@@ -1,35 +1,36 @@
 #!/bin/bash
-# Run the local e2e suites (integration.py, *_e2e.py, *_ui.py, ...) inside a container of the Docker image, so they
-# need nothing on the host but Docker. Each suite gets a freshly started stack (tests/run_local.sh: fake LLM + all
-# services), because several suites expect a fresh install.
-#   bash tests/run_in_docker.sh                 # every suite (about 15 minutes)
+# Run the local e2e suites (integration.py, *_e2e.py, *_ui.py, ...) inside a container of the test image
+# (Dockerfile.test: Playwright's Python image + the `omuse` binary), so they need nothing on the host but Docker.
+# Each suite gets a freshly started stack (tests/run_local.sh: fake LLM + all services), because several suites
+# expect a fresh install.
+#   bash tests/run_in_docker.sh                 # every suite
 #   bash tests/run_in_docker.sh e2e_027 mcp_e2e # only these
-# OMUSE_IMAGE picks the image (default: omuse, built from the Dockerfile when missing). Exit code 1 if a suite fails.
-# OMUSE_TEST_OFFLINE=1 skips the apt/pip step inside the container (no network: the mail suites then have no IMAP server).
+# OMUSE_IMAGE picks the image (default: omuse-test, built from Dockerfile.test when missing). Exit code 1 if a suite fails.
 # docker_browser_e2e.py is not part of this: it needs a real model (see its docstring).
 set -u
 if [ "${1:-}" != "--inside" ]; then
   cd "$(dirname "$0")/.."
-  IMAGE="${OMUSE_IMAGE:-omuse}"
-  docker image inspect "$IMAGE" >/dev/null 2>&1 || docker build -t "$IMAGE" . || exit 1
-  # root: apt installs Dovecot. Empty OMUSE_MODEL*: the image defaults would override the stack's fake model.
-  # shop.test / opentable.test: the hostnames the test pages are served under.
-  exec docker run --rm --user 0 -e OMUSE_MODEL_URL= -e OMUSE_MODEL= -e VOICE_PORT= -e OMUSE_TEST_OFFLINE \
+  IMAGE="${OMUSE_IMAGE:-omuse-test}"
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || docker build -f Dockerfile.test -t "$IMAGE" . || exit 1
+  # root: Dovecot. shop.test / opentable.test: the hostnames the test pages are served under.
+  # OMUSE_E2E_ENV_FILE: real-model runs of the travel suites (endpoint, key and model names; the key stays in that file).
+  # OMUSE_E2E_OUT: a writable host directory, mounted at /repo-out (suite logs, TIMING lines, screenshots_real.py pictures).
+  EXTRA=()
+  [ -n "${OMUSE_E2E_ENV_FILE:-}" ] && EXTRA+=(--env-file "$OMUSE_E2E_ENV_FILE" -e OMUSE_E2E_REAL=1 -e OMUSE_E2E_MODELS)
+  [ -n "${OMUSE_E2E_OUT:-}" ] && { mkdir -p "$OMUSE_E2E_OUT"; EXTRA+=(-v "$(cd "$OMUSE_E2E_OUT" && pwd)":/repo-out); }
+  exec docker run --rm --user 0 ${EXTRA[@]+"${EXTRA[@]}"} ${OMUSE_TEST_NAME:+--name "$OMUSE_TEST_NAME"} \
     --add-host shop.test:127.0.0.1 --add-host opentable.test:127.0.0.1 \
     -v "$PWD":/repo:ro --entrypoint bash "$IMAGE" /repo/tests/run_in_docker.sh --inside "$@"
 fi
 shift
 
-cp -r /repo /src && cd /src && rm -rf dist
-# test-only dependencies (not in requirements.txt): IMAP server for the mail suites, form parsing for the fake services
+# a writable copy of the tests (suites write next to themselves); the repo stays mounted read-only
+mkdir -p /src && cp -r /repo/tests /repo/web /src/ && cd /src
+# test-only services baked into the image: IMAP server for the mail suites
 mkdir -p /tmp/claude-0 /srv/dove/run /srv/dove/mail
-if [ -z "${OMUSE_TEST_OFFLINE:-}" ]; then
-  (apt-get update -qq && apt-get install -y -qq dovecot-imapd psmisc) >/dev/null 2>&1 || echo "WARNING: could not install dovecot"
-  pip install -q --break-system-packages pytest aiosmtpd python-multipart >/dev/null 2>&1 || echo "WARNING: pip install failed"
-  cp tests/dovecot.conf /srv/dove/; cp tests/dovecot-oauth2.conf /srv/dove/oauth2.conf
-  echo "tester@example.com:{PLAIN}secretpass123" > /srv/dove/users; chown -R nobody:nogroup /srv/dove/mail
-  dovecot -c /srv/dove/dovecot.conf || echo "WARNING: dovecot did not start"
-fi
+cp tests/dovecot.conf /srv/dove/; cp tests/dovecot-oauth2.conf /srv/dove/oauth2.conf
+echo "tester@example.com:{PLAIN}secretpass123" > /srv/dove/users; chown -R nobody:nogroup /srv/dove/mail
+dovecot -c /srv/dove/dovecot.conf || echo "WARNING: dovecot did not start"
 export PYTHONPATH=/src
 
 if [ $# -gt 0 ]; then
@@ -40,15 +41,28 @@ fi
 failed=""
 for f in $SUITES; do
   f="${f%.py}"
-  bash tests/stop_local.sh >/dev/null 2>&1; pkill -f "uvicorn|http.server|chrome" >/dev/null 2>&1; sleep 1
+  bash tests/stop_local.sh >/dev/null 2>&1; pkill -f "uvicorn|http.server|chrome|omuse" >/dev/null 2>&1; sleep 1
   bash tests/run_local.sh > /tmp/up.log 2>&1 < /dev/null
   for i in $(seq 1 20); do
     curl -s -o /dev/null http://127.0.0.1:8082/ && curl -sf -o /dev/null http://127.0.0.1:8080/sentinel/api/health && break
     sleep 1
   done
   t0=$(date +%s)
-  timeout 420 python3 "tests/$f.py" > "/tmp/out-$f.log" 2>&1; rc=$?
+  rm -f /tmp/claude-0/travel_last.json
+  # real-model runs take longer
+  timeout "${OMUSE_SUITE_TIMEOUT:-$([ -n "${OMUSE_E2E_REAL:-}" ] && echo 1800 || echo 420)}" python3 "tests/$f.py" > "/tmp/out-$f.log" 2>&1; rc=$?
   echo "SUITE $f rc=$rc $(( $(date +%s) - t0 ))s pass=$(grep -c '^PASS' "/tmp/out-$f.log") fail=$(grep -c '^FAIL' "/tmp/out-$f.log")"
+  grep '^TIMING ' "/tmp/out-$f.log" | sed 's/^/  /'
+  if [ -d /repo-out ]; then
+    cp "/tmp/out-$f.log" /repo-out/
+    if [ -n "${OMUSE_E2E_REAL:-}" ] && [ -f /tmp/claude-0/travel_last.json ]; then
+      # the task record (events, outcome) for reading the run afterwards
+      for tid in $(jq -r '.tasks[]? | if type == "object" then .id else . end' /tmp/claude-0/travel_last.json); do
+        curl -s -H 'X-Persona-UI: 1' "http://127.0.0.1:8080/api/tasks/$tid" > "/repo-out/task-$f-$tid.json"
+      done
+      timeout 180 python3 tests/screenshots_real.py /repo-out/shots > "/tmp/shots-$f.log" 2>&1 || echo "  screenshots failed: $(tail -1 /tmp/shots-$f.log)"
+    fi
+  fi
   if [ $rc -ne 0 ]; then
     failed="$failed $f"
     echo "  stack: $(tr '\n' ' ' < /tmp/up.log)"

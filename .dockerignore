@@ -1,8 +1,8 @@
 .git
+target
 dist
 deliver
 evals
-tests
 chart
 assets
 deploy/market
@@ -10,3 +10,4 @@ deploy/oauth-relay
 **/__pycache__
 **/*.pyc
 .pytest_cache
+config.toml

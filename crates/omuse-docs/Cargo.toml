@@ -1,0 +1,19 @@
+[package]
+name = "omuse-docs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+omuse-common.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+fancy-regex.workspace = true
+chrono.workspace = true
+zip.workspace = true
+html-escape.workspace = true
+unicode-width.workspace = true
+calamine = { workspace = true, features = ["dates"] }
+indexmap.workspace = true
+encoding_rs.workspace = true
+thiserror.workspace = true

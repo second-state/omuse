@@ -153,12 +153,18 @@ fl = results(t, "pdf_form_fill")
 check("a filled copy is written; unknown fields are reported, not guessed",
       fl and fl[0]["ok"] and "permission_slip-filled.pdf" in fl[0]["preview"] and "unknown field 'signature'" in fl[0]["preview"], fl[:1])
 check("required/empty fields are pointed out (emergency phone)", fl and "emergency_phone" in fl[0]["preview"], fl[:1])
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from app.runtime import pdfforms  # noqa: E402
-vals = {f["name"]: f["value"] for f in pdfforms.fields(os.path.join(WS, "forms", "permission_slip-filled.pdf"))}
+from pypdf import PdfReader  # noqa: E402
+
+
+def pdf_values(path):
+    """Form field values as the PDF stores them (checkbox / radio states without the leading slash)."""
+    return {name: str(f.get("/V", "") or "").lstrip("/") for name, f in (PdfReader(path).get_fields() or {}).items()}
+
+
+vals = pdf_values(os.path.join(WS, "forms", "permission_slip-filled.pdf"))
 check("the filled PDF really contains the values", vals.get("student_name") == "Able Lu" and vals.get("consent") == "Yes"
       and vals.get("lunch") == "vegetarian" and vals.get("tshirt") == "L", vals)
-orig = {f["name"]: f["value"] for f in pdfforms.fields(os.path.join(WS, "forms", "permission_slip.pdf"))}
+orig = pdf_values(os.path.join(WS, "forms", "permission_slip.pdf"))
 check("the original stays untouched", orig.get("student_name") == "" and orig.get("consent") == "Off", orig)
 sf = results(t, "send_file")
 check("the filled copy is handed to the user to check", sf and sf[0]["ok"], sf[:1])

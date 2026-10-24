@@ -1,21 +1,30 @@
-"""Non-Gmail mailboxes against a real IMAP server (Dovecot on 127.0.0.1:1143) and an SMTP server (aiosmtpd on :1025).
+"""Non-Gmail mailboxes against a real IMAP server (Dovecot on 127.0.0.1:1143) and an SMTP server (aiosmtpd on :1025),
+through a running local stack (tests/run_local.sh): the mailbox is connected with Sentinel's API and every mail operation
+is the tool call the agent makes (/internal/act), approvals included.
 
-Start Dovecot first (tests/dovecot.conf, see the docstring there); this script starts its own SMTP server and seeds the
-mailbox. Covers: search translation (folders, from:, is:unread, UTF-8 text, dates, OR), message / thread / attachment,
-drafts, send + Sent copy, archive (Archive folder created), labels as folders (UTF-7 names), stars, read state,
-unsubscribe targets, and the API connect flow when a local stack runs (pass --api)."""
+Start Dovecot first (tests/dovecot.conf, see the docstring there); this script starts its own SMTP server, the fake
+Microsoft sign-in (tests/fake_ms.py on :18999, [endpoints] ms_login) and seeds the mailbox. Covers: the connect flow,
+search translation (folders, from:, is:unread, UTF-8 text, dates, OR), message / thread / attachment, drafts, send + Sent
+copy, archive (Archive folder created), labels as folders (UTF-7 names), stars, read state, unsubscribe targets, and
+Outlook (device-code sign-in, XOAUTH2 for IMAP and SMTP, token caching)."""
+import base64
 import email.utils
 import imaplib
 import sys
+import threading
 import time
+
+import httpx
 
 sys.path.insert(0, ".")
 from aiosmtpd.controller import Controller  # noqa: E402
 from aiosmtpd.smtp import AuthResult, LoginPassword  # noqa: E402
 
-from app.sentinel.gmail import Gmail, GmailError  # noqa: E402
+from tests import fake_ms  # noqa: E402
 
 USER, PW = "tester@example.com", "secretpass123"
+B, H, RT = "http://127.0.0.1:8080", {"X-Persona-UI": "1"}, {"X-Persona-Runtime": "rt-test"}
+c = httpx.Client(timeout=60, trust_env=False)
 fails = []
 
 
@@ -92,184 +101,184 @@ def main():
     ctl = Controller(sink, hostname="127.0.0.1", port=1025, authenticator=auth, auth_require_tls=False)
     ctl.start()
     try:
-        run(sink)
+        acc = connect()
+        run(sink, acc)
         outlook(sink)
-        if "--api" in sys.argv:
-            api()
     finally:
         ctl.stop()
     print("\n%d failures" % len(fails), fails)
     sys.exit(1 if fails else 0)
 
 
-def client():
-    return Gmail(USER, PW, "127.0.0.1", "127.0.0.1", "Tester", provider="custom", imap_port=1143, imap_security="none",
-                 smtp_port=1025, smtp_security="none")
+BODY = {"provider": "custom", "email": USER, "app_password": PW, "display_name": "Tester",
+        "imap_host": "127.0.0.1", "imap_port": 1143, "imap_security": "none",
+        "smtp_host": "127.0.0.1", "smtp_port": 1025, "smtp_security": "none"}
 
 
-def run(sink):
-    g = client()
-    t = g.test()
-    check("test(): generic mode, folders found", t["ok"] and g.gm is False and t["sent"] == "Sent" and t["drafts"] == "Drafts", t)
-    check("test(): unread count", t["unread_inbox"] == 3, t)
-
-    res = g.search("in:inbox", 10)
-    check("search in:inbox -> 5 messages, folder ids", len(res) == 5 and all(r["id"].startswith("i-") for r in res), res)
-    check("decoded subjects / from", any(r["subject"] == "发票报销" and "财务" in r["from"] for r in res), [r["subject"] for r in res])
-    check("search from:boss", len(g.search("from:boss@acme.com", 10)) == 2)
-    check("search is:unread", len(g.search("is:unread", 10)) == 3)
-    r = g.search("发票", 10)
-    check("search UTF-8 text", len(r) == 1 and r[0]["subject"] == "发票报销", r)
-    check("search newer_than:7d excludes old", len(g.search("newer_than:7d", 10)) == 4)
-    check("search older_than:30d", [x["subject"] for x in g.search("older_than:30d", 10)] == ["Old news"])
-    check("search OR", len(g.search("subject:sale OR subject:news", 10)) == 2)
-    check("search {a b}", len(g.search("{from:news@shop.com from:old@acme.com}", 10)) == 2)
-    check("search -category:promotions", all("sale" not in x["subject"] for x in g.search("-category:promotions", 10)))
-    check("search category:promotions", [x["subject"] for x in g.search("category:promotions", 10)] == ["Big sale today"])
-    check("search has:attachment", [x["subject"] for x in g.search("has:attachment", 10)] == ["Re: Quarterly plan"])
-    check("search in:sent", [x["id"][:2] for x in g.search("in:sent", 10)] == ["s-"])
-    check("search in:anywhere covers sent", len(g.search("in:anywhere quarterly", 10)) == 3)
-    try:
-        g.search("label:Nope", 5)
-        check("unknown folder errors", False)
-    except GmailError as e:
-        check("unknown folder errors with folder list", "Sent" in str(e), e)
-    sale = next(x for x in res if x["subject"] == "Big sale today")
-    check("unsubscribe method visible, URL hidden", sale.get("unsubscribe") == "one-click" and "XYZ" not in str(res), sale)
-
-    reply = next(x for x in res if x["subject"] == "Re: Quarterly plan")
-    full = g.get_message(reply["id"])
-    check("get_message body + attachment list", "numbers" in full["body"] and full["attachments"][0]["filename"] == "numbers.csv", full)
-    name, ctype, data = g.get_attachment(reply["id"], "numbers.csv")
-    check("get_attachment", name == "numbers.csv" and b"1,2" in data, (name, data))
-    th = g.get_thread(reply["thread_id"])
-    check("thread via References (inbox + sent)", len(th) == 3 and th[0]["subject"] == "Quarterly plan", [x["subject"] for x in th])
-
-    d = g.create_draft("boss@acme.com", "", "Draft reply", reply_to_message_id=reply["id"])
-    dr = g.search("in:drafts", 5)
-    check("draft saved in Drafts", d["saved"] and d["folder"] == "Drafts" and dr and dr[0]["subject"] == "Re: Re: Quarterly plan"
-          or dr[0]["subject"] == "Re: Quarterly plan", (d, dr))
-
-    s = g.send("boss@acme.com", "Hello", "Body text", reply_to_message_id=reply["id"])
-    check("send via SMTP (login)", s["sent"] and len(sink.msgs) == 1 and sink.msgs[0][1] == ["boss@acme.com"], sink.msgs)
-    check("sent copy appended to Sent", s.get("saved_to_sent") is True and any(x["subject"] == "Re: Quarterly plan" or x["subject"] == "Hello"
-                                                                          for x in g.search("in:sent subject:Hello", 5)), s)
-    check("reply headers", b"In-Reply-To: <q2@acme.com>" in sink.msgs[0][2], sink.msgs[0][2][:400])
-
-    old = next(x for x in g.search("in:inbox", 10) if x["subject"] == "Old news")
-    a = g.archive([old["id"]])
-    check("archive moves to Archive (created)", a["archived"] == 1 and "Archive" in g.list_labels(), a)
-    arch = g.search("in:archive", 5)
-    check("archived message found in Archive", [x["subject"] for x in arch] == ["Old news"] and arch[0]["id"].startswith("a-"), arch)
-    check("default search covers Archive", "Old news" in [x["subject"] for x in g.search("older_than:30d", 10)])
-
-    boss = next(x for x in g.search("in:inbox", 10) if x["subject"] == "Quarterly plan")
-    lab = g.label([boss["id"]], add=["STARRED", "工作"])
-    check("label: star + UTF-7 folder copy", lab.get("added") == 2 and "工作" in g.list_labels(), (lab, g.list_labels()))
-    w = g.search("label:工作", 5)
-    check("search label:<chinese folder>", [x["subject"] for x in w] == ["Quarterly plan"], w)
-    check("is:starred", [x["subject"] for x in g.search("is:starred", 5)] == ["Quarterly plan"])
-    lab = g.label([boss["id"]], remove=["STARRED"])
-    check("unstar", lab.get("removed") == 1 and not g.search("is:starred", 5))
-    mr = g.mark_read([sale["id"]], True)
-    check("mark read", mr["updated"] == 1 and len(g.search("is:unread", 10)) == 2)
-    tg = g.unsubscribe_targets([sale["id"]])
-    check("unsubscribe targets", tg[0]["method"] == "one-click" and tg[0]["_unsub"]["https"].endswith("XYZ"), tg)
-
-    bad = Gmail(USER, "wrong", "127.0.0.1", "127.0.0.1", provider="qq", imap_port=1143, imap_security="none")
-    try:
-        bad.test()
-        check("bad password fails", False)
-    except GmailError as e:
-        check("bad password: provider-specific hint", "授权码" in str(e), e)
+def act(tool, args, decision="approve"):
+    """The agent's tool call; an approval card is resolved with `decision` and the action's own result returned."""
+    r = c.post(B + "/internal/act", headers=RT,
+               json={"task_id": "mail-t1", "call_id": "c" + str(time.time()), "tool": tool, "args": args}).json()
+    if r.get("status") == "approval_required" and decision:
+        res = c.post(B + f"/sentinel/api/approvals/{r['approval_id']}/resolve", headers=H, json={"decision": decision}).json()
+        return {"approval": r, **(res.get("result") or res)}
+    return r
 
 
-def outlook(sink):
-    """Outlook path end to end: device code sign-in (fake Microsoft endpoint), XOAUTH2 to IMAP (Dovecot verifies the
-    token through the same fake's introspection endpoint) and SMTP, token caching and refresh-token rotation."""
-    import threading
-    from app.sentinel import actions, mailproviders as mp
-    from tests import fake_ms
-    srv = fake_ms.serve()
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    mp.MS_LOGIN = "http://127.0.0.1:18999"
-    cid = "11111111-2222-3333-4444-555555555555"
-    try:
-        mp.ms_device_start("not-a-guid", "consumers")
-        check("MS: bad client id rejected locally", False)
-    except mp.OAuthError as e:
-        check("MS: bad client id rejected locally", "GUID" in str(e))
-    try:
-        mp.ms_device_start("99999999-2222-3333-4444-555555555555", "consumers")
-        check("MS: unknown app -> readable error", False)
-    except mp.OAuthError as e:
-        check("MS: unknown app -> readable error", "AADSTS700016" in str(e), e)
-    d = mp.ms_device_start(cid, "consumers")
-    check("MS: device code", d["user_code"] == "ABCD-1234" and d["interval"] == 1, d)
-    first = mp.ms_device_poll(cid, "consumers", d["device_code"])
-    tok = mp.ms_device_poll(cid, "consumers", d["device_code"])
-    check("MS: pending then token", first is None and tok and tok["refresh_token"] == "rt-1", (first, tok))
-
-    class St:
-        def __init__(self):
-            self.s = {"cred_gmail_9": {"oauth": {"client_id": cid, "tenant": "consumers", "refresh_token": "rt-1"}}}
-
-        def get_secret(self, h):
-            return self.s.get(h)
-
-        def put_secret(self, c, payload, handle=None):
-            self.s[handle] = payload
-    st = St()
-    acc = {"id": "g9", "email": "me@outlook.com", "provider": "outlook", "imap_host": "127.0.0.1", "imap_port": 1143,
-           "imap_security": "none", "smtp_host": "127.0.0.1", "smtp_port": 1025, "smtp_security": "none"}
-    actions._MS_TOKENS.pop("g9", None)
-    g = actions.make_client(acc, st.get_secret("cred_gmail_9"), st)
-    t = g.test()
-    check("Outlook: IMAP XOAUTH2 login + generic mode", t["ok"] and g.gm is False, t)
-    check("Outlook: refresh token rotated and saved", st.s["cred_gmail_9"]["oauth"]["refresh_token"] == "rt-2", st.s)
-    n_before = fake_ms.STATE["n"]
-    g.test()
-    check("Outlook: access token cached", fake_ms.STATE["n"] == n_before)
-    r = g.send("friend@example.com", "Hi from Outlook", "Hello")
-    check("Outlook: SMTP XOAUTH2 send", r["sent"] and sink.xoauth and sink.msgs[-1][1] == ["friend@example.com"], sink.xoauth)
-    check("Outlook: sent copy kept", r.get("saved_to_sent") is True, r)
-    st.s["cred_gmail_9"]["oauth"]["refresh_token"] = "revoked"
-    actions._MS_TOKENS.pop("g9", None)
-    g2 = actions.make_client(acc, st.get_secret("cred_gmail_9"), st)
-    try:
-        g2.test()
-        check("Outlook: revoked token -> reconnect hint", False)
-    except GmailError as e:
-        check("Outlook: revoked token -> reconnect hint", "重新登录" in str(e), e)
-    srv.shutdown()
+def result(r):
+    return r.get("result") if isinstance(r.get("result"), dict) else {}
 
 
-def api():
-    """Connect the same mailbox through Sentinel's API on a local stack, then run gmail_search as the agent would."""
-    import httpx
-    B, H = "http://127.0.0.1:8080", {"X-Persona-UI": "1"}
-    c = httpx.Client(timeout=60, trust_env=False)
-    body = {"provider": "custom", "email": USER, "app_password": PW, "display_name": "Tester",
-            "imap_host": "127.0.0.1", "imap_port": 1143, "imap_security": "none",
-            "smtp_host": "127.0.0.1", "smtp_port": 1025, "smtp_security": "none"}
-    r = c.post(B + "/sentinel/api/connections/gmail/credential", json={**body, "app_password": "wrong"}, headers=H)
+def search(q, n=10):
+    r = act("gmail_search", {"query": q, "max_results": n})
+    return result(r).get("messages", []) if r.get("status") == "ok" else r
+
+
+def subjects(msgs):
+    return [m.get("subject") for m in msgs] if isinstance(msgs, list) else msgs
+
+
+def connect():
+    """Connect the mailbox through Sentinel's API, as Settings > Connections does."""
+    r = c.post(B + "/sentinel/api/connections/gmail/credential", json={**BODY, "app_password": "wrong"}, headers=H)
     check("API: wrong password rejected, nothing saved", r.status_code == 400, r.text)
-    r = c.post(B + "/sentinel/api/connections/gmail/credential", json={**body, "imap_host": "10.0.0.5"}, headers=H)
+    r = c.post(B + "/sentinel/api/connections/gmail/credential", json={**BODY, "imap_host": "10.0.0.5"}, headers=H)
     check("API: unencrypted non-loopback refused", r.status_code == 400 and "localhost" in r.text, r.text)
-    r = c.post(B + "/sentinel/api/connections/gmail/credential", json=body, headers=H)
+    r = c.post(B + "/sentinel/api/connections/gmail/credential",
+               json={**BODY, "provider": "qq", "email": "tester@qq.com", "app_password": "wrong"}, headers=H)
+    check("bad password: provider-specific hint", r.status_code == 400 and "授权码" in r.text, r.text)
+    r = c.post(B + "/sentinel/api/connections/gmail/credential", json=BODY, headers=H)
     check("API: custom IMAP connected", r.status_code == 200 and r.json()["ok"], r.text)
     conn = c.get(B + "/sentinel/api/connections", headers=H).json()
     gm = next(x for x in conn["connections"] if x["name"] == "gmail")
     acc = next((a for a in gm["accounts"] if a["email"] == USER), None)
     check("API: account listed with provider", acc and acc["provider"] == "custom" and acc["ready"], gm["accounts"])
     check("API: presets exposed", any(p["key"] == "outlook" and p["auth"] == "oauth" for p in gm["providers"]), "")
-    r = c.post(B + "/sentinel/api/connections/gmail/test", json={"account": acc["id"]}, headers=H).json()
-    check("API: test endpoint", r.get("ok") and r["test"]["provider"] == "custom", r)
-    r = c.post(B + "/sentinel/api/connections/gmail/oauth/start", json={"email": "me@outlook.com", "client_id": "nope"}, headers=H)
-    check("API: Outlook bad client id rejected", r.status_code == 400 and "GUID" in r.text, r.text)
-    r = c.post(B + "/sentinel/api/connections/gmail/credential", json={"email": "me@outlook.com", "app_password": "x" * 16}, headers=H)
-    check("API: Outlook requires Microsoft sign-in", r.status_code == 400 and "Microsoft" in r.text, r.text)
+    t = c.post(B + "/sentinel/api/connections/gmail/test", json={"account": acc["id"]}, headers=H).json()
+    tt = t.get("test") or {}
+    check("test: generic mode, folders found", t.get("ok") and tt.get("provider") == "custom" and tt.get("sent") == "Sent"
+          and tt.get("drafts") == "Drafts", t)
+    check("test: unread count", tt.get("unread_inbox") == 3, t)
+    return acc
+
+
+def run(sink, acc):
+    res = search("in:inbox")
+    check("search in:inbox -> 5 messages, folder ids", isinstance(res, list) and len(res) == 5
+          and all(r["id"].startswith("i-") for r in res), res)
+    res = res if isinstance(res, list) else []
+    check("decoded subjects / from", any(r["subject"] == "发票报销" and "财务" in r["from"] for r in res), subjects(res))
+    check("search from:boss", len(search("from:boss@acme.com")) == 2)
+    check("search is:unread", len(search("is:unread")) == 3)
+    r = search("发票")
+    check("search UTF-8 text", subjects(r) == ["发票报销"], r)
+    check("search newer_than:7d excludes old", len(search("newer_than:7d")) == 4)
+    check("search older_than:30d", subjects(search("older_than:30d")) == ["Old news"])
+    check("search OR", len(search("subject:sale OR subject:news")) == 2)
+    check("search {a b}", len(search("{from:news@shop.com from:old@acme.com}")) == 2)
+    check("search -category:promotions", all("sale" not in x["subject"] for x in search("-category:promotions")))
+    check("search category:promotions", subjects(search("category:promotions")) == ["Big sale today"])
+    check("search has:attachment", subjects(search("has:attachment")) == ["Re: Quarterly plan"])
+    check("search in:sent", [x["id"][:2] for x in search("in:sent")] == ["s-"])
+    check("search in:anywhere covers sent", len(search("in:anywhere quarterly")) == 3)
+    r = act("gmail_search", {"query": "label:Nope", "max_results": 5})
+    check("unknown folder errors with folder list", r.get("status") == "error" and "Sent" in r.get("error", ""), r)
+    sale = next((x for x in res if x["subject"] == "Big sale today"), {})
+    check("unsubscribe method visible, URL hidden", sale.get("unsubscribe") == "one-click" and "XYZ" not in str(res), sale)
+
+    reply = next((x for x in res if x["subject"] == "Re: Quarterly plan"), {})
+    full = act("gmail_get_message", {"message_id": reply.get("id")})
+    check("get_message body + attachment list", full.get("status") == "ok" and "numbers" in str(full)
+          and "numbers.csv" in str(result(full).get("attachments")), full)
+    r = act("gmail_save_attachment", {"message_id": reply.get("id"), "filename": "numbers.csv"})
+    data = base64.b64decode(result(r).get("data_b64") or "")
+    check("get_attachment", r.get("status") == "ok" and result(r).get("filename") == "numbers.csv" and b"1,2" in data, r)
+    th = act("gmail_get_thread", {"thread_id": result(full).get("thread_id")})  # the agent reads it off the message
+    tm = result(th).get("messages", [])
+    check("thread via References (inbox + sent)", len(tm) == 3 and tm[0]["subject"] == "Quarterly plan", (full, th))
+
+    d = act("gmail_create_draft", {"to": "boss@acme.com", "subject": "", "body": "Draft reply", "reply_to_message_id": reply.get("id")})
+    dr = search("in:drafts", 5)
+    check("draft saved in Drafts", d.get("status") == "ok" and result(d).get("folder") == "Drafts" and isinstance(dr, list) and dr
+          and dr[0]["subject"] in ("Re: Quarterly plan", "Re: Re: Quarterly plan"), (d, dr))
+
+    s = act("gmail_send", {"to": "boss@acme.com", "subject": "Hello", "body": "Body text", "reply_to_message_id": reply.get("id")})
+    check("send needs approval", "approval" in s, s)
+    check("send via SMTP (login)", s.get("status") == "ok" and len(sink.msgs) == 1 and sink.msgs[0][1] == ["boss@acme.com"],
+          (s, sink.msgs))
+    check("sent copy appended to Sent", result(s).get("saved_to_sent") is True
+          and any(x["subject"] in ("Re: Quarterly plan", "Hello") for x in search("in:sent subject:Hello", 5)), s)
+    check("reply headers", sink.msgs and b"In-Reply-To: <q2@acme.com>" in sink.msgs[0][2], sink.msgs[:1])
+
+    old = next(x for x in search("in:inbox") if x["subject"] == "Old news")
+    a = act("gmail_archive", {"message_ids": [old["id"]]})
+    labels = result(act("gmail_list_labels", {})).get("labels", [])
+    check("archive moves to Archive (created)", a.get("status") == "ok" and result(a).get("archived") == 1 and "Archive" in labels,
+          (a, labels))
+    arch = search("in:archive", 5)
+    check("archived message found in Archive", subjects(arch) == ["Old news"] and arch[0]["id"].startswith("a-"), arch)
+    check("default search covers Archive", "Old news" in subjects(search("older_than:30d")))
+
+    boss = next(x for x in search("in:inbox") if x["subject"] == "Quarterly plan")
+    lab = act("gmail_label", {"message_ids": [boss["id"]], "add_labels": ["STARRED", "工作"]})
+    labels = result(act("gmail_list_labels", {})).get("labels", [])
+    check("label: star + UTF-7 folder copy", result(lab).get("added") == 2 and "工作" in labels, (lab, labels))
+    check("search label:<chinese folder>", subjects(search("label:工作", 5)) == ["Quarterly plan"])
+    check("is:starred", subjects(search("is:starred", 5)) == ["Quarterly plan"])
+    lab = act("gmail_label", {"message_ids": [boss["id"]], "remove_labels": ["STARRED"]})
+    check("unstar", result(lab).get("removed") == 1 and not search("is:starred", 5), lab)
+    mr = act("gmail_label", {"message_ids": [sale.get("id")], "mark_read": True})
+    check("mark read", result(mr).get("updated") == 1 and len(search("is:unread")) == 2, mr)
+    u = act("gmail_unsubscribe", {"message_ids": [sale.get("id")]}, decision="deny")
+    check("unsubscribe targets shown on the approval card", u.get("status") == "denied"
+          and "one-click" in str(u.get("approval", {}).get("summary")), u)
     c.delete(B + f"/sentinel/api/connections/gmail/accounts/{acc['id']}", headers=H)
+
+
+def outlook(sink):
+    """Outlook end to end through the API: device-code sign-in (fake Microsoft endpoint), XOAUTH2 to IMAP (Dovecot
+    verifies the token through the same fake's introspection endpoint) and SMTP, access-token caching."""
+    srv = fake_ms.serve()
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    cid = "11111111-2222-3333-4444-555555555555"
+    form = {"email": "me@outlook.com", "imap_host": "127.0.0.1", "imap_port": 1143, "imap_security": "none",
+            "smtp_host": "127.0.0.1", "smtp_port": 1025, "smtp_security": "none"}
+    try:
+        r = c.post(B + "/sentinel/api/connections/gmail/oauth/start", json={**form, "client_id": "not-a-guid"}, headers=H)
+        check("MS: bad client id rejected locally", r.status_code == 400 and "GUID" in r.text, r.text)
+        r = c.post(B + "/sentinel/api/connections/gmail/oauth/start",
+                   json={**form, "client_id": "99999999-2222-3333-4444-555555555555"}, headers=H)
+        check("MS: unknown app -> readable error", r.status_code == 400 and "AADSTS700016" in r.text, r.text)
+        r = c.post(B + "/sentinel/api/connections/gmail/credential", json={"email": "me@outlook.com", "app_password": "x" * 16},
+                   headers=H)
+        check("API: Outlook requires Microsoft sign-in", r.status_code == 400 and "Microsoft" in r.text, r.text)
+        d = c.post(B + "/sentinel/api/connections/gmail/oauth/start", json={**form, "client_id": cid}, headers=H).json()
+        check("MS: device code", d.get("user_code") == "ABCD-1234" and d.get("interval") == 1, d)
+        polls = []
+        for _ in range(20):
+            p = c.get(B + f"/sentinel/api/connections/gmail/oauth/{d.get('flow')}", headers=H).json()
+            polls.append(p.get("status"))
+            if p.get("status") != "pending":
+                break
+            time.sleep(1.1)
+        check("MS: pending then token, account connected", polls[0] == "pending" and polls[-1] == "done", (polls, p))
+        conn = c.get(B + "/sentinel/api/connections", headers=H).json()
+        gm = next(x for x in conn["connections"] if x["name"] == "gmail")
+        acc = next((a for a in gm["accounts"] if a["email"] == "me@outlook.com"), {})
+        check("Outlook: account listed", acc.get("provider") == "outlook" and acc.get("ready"), gm["accounts"])
+        t = c.post(B + "/sentinel/api/connections/gmail/test", json={"account": acc.get("id")}, headers=H).json()
+        check("Outlook: IMAP XOAUTH2 login + generic mode", t.get("ok") and t["test"].get("provider") == "outlook", t)
+        n_before = fake_ms.STATE["n"]
+        c.post(B + "/sentinel/api/connections/gmail/test", json={"account": acc.get("id")}, headers=H)
+        check("Outlook: access token cached", fake_ms.STATE["n"] == n_before, fake_ms.STATE)
+        r = act("gmail_send", {"to": "friend@example.com", "subject": "Hi from Outlook", "body": "Hello",
+                               "from_account": "me@outlook.com"})
+        check("Outlook: SMTP XOAUTH2 send", r.get("status") == "ok" and sink.xoauth and sink.msgs[-1][1] == ["friend@example.com"],
+              (r, sink.xoauth))
+        check("Outlook: sent copy kept", result(r).get("saved_to_sent") is True, r)
+        c.delete(B + f"/sentinel/api/connections/gmail/accounts/{acc.get('id')}", headers=H)
+    finally:
+        srv.shutdown()
 
 
 if __name__ == "__main__":

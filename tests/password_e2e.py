@@ -1,6 +1,8 @@
 """Standalone installs (run_local.sh sets OMUSE_PASSWORD=local-test): the chat view reminds the user to change the
 initial password, Settings has a Password section, and changing it stores a hashed password that the gate verifies."""
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -8,7 +10,6 @@ import sys
 import httpx
 from playwright.async_api import async_playwright
 
-sys.path.insert(0, ".")
 B = "http://127.0.0.1:8080"
 H = {"X-Persona-UI": "1"}
 c = httpx.Client(timeout=60, trust_env=False)
@@ -66,12 +67,19 @@ async def ui():
 asyncio.run(ui())
 s = c.get(B + "/sentinel/api/password").json()
 check("no longer on the default", s.get("default") is False, s)
-from app.sentinel import passwd
-os.environ["SENTINEL_DATA"] = SDATA; os.environ["OMUSE_PASSWORD"] = "local-test"
+
+
+def gate_accepts(password):
+    """The gate's check: PBKDF2-SHA256 of the password with the stored salt and iteration count equals the stored hash."""
+    rec = json.load(open(auth_file))
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(rec["salt"]), int(rec["iters"]))
+    return hmac.compare_digest(dk.hex(), str(rec["hash"]))
+
+
 check("the gate's check accepts the new password and refuses the initial one",
-      passwd.verify("omuse", "my-own-password-1") and not passwd.verify("omuse", "local-test"))
+      gate_accepts("my-own-password-1") and not gate_accepts("local-test"))
 r = c.post(B + "/sentinel/api/password", json={"current": "my-own-password-1", "new": "another-one-2"}, headers=H)
-check("changing again needs the new current password", r.status_code == 200 and passwd.verify("omuse", "another-one-2"), r.text[:200])
+check("changing again needs the new current password", r.status_code == 200 and gate_accepts("another-one-2"), r.text[:200])
 aud = c.get(B + "/sentinel/api/audit", params={"limit": 30}).text
 check("changes are in the audit log, without the passwords", "password.change" in aud and "my-own-password" not in aud and "another-one" not in aud, aud[:300])
 os.remove(auth_file)

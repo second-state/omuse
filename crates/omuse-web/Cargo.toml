@@ -1,0 +1,38 @@
+[package]
+name = "omuse-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+omuse-common.workspace = true
+
+# async / web
+tokio.workspace = true
+axum.workspace = true
+http-body-util.workspace = true
+
+# templates and embedded files
+tera.workspace = true
+include_dir.workspace = true
+walkdir.workspace = true
+mime_guess.workspace = true
+flate2.workspace = true
+
+# crypto / encoding
+sha2.workspace = true
+hmac.workspace = true
+hex.workspace = true
+base64.workspace = true
+subtle.workspace = true
+form_urlencoded.workspace = true
+percent-encoding.workspace = true
+
+# misc
+regex.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tower.workspace = true
+tempfile.workspace = true

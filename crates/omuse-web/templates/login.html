@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="{{ lang }}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OMuse</title>
+<style>
+:root{--bg:#f4f1ea;--surface:#fffdf8;--line:#e3ddd2;--text:#1f1d1a;--muted:#6b665e;--accent:#0b7a5c;--accent-ink:#fff;--danger:#c62828;color-scheme:light}
+@media (prefers-color-scheme: dark){:root{--bg:#0e1114;--surface:#161a1f;--line:#2a3139;--text:#e6e8eb;--muted:#9aa3ad;--accent:#34c79a;--accent-ink:#06231a;--danger:#ff7b72;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--text);
+font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;padding:16px}
+form{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:24px;display:flex;flex-direction:column;gap:14px}
+h1{font-size:20px;margin:0}h1 span{color:var(--muted);font-weight:400;font-size:14px}
+label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+input{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+button{font:inherit;font-weight:600;background:var(--accent);color:var(--accent-ink);border:0;border-radius:8px;padding:11px;cursor:pointer}
+.err{color:var(--danger);font-size:13px;margin:0}.hint{color:var(--muted);font-size:12.5px;margin:0}
+</style></head><body>
+<form method="post" action="/login" autocomplete="on">
+<h1>OMuse <span>{{ title }}</span></h1>
+{{ error | safe }}
+<label>{{ user_label }}<input name="user" value="{{ user }}" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+<label>{{ pw_label }}<input name="password" type="password" autocomplete="current-password" required autofocus></label>
+<input type="hidden" name="next" value="{{ next }}">
+<button type="submit">{{ button }}</button>
+<p class="hint">{{ hint }}</p>
+</form></body></html>

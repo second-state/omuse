@@ -1,0 +1,31 @@
+# The e2e test runner: Playwright's Python image (Chromium + Xvfb + Python for the fake services and the test scripts
+# in tests/) plus the `omuse` binary. Not a deployment image.
+#   docker build -f Dockerfile.test -t omuse-test .
+#   bash tests/run_in_docker.sh            # uses omuse-test
+ARG TEST_BASE=mcr.microsoft.com/playwright/python:v1.56.0-noble
+FROM rust:1-bookworm AS builder
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY web ./web
+COPY skills ./skills
+ARG OMUSE_VERSION=
+ENV OMUSE_VERSION=$OMUSE_VERSION
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    cargo build --release --locked --bin omuse && cp /src/target/release/omuse /omuse-bin
+
+FROM ${TEST_BASE}
+USER root
+# the programs the binary calls (as in ./Dockerfile) plus the test-only IMAP server and process tools
+RUN apt-get update && apt-get install -y --no-install-recommends tini tzdata curl jq psmisc dovecot-imapd \
+      ffmpeg libheif-examples fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+# the Python packages the test scripts, fake services and analysis tools import (tests/requirements.txt)
+COPY tests/requirements.txt /tmp/req/requirements.txt
+RUN pip install --no-cache-dir --break-system-packages -r /tmp/req/requirements.txt
+COPY --from=builder /omuse-bin /opt/omuse/bin/omuse
+RUN chmod 0755 /opt/omuse/bin/omuse
+ENV OMUSE_BIN=/opt/omuse/bin/omuse TZ=UTC
+ENTRYPOINT ["tini", "--"]
+CMD ["bash"]

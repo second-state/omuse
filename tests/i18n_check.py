@@ -1,9 +1,9 @@
 """Every Chinese UI string in app.js must be wrapped in T()/Tf() and have an English translation in i18n.js."""
 import json, re, subprocess, sys
 sys.path.insert(0, '/tmp/claude-0')
-src = open('app/web/app.js', encoding='utf-8').read()
-en = json.loads(re.search(r'window\.OMUSE_EN = (\{.*\});', open('app/web/i18n.js', encoding='utf-8').read(), re.S).group(1))
-tw = json.loads(re.search(r'window\.OMUSE_TW = (\{.*\});', open('app/web/i18n_tw.js', encoding='utf-8').read(), re.S).group(1))
+src = open('web/app.js', encoding='utf-8').read()
+en = json.loads(re.search(r'window\.OMUSE_EN = (\{.*\});', open('web/i18n.js', encoding='utf-8').read(), re.S).group(1))
+tw = json.loads(re.search(r'window\.OMUSE_TW = (\{.*\});', open('web/i18n_tw.js', encoding='utf-8').read(), re.S).group(1))
 keys = set()
 for m in re.finditer(r"\bT\((['`])((?:\\.|(?!\1).)*)\1\)", src):
     keys.add(m.group(2))

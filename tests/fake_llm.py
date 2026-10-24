@@ -675,6 +675,9 @@ async def chat(req: Request):
         if n == 0:
             return reply('<tool_call>{"name": "files_write", "arguments": {"path": "notes/a.md", "content": "hello"}}</tool_call>')
         return reply("<think>hidden</think>Wrote file: " + last_tool)
+    for _kw, _kind in (("FLIGHTBOOK", "flight"), ("HOTELBOOK", "hotel"), ("MICHELINBOOK", "michelin")):
+        if _kw in goal:   # travel_*_e2e.py: data connector first, the browser only for the booking page
+            return travel_book(_kind, goal, msgs, tnames)
     return reply("<think>reasoning here</think>你好！这是一个普通回答。")
 
 
@@ -763,3 +766,213 @@ def fake_locate(sys, content):
     d = ((rx / rn - cx) ** 2 + (ry / rn - cy) ** 2) ** 0.5
     return f"YES — the marker is on the {'chat bubble' if want[0] == 0 else 'message box'} (off by {d:.0f}px)" if d < 25 \
         else f"NO — the marker is {d:.0f}px away from it"
+
+
+# ---------------------------------------------------------------- travel booking scenarios (travel_*_e2e.py)
+# FLIGHTBOOK / HOTELBOOK / MICHELINBOOK: load_skill → the travel connector's MCP tools → present_choices → vault_list (when a
+# card or passport is needed) → purchase_confirm → browser_navigate(booking_url) → browser_type / browser_fill_secret →
+# click the confirm button (approval or covered by the purchase) → final answer quoting the booking reference.
+TRAVELLER = {"name": "Lucas Lu", "email": "lucas@example.com", "phone": "+65 8000 0000"}
+
+
+def _travel_calls(msgs):
+    """[(name, args, result text)] of every tool call so far, in order."""
+    res = {m.get("tool_call_id"): str(m.get("content") or "") for m in msgs if m.get("role") == "tool"}
+    out = []
+    for m in msgs:
+        if m.get("role") != "assistant":
+            continue
+        for c in m.get("tool_calls") or []:
+            fn = c.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}") if isinstance(fn.get("arguments"), str) else (fn.get("arguments") or {})
+            except ValueError:
+                args = {}
+            out.append((fn.get("name", ""), args, res.get(c.get("id"), "")))
+    return out
+
+
+def _json_find(text, key):
+    """The first JSON object holding `key` anywhere in a tool result (the data sits as a JSON string inside the envelope)."""
+    def walk(o):
+        if isinstance(o, dict):
+            if key in o:
+                return o
+            vals = o.values()
+        elif isinstance(o, list):
+            vals = o
+        elif isinstance(o, str) and o.lstrip()[:1] in ("{", "["):
+            try:
+                return walk(json.loads(o))
+            except ValueError:
+                return None
+        else:
+            return None
+        for v in vals:
+            r = walk(v)
+            if r is not None:
+                return r
+        return None
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = dec.raw_decode(text, i)
+        except ValueError:
+            continue
+        r = walk(obj)
+        if r is not None:
+            return r
+    return None
+
+
+def _snap_ref(text, label, role=r"\w+"):
+    m = re.search(r"\[((?:f\d+)?e\d+)\]\s+" + role + r"\s+\\*\"" + re.escape(label), text)
+    return m.group(1) if m else None
+
+
+def _vault_id(text, kind):
+    for line in text.replace("\\n", "\n").splitlines():
+        m = re.search(r"(vlt_\w+)", line)
+        if m and f"· {kind} ·" in line:
+            return m.group(1)
+    return None
+
+
+def travel_book(kind, goal, msgs, tnames):
+    import datetime as _dt
+    calls = _travel_calls(msgs)
+    names = [c[0] for c in calls]
+
+    def tool(suffix):
+        return next((t for t in tnames if t.endswith("__" + suffix)), None)
+
+    def has(suffix):
+        return any(n == suffix or n.endswith("__" + suffix) for n in names)
+
+    def result(suffix):
+        return next((r for n, _, r in reversed(calls) if n == suffix or n.endswith("__" + suffix)), "")
+
+    dates = re.findall(r"\d{4}-\d{2}-\d{2}", goal) or [str(_dt.date.today() + _dt.timedelta(days=21))]
+    skill = {"flight": "flight-booking", "hotel": "hotel-booking", "michelin": "michelin-dining"}[kind]
+    if not has("load_skill"):
+        return reply("", [tc("load_skill", {"name": skill})])
+    data_tools = {"flight": ("flights_search", "flight_offer"), "hotel": ("hotels_search", "hotel_rooms"),
+                  "michelin": ("michelin_search", "restaurant_availability")}[kind]
+    if not all(tool(x) for x in data_tools):
+        return reply("TRAVEL FAIL: no travel connector tools; mcp tools offered: " + ",".join(t for t in tnames if t.startswith("mcp_")))
+
+    # ---- 1. data: search, details, the pick
+    if kind == "flight":
+        if not has("flights_search"):
+            return reply("", [tc(tool("flights_search"), {"origin": "Singapore", "destination": "Tokyo", "date": dates[0],
+                                                          "adults": 1, "nonstop_only": True})])
+        data = _json_find(result("flights_search"), "offers") or {}
+        options = sorted([o for o in data.get("offers") or [] if o.get("stops") == 0], key=lambda o: o["fare_amount"])
+        if not options:
+            return reply("TRAVEL FAIL: no direct offers in " + result("flights_search")[:600])
+        pick = options[0]
+        if not has("flight_offer"):
+            return reply("", [tc(tool("flight_offer"), {"offer_id": pick["offer_id"]})])
+        cards = [{"label": o["title"], "details": [o["schedule"], o["duration"], o["stops_text"], o["fare"]],
+                  "source_url": o["booking_url"], "note": ("Cheapest direct. " if i == 0 else "") + o["baggage"]}
+                 for i, o in enumerate(options[:3])]
+        amount, currency, url = float(pick["fare_amount"]), "SGD", pick["booking_url"]
+        item = f"{pick['title']} {pick['schedule']} on {dates[0]}, 1 adult"
+        delivery, note = f"E-ticket to {TRAVELLER['email']}", f"{pick['baggage']}. {pick['refund_rules']}"
+        need_card, need_passport, button = True, True, "Pay now"
+        summary = f"{pick['title']}, {pick['schedule']} ({pick['duration']}, {pick['stops_text']}), total {pick['fare']}"
+    elif kind == "hotel":
+        ci, co = (dates + [str(_dt.date.fromisoformat(dates[0]) + _dt.timedelta(days=3))])[:2]
+        if not has("hotels_search"):
+            return reply("", [tc(tool("hotels_search"), {"city": "Tokyo", "check_in": ci, "check_out": co, "guests": 2, "min_stars": 4})])
+        hotels = (_json_find(result("hotels_search"), "hotels") or {}).get("hotels") or []
+        if not hotels:
+            return reply("TRAVEL FAIL: no hotels in " + result("hotels_search")[:600])
+        h = hotels[0]
+        if not has("hotel_rooms"):
+            return reply("", [tc(tool("hotel_rooms"), {"hotel_id": h["hotel_id"], "check_in": ci, "check_out": co, "guests": 2})])
+        rooms = [r for r in (_json_find(result("hotel_rooms"), "rooms") or {}).get("rooms") or []
+                 if str(r.get("cancellation", "")).startswith("Free")]
+        if not rooms:
+            return reply("TRAVEL FAIL: no free-cancellation room in " + result("hotel_rooms")[:600])
+        rooms.sort(key=lambda r: r["total_amount"])
+        pick = rooms[0]
+        cards = [{"label": r["room_type"], "details": [h["name"], r["price_per_night"], r["total"], r["cancellation"]],
+                  "source_url": r["booking_url"], "note": ("Cheapest with free cancellation. " if i == 0 else "") + r["payment"]}
+                 for i, r in enumerate(rooms[:2])]
+        amount, currency, url = float(pick["total_amount"]), "SGD", pick["booking_url"]
+        item = f"{h['name']} - {pick['room_type']}, {ci} to {co} ({pick['nights']} nights)"
+        delivery, note = f"Hotel stay, {pick['payment']}", pick["cancellation"]
+        need_card, need_passport, button = False, False, "Confirm booking"
+        summary = f"{h['name']} ({h['area']}), {pick['room_type']}, {ci} to {co}, {pick['total']}; {pick['cancellation']}"
+    else:
+        if not has("michelin_search"):
+            return reply("", [tc(tool("michelin_search"), {"city": "Tokyo", "distinction": "2 stars"})])
+        rests = (_json_find(result("michelin_search"), "restaurants") or {}).get("restaurants") or []
+        if not rests:
+            return reply("TRAVEL FAIL: no restaurants in " + result("michelin_search")[:600])
+        r0 = rests[0]
+        if not has("restaurant_availability"):
+            return reply("", [tc(tool("restaurant_availability"), {"restaurant_id": r0["restaurant_id"], "date": dates[0], "party_size": 2})])
+        av = _json_find(result("restaurant_availability"), "slots") or {}
+        slots = av.get("slots") or []
+        if not slots:
+            return reply("TRAVEL FAIL: no slots in " + result("restaurant_availability")[:600])
+        slots.sort(key=lambda s: abs(int(s["time"][:2]) * 60 + int(s["time"][3:]) - 19 * 60))
+        pick = slots[0]
+        cards = [{"label": r0["name"], "details": [r0["distinction"], r0["cuisine"], s["time"], r0["deposit_policy"]],
+                  "source_url": s["booking_url"], "note": "Closest to 19:00." if i == 0 else "Alternative time."}
+                 for i, s in enumerate(slots[:2])]
+        dep = str(av.get("deposit_due_now") or "")
+        currency = dep.split()[0] if dep and dep != "none" else "JPY"
+        amount = float(re.sub(r"[^\d.]", "", dep.split()[-1])) if dep and dep != "none" else 0.0
+        url = pick["booking_url"]
+        item = f"{r0['name']} {dates[0]} {pick['time']}, 2 guests - deposit"
+        delivery, note = "Table reservation", r0["deposit_policy"]
+        need_card, need_passport, button = amount > 0, False, "Confirm booking"
+        summary = f"{r0['name']} ({r0['distinction']}, {r0['cuisine']}), {dates[0]} at {pick['time']} for 2, deposit {dep}"
+
+    # ---- 2. show the options (the request already says which one to book, so go on)
+    if not has("present_choices"):
+        return reply("", [tc("present_choices", {"question": "Which one should I book?", "kind": "comparison", "options": cards})])
+    if (need_card or need_passport) and not has("vault_list"):
+        return reply("", [tc("vault_list", {})])
+    vl = result("vault_list")
+    card_id, passport_id = _vault_id(vl, "card"), _vault_id(vl, "id_document")
+    if amount > 0 and not has("purchase_confirm"):
+        args = {"site": url.split("/")[2].split(":")[0], "items": [{"name": item, "qty": 1, "price": amount}], "shipping": 0,
+                "total": amount, "currency": currency, "delivery": delivery, "note": note}
+        if need_card and card_id:
+            args["card_item_id"] = card_id
+        return reply("", [tc("purchase_confirm", args)])
+
+    # ---- 3. the booking page: one navigate, fill, one click
+    if not has("browser_navigate"):
+        return reply("", [tc("browser_navigate", {"url": url})])
+    page = result("browser_navigate")
+    if not has("browser_type"):
+        fields = [("Full name", TRAVELLER["name"]), ("Email", TRAVELLER["email"]), ("Phone", TRAVELLER["phone"])]
+        typed = [tc("browser_type", {"ref": _snap_ref(page, lbl), "text": v}) for lbl, v in fields if _snap_ref(page, lbl)]
+        if not typed:
+            return reply("TRAVEL FAIL: no form fields on the booking page: " + page[:800])
+        return reply("", typed)
+    fills = [a for n, a, _ in calls if n == "browser_fill_secret"]
+    if need_passport and passport_id and not any(a.get("item_id") == passport_id for a in fills):
+        return reply("", [tc("browser_fill_secret", {"ref": _snap_ref(page, "Passport number") or "e1", "item_id": passport_id,
+                                                     "field": "number"})])
+    if need_card and card_id and not any(a.get("item_id") == card_id for a in fills):
+        boxes = [("Card number", "number"), ("Expiry", "expiry"), ("CVC", "cvc"), ("Name on card", "holder")]
+        return reply("", [tc("browser_fill_secret", {"ref": _snap_ref(page, lbl), "item_id": card_id, "field": f})
+                          for lbl, f in boxes if _snap_ref(page, lbl)])
+    if not has("browser_click"):
+        ref = _snap_ref(page, button, "button")
+        return reply("", [tc("browser_click", {"ref": ref or "e1"})])
+    after = "\n".join(r for n, _, r in calls if n in ("browser_click", "browser_snapshot"))
+    m = re.search(r"TRV-[A-Z0-9]{7}", after)
+    if not m and not has("browser_snapshot"):
+        return reply("", [tc("browser_snapshot", {})])
+    if not m:
+        return reply("TRAVEL FAIL: no booking reference after the click: " + after[-800:])
+    return reply(f"Booked. Booking reference: {m.group(0)}. {summary}. Confirmation goes to {TRAVELLER['email']}.")

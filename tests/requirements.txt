@@ -1,0 +1,13 @@
+# Python packages the e2e suites, the fake services (tests/fake_*.py) and the analysis tools import.
+# Only for testing: the OMuse application itself is the Rust binary and needs none of these.
+fastapi==0.141.1
+uvicorn==0.46.0
+python-multipart==0.0.20
+httpx==0.28.1
+cryptography==46.0.7
+pypdf==5.9.0
+openpyxl==3.1.5
+websockets==15.0.1
+pillow==12.2.0
+aiosmtpd==1.4.6
+playwright==1.56.0
