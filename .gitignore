@@ -3,5 +3,6 @@ deliver/
 evals/
 __pycache__/
 *.pyc
-.pytest_cache/
 .cache/
+/target
+/config.toml

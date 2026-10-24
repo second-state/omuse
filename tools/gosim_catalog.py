@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the event catalog inside app/skills/gosim-shenzhen-2026/SKILL.md from the three event sites.
+"""Build the event catalog inside skills/gosim-shenzhen-2026/SKILL.md from the three event sites.
 
     python3 tools/gosim_catalog.py --fetch            # download the pages into .cache/gosim and rebuild
     python3 tools/gosim_catalog.py --cache DIR        # rebuild from pages downloaded earlier

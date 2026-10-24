@@ -1,27 +1,29 @@
-# OMuse on Fly.io (see fly.toml): `fly deploy`. Same image as ./Dockerfile with one difference: it starts as root,
-# because Fly mounts the data volume owned by root. The entrypoint hands /omuse to pwuser and drops privileges
-# before any service starts.
-FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
-
-RUN apt-get update && apt-get install -y --no-install-recommends tini tzdata curl \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /opt/omuse
-COPY requirements.txt requirements-browser.txt ./
-RUN pip install --no-cache-dir --break-system-packages -r requirements.txt -r requirements-browser.txt playwright==1.56.0
-
-COPY app ./app
-COPY deploy/docker ./deploy/docker
-
-# Release builds pass the git tag (e.g. locius-v0.3.1); the app shows it as v0.3.1. Empty = version from the source.
+# OMuse (Rust) on Fly.io (see fly.toml) and the release image: `fly deploy`. Same image as ./Dockerfile with one
+# difference: it starts as root, because Fly mounts the data volume owned by root. The entrypoint hands /omuse to the
+# service user and drops privileges before the services start. No settings are baked in: each instance gets them from
+# /omuse/config.toml on its volume or, without that file, from environment variables (fly secrets / fly.toml [env]).
+FROM rust:1-bookworm AS builder
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY web ./web
+COPY skills ./skills
 ARG OMUSE_VERSION=
 ENV OMUSE_VERSION=$OMUSE_VERSION
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    cargo build --release --locked --bin omuse && cp /src/target/release/omuse /omuse-bin
 
-ENV TZ=UTC \
-    OMUSE_DATA=/omuse \
-    OMUSE_MODEL_URL=https://api.openai.com/v1 \
-    OMUSE_MODEL=gpt-4.1 \
-    VOICE_PORT=8083
-
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates tini tzdata curl util-linux \
+      chromium xvfb fonts-noto-cjk fonts-noto-color-emoji fonts-liberation \
+      ffmpeg libheif-examples \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd --system --create-home --home-dir /home/omuse --uid 1000 --shell /usr/sbin/nologin omuse
+COPY --from=builder /omuse-bin /opt/omuse/bin/omuse
+COPY deploy/docker/entrypoint.sh /opt/omuse/entrypoint.sh
+COPY config.example.toml /opt/omuse/config.example.toml
+RUN chmod 0755 /opt/omuse/bin/omuse /opt/omuse/entrypoint.sh
 EXPOSE 8080 8083
-ENTRYPOINT ["tini", "--", "/opt/omuse/deploy/docker/entrypoint.sh"]
+ENTRYPOINT ["tini", "--", "/opt/omuse/entrypoint.sh"]

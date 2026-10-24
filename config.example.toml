@@ -1,0 +1,104 @@
+# OMuse configuration. Copy to config.toml, set [auth] password, and start:
+#   omuse --config config.toml
+# Every key is optional except [auth] password (or [auth] enabled = false). The comments name the
+# environment variable the Python version used for the same setting.
+
+[server]
+host = "0.0.0.0"          # web UI + API (Sentinel)
+port = 8080
+runtime_host = "127.0.0.1"   # agent runtime: loopback only
+runtime_port = 8081
+browser_host = "127.0.0.1"   # browser broker: loopback only
+browser_port = 8082
+proxy_headers = true       # trust X-Forwarded-* from the proxy in front (uvicorn --proxy-headers)
+timezone = "UTC"           # TZ: default for Settings → Timezone
+app_id = "omuse"           # APP_ID (Olares): shown in file paths
+loop_stall_seconds = 3     # LOOP_STALL_SECONDS: stall watchdog threshold
+
+[data]
+dir = "/omuse"             # OMUSE_DATA: all state lives here (sentinel/, runtime/, workspace/, browser-profile/)
+# sentinel = ""            # SENTINEL_DATA  (default <dir>/sentinel)
+# runtime = ""             # RUNTIME_DATA   (default <dir>/runtime)
+# workspace = ""           # WORKSPACE      (default <dir>/workspace)
+# browser_profile = ""     # BROWSER_PROFILE (default <dir>/browser-profile)
+
+[auth]
+enabled = true             # false = OMUSE_AUTH=off: no login, only behind a proxy that already authenticates
+user = "omuse"             # OMUSE_USER
+password = ""              # OMUSE_PASSWORD: the initial password; Settings → Password wins afterwards
+session_days = 180         # browser cookie lifetime
+gate = true                # false: no login page in front (another proxy logs in), Settings → Password still works
+
+[model]
+url = "https://api.openai.com/v1"   # OMUSE_MODEL_URL: the system's OpenAI-compatible endpoint
+api_key = ""               # OMUSE_MODEL_API_KEY: sent as Bearer token; never shown in Settings
+name = "gpt-4.1"           # OMUSE_MODEL
+planner = ""               # OMUSE_PLANNER_MODEL ("" = name)
+vision = ""                # OMUSE_VISION_MODEL  ("" = name)
+stt = ""                   # OMUSE_STT_MODEL     ("" = a whisper-like model on the endpoint, if any)
+image = ""                 # OMUSE_IMAGE_MODEL   ("" = auto-pick)
+image_url = ""             # OMUSE_IMAGE_URL     ("" = the model endpoint)
+image_api_key = ""         # OMUSE_IMAGE_API_KEY ("" = api_key)
+image_budget = 6           # OMUSE_IMAGE_BUDGET: generated pictures per task
+
+[skills]
+# initial = ["online-shopping", "reply-email"]   # OMUSE_SKILLS: skills on at the first start of a fresh volume (unset = all)
+dir = ""                   # SKILLS_DIR: "" = the skills built into the binary
+
+[browser]
+headless = ""              # BROWSER_HEADLESS: "" auto, "1" headless, "0" headed on the virtual display
+display = ":99"            # BROWSER_DISPLAY: Xvfb display to start
+user_agent = ""            # BROWSER_UA
+pace_gap = 1.3             # BROWSER_PACE_GAP: min seconds between hits to one site
+idle_shutdown = 600        # BROWSER_IDLE_SHUTDOWN: close Chromium after this many idle seconds (0 = never)
+search_engines = ""        # SEARCH_ENGINES (tests): "name=url-prefix,name=url-prefix"
+executable = ""            # Chromium binary ("" = auto-detect)
+
+[telegram]
+enabled = true             # false = TELEGRAM_BOT=0
+api = "https://api.telegram.org"   # TELEGRAM_API
+
+[voice]
+port = 8083                # VOICE_PORT: 0 = no phone port
+allow_http = false         # VOICE_ALLOW_HTTP
+telnyx_api = "https://api.telnyx.com"               # TELNYX_API
+openai_api = "https://api.openai.com"               # OPENAI_API
+openai_realtime_url = "wss://api.openai.com/v1/realtime"   # OPENAI_REALTIME_URL
+dialmcp_url = "https://mcp.dialmcp.com/mcp"         # DIALMCP_URL
+
+[stripe]                   # OMUSE_STRIPE_*: with all three set, Settings shows "Manage subscription"
+api_key = ""
+customer_id = ""
+subscription_id = ""
+api = "https://api.stripe.com"   # STRIPE_API
+
+[google]                   # GOOGLE_*: OAuth for Gmail / Calendar
+auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+userinfo_url = "https://www.googleapis.com/oauth2/v3/userinfo"
+gcal_api = "https://www.googleapis.com/calendar/v3"
+relay_url = ""             # GOOGLE_RELAY_URL ("" = the default relay page)
+managed_file = ""          # GOOGLE_MANAGED_FILE
+managed_client_id = ""     # GOOGLE_MANAGED_CLIENT_ID
+managed_client_secret = "" # GOOGLE_MANAGED_CLIENT_SECRET
+broker_url = ""            # GOOGLE_BROKER_URL
+
+[endpoints]                # third-party API bases (tests point them at fakes)
+notion = "https://api.notion.com"        # NOTION_API
+slack = "https://slack.com/api"          # SLACK_API
+ms_login = "https://login.microsoftonline.com"   # MS_LOGIN_URL
+github_raw = "https://raw.githubusercontent.com" # GITHUB_RAW_URL
+market_data_hosts = []     # MARKET_DATA_HOSTS ([] = Yahoo Finance query1/query2)
+ical_allow_http = false    # ICAL_ALLOW_HTTP
+outlook_imap = ""          # tests: Outlook's IMAP server as "host:port:security" ("" = outlook.office365.com)
+outlook_smtp = ""          # tests: Outlook's SMTP server as "host:port:security" ("" = smtp-mail.outlook.com)
+
+[internal]                 # how the services reach each other; blank = derived from [server] / random per start
+sentinel_url = ""          # SENTINEL_URL
+runtime_url = ""           # RUNTIME_URL
+browser_url = ""           # BROWSER_URL
+runtime_token = ""         # RUNTIME_TOKEN
+browser_token = ""         # BROWSER_TOKEN
+
+[web]
+dir = ""                   # WEB_DIR: serve the UI from this directory (hot reload) instead of the built-in files

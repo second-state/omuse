@@ -66,6 +66,10 @@ jobs:
             --tag "$IMAGE_REPOSITORY:$VERSION" \
             --load .
 
+      - name: Build the test sidecar image (Python + Playwright checks for the smoke test)
+        run: |
+          docker buildx build --platform linux/amd64 --file Dockerfile.test --tag omuse-test --load .
+
       - name: Smoke test image before publishing
         env:
           OMUSE_VERSION: ${{ env.VERSION }}

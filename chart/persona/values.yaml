@@ -7,8 +7,7 @@ userspace:
   appCache: /tmp/persona-appcache
 olaresEnv: {}
 image:
-  python: docker.io/library/python:3.12-slim
-  browser: mcr.microsoft.com/playwright/python:v1.56.0-noble
+  omuse: ghcr.io/second-state/omuse:locius-v0.3.6   # chart/build.sh pins the release image of the chart's version
   busybox: docker.io/beclab/busybox:1.37
 timezone: Asia/Singapore
 bfl:

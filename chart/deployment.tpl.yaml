@@ -1,14 +1,51 @@
 {{- $rt := randAlphaNum 40 }}
 {{- $bt := randAlphaNum 40 }}
 apiVersion: v1
-kind: ConfigMap
+kind: Secret
 metadata:
-  name: persona-bundle
+  name: persona-config
   namespace: {{ .Release.Namespace }}
-data:
-  bootstrap.sh: |
-__BOOTSTRAP__
-__BUNDLE__
+type: Opaque
+stringData:
+  # The three containers run the same `omuse` binary, one role each, and share this file (see config.example.toml).
+  config.toml: |
+    [server]
+    host = "0.0.0.0"
+    port = 8080
+    runtime_host = "127.0.0.1"
+    runtime_port = 8081
+    browser_host = "127.0.0.1"
+    browser_port = 8082
+    timezone = {{ .Values.timezone | toJson }}
+    app_id = "persona"
+
+    [data]
+    sentinel = "/sdata"
+    runtime = "/data"
+    workspace = "/workspace"
+    browser_profile = "/bprofile"
+
+    [auth]
+    enabled = false   # the Olares entrance logs the user in
+
+    [model]
+    url = {{ (.Values.olaresEnv).OMUSE_MODEL_URL | default (printf "https://router.%s.olares.com/v1" (.Values.bfl).username) | toJson }}
+    name = {{ (.Values.olaresEnv).OMUSE_MODEL | default "Olares/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL" | toJson }}
+    # optional: an OpenAI-Images-compatible endpoint for make_image (gpt-image-1 / DALL·E / a local FLUX or SD server)
+    # and its key; the key is never shown in Settings or the audit log
+    image_url = {{ (.Values.olaresEnv).OMUSE_IMAGE_URL | default "" | toJson }}
+    image_api_key = {{ (.Values.olaresEnv).OMUSE_IMAGE_API_KEY | default "" | toJson }}
+    image = {{ (.Values.olaresEnv).OMUSE_IMAGE_MODEL | default "" | toJson }}
+
+    [voice]
+    port = 8083
+
+    [internal]
+    sentinel_url = "http://127.0.0.1:8080"
+    runtime_url = "http://127.0.0.1:8081"
+    browser_url = "http://127.0.0.1:8082"
+    runtime_token = "{{ $rt }}"
+    browser_token = "{{ $bt }}"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -28,14 +65,12 @@ spec:
     metadata:
       labels:
         app: persona
-      annotations:
-        persona/bundle: "__HASH__"
     spec:
       terminationGracePeriodSeconds: 20
       initContainers:
       - name: init-permissions
         image: "{{ .Values.image.busybox }}"
-        command: ["sh", "-c", "for d in /sdata /data /workspace /bprofile /cache; do mkdir -p $d && chown -R 1000:1000 $d; done; chmod 700 /sdata"]
+        command: ["sh", "-c", "for d in /sdata /data /workspace /bprofile; do mkdir -p $d && chown -R 1000:1000 $d; done; chmod 700 /sdata"]
         securityContext:
           runAsUser: 0
         volumeMounts:
@@ -43,23 +78,14 @@ spec:
         - {name: rdata, mountPath: /data}
         - {name: workspace, mountPath: /workspace}
         - {name: bprofile, mountPath: /bprofile}
-        - {name: cache, mountPath: /cache}
       containers:
       - name: sentinel
-        image: "{{ .Values.image.python }}"
+        image: "{{ .Values.image.omuse }}"
         imagePullPolicy: IfNotPresent
-        command: ["/bin/sh", "/bundle/bootstrap.sh", "sentinel"]
+        command: ["tini", "--", "/opt/omuse/bin/omuse", "--config", "/config/config.toml", "--role", "sentinel"]
         env:
         - {name: TZ, value: "{{ .Values.timezone }}"}
         - {name: HOME, value: /tmp}
-        - {name: RUNTIME_TOKEN, value: "{{ $rt }}"}
-        - {name: BROWSER_TOKEN, value: "{{ $bt }}"}
-        - {name: SENTINEL_DATA, value: /sdata}
-        - {name: RUNTIME_URL, value: "http://127.0.0.1:8081"}
-        - {name: BROWSER_URL, value: "http://127.0.0.1:8082"}
-        - {name: WEB_DIR, value: /tmp/persona/app/web}
-        - {name: PATCH_DIR, value: /cache/patch}
-        - {name: VOICE_PORT, value: "8083"}
         ports:
         - {containerPort: 8080, name: http, protocol: TCP}
         - {containerPort: 8083, name: voice, protocol: TCP}
@@ -69,59 +95,40 @@ spec:
           periodSeconds: 10
           failureThreshold: 60
         resources:
-          requests: {cpu: 100m, memory: 192Mi}
+          requests: {cpu: 50m, memory: 64Mi}
           limits: {cpu: "2", memory: 1Gi}
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
           allowPrivilegeEscalation: false
         volumeMounts:
-        - {name: bundle, mountPath: /bundle, readOnly: true}
+        - {name: config, mountPath: /config, readOnly: true}
         - {name: sdata, mountPath: /sdata}
-        - {name: cache, mountPath: /cache}
       - name: runtime
-        image: "{{ .Values.image.python }}"
+        image: "{{ .Values.image.omuse }}"
         imagePullPolicy: IfNotPresent
-        command: ["/bin/sh", "/bundle/bootstrap.sh", "runtime"]
+        command: ["tini", "--", "/opt/omuse/bin/omuse", "--config", "/config/config.toml", "--role", "runtime"]
         env:
         - {name: TZ, value: "{{ .Values.timezone }}"}
         - {name: HOME, value: /tmp}
-        - {name: RUNTIME_TOKEN, value: "{{ $rt }}"}
-        - {name: RUNTIME_DATA, value: /data}
-        - {name: APP_ID, value: persona}
-        - {name: WORKSPACE, value: /workspace}
-        - {name: SENTINEL_URL, value: "http://127.0.0.1:8080"}
-        - {name: PERSONA_MODEL_URL, value: {{ (.Values.olaresEnv).OMUSE_MODEL_URL | default (printf "https://router.%s.olares.com/v1" (.Values.bfl).username) | quote }}}
-        - {name: PERSONA_MODEL, value: {{ (.Values.olaresEnv).OMUSE_MODEL | default "Olares/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL" | quote }}}
-        # optional: an OpenAI-Images-compatible endpoint for make_image (gpt-image-1 / DALL·E / a local FLUX or SD server)
-        # and its key — the key is read from the environment only, never shown in Settings or the audit log
-        - {name: OMUSE_IMAGE_URL, value: {{ (.Values.olaresEnv).OMUSE_IMAGE_URL | default "" | quote }}}
-        - {name: OMUSE_IMAGE_API_KEY, value: {{ (.Values.olaresEnv).OMUSE_IMAGE_API_KEY | default "" | quote }}}
-        - {name: OMUSE_IMAGE_MODEL, value: {{ (.Values.olaresEnv).OMUSE_IMAGE_MODEL | default "" | quote }}}
-        - {name: PATCH_DIR, value: /cache/patch}
         resources:
-          requests: {cpu: 100m, memory: 256Mi}
+          requests: {cpu: 50m, memory: 64Mi}
           limits: {cpu: "2", memory: 2Gi}
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
           allowPrivilegeEscalation: false
         volumeMounts:
-        - {name: bundle, mountPath: /bundle, readOnly: true}
+        - {name: config, mountPath: /config, readOnly: true}
         - {name: rdata, mountPath: /data}
         - {name: workspace, mountPath: /workspace}
-        - {name: cache, mountPath: /cache}
       - name: browser
-        image: "{{ .Values.image.browser }}"
+        image: "{{ .Values.image.omuse }}"
         imagePullPolicy: IfNotPresent
-        command: ["/bin/sh", "/bundle/bootstrap.sh", "browser"]
+        command: ["tini", "--", "/opt/omuse/bin/omuse", "--config", "/config/config.toml", "--role", "browser"]
         env:
         - {name: TZ, value: "{{ .Values.timezone }}"}
         - {name: HOME, value: /tmp}
-        - {name: BROWSER_TOKEN, value: "{{ $bt }}"}
-        - {name: BROWSER_PROFILE, value: /bprofile}
-        - {name: WORKSPACE, value: /workspace}
-        - {name: PATCH_DIR, value: /cache/patch}
         resources:
           requests: {cpu: 200m, memory: 512Mi}
           limits: {cpu: "3", memory: 4Gi}
@@ -130,16 +137,15 @@ spec:
           runAsGroup: 1000
           allowPrivilegeEscalation: false
         volumeMounts:
-        - {name: bundle, mountPath: /bundle, readOnly: true}
+        - {name: config, mountPath: /config, readOnly: true}
         - {name: bprofile, mountPath: /bprofile}
         - {name: workspace, mountPath: /workspace}
-        - {name: cache, mountPath: /cache}
         - {name: dshm, mountPath: /dev/shm}
       volumes:
-      - name: bundle
-        configMap:
-          name: persona-bundle
-          defaultMode: 365
+      - name: config
+        secret:
+          secretName: persona-config
+          defaultMode: 0444
       - name: sdata
         hostPath:
           path: '{{ .Values.userspace.appCache }}/sentinel'
@@ -155,10 +161,6 @@ spec:
       - name: bprofile
         hostPath:
           path: '{{ .Values.userspace.appCache }}/browser-profile'
-          type: DirectoryOrCreate
-      - name: cache
-        hostPath:
-          path: '{{ .Values.userspace.appCache }}/pycache'
           type: DirectoryOrCreate
       - name: dshm
         emptyDir:

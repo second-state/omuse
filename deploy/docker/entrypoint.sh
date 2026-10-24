@@ -1,42 +1,58 @@
 #!/bin/bash
-# OMuse in one container: browser broker, agent runtime and Sentinel, the same three processes as the Olares pod.
-# They talk over 127.0.0.1; only Sentinel (8080) and the phone port (8083) listen on all interfaces.
+# OMuse in one container. Settings come from config.toml ($OMUSE_CONFIG, default /omuse/config.toml on the volume).
+# Container platforms that hand each instance its settings as environment variables (Fly secrets, Products Provisioner)
+# may leave the file out: then this script writes the config from OMUSE_PASSWORD, OMUSE_MODEL_URL, ... (the table in
+# README.md) into a private file for this start. The binary itself reads only the config file.
 set -euo pipefail
-
-if [ "${OMUSE_AUTH:-}" != "off" ] && [ -z "${OMUSE_PASSWORD:-}" ]; then
-  echo "OMUSE_PASSWORD is not set. OMuse reads your mail and drives a browser: set a login password" >&2
-  echo "(docker run -e OMUSE_PASSWORD=...), or OMUSE_AUTH=off if another proxy in front already does the login." >&2
-  exit 64
-fi
-
-DATA="${OMUSE_DATA:-/omuse}"
-# started as root (Dockerfile.fly: Fly.io mounts its volume root-owned): hand the data dir to pwuser, drop privileges
+CONFIG="${OMUSE_CONFIG:-/omuse/config.toml}"
+DATA=/omuse
+# started as root (Dockerfile.fly: Fly.io mounts its volume root-owned): hand the data dir to the service user, drop privileges
 if [ "$(id -u)" = 0 ]; then
   mkdir -p "$DATA"
-  [ "$(stat -c %U "$DATA")" = pwuser ] || chown -R pwuser:pwuser "$DATA"
-  exec setpriv --reuid=pwuser --regid=pwuser --init-groups env HOME=/home/pwuser "$0" "$@"
+  # a read-only mount inside the volume (config.toml) keeps its owner; everything else goes to the service user
+  [ "$(stat -c %U "$DATA")" = omuse ] || find "$DATA" -xdev ! -user omuse -exec chown omuse:omuse {} + 2>/dev/null || true
+  exec setpriv --reuid=omuse --regid=omuse --init-groups env HOME=/home/omuse OMUSE_CONFIG="$CONFIG" "$0" "$@"
 fi
-export SENTINEL_DATA="$DATA/sentinel" RUNTIME_DATA="$DATA/runtime" WORKSPACE="$DATA/workspace" BROWSER_PROFILE="$DATA/browser-profile"
-mkdir -p "$SENTINEL_DATA" "$RUNTIME_DATA" "$WORKSPACE" "$BROWSER_PROFILE"
-chmod 700 "$SENTINEL_DATA"
 
-# internal service tokens: fresh on every start, like the chart's randAlphaNum
-RUNTIME_TOKEN="${RUNTIME_TOKEN:-$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')}"
-BROWSER_TOKEN="${BROWSER_TOKEN:-$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')}"
-export RUNTIME_TOKEN BROWSER_TOKEN
-export SENTINEL_URL=http://127.0.0.1:8080 RUNTIME_URL=http://127.0.0.1:8081 BROWSER_URL=http://127.0.0.1:8082
-export PYTHONUNBUFFERED=1 PYTHONPATH=/opt/omuse
+toml_str() {   # a TOML basic string: backslashes, quotes and control characters escaped
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}; s=${s//$'\n'/\\n}; s=${s//$'\r'/\\r}; s=${s//$'\t'/\\t}
+  printf '"%s"' "$s"
+}
+kv() {   # kv <key> <env var>: one line when the variable is set
+  [ -n "${!2:-}" ] && printf '%s = %s\n' "$1" "$(toml_str "${!2}")"
+  return 0
+}
 
-cd /opt/omuse
-python3 -m uvicorn app.browser.main:app --host 127.0.0.1 --port 8082 &
-python3 -m uvicorn app.runtime.main:app --host 127.0.0.1 --port 8081 &
-python3 -m uvicorn deploy.docker.gate:create --factory --host 0.0.0.0 --port 8080 \
-  --proxy-headers --forwarded-allow-ips='*' --timeout-keep-alive 75 &
-
-stop() { trap - TERM INT; kill -TERM $(jobs -p) 2>/dev/null || true; }
-trap stop TERM INT
-# one process gone = restart the whole container (docker --restart), the way the pod restarts a container
-rc=0; wait -n || rc=$?
-stop
-wait || true
-exit "$rc"
+if [ ! -s "$CONFIG" ]; then
+  if [ "${OMUSE_AUTH:-}" != off ] && [ -z "${OMUSE_PASSWORD:-}" ]; then
+    echo "No config file at $CONFIG and no OMUSE_PASSWORD. OMuse reads your mail and drives a browser: it needs a login password." >&2
+    echo "Copy config.example.toml (in the image: /opt/omuse/config.example.toml), set [auth] password, and mount it:" >&2
+    echo "  docker run ... -v \$PWD/config.toml:/omuse/config.toml:ro omuse" >&2
+    echo "or pass -e OMUSE_PASSWORD=... (OMUSE_AUTH=off if another proxy in front already does the login)." >&2
+    exit 64
+  fi
+  CONFIG=$(mktemp /tmp/omuse-config.XXXXXX)
+  chmod 600 "$CONFIG"
+  {
+    echo "# written by the entrypoint from the environment"
+    echo "[server]"; kv timezone TZ
+    echo "[auth]"
+    [ "${OMUSE_AUTH:-}" = off ] && echo "enabled = false"
+    kv user OMUSE_USER; kv password OMUSE_PASSWORD
+    echo "[model]"
+    kv url OMUSE_MODEL_URL; kv api_key OMUSE_MODEL_API_KEY; kv name OMUSE_MODEL
+    kv planner OMUSE_PLANNER_MODEL; kv vision OMUSE_VISION_MODEL; kv stt OMUSE_STT_MODEL
+    kv image OMUSE_IMAGE_MODEL; kv image_url OMUSE_IMAGE_URL; kv image_api_key OMUSE_IMAGE_API_KEY
+    if [ -n "${OMUSE_SKILLS:-}" ]; then
+      echo "[skills]"
+      printf 'initial = ['; sep=""
+      IFS=, read -ra skills <<< "$OMUSE_SKILLS"
+      for s in "${skills[@]}"; do s=$(echo "$s" | xargs); [ -n "$s" ] && { printf '%s%s' "$sep" "$(toml_str "$s")"; sep=", "; }; done
+      echo "]"
+    fi
+    echo "[stripe]"
+    kv api_key OMUSE_STRIPE_API_KEY; kv customer_id OMUSE_STRIPE_CUSTOMER_ID; kv subscription_id OMUSE_STRIPE_SUBSCRIPTION_ID
+  } > "$CONFIG"
+fi
+exec /opt/omuse/bin/omuse --config "$CONFIG" "$@"

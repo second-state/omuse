@@ -42,64 +42,65 @@ OMuse is a local-first AI agent for [Olares](https://www.olares.com). It doesn't
                             │
                             ├──► Runtime :8081  (planner / executor, scheduler, goals, memory)
                             │        └──► LLM (OpenAI-compatible, default: Olares router)
-                            └──► Browser broker :8082  (Playwright + Xvfb)
+                            └──► Browser broker :8082  (Chromium over CDP + Xvfb)
+
+ One Rust binary (`omuse`, Axum + Tokio) runs the three services; config.toml holds every setting.
 ```
 
 ### Install
 
 - **Olares Market**: search for *OMuse* (after the listing is approved).
-- **Manual**: `python3 build.py omuse` → upload `dist/omuse-<version>.tgz` in Olares Market ▸ *Upload custom chart*.
+- **Manual**: `sh chart/build.sh omuse` → upload `dist/omuse-<version>.tgz` in Olares Market ▸ *Upload custom chart*. The pod runs the release image (`ghcr.io/second-state/omuse:locius-v<version>`), one `omuse --role …` per container.
 
-The model endpoint defaults to `https://router.<your-olares-name>.olares.com/v1`; change it in the app's settings or the `PERSONA_MODEL_URL` / `PERSONA_MODEL` environment values. If the configured model isn't served, OMuse picks an available one.
+The model endpoint defaults to `https://router.<your-olares-name>.olares.com/v1`; change it in the app's settings or with the `OMUSE_MODEL_URL` / `OMUSE_MODEL` values of the Olares app environment (the chart writes them into the pod's `config.toml`). If the configured model isn't served, OMuse picks an available one.
 
 ### Run with Docker
 
-One container holds all three services; state lives in the `omuse-data` volume.
+OMuse is a single Rust binary (`omuse`) that runs all three services in one process; state lives in the `omuse-data`
+volume. All settings come from one `config.toml` (copy `config.example.toml`; every key is commented and names the
+environment variable that sets it in a container without a config file, see below).
 
 ```bash
+cp config.example.toml config.toml      # set [auth] password, [model] url / name / api_key, timezone
 docker build -t omuse .
 docker run -d --name omuse --restart unless-stopped \
-  -p 8080:8080 -v omuse-data:/omuse \
-  -e OMUSE_PASSWORD='choose-a-long-password' \
-  -e OMUSE_MODEL_URL=https://api.openai.com/v1 \
-  -e OMUSE_MODEL=gpt-4.1 \
-  -e OMUSE_MODEL_API_KEY=sk-... \
-  -e TZ=America/Los_Angeles \
+  -p 8080:8080 -v omuse-data:/omuse -v "$PWD/config.toml:/omuse/config.toml:ro" \
   omuse
 ```
 
-Open `http://localhost:8080` and sign in as `omuse` (change with `OMUSE_USER`) with your password. `OMUSE_PASSWORD` is only the initial password: change it in Settings → Password (the UI reminds you until you do); the new one is stored hashed in the volume and wins from then on. Olares normally does the login; here the container shows a login page and keeps the browser signed in with a cookie (180 days, or until the password changes; Settings → Password has Sign out), and it refuses to start without `OMUSE_PASSWORD`. Scripts can send HTTP Basic auth instead (`curl -u omuse:…`). Before opening the port to the internet, put HTTPS in front (Cloudflare Tunnel, Tailscale Funnel, Caddy, …) — over plain HTTP the password is sent in the clear. `OMUSE_MODEL_API_KEY` is sent as a Bearer token to the model endpoint and is never stored in Settings. A user may instead switch on "Use my own model" in Settings → Models and enter their own endpoint, API key and model names; switched off, the system's values apply again and the entered ones are ignored. The user's own key is kept in the runtime database (never shown again) and is only ever sent to the user's own endpoint. Add `-p 8083:8083` only if you use the Telnyx phone line.
+Open `http://localhost:8080` and sign in as `omuse` (`[auth] user`) with your password. `[auth] password` is only the
+initial password: change it in Settings → Password (the UI reminds you until you do); the new one is stored hashed in
+the volume and wins from then on. Browsers get a login page and a session cookie (180 days, `[auth] session_days`, or
+until the password changes; Settings → Password has Sign out); scripts can send HTTP Basic auth (`curl -u omuse:…`).
+Without a password the container refuses to start (exit code 64). Keep `config.toml` out of
+git: it holds your password and API key. Before opening the port to the internet, put HTTPS in front (Cloudflare
+Tunnel, Tailscale Funnel, Caddy, …). `[model] api_key` is sent as a Bearer token to the model endpoint and is never shown
+in Settings; a user may instead switch on "Use my own model" in Settings → Models. Add `-p 8083:8083` only if you use the
+Telnyx phone line (`[voice] port`). After editing `config.toml`, `docker restart omuse` (data stays in the volume).
 
-**Configuration.** Instead of `-e` flags you can keep the settings in a file on the host and pass it with `--env-file` (one `NAME=value` per line, no quotes; keep it out of git, it holds your password and API key):
+Platforms that hand settings to a container only as environment variables (Fly secrets, Products Provisioner) can
+leave the file out: the entrypoint then writes the config for that start from these variables. A mounted `config.toml`
+always wins; the binary itself reads only the file.
 
-```bash
-docker run -d --name omuse --restart unless-stopped \
-  -p 8080:8080 -v omuse-data:/omuse \
-  --env-file ~/.config/omuse/omuse.env omuse
-```
-
-Docker reads the file when the container is created: after editing it, `docker rm -f omuse` and run it again (your data stays in the volume). To use another host port, change the left side of `-p`, e.g. `-p 9000:8080`.
-
-| Variable | Meaning |
+| Section | Keys (environment variable without a config file) |
 |---|---|
-| `OMUSE_PASSWORD` | Login password (required) |
-| `OMUSE_USER` | Login name (default `omuse`) |
-| `OMUSE_AUTH=off` | No login — only behind another proxy that already authenticates |
-| `OMUSE_MODEL_URL`, `OMUSE_MODEL` | The system's OpenAI-compatible endpoint and model id. A user can switch to their own endpoint, key and models in Settings → Models ("Use my own model") |
-| `OMUSE_SKILLS` | Optional, comma-separated skill names that are on when a fresh data volume is set up (e.g. `online-shopping,reply-email`); unset = every skill. Only read at that first start: afterwards the selection saved on the Skills page rules and the variable is ignored |
-| `OMUSE_PLANNER_MODEL`, `OMUSE_VISION_MODEL`, `OMUSE_STT_MODEL`, `OMUSE_IMAGE_MODEL` | Optional model ids for planning, vision (screenshots, images), speech-to-text and image generation on the same endpoint. Unset: planner and vision use `OMUSE_MODEL`, speech-to-text uses a whisper-like model if the endpoint has one, images auto-pick an image model. A user who switches on their own model in Settings sets their own names instead |
-| `OMUSE_IMAGE_URL`, `OMUSE_IMAGE_API_KEY` | Advanced: a separate OpenAI-Images-compatible endpoint and key for image generation; unset = the model endpoint and its key |
-| `OMUSE_MODEL_API_KEY` | The system's API key for the model endpoint (environment only, never shown in Settings and never sent to a user's own endpoint) |
-| `TZ` | Default timezone (a value saved in Settings wins) |
-| `TELEGRAM_BOT=0`, `VOICE_PORT=0` | Turn off the Telegram bot / the phone port |
-| `BROWSER_HEADLESS=1` | Run the browser headless instead of on the virtual display |
-| `OMUSE_STRIPE_API_KEY`, `OMUSE_STRIPE_CUSTOMER_ID`, `OMUSE_STRIPE_SUBSCRIPTION_ID` | Optional. With all three set, Settings ends with a "Manage subscription" section that opens the Stripe customer portal |
+| `[auth]` | `password` (`OMUSE_PASSWORD`, required), `user` (`OMUSE_USER`), `enabled = false` (`OMUSE_AUTH=off`), `gate` |
+| `[model]` | `url`, `name`, `api_key`, `planner`, `vision`, `stt`, `image`, `image_url`, `image_api_key` (`OMUSE_MODEL_URL`, `OMUSE_MODEL`, …) |
+| `[server]` | `port`, `timezone` (`TZ`), … |
+| `[skills]` | `initial` (`OMUSE_SKILLS`), `dir` |
+| `[telegram]`, `[voice]` | `enabled = false` (`TELEGRAM_BOT=0`), `port = 0` (`VOICE_PORT=0`) |
+| `[browser]` | `headless = "1"` (`BROWSER_HEADLESS=1`), `executable` |
+| `[stripe]` | `api_key`, `customer_id`, `subscription_id` (`OMUSE_STRIPE_*`) |
 
-Everything else (connections, vault, language, limits) is set in the web UI and stored in the volume.
+The image contains, besides the binary: Chromium and Xvfb (the agent's browser), ffmpeg (video/audio attachments),
+`heif-convert` (HEIC photos) and Noto CJK fonts. Nothing is downloaded at run time.
 
 ### Deploy on Fly.io
 
-`fly.toml` and `Dockerfile.fly` run the same container on [Fly.io](https://fly.io): one always-on machine with one volume for all state, HTTPS from Fly.
+`fly.toml` and `Dockerfile.fly` run the same binary on [Fly.io](https://fly.io): one always-on machine with one volume for
+all state, HTTPS from Fly. The image holds no settings: the model endpoint comes from `[env]` in `fly.toml`, the
+password and key from Fly secrets (or put a `config.toml` on the volume at `/omuse/config.toml`). It starts as root
+only to hand the root-owned volume to the service user.
 
 ```bash
 fly launch --no-deploy --copy-config        # once: creates the app (choose a name and region)
@@ -108,7 +109,7 @@ fly secrets set OMUSE_PASSWORD='choose-a-long-password' OMUSE_MODEL_API_KEY=sk-.
 fly deploy
 ```
 
-Then open `https://<app>.fly.dev` and sign in as `omuse`. The model endpoint and the other variables from the table above go in `[env]` in `fly.toml` (secrets with `fly secrets set`). Keep it at one machine: the state is on the volume.
+Keep it at one machine: the state is on the volume.
 
 ### Publish images for Products Provisioner
 
@@ -200,21 +201,30 @@ or Telegram polling must continue while no browser is open.
 ### Development
 
 ```bash
-pip install -r requirements.txt -r requirements-browser.txt
-bash tests/run_local.sh            # fake LLM + all services on localhost
-python3 -m pytest -q tests/test_units.py
-python3 tests/integration.py        # and the other *_e2e.py suites
-bash tests/stop_local.sh
+cargo build --release                       # target/release/omuse
+cargo test --workspace && cargo clippy --workspace -- -D warnings
+./target/release/omuse --config config.toml # or --role sentinel|runtime|browser for split deployments
 ```
 
-Or run the local e2e suites inside the Docker image, with nothing on the host but Docker (it installs the test-only dependencies in the container and gives every suite a freshly started stack with the fake LLM):
+The code is a Cargo workspace under `crates/` (one crate per area: common, docs, web shell + login gate, sentinel core,
+mail / apps / MCP / phone connectors, sentinel, runtime, browser broker, and the `omuse` binary). The web UI (`web/`),
+the skills (`skills/`) and the browser helper scripts (`crates/omuse-browser/js/`) are compiled into the binary.
+`docs/rust-port.md` records how the earlier Python version (v0.3.6, commit 562a36f) maps to the crates.
+
+The end-to-end suites in `tests/` (Python + Playwright, kept from the Python version) run against the binary inside
+Docker, with nothing on the host but Docker. Each suite gets a freshly started stack (fake LLM, fake third-party
+services and the binary, configured by a generated `config.toml`):
 
 ```bash
-bash tests/run_in_docker.sh                  # every suite, about 15 minutes
+bash tests/run_in_docker.sh                  # every suite
 bash tests/run_in_docker.sh e2e_027 mcp_e2e  # only these
+bash tests/docker_image_smoke.sh omuse       # the production image: config, auth, Chromium, volume
 ```
 
-It builds the `omuse` image from the Dockerfile if it is missing (`OMUSE_IMAGE` picks another image), prints one `SUITE <name> rc=… pass=… fail=…` line per suite, and exits 1 if any suite fails. `tests/docker_browser_e2e.py` is separate: it drives a running container with a real, vision-capable model (see its docstring).
+The test image is `Dockerfile.test` (`omuse-test`). The travel suites (`travel_*_e2e.py`) can also run with a real model:
+set `OMUSE_E2E_ENV_FILE` to a file outside the repository with `OMUSE_E2E_MODEL_URL`, `OMUSE_E2E_MODEL_KEY`,
+`OMUSE_E2E_PLANNER`, `OMUSE_E2E_EXECUTOR` and `OMUSE_E2E_OUT` to a directory for logs and screenshots; each suite prints a
+`TIMING` line with its execution time excluding model time (measured by `tests/model_proxy.py`).
 
 ---
 
@@ -246,9 +256,9 @@ OMuse 是为 [Olares](https://www.olares.com) 打造的本地优先（local-firs
 ### 安装
 
 - **Olares 应用商店**：审核通过后搜索 *OMuse*。
-- **手动安装**：`python3 build.py omuse`，然后在 Olares 应用商店 ▸ *上传自定义 Chart* 中上传 `dist/omuse-<版本>.tgz`。
+- **手动安装**：`sh chart/build.sh omuse`，然后在 Olares 应用商店 ▸ *上传自定义 Chart* 中上传 `dist/omuse-<版本>.tgz`。
 
-模型接口默认是 `https://router.<你的 Olares 名称>.olares.com/v1`，可在应用设置或环境变量 `PERSONA_MODEL_URL` / `PERSONA_MODEL` 中修改；如果配置的模型不存在，OMuse 会自动选择一个可用模型。
+模型接口默认是 `https://router.<你的 Olares 名称>.olares.com/v1`，可在应用设置或 Olares 应用环境变量 `OMUSE_MODEL_URL` / `OMUSE_MODEL` 中修改；如果配置的模型不存在，OMuse 会自动选择一个可用模型。
 
 ---
 

@@ -71,12 +71,9 @@ check("browser_scroll returns the region around the new position (not the header
       and "Department number" not in sc[0]["preview"], sc[:1])
 
 # ---------------------------------------------------------------- the approval rule itself
-from app.sentinel import guard  # noqa: E402
-check("Add to Cart (an <input type=submit> on Amazon) is a normal click", not guard.click_is_risky("button", "Add to Cart", "submit"))
-check("...also with Amazon's shortcut suffix", not guard.click_is_risky("button", "Add to cart, shift, Alt, K", "submit"))
-check("Buy Now still needs approval", guard.click_is_risky("button", "Buy Now", "submit"))
-check("going to checkout is navigation (0.2.65); placing the order still needs approval",
-      not guard.click_is_risky("link", "Proceed to checkout", "") and guard.click_is_risky("button", "Place order", "submit"))
+# The rule (Add to Cart is a normal click, Buy Now / Place order need approval, checkout is navigation) is unit-tested
+# in Rust next to the code: crates/omuse-common/src/guard.rs, `cargo test -p omuse-common click_risk`. The run above checks
+# it end to end: Add to Cart went through without an approval.
 
 # ---------------------------------------------------------------- the configured vision model can't take images
 sys_url = c.get(B + "/api/settings", headers=H).json()["settings"]["model_base_url"]
