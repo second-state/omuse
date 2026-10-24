@@ -57,10 +57,27 @@ Sentinel without the gate (`[auth] gate = false`); the gate is covered by unit
 tests and `tests/docker_image_smoke.sh`. On Olares the entrance does the login
 (`[auth] enabled = false` in the chart).
 
+## Repository: second-state/omuse only
+
+This repository is `second-state/omuse`, a fork of `Drlucaslu/locius`. Every
+branch, commit, push, tag, issue and pull request goes to `second-state/omuse`;
+nothing is ever sent upstream (no push, PR, issue or comment on
+`Drlucaslu/locius`).
+
+- Push only to `origin` (`https://github.com/second-state/omuse`). Do not add
+  the upstream as a remote you push to.
+- Open pull requests with an explicit target, because `gh` defaults to the
+  parent repository for forks:
+  `gh pr create --repo second-state/omuse --base main ...`
+  (likewise `--repo second-state/omuse` for `gh pr view/merge`, `gh issue`,
+  `gh release`).
+- Before pushing or opening a PR, check the target (`git remote -v`,
+  `gh pr view --repo second-state/omuse`).
+
 ## Pull requests
 
-Open a PR and report it; merge only when the user explicitly says to merge
-that PR. Never commit API keys, passwords or other credentials, and keep the
+Open a PR against `second-state/omuse` and report it; merge only when the user
+explicitly says to merge that PR. Never commit API keys, passwords or other credentials, and keep the
 local e2e environment file outside the repository.
 
 ## Rust port
