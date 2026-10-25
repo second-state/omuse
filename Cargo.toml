@@ -5,7 +5,7 @@ members = ["crates/omuse-common", "crates/omuse-docs", "crates/omuse-web", "crat
 [workspace.package]
 version = "0.4.2"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 rust-version = "1.85"
 
 [workspace.dependencies]

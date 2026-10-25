@@ -1100,7 +1100,7 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
     if "focused sub-agent" in sys:
         return None
     tc_ = tc
-    if goal.startswith(SHOW_TRIP):
+    if str(goal).startswith(SHOW_TRIP):
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "trip-today"})])
         if n == 1:
@@ -1122,7 +1122,7 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
                      "- ⚠️ **No hotel for the night of Sat 21** — you check out on the 21st and fly on the 22nd. Want me to find a room near Haneda?\n"
                      "- 🚆 Haneda → Ginza: Keikyu Line through to Higashi-Ginza, about 35 minutes; tap your Suica.\n"
                      "- 🛡️ I found no travel-insurance email. Delays and lost bags are the most common claims — are you covered?")
-    if goal.startswith(SHOW_CITY):
+    if str(goal).startswith(SHOW_CITY):
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "shanghai"})])
         if n == 1:
@@ -1154,7 +1154,7 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         return reply("TRIP TIMELINE (from your mail and calendar):\n" + "\n".join(f"- {x}" for x in subs) +
                      "\n\nGAP: no hotel for the night of 2026-11-23 (Hotel Ginza Grand checks out 23 Nov, SQ 637 flies 24 Nov).\n"
                      "Insurance: no travel insurance email was found — delays and lost luggage are common claims; are you covered?")
-    if "SGAC" in goal or goal.startswith(SHOW_SGAC):   # sg-arrival-card: gather, fill, hand the Submit to the user (or click it when told to)
+    if "SGAC" in goal or str(goal).startswith(SHOW_SGAC):   # sg-arrival-card: gather, fill, hand the Submit to the user (or click it when told to)
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "sg-arrival-card"})])
         if n == 1:

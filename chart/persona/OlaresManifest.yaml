@@ -89,8 +89,8 @@ spec:
     - en-US
     - zh-CN
   license:
-    - text: MIT
-      url: https://github.com/Drlucaslu/locius/blob/main/LICENSE
+    - text: GPL-3.0
+      url: https://github.com/second-state/omuse/blob/main/LICENSE
   requiredCpu: 500m
   limitedCpu: '7'
   requiredMemory: 1Gi
