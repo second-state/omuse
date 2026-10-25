@@ -130,6 +130,9 @@ scenario (`tests/parallel_steps_e2e.py`).
   browser, approval or takeover was involved, with a TIMING line each; `tests/browser_auto_real.py` reads a hotel booking from mail and
   opens its address on openstreetmap.org (a data-egress check, so Sentinel always asks) with "auto-approve browser
   actions" on (no dialog, recorded as approved by auto) and off (the same request stops at that step).
+- Market and README images (`deploy/market/assets`): `OMUSE_E2E_OUT=<dir> bash tests/run_in_docker.sh marketing_shots`
+  photographs the current UI (showcase scenarios `SHOW_*` in `tests/fake_llm.py`) and frames it; copy
+  `<dir>/market/*.webp` and `overview.png` into `deploy/market/assets`. Rebuild the test image first.
 - Image smoke test: `tests/docker_image_smoke.sh <image>`; set `OMUSE_VERSION`
   to the tag to also check the reported version.
 - `python3 tests/i18n_check.py` must report no missing or stale translations

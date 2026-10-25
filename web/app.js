@@ -52,7 +52,8 @@ function biEn(s) {
   const parts = s.split(/[；;]\s*/);
   if (parts.length > 1) return parts.map(biEn).join('; ');
   // "中文说明 (english explanation)" -> the part in brackets
-  let m = s.match(/^(.*[\u4e00-\u9fff][^()（）]*?)\s*[(（]([^()（）\u4e00-\u9fff]*[A-Za-z][^()（）\u4e00-\u9fff]*)[)）]\s*([^\u4e00-\u9fff]*)$/);
+  // (the Chinese may end in its own bracket: "…输入框（每次使用都需要你批准）(fills a vault value)")
+  let m = s.match(/^(.*[\u4e00-\u9fff][）」》]?[^()（）]*?)\s*[(（]([^()（）\u4e00-\u9fff]*[A-Za-z][^()（）\u4e00-\u9fff]*)[)）]\s*([^\u4e00-\u9fff]*)$/);
   if (m) { const t = m[2].charAt(0).toUpperCase() + m[2].slice(1); return m[3] ? `${t} ${m[3]}` : t; }
   // "中文标签 English label" -> the trailing English
   m = s.match(/^([^\w\u4e00-\u9fff]*)\S.*[\u4e00-\u9fff](?:[）)」》]\s*|\s+)([A-Za-z][^\u4e00-\u9fff]*)$/);
@@ -419,7 +420,7 @@ function renderThread(thread) {
         if (j.type === 'approval') {
           const pending = S.approvals.some(a => a.id === j.approval_id);
           msgs.append(h('div', { class: 'msg' }, h('div', { class: 'sys-card' }, '🛡',
-            h('span', null, Tf("Sentinel 请求审批：{0}", (j.title || ''))),
+            h('span', null, Tf("Sentinel 请求审批：{0}", B(j.title || ''))),
             pending ? h('button', { class: 'btn approve small', onclick: () => openApproval(j.approval_id) }, T('去审批 Review')) :
               h('span', { class: 'small muted' }, T('已处理 resolved')))));
         } else if (j.type === 'approval_auto') {   // Settings → auto-approve browser actions: shown like a manual approval
@@ -932,6 +933,9 @@ async function loadApprovals() {
   document.title = n ? `(${n}) ${S.name}` : S.name;
 }
 
+// approval fields whose values Sentinel writes itself (bilingual labels such as "号码 number"); every other value is the
+// user's own content (a subject, a message) and is shown as it is
+const SERVER_VALUES = new Set(['填写内容 Value', '授权 Approval', '提交 Submit']);   // i18n-ok: server field ids
 function approvalForm(a, onDone) {
   const s = a.summary || {};
   const editable = new Set(s.editable || []);
@@ -946,7 +950,7 @@ function approvalForm(a, onDone) {
     const key = { '收件人 To': 'to', '抄送 Cc': 'cc', '主题 Subject': 'subject', '转发给 To': 'to', '标题 Title': 'title', '开始 Start': 'start', '结束 End': 'end', '地点 Location': 'location' }[k];  // i18n-ok: server field ids
     kv.append(h('dt', null, B(k)));
     if (key && editable.has(key)) { const inp = h('input', { type: 'text', value: v || '' }); inputs[key] = inp; kv.append(h('dd', null, inp)); }
-    else kv.append(h('dd', null, v || '—'));
+    else kv.append(h('dd', null, SERVER_VALUES.has(k) ? String(v || '—').split(' · ').map(B).join(' · ') : (v || '—')));
   }
   box.append(kv);
   if (Array.isArray(s.items)) {  // e.g. unsubscribe: one checkbox per email, untick to keep

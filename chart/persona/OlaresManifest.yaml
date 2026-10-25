@@ -10,7 +10,7 @@ metadata:
   appid: persona
   title: 'OMuse'
   description: 'Your private AI agent'
-  icon: https://raw.githubusercontent.com/Drlucaslu/locius/main/deploy/market/assets/omuse-icon.png
+  icon: https://raw.githubusercontent.com/second-state/omuse/main/deploy/market/assets/omuse-icon.png
   version: '0.1.0'
   categories:
     - agents
@@ -26,28 +26,29 @@ entrances:
     host: persona
     port: 8080
     title: 'OMuse'
-    icon: https://raw.githubusercontent.com/Drlucaslu/locius/main/deploy/market/assets/omuse-icon.png
+    icon: https://raw.githubusercontent.com/second-state/omuse/main/deploy/market/assets/omuse-icon.png
     authLevel: private
     openMethod: window
   - name: phone
     host: persona-voice
     port: 8083
     title: 'OMuse Phone'
-    icon: https://raw.githubusercontent.com/Drlucaslu/locius/main/deploy/market/assets/omuse-icon.png
+    icon: https://raw.githubusercontent.com/second-state/omuse/main/deploy/market/assets/omuse-icon.png
     authLevel: public
     invisible: true
 
 spec:
   versionName: '0.1.0'
   runAsUser: true
-  featuredImage: https://raw.githubusercontent.com/Drlucaslu/locius/main/deploy/market/assets/featured.webp
+  featuredImage: https://raw.githubusercontent.com/second-state/omuse/main/deploy/market/assets/featured.webp
   promoteImage:
-    - https://raw.githubusercontent.com/Drlucaslu/locius/main/deploy/market/assets/promote-1-chat.webp
-    - https://raw.githubusercontent.com/Drlucaslu/locius/main/deploy/market/assets/promote-2-approval.webp
-    - https://raw.githubusercontent.com/Drlucaslu/locius/main/deploy/market/assets/promote-3-goals.webp
-    - https://raw.githubusercontent.com/Drlucaslu/locius/main/deploy/market/assets/promote-4-connections.webp
-    - https://raw.githubusercontent.com/Drlucaslu/locius/main/deploy/market/assets/promote-5-audit.webp
-    - https://raw.githubusercontent.com/Drlucaslu/locius/main/deploy/market/assets/promote-6-mobile.webp
+    - https://raw.githubusercontent.com/second-state/omuse/main/deploy/market/assets/promote-1-chat.webp
+    - https://raw.githubusercontent.com/second-state/omuse/main/deploy/market/assets/promote-2-approval.webp
+    - https://raw.githubusercontent.com/second-state/omuse/main/deploy/market/assets/promote-3-travel.webp
+    - https://raw.githubusercontent.com/second-state/omuse/main/deploy/market/assets/promote-4-cityguides.webp
+    - https://raw.githubusercontent.com/second-state/omuse/main/deploy/market/assets/promote-5-connections.webp
+    - https://raw.githubusercontent.com/second-state/omuse/main/deploy/market/assets/promote-6-audit.webp
+    - https://raw.githubusercontent.com/second-state/omuse/main/deploy/market/assets/promote-7-mobile.webp
   fullDescription: |
     OMuse is a private AI agent that lives on your Olares — local-first, private by default and always on. It doesn't just chat: it plans multi-step tasks and carries them out across your email, documents, team chat and the web, and it asks before doing anything that matters.
 

@@ -106,6 +106,9 @@ async def chat(req: Request):
         last = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
         if "很长很长" in str(last):   # resize_ui.py needs its long first-question title kept: "nothing usable" from the model
             return reply("")
+        for ask, title in ((SHOW_TRIP, "Tokyo trip this week"), (SHOW_CITY, "Moving to Shanghai"), (SHOW_SGAC, "Singapore arrival card")):
+            if ask in str(last):   # marketing_shots.py: real-looking titles in the pictures
+                return reply(title)
         users = re.findall(r"User: (.*)", str(last))   # the latest request: deterministic, and the title follows the chat
         return reply("Topic: " + (users[-1].split()[0][:16] if users and users[-1].split() else "chat"))
     if sys.startswith("You look at a file"):   # file_look / attachment reading
@@ -139,6 +142,22 @@ async def chat(req: Request):
         return reply(json.dumps({"objective": "Share the Q4 plan with the team on Slack", "steps": [
             {"id": "s1", "description": "Read the Q4 plan page in Notion", "tool_hint": "notion", "risk": "read"},
             {"id": "s2", "description": "Post a short summary to #general (needs approval)", "tool_hint": "slack", "risk": "send"}]}))
+    if "planning module" in sys and SHOW_TRIP in msgs[-1]["content"]:   # marketing_shots.py
+        return reply(json.dumps({"objective": "Put this week's Tokyo trip into one timeline", "steps": [
+            {"id": "s1", "description": "Find the flight, hotel and restaurant bookings in mail", "tool_hint": "gmail", "risk": "read", "parallel": "p1"},
+            {"id": "s2", "description": "Read this week's calendar", "tool_hint": "calendar", "risk": "read", "parallel": "p1"},
+            {"id": "s3", "description": "Build the day-by-day timeline and flag gaps and conflicts", "tool_hint": "trip-today", "risk": "read"}]}))
+    if "planning module" in sys and SHOW_SGAC in msgs[-1]["content"]:
+        return reply(json.dumps({"objective": "Fill in the SG Arrival Card for Sunday's flight", "steps": [
+            {"id": "s1", "description": "Find the flight and the hotel in mail", "tool_hint": "gmail", "risk": "read", "parallel": "p1"},
+            {"id": "s2", "description": "Read the traveller's details from the profile and the Vault", "tool_hint": "profile", "risk": "read", "parallel": "p1"},
+            {"id": "s3", "description": "Fill the ICA form; the passport number from the Vault (approval)", "tool_hint": "browser", "risk": "write"},
+            {"id": "s4", "description": "Hand the form over for review and Submit", "tool_hint": "browser", "risk": "read"}]}))
+    if "planning module" in sys and SHOW_CITY in msgs[-1]["content"]:
+        return reply(json.dumps({"objective": "Brief a family moving to Shanghai on neighbourhoods and rents", "steps": [
+            {"id": "s1", "description": "Load the Shanghai city guide", "tool_hint": "shanghai", "risk": "read"},
+            {"id": "s2", "description": "Get today's USD/CNY rate", "tool_hint": "market_data", "risk": "read"},
+            {"id": "s3", "description": "Compare neighbourhoods, rents and schools", "tool_hint": "shanghai", "risk": "read"}]}))
     if "planning module" in sys and "PARALLEL" in msgs[-1]["content"]:   # parallel_steps_e2e.py: three independent steps
         return reply(json.dumps({"objective": "Compare three hotels", "steps": [
             {"id": "s1", "description": "Research Hotel A", "tool_hint": "delegate", "risk": "read", "parallel": "p1"},
@@ -1070,11 +1089,57 @@ def _upload_path(sys, goal, ext):
     return m.group(1) if m else f"uploads/x.{ext}"
 
 
+# marketing_shots.py: natural prompts (no test markers in the pictures) with presentable answers
+SHOW_TRIP = "What's on my Tokyo trip this week? Check my mail and calendar."
+SHOW_CITY = "We're moving to Shanghai for work with two kids. Where do expat families live, and what does rent cost?"
+SHOW_SGAC = "Fill in my Singapore arrival card for Sunday's flight."
+
+
 def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
     """One scripted agent per skill. Returns None when the goal is not one of these scenarios."""
     if "focused sub-agent" in sys:
         return None
     tc_ = tc
+    if goal.startswith(SHOW_TRIP):
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "trip-today"})])
+        if n == 1:
+            calls = [tc_("gmail_search", {"query": "(flight OR e-ticket OR itinerary) Tokyo newer_than:60d"}),
+                     tc_("gmail_search", {"query": "(hotel OR booking OR reservation) Tokyo newer_than:60d"}),
+                     tc_("gmail_search", {"query": "(restaurant OR table) Tokyo newer_than:60d"})]
+            if "calendar_list_events" in tnames:
+                calls.append(tc_("calendar_list_events", {"time_min": "2026-11-18", "time_max": "2026-11-23"}))
+            return reply("", calls)
+        return reply("Here's your Tokyo trip, **18–22 November**, from your mail and calendar:\n\n"
+                     "| Day | Time | What | Ref |\n|---|---|---|---|\n"
+                     "| Wed 18 | 10:30 → 18:25 | ✈️ SQ 636 Singapore → Tokyo Haneda | 9QW3PL |\n"
+                     "| Wed 18 | 20:00 | 🏨 Hotel Ginza Grand, check-in (3 nights) | 88812345 |\n"
+                     "| Thu 19 | 10:00 | 💼 Product review at Sony, Shinagawa | calendar |\n"
+                     "| Fri 20 | 19:00 | 🍣 Sushi Hoshizora, Ginza — table for 2 | OT-55812 |\n"
+                     "| Sat 21 | 11:00 | 🏨 Check-out, Hotel Ginza Grand | |\n"
+                     "| Sun 22 | 11:05 | ✈️ SQ 637 Haneda → Singapore | 9QW3PL |\n\n"
+                     "**Needs your attention**\n"
+                     "- ⚠️ **No hotel for the night of Sat 21** — you check out on the 21st and fly on the 22nd. Want me to find a room near Haneda?\n"
+                     "- 🚆 Haneda → Ginza: Keikyu Line through to Higashi-Ginza, about 35 minutes; tap your Suica.\n"
+                     "- 🛡️ I found no travel-insurance email. Delays and lost bags are the most common claims — are you covered?")
+    if goal.startswith(SHOW_CITY):
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "shanghai"})])
+        if n == 1:
+            return reply("", [tc_("market_data", {"symbols": ["USDCNY=X"]})])
+        rate = re.search(r"USD/CNY[^0-9]*([0-9]+\.[0-9]+)", str(last_tool))
+        r = float(rate.group(1)) if rate else 7.12
+        usd = lambda y: f"≈ US${round(y / r / 100) * 100:,.0f}"
+        return reply("Where expat families usually live in Shanghai (from the Shanghai guide, checked October 2026):\n\n"
+                     "| Area | Why families choose it | Rent per month |\n|---|---|---|\n"
+                     f"| **Jinqiao / Biyun** 金桥/碧云, Pudong | Villa compounds next to Concordia and Dulwich; school-bus life | villas ¥30,000+ ({usd(30000)}) |\n"
+                     f"| **Gubei / Hongqiao** 古北/虹桥 | Family flats, international and Japanese/Korean schools, near the airport | ¥15,000–30,000 ({usd(15000)}–{usd(30000)[2:]}) |\n"
+                     f"| **Former French Concession** (Xuhui / Jing'an) | Leafy, walkable, cafés; older lane houses and art-deco flats | 1-bed ¥8,000–15,000 ({usd(8000)}–{usd(15000)[2:]}) |\n"
+                     f"| **Huacao / Xujing** 华漕/徐泾 | Villas near SAS Puxi and WISS, more space for the money | from ¥25,000 ({usd(25000)}) |\n\n"
+                     f"Rate used: 1 USD = ¥{r:.2f} (market data, today).\n\n"
+                     "**Before you sign**: one month's deposit plus 1–3 months' rent in advance; agents (Lianjia/Beike 贝壳, Ziroom 自如) charge up to a month. "
+                     "School places fill early — Shanghai American School, Concordia and Dulwich publish fees of roughly ¥250,000–390,000 a year. "
+                     "Want me to remember which area you choose for next time?")
     if "TRIPTODAY" in goal:   # trip-today: mail + calendar in one turn, then the timeline with the gap
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "trip-today"})])
@@ -1089,7 +1154,7 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         return reply("TRIP TIMELINE (from your mail and calendar):\n" + "\n".join(f"- {x}" for x in subs) +
                      "\n\nGAP: no hotel for the night of 2026-11-23 (Hotel Ginza Grand checks out 23 Nov, SQ 637 flies 24 Nov).\n"
                      "Insurance: no travel insurance email was found — delays and lost luggage are common claims; are you covered?")
-    if "SGAC" in goal:   # sg-arrival-card: gather, fill, hand the Submit to the user (or click it when told to)
+    if "SGAC" in goal or goal.startswith(SHOW_SGAC):   # sg-arrival-card: gather, fill, hand the Submit to the user (or click it when told to)
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "sg-arrival-card"})])
         if n == 1:
