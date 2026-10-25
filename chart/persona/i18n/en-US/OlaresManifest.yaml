@@ -25,6 +25,7 @@ spec:
 
     Runs on the local models served by your Olares by default — any OpenAI-compatible endpoint works. English and 中文 interface.
   upgradeDescription: |
+    0.4.3: Now licensed under GPL-3.0; new OMuse images in the Market listing; the approval dialog shows one language only
     0.4.2: Travel skills for Asia (arrival cards for 11 countries, trip today, disruptions, lost bags, expense reports, which card to use) and city guides for 15 Asian cities that answer without the browser; browser actions approved automatically by default (Settings, logins and payments still ask); fast mode and reasoning effort settings
     0.4.1: Parallel plan steps: independent steps run at the same time as sub-agents, each with its own browser tab; the interface shows one language at a time (English by default); settings for parallel model requests
     0.4.0: Rewritten in Rust: one binary for all three services, about 9x less CPU and 6x less memory, faster start; same features and data
