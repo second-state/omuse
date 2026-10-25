@@ -3,11 +3,12 @@ name: Build application release image
 on:
   push:
     tags:
+      - "omuse-v*"
       - "locius-v*"
   workflow_dispatch:
     inputs:
       version:
-        description: Release version (for example locius-v0.1.0)
+        description: Release version (for example omuse-v0.4.0)
         required: true
         type: string
       import_release:
@@ -44,7 +45,7 @@ jobs:
           RELEASE_IMPORT_TOKEN: ${{ secrets.RELEASE_IMPORT_TOKEN }}
         run: |
           set -euo pipefail
-          [[ "$VERSION" =~ ^locius-v[0-9][A-Za-z0-9._-]*$ && ${#VERSION} -le 128 ]]
+          [[ "$VERSION" =~ ^(omuse|locius)-v[0-9][A-Za-z0-9._-]*$ && ${#VERSION} -le 128 ]]
           [[ "$PRODUCT_KEY" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
           if [[ "$IMPORT_RELEASE" == true ]]; then
             : "${RELEASE_IMPORT_URL:?Set RELEASE_IMPORT_URL to the provisioner origin}"

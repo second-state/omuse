@@ -1,23 +1,25 @@
 # Notes for coding agents working on this repo
 
-## Releasing (tag `locius-vX.Y.Z`)
+## Releasing (tag `omuse-vX.Y.Z`)
 
 The version shown in the app comes from the release tag: the release workflow
 (`.github/workflows/release-image.yml`) passes the tag as the `OMUSE_VERSION`
-build argument (compiled into the Rust binary) and `locius-v0.3.1` is shown as `v0.3.1`. Source checkouts and
+build argument (compiled into the Rust binary) and `omuse-v0.4.0` is shown as `v0.4.0`. Source checkouts and
 untagged builds show `SOURCE_VERSION` in `crates/omuse-common/src/util.rs` (keep `version` in the root `Cargo.toml`
 equal to it).
 
-When asked to release `locius-vX.Y.Z`, do it in this order so that the source
+When asked to release `omuse-vX.Y.Z`, do it in this order so that the source
 literal, the tagged commit and the image all agree:
 
 1. On `main`, set `SOURCE_VERSION` in `crates/omuse-common/src/util.rs` and `version` in `Cargo.toml`
    (`cargo check` updates `Cargo.lock`).
-2. Commit that change (`Release X.Y.Z`) and push `main`.
-3. Tag that commit `locius-vX.Y.Z` and push the tag. The tag push builds, smoke
+2. Commit that change (`Release X.Y.Z`) and push `main` of `second-state/omuse`.
+3. Tag that commit `omuse-vX.Y.Z` and push the tag to `second-state/omuse`. The tag push builds, smoke
    tests (including a check that the app reports `X.Y.Z`) and publishes
-   `ghcr.io/drlucaslu/locius:locius-vX.Y.Z`.
-4. Report the run result and the image digest from the `image-import.json`
+   `ghcr.io/second-state/omuse:omuse-vX.Y.Z` (the workflow still accepts the older `locius-v*` tags).
+4. Create the GitHub release on `second-state/omuse` (`gh release create omuse-vX.Y.Z --repo second-state/omuse
+   --verify-tag`), with the Olares chart from `sh chart/build.sh omuse` attached.
+5. Report the run result and the image digest from the `image-import.json`
    artifact.
 
 Do not move or re-publish an existing release tag; use a new version instead.

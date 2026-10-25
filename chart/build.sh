@@ -10,7 +10,7 @@ APP=$(printf '%s' "${1:-omuse}" | tr 'A-Z' 'a-z')
 printf '%s' "$APP" | grep -Eq '^[a-z][a-z0-9]{1,29}$' || { echo "app id must be lowercase letters/digits" >&2; exit 1; }
 VER=$(sed -n 's/^pub const SOURCE_VERSION: &str = "\(.*\)";$/\1/p' crates/omuse-common/src/util.rs)
 [ -n "$VER" ] || { echo "SOURCE_VERSION not found" >&2; exit 1; }
-IMAGE="${OMUSE_IMAGE:-ghcr.io/second-state/omuse:locius-v$VER}"
+IMAGE="${OMUSE_IMAGE:-ghcr.io/second-state/omuse:omuse-v$VER}"
 DIST="dist/$APP"
 rm -rf "$DIST"; mkdir -p "$DIST/templates"
 cp -R chart/persona/. "$DIST/"

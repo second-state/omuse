@@ -50,7 +50,7 @@ OMuse is a local-first AI agent for [Olares](https://www.olares.com). It doesn't
 ### Install
 
 - **Olares Market**: search for *OMuse* (after the listing is approved).
-- **Manual**: `sh chart/build.sh omuse` → upload `dist/omuse-<version>.tgz` in Olares Market ▸ *Upload custom chart*. The pod runs the release image (`ghcr.io/second-state/omuse:locius-v<version>`), one `omuse --role …` per container.
+- **Manual**: `sh chart/build.sh omuse` → upload `dist/omuse-<version>.tgz` in Olares Market ▸ *Upload custom chart*. The pod runs the release image (`ghcr.io/second-state/omuse:omuse-v<version>`), one `omuse --role …` per container.
 
 The model endpoint defaults to `https://router.<your-olares-name>.olares.com/v1`; change it in the app's settings or with the `OMUSE_MODEL_URL` / `OMUSE_MODEL` values of the Olares app environment (the chart writes them into the pod's `config.toml`). If the configured model isn't served, OMuse picks an available one.
 
@@ -155,14 +155,14 @@ pulled by Fly without private registry credentials.
 After committing and pushing the workflow, tag the intended source commit:
 
 ```bash
-git switch stripe-subscription
-git tag locius-v0.1.0
-git push origin locius-v0.1.0
+git switch main
+git tag omuse-v0.4.0
+git push origin omuse-v0.4.0
 ```
 
 Tag pushes run the workflow from the tagged commit, even while it lives on this
 branch. Manual dispatch becomes available once the workflow is on the default
-branch; choose the desired source branch and enter a `locius-v*` version. A manual
+branch; choose the desired source branch and enter an `omuse-v*` version (`locius-v*` tags from before 0.4.0 are still accepted). A manual
 run can enable `import_release` for a callback-backed product; it defaults to false.
 Use a new version for changed source; do not move existing release tags.
 
@@ -180,9 +180,9 @@ bash tests/docker_image_smoke.sh locius:local
 
 The version shown in the app (left bar, `/sentinel/api/health`) comes from the
 release tag: the workflow passes the tag as the `OMUSE_VERSION` build argument and
-`locius-v0.3.1` is shown as `v0.3.1`. The smoke test checks this when `OMUSE_VERSION`
-is set, e.g. `OMUSE_VERSION=locius-v0.3.1 bash tests/docker_image_smoke.sh locius:local`
-after `docker build --build-arg OMUSE_VERSION=locius-v0.3.1 ...`. Builds without the
+`omuse-v0.4.0` is shown as `v0.4.0`. The smoke test checks this when `OMUSE_VERSION`
+is set, e.g. `OMUSE_VERSION=omuse-v0.4.0 bash tests/docker_image_smoke.sh locius:local`
+after `docker build --build-arg OMUSE_VERSION=omuse-v0.4.0 ...`. Builds without the
 argument show the version from the source.
 
 On an Apple Silicon Mac, `--platform linux/arm64` builds a native test image;
