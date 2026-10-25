@@ -213,6 +213,7 @@ impl Runtime {
             let ext_names: Vec<&str> = arr(catalog, "tools").iter().map(tool_name).collect();
             let mut ok = true;
             let mut refused = false;
+            let mut auto_aid = String::new(); // Sentinel approved the call itself (auto-approve browser actions)
             let seen = self.inner.lock().seen_ids.get(&task_id).cloned();
             let st = self.store.clone();
             let tid2 = task_id.clone();
@@ -395,6 +396,34 @@ Use another source, or browser_request_takeover if this exact site is essential.
                             "_pending": {"call_id": call.id, "calls": calls}}),
                     });
                 }
+                if truthy(res.get("auto_approved").unwrap_or(&Value::Null)) {
+                    // shown exactly like a manual approval: a timeline event and a card in the chat
+                    auto_aid = sget(&res, "approval_id");
+                    let title = res
+                        .get("summary")
+                        .and_then(|s| s.get("title"))
+                        .filter(|t| truthy(t))
+                        .cloned()
+                        .unwrap_or_else(|| json!(name));
+                    self.event(
+                        &task_id,
+                        "approval_auto",
+                        json!({"approval_id": auto_aid, "tool": name, "title": title}),
+                    )
+                    .await;
+                    let conv = get_str(t, "conv_id");
+                    if !conv.is_empty() && !sub {
+                        let _ = self.store.add_msg(
+                            &conv,
+                            "system",
+                            &pyjson::dumps(&json!({"type": "approval_auto", "approval_id": auto_aid, "title": title, "task_id": task_id})),
+                            &task_id,
+                            None,
+                        );
+                        self.publish(json!({"kind": "conv_update", "conv_id": conv}))
+                            .await;
+                    }
+                }
                 let st = sget(&res, "status");
                 let result_obj = res.get("result").filter(|r| r.is_object()).cloned();
                 content = match (name, st == "ok", &result_obj) {
@@ -511,6 +540,10 @@ on this site; switch to another source, or request a takeover if this site is es
             let mut ev = json!({"call_id": call.id, "name": name, "ok": ok, "sub": sub, "preview": truncate(&content, 800)});
             if !mode.lane.is_empty() {
                 ev["lane"] = json!(mode.lane);
+            }
+            if !auto_aid.is_empty() {
+                ev["approved"] = json!("auto");
+                ev["approval_id"] = json!(auto_aid);
             }
             self.event(&task_id, "tool_result", ev).await;
             Ok(CallOutcome { ok, refused })

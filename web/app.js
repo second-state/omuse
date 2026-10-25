@@ -422,6 +422,10 @@ function renderThread(thread) {
             h('span', null, Tf("Sentinel 请求审批：{0}", (j.title || ''))),
             pending ? h('button', { class: 'btn approve small', onclick: () => openApproval(j.approval_id) }, T('去审批 Review')) :
               h('span', { class: 'small muted' }, T('已处理 resolved')))));
+        } else if (j.type === 'approval_auto') {   // Settings → auto-approve browser actions: shown like a manual approval
+          msgs.append(h('div', { class: 'msg' }, h('div', { class: 'sys-card' }, '🛡',
+            h('span', null, Tf("Sentinel 已自动批准：{0}", B(j.title || ''))),
+            h('span', { class: 'small muted' }, T('自动批准 auto')))));
         } else if (j.type === 'file') {
           msgs.append(fileCard(j));
         } else if (j.type === 'files') {
@@ -700,6 +704,7 @@ function evLine(e) {
     case 'tool_result': body = h('details', null, h('summary', null, (d.ok === false ? '⚠️ ' : '✅ ') + d.name + T(' 结果 result')), h('pre', null, d.preview)); break;
     case 'waiting': body = h('span', { style: 'color:var(--approve)' }, d.type === 'approval' ? Tf("🛡 等待审批：{0}", B((d.summary || {}).title || d.tool)) : Tf("🖐 等待接管：{0}", (d.reason || ''))); break;
     case 'approval_resolved': body = h('span', null, Tf("🛡 审批结果：{0}", (d.decision))); break;
+    case 'approval_auto': body = h('span', null, Tf("🛡 已自动批准：{0}", B(d.title || d.tool))); break;
     case 'subagent_start': body = h('span', null, Tf("🧩 子 Agent ({0}{1})：{2}", d.role, d.step ? ' · ' + d.step : '', d.task)); break;
     case 'subagent_done': body = h('details', null, h('summary', null, (d.ok === false ? '⚠️ ' : '') +
       Tf("🧩 子 Agent 完成 ({0}{1}{2})", d.role, d.step ? ' · ' + d.step : '', d.secs ? ' · ' + d.secs + ' s' : '')), h('pre', null, d.report)); break;
@@ -1028,7 +1033,8 @@ function renderDrawer() {
     r.approvals.forEach(a => {
       const [lbl, cls] = AP_DONE[a.status] || [a.status, ''];
       const res = a.result || {};
-      const why = a.status === 'expired' ? (res.reason || '') : a.decided_by === 'user' && a.scope && a.scope !== 'ONCE' ? Tf("范围 {0}", (a.scope)) : '';
+      const why = a.status === 'expired' ? (res.reason || '') : a.decided_by === 'auto' ? T('自动批准 auto')
+        : a.decided_by === 'user' && a.scope && a.scope !== 'ONCE' ? Tf("范围 {0}", (a.scope)) : '';
       hist.append(h('div', { class: 'card', style: 'padding:8px 10px' },
         h('div', { class: 'row' }, h('span', { style: 'flex:1' }, B((a.summary || {}).title || a.tool)), h('span', { class: 'pill ' + cls }, lbl)),
         h('div', { class: 'small muted' }, `${fmtTime(a.resolved_at || a.created_at)} · ${a.tool}` + (why ? ' · ' + why : ''))));
@@ -2299,6 +2305,13 @@ async function viewSkills(root) {
 
 async function viewSettings(root) {
   const r = await api('settings');
+  // "auto-approve browser actions" lives on the browser connection (Sentinel decides), not in the runtime settings
+  let brAuto = true;
+  try { const cc = await sapi('connections'); const bc = (cc.connections || []).find(x => x.name === 'browser'); brAuto = !bc || !bc.config || bc.config.auto_approve !== false; } catch (e) { /* offline */ }
+  const autoBr = h('input', { type: 'checkbox', checked: brAuto, onchange: safe(async e => {
+    await sapi('connections/browser', { method: 'PUT', body: { config: { auto_approve: e.target.checked } } });
+    toast(e.target.checked ? T('浏览器操作将自动批准（登录、保险箱、付款除外）') : T('浏览器操作将需要你审批'));
+  }) });
   const s = r.settings;
   const f = {};
   const field = (k, zh, en, type = 'text', help) => { const i = h('input', { type, value: s[k] ?? '' }); f[k] = i;
@@ -2312,6 +2325,11 @@ async function viewSettings(root) {
   const MODEL_FIELDS = ['model_base_url', 'model_name', 'planner_model', 'vision_model', 'stt_model', 'image_model'];
   const mfield = (k, zh, en, required) => { const i = h('input', { type: 'text', value: mu[k] ?? '', required: required || null, autocomplete: 'off', spellcheck: 'false' }); f[k] = i;
     return h('label', { class: 'field' }, h('span', null, LANG === 'en' ? en : zh, required ? h('span', { class: 'req', title: T('必填') }, ' *') : null), i); };
+  // fast mode and reasoning effort: the user's own model only (the system's come from config.toml, shown read-only)
+  const EFFORTS = [['', T('模型默认（不发送）')], ['none', T('关闭推理')], ['minimal', T('极低')], ['low', T('低')], ['medium', T('中')], ['high', T('高')], ['xhigh', T('极高')]];
+  const effortName = v => (EFFORTS.find(e => e[0] === (v || '')) || EFFORTS[0])[1];
+  const fastIn = h('input', { type: 'checkbox', checked: !!mu.fast_mode }); f.fast_mode = fastIn;
+  const effortIn = h('select', null, EFFORTS.map(([v, label]) => h('option', { value: v, selected: (mu.reasoning_effort || '') === v || null }, label))); f.reasoning_effort = effortIn;
   const keyIn = h('input', { type: 'password', value: '', autocomplete: 'new-password', placeholder: mu.api_key_set ? T('已保存；留空=不改') : 'sk-…' });
   f.model_api_key = keyIn;
   const modelBox = h('div', { class: 'stack', id: 'modelOverride', hidden: !s.model_override },
@@ -2321,7 +2339,9 @@ async function viewSettings(root) {
     mfield('planner_model', T('规划模型（留空=同 LLM）'), 'Planner'),
     mfield('vision_model', T('视觉模型（看截图和图片，留空=同 LLM）'), 'Vision'),
     mfield('stt_model', T('语音转文字模型（留空=自动寻找 whisper 类模型）'), 'Speech-to-text'),
-    mfield('image_model', T('图像生成模型（留空=自动）'), 'Image'));
+    mfield('image_model', T('图像生成模型（留空=自动）'), 'Image'),
+    h('label', { class: 'toggle' }, fastIn, T('快速模式（请求里加 service_tier=fast）')),
+    h('label', { class: 'field' }, h('span', null, T('推理强度')), effortIn));
   // the three required fields, or a message naming the first one missing ('' = fine)
   const modelMissing = () => !f.model_override.checked ? '' : !/^https?:\/\/\S+$/.test(f.model_base_url.value.trim()) ? T('请填写接口地址（http:// 或 https:// 开头）')
     : !(keyIn.value.trim() || mu.api_key_set) ? T('请填写 API 密钥') : !f.model_name.value.trim() ? T('请填写执行任务的 LLM 模型名') : '';
@@ -2332,6 +2352,8 @@ async function viewSettings(root) {
       h('div', { class: 'small muted', id: 'systemModel' }, Tf("系统默认：LLM {0}", modelLabel(sm.model_name)),
         sm.planner_model ? Tf(" · 规划 {0}", modelLabel(sm.planner_model)) : '', sm.vision_model ? Tf(" · 视觉 {0}", modelLabel(sm.vision_model)) : '',
         sm.stt_model ? Tf(" · 语音转文字 {0}", modelLabel(sm.stt_model)) : '', sm.image_model ? Tf(" · 图像 {0}", modelLabel(sm.image_model)) : ''),
+      h('div', { class: 'small muted', id: 'systemOptions' }, Tf("系统默认的快速模式：{0} · 推理强度：{1}（在 config.toml 中设置，使用自己的模型时才能在这里修改）",
+        sm.fast_mode ? T('开') : T('关'), effortName(sm.reasoning_effort))),
       h('div', null, tog('model_override', T('使用自己的模型 Use my own model')),
         h('div', { class: 'small muted', style: 'margin-top:4px' }, T('打开后，下面填的接口、API 密钥和模型会代替系统默认，三项必填。关掉就回到系统默认，下面的值全部不再使用（保留着，再打开时还在）。'))),
       modelBox,
@@ -2348,13 +2370,14 @@ async function viewSettings(root) {
       testOut,
       h('h3', { style: 'margin-top:12px' }, T('LLM 参数')),
       field('temperature', T('温度'), 'Temperature', 'number'), field('max_tokens', T('单次最大输出'), 'Max tokens', 'number'),
-      field('llm_concurrency', T('同时进行的模型请求数（并行子 Agent 各占一个）'), 'Parallel model requests', 'number'),
-      tog('disable_thinking', T('关闭思考模式（更快，复杂任务效果可能下降）Disable thinking'))),
+      field('llm_concurrency', T('同时进行的模型请求数（并行子 Agent 各占一个）'), 'Parallel model requests', 'number')),
     h('div', { class: 'card stack' }, h('h3', null, T('🤖 智能体')),
       langField(s, f),
       field('user_name', T('你的名字'), 'Your name'), field('timezone', T('时区（定时任务）'), 'Timezone'),
       field('max_steps', T('每个任务最多步数'), 'Max steps', 'number'),
       field('max_minutes', T('每个任务最长用时（分钟）'), 'Time limit (minutes)', 'number'),
+      h('label', { class: 'toggle' }, autoBr, T('自动批准浏览器操作（打开网页、点击、输入、提交）Auto-approve browser actions')),
+      h('div', { class: 'small muted', style: 'font-weight:400;margin-top:-6px' }, T('仍会先问你：需要登录等接管的情况、填写保险箱里的证件或银行卡、付款或更改订单的点击、上传文件，以及疑似提示注入之后的操作。关闭后，所有有风险的浏览器操作都会弹出审批。')),
       tog('memory_extraction', T('任务结束后自动提取长期记忆 Auto memory extraction')),
       tog('memory_consolidation', T('每天自动整理记忆并发送报告到 Telegram Daily memory tidy')),
       field('memory_consolidate_at', T('每天整理时间（HH:MM）'), 'Tidy at'),
@@ -2362,7 +2385,7 @@ async function viewSettings(root) {
   ), h('div', { style: 'margin-top:16px' }, h('button', { class: 'btn primary', onclick: safe(async () => {
     const body = {};
     for (const [k, el] of Object.entries(f)) body[k] = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value;
-    if (!body.model_override) { for (const k of MODEL_FIELDS) delete body[k]; }   // off: the saved values stay but are ignored
+    if (!body.model_override) { for (const k of [...MODEL_FIELDS, 'fast_mode', 'reasoning_effort']) delete body[k]; }   // off: the saved values stay but are ignored
     if (!body.model_api_key) delete body.model_api_key;                              // empty: keep the saved key
     const miss = modelMissing();
     if (miss) { toast(miss, true); (!/^https?:/.test(f.model_base_url.value.trim()) ? f.model_base_url : !(keyIn.value.trim() || mu.api_key_set) ? keyIn : f.model_name).focus(); return; }

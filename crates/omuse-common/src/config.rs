@@ -152,6 +152,12 @@ pub struct ModelConfig {
     pub image_api_key: String,
     /// `OMUSE_IMAGE_BUDGET`: generated pictures per task.
     pub image_budget: u32,
+    /// `OMUSE_MODEL_FAST`: send `service_tier: "fast"` with every chat request to the system's endpoint (Settings
+    /// may change it only for the user's own model).
+    pub fast: bool,
+    /// `OMUSE_MODEL_REASONING`: `reasoning_effort` sent with every chat request to the system's endpoint — `none`,
+    /// `minimal`, `low`, `medium`, `high` or `xhigh`; "" = not sent (the model's default).
+    pub reasoning_effort: String,
 }
 
 impl Default for ModelConfig {
@@ -167,6 +173,8 @@ impl Default for ModelConfig {
             image_url: String::new(),
             image_api_key: String::new(),
             image_budget: 6,
+            fast: false,
+            reasoning_effort: String::new(),
         }
     }
 }
@@ -197,6 +205,11 @@ pub struct BrowserConfig {
     pub user_agent: String,
     /// `BROWSER_PACE_GAP`: minimum seconds between hits to one registered domain.
     pub pace_gap: f64,
+    /// Default of "auto-approve browser actions" (Settings → Agent) until the user sets it: page loads, clicks,
+    /// typing and form submits run without the approval dialog, recorded as approved by "auto". Vault fills,
+    /// uploads, money and order-change clicks, anything after a suspected prompt injection, logins and takeovers
+    /// still come to the user.
+    pub auto_approve: bool,
     /// `BROWSER_IDLE_SHUTDOWN`: close Chromium after this many idle seconds (0 = never).
     pub idle_shutdown: f64,
     /// `SEARCH_ENGINES` (tests): `name=url-prefix,name=url-prefix`.
@@ -212,6 +225,7 @@ impl Default for BrowserConfig {
             display: ":99".into(),
             user_agent: String::new(),
             pace_gap: 1.3,
+            auto_approve: true,
             idle_shutdown: 600.0,
             search_engines: String::new(),
             executable: String::new(),

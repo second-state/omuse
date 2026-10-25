@@ -353,7 +353,8 @@ async def wall():
 # ---------------------------------------------------------------- fake Yahoo Finance (market_data): host 1 is rate-limited
 _MKT = {"0700.HK": ("Tencent Holdings Limited", "HKD", 400.0), "0005.HK": ("HSBC Holdings plc", "HKD", 100.0),
         "2888.HK": ("Standard Chartered PLC", "HKD", 80.0), "^HSI": ("HANG SENG INDEX", "HKD", 25000.0),
-        "AAPL": ("Apple Inc.", "USD", 200.0)}
+        "AAPL": ("Apple Inc.", "USD", 200.0),
+        "SGDJPY=X": ("SGD/JPY", "JPY", 115.2), "SGDCNY=X": ("SGD/CNY", "CNY", 5.5), "JPYSGD=X": ("JPY/SGD", "SGD", 0.00868)}
 
 
 @app.get("/yahoo1/{rest:path}")

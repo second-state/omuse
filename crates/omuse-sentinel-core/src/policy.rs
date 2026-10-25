@@ -49,6 +49,13 @@ pub struct Decision {
     pub destination: String,
     pub grant_id: String,
     pub notes: Vec<String>,
+    /// Approved one by one, never by a standing grant or the browser auto-approval (vault fills, purchases, money
+    /// and order-change clicks).
+    #[serde(default)]
+    pub per_use: bool,
+    /// Raised to ASK because the task read content that looks like a prompt injection.
+    #[serde(default)]
+    pub injected: bool,
 }
 
 impl Decision {
@@ -82,6 +89,18 @@ impl Decision {
     }
     pub fn is_ask(&self) -> bool {
         self.decision == ASK
+    }
+
+    /// Whether "auto-approve browser actions" may approve this ASK on the user's behalf: a browser tool, not a
+    /// vault fill or an upload (the user's own information leaving the machine), not a per-use decision (money,
+    /// order changes) and not after a suspected prompt injection. Logins and takeovers never come through here.
+    pub fn browser_auto_ok(&self, tool: &str) -> bool {
+        self.decision == ASK
+            && tool.starts_with("browser_")
+            && tool != "browser_fill_secret"
+            && tool != "browser_upload"
+            && !self.per_use
+            && !self.injected
     }
 
     /// `dataclasses.asdict(d)`.
@@ -915,7 +934,10 @@ fn finish(
     } else {
         reason
     };
-    Ok(Decision::with_dest(ASK, risk, reason, dest))
+    let mut d = Decision::with_dest(ASK, risk, reason, dest);
+    d.per_use = per_use || PER_USE_TOOLS.contains(&tool);
+    d.injected = !injection.is_empty();
+    Ok(d)
 }
 
 /// MCP tools: the per-tool mode the user set (auto / ask / off) plus taint & injection escalation.
@@ -2338,5 +2360,30 @@ mod tests {
         assert_eq!(r.decision, DENY);
         assert_eq!(r.reason, "这个 MCP 工具已被移除 (tool removed)");
         catalog::remove("mcp_t__x");
+    }
+}
+
+#[cfg(test)]
+mod browser_auto_tests {
+    use super::*;
+
+    #[test]
+    fn browser_auto_ok_scope() {
+        let ask = |tool: &str, per_use: bool, injected: bool| {
+            let mut d = Decision::new(ASK, "high", "r");
+            d.per_use = per_use;
+            d.injected = injected;
+            d.browser_auto_ok(tool)
+        };
+        assert!(ask("browser_click", false, false));
+        assert!(ask("browser_navigate", false, false));
+        assert!(ask("browser_type", false, false));
+        assert!(!ask("browser_fill_secret", true, false));
+        assert!(!ask("browser_upload", false, false));
+        assert!(!ask("browser_click", true, false)); // pay / cancel-order clicks
+        assert!(!ask("browser_click", false, true)); // after a suspected prompt injection
+        assert!(!ask("gmail_send", false, false));
+        assert!(!ask("purchase_confirm", true, false));
+        assert!(!Decision::new(ALLOW, "low", "").browser_auto_ok("browser_click"));
     }
 }

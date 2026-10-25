@@ -41,7 +41,7 @@ LLM = "http://127.0.0.1:8090"
 g = c.get(B + "/api/settings", headers=H).json()
 check("the key never leaves the runtime: only whether one is set", "model_api_key" not in g["settings"] and g["settings"]["model_api_key_set"] is False, g["settings"])
 check("the system model names are listed without the endpoint", g["system_model"].get("model_name") == "fake" and "model_base_url" not in g["system_model"], g.get("system_model"))
-check("own-model form starts empty", g["model_user"] == {"model_base_url": "", "model_name": "", "planner_model": "", "vision_model": "", "stt_model": "", "image_model": "", "api_key_set": False}, g["model_user"])
+check("own-model form starts empty", g["model_user"] == {"model_base_url": "", "model_name": "", "planner_model": "", "vision_model": "", "stt_model": "", "image_model": "", "fast_mode": False, "reasoning_effort": "", "api_key_set": False}, g["model_user"])
 sys_url = g["settings"]["model_base_url"]
 for body, what in (({"model_override": True}, "nothing filled"),
                    ({"model_override": True, "model_base_url": sys_url, "model_name": "fake"}, "no key"),

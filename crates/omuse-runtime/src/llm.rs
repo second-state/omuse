@@ -794,7 +794,16 @@ impl Llm {
             body.insert("tools".into(), Value::Array(t.to_vec()));
             body.insert("tool_choice".into(), json!("auto"));
         }
-        if get_truthy(&s, "disable_thinking") || o.no_think {
+        // fast mode and reasoning, in the OpenAI request format (the settings in force decide: the config's for
+        // the system's models, the user's own in Settings → Models)
+        if get_truthy(&s, "fast_mode") {
+            body.insert("service_tier".into(), json!("fast"));
+        }
+        let effort = get_str(&s, "reasoning_effort").trim().to_lowercase();
+        if !effort.is_empty() && crate::store::REASONING_EFFORTS.contains(&effort.as_str()) {
+            body.insert("reasoning_effort".into(), json!(effort));
+        }
+        if effort == "none" || o.no_think {
             body.insert(
                 "chat_template_kwargs".into(),
                 json!({"enable_thinking": false}),
@@ -893,6 +902,13 @@ impl Llm {
                         "设置里的模型 {} 现在不可用（可能正在加载或已被卸载），也没有别的聊天模型可用 (the configured model is not available right now): {}",
                         want, err
                     );
+                } else if let Some(k) = REQUEST_OPTIONS
+                    .iter()
+                    .find(|k| body.contains_key(**k) && r.text.contains(**k))
+                {
+                    // an endpoint that does not know service_tier / reasoning_effort: the request without it
+                    body.remove(*k);
+                    continue;
                 } else if body.contains_key("chat_template_kwargs") && !stripped_kwargs {
                     stripped_kwargs = true;
                     body.remove("chat_template_kwargs");
@@ -1032,6 +1048,9 @@ impl Llm {
         })
     }
 }
+
+/// Optional request fields dropped (and the request sent again) when the endpoint rejects them by name.
+const REQUEST_OPTIONS: [&str; 2] = ["service_tier", "reasoning_effort"];
 
 fn new_call_id() -> String {
     format!("call_{}", &omuse_common::util::uuid_hex()[..10])
@@ -1381,9 +1400,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fast_mode_and_reasoning_effort_in_the_request() {
+        let settings: SettingsFn = Arc::new(
+            || json!({"model_base_url": "http://x/v1", "model_name": "m", "fast_mode": true, "reasoning_effort": "high"}),
+        );
+        let tr = Arc::new(Scripted {
+            responses: Mutex::new(vec![
+                resp(
+                    400,
+                    json!({"error": {"message": "Unsupported parameter: 'service_tier'"}}),
+                    None,
+                ),
+                resp(200, ok_body(), None),
+            ]),
+            requests: Mutex::new(vec![]),
+        });
+        let llm = Llm::with_transport(settings, None, None, tr.clone());
+        llm.chat(
+            &[json!({"role": "user", "content": "hi"})],
+            None,
+            &ChatOpts::default(),
+        )
+        .await
+        .unwrap();
+        let reqs = tr.requests.lock();
+        let first = reqs[0].json.as_ref().unwrap();
+        assert_eq!(first["service_tier"], "fast");
+        assert_eq!(first["reasoning_effort"], "high");
+        assert!(first.get("chat_template_kwargs").is_none());
+        // rejected by name: sent again without service_tier, the effort kept
+        let second = reqs[1].json.as_ref().unwrap();
+        assert!(second.get("service_tier").is_none());
+        assert_eq!(second["reasoning_effort"], "high");
+        drop(reqs);
+        // off / unset: neither field is sent
+        let plain: SettingsFn =
+            Arc::new(|| json!({"model_base_url": "http://x/v1", "model_name": "m"}));
+        let tr = Arc::new(Scripted {
+            responses: Mutex::new(vec![resp(200, ok_body(), None)]),
+            requests: Mutex::new(vec![]),
+        });
+        Llm::with_transport(plain, None, None, tr.clone())
+            .chat(
+                &[json!({"role": "user", "content": "hi"})],
+                None,
+                &ChatOpts::default(),
+            )
+            .await
+            .unwrap();
+        let req = tr.requests.lock()[0].json.clone().unwrap();
+        assert!(req.get("service_tier").is_none() && req.get("reasoning_effort").is_none());
+    }
+
+    #[tokio::test]
     async fn text_tool_calls_and_kwargs_strip() {
         let settings: SettingsFn = Arc::new(
-            || json!({"model_base_url": "http://x/v1", "model_name": "m", "temperature": 0.3, "max_tokens": 10, "disable_thinking": true}),
+            || json!({"model_base_url": "http://x/v1", "model_name": "m", "temperature": 0.3, "max_tokens": 10, "reasoning_effort": "none"}),
         );
         let tr = Arc::new(Scripted {
             responses: Mutex::new(vec![
@@ -1421,6 +1493,7 @@ mod tests {
             reqs[0].json.as_ref().unwrap()["chat_template_kwargs"],
             json!({"enable_thinking": false})
         );
+        assert_eq!(reqs[0].json.as_ref().unwrap()["reasoning_effort"], "none");
         assert!(reqs[1]
             .json
             .as_ref()
@@ -1482,7 +1555,10 @@ mod tests {
     #[tokio::test]
     async fn transcribe_needs_a_speech_model() {
         let settings: SettingsFn =
-            Arc::new(|| json!({"model_base_url": "http://x/v1", "model_name": "m"}));
+            // fast mode and reasoning are chat options: never sent with a transcription
+            Arc::new(|| {
+                json!({"model_base_url": "http://x/v1", "model_name": "m", "fast_mode": true, "reasoning_effort": "high"})
+            });
         let tr = Arc::new(Scripted {
             responses: Mutex::new(vec![
                 resp(200, json!({"data": [{"id": "gpt"}]}), None),
@@ -1505,5 +1581,6 @@ mod tests {
         let reqs = tr.requests.lock();
         assert!(reqs[2].url.ends_with("/audio/transcriptions"));
         assert_eq!(reqs[2].audio.as_ref().unwrap().0, "faster-whisper-small");
+        assert!(reqs[2].json.is_none() && reqs[2].headers.iter().all(|(_, v)| !v.contains("fast")));
     }
 }

@@ -69,6 +69,16 @@ pub fn conn_view(ctx: &Ctx, name: &str) -> Result<Value, ApiError> {
     } else {
         String::new()
     });
+    if name == "browser" {
+        // the setting's default comes from config.toml until the user chooses in Settings
+        let dflt = ctx.cfg.browser.auto_approve;
+        match c.get_mut("config") {
+            Some(Value::Object(m)) => {
+                m.entry("auto_approve".to_string()).or_insert(json!(dflt));
+            }
+            _ => c["config"] = json!({"auto_approve": dflt}),
+        }
+    }
     if name == "gmail" {
         let accs: Vec<Value> = mailboxes::accounts(store)
             .map_err(ierr)?

@@ -13,16 +13,19 @@ use serde_json::{json, Map, Value};
 
 use super::{body_obj, body_opt, round2, St, R};
 use crate::llm::{ChatOpts, Llm};
-use crate::store::{redacted, system_model};
+use crate::store::{redacted, system_model, system_options, MODEL_OPTIONS, REASONING_EFFORTS};
 
 /// settings: the values in force (the model key only as model_api_key_set). model_user: the user's own model
 /// settings as saved in Settings → Models, whether or not they are switched on.
 pub async fn get_settings(st: St) -> R {
     let store = &st.rt.store;
     // names only, no endpoint
-    let system = super::filter_obj(&system_model(&st.cfg), |k| {
+    let mut system = super::filter_obj(&system_model(&st.cfg), |k| {
         k.ends_with("_model") || k == "model_name"
     });
+    if let (Value::Object(m), Value::Object(opts)) = (&mut system, system_options(&st.cfg)) {
+        m.extend(opts); // fast mode and reasoning of the system's models, shown read-only
+    }
     let skills: Vec<Value> = st
         .rt
         .skills()
@@ -115,6 +118,35 @@ pub async fn put_settings(st: St, body: Bytes) -> R {
         check_model_override(&mut b, &saved)?;
     } else if b.contains_key("model_override") {
         b.insert("model_override".into(), json!(false));
+    }
+    // fast mode and reasoning belong to the user's own model: the system's come from the config
+    let own = match b.get("model_override") {
+        Some(v) => truthy(v),
+        None => store
+            .saved_settings()?
+            .get("model_override")
+            .is_some_and(truthy),
+    };
+    if !own {
+        for k in MODEL_OPTIONS {
+            b.shift_remove(k);
+        }
+    } else {
+        if let Some(v) = b.get("fast_mode") {
+            let on = truthy(v);
+            b.insert("fast_mode".into(), json!(on));
+        }
+        if b.contains_key("reasoning_effort") {
+            let effort = s_or_empty(b.get("reasoning_effort")).trim().to_lowercase();
+            if !REASONING_EFFORTS.contains(&effort.as_str()) {
+                return Err(ApiError::new(
+                    400,
+                    "推理强度只能是 none、minimal、low、medium、high、xhigh 或留空 (reasoning effort must be none, minimal, low, medium, high, xhigh or empty)",
+                )
+                .into());
+            }
+            b.insert("reasoning_effort".into(), json!(effort));
+        }
     }
     if b.contains_key("model_api_key") && s_or_empty(b.get("model_api_key")).trim().is_empty() {
         b.shift_remove("model_api_key"); // an empty key field means "keep the saved one"

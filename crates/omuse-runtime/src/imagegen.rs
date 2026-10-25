@@ -1324,6 +1324,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_options_never_reach_image_requests() {
+        // fast mode and reasoning effort belong to chat requests only: not on generations, edits or variations
+        let (c, f) = client(Fake {
+            has_variations: true,
+            ..Default::default()
+        });
+        let s = json!({"model_base_url": "http://x/v1", "image_model": "gpt-image-1",
+                       "fast_mode": true, "reasoning_effort": "high"});
+        c.generate(&s, "a fox", &GenerateOpts::default())
+            .await
+            .unwrap();
+        c.edit(
+            &s,
+            &[("a.png".into(), b"A".to_vec())],
+            "add a hat",
+            &EditOpts::default(),
+        )
+        .await
+        .unwrap();
+        c.variation(&s, &("a.png".into(), b"A".to_vec()), &EditOpts::default())
+            .await
+            .unwrap();
+        let calls = f.calls.lock();
+        assert!(calls.len() >= 3, "{:?}", calls);
+        for call in calls.iter() {
+            let txt = call.to_string();
+            assert!(
+                !txt.contains("service_tier") && !txt.contains("reasoning_effort"),
+                "{}",
+                txt
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn walks_size_fallbacks_and_drops_unknown_fields() {
         let (c, f) = client(Fake {
             reject_sizes: vec!["1536x1024"],

@@ -1161,6 +1161,34 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
                 let _ = std::fs::write(ctx.shots.join(format!("{aid}.jpg")), img);
             }
         }
+        if browser_auto_approve(&ctx, &tool, &d) {
+            // Settings → "auto-approve browser actions": the approval exists and is resolved by "auto" at once, so the
+            // chat, the approvals history and the audit show it exactly like a manual approval, and the action runs now
+            ctx.audit(
+                "sentinel",
+                &tool,
+                au(
+                    "approved",
+                    ALLOW,
+                    merged(
+                        &detail,
+                        vec![("approval_id", json!(aid)), ("auto", json!(true))],
+                    ),
+                ),
+            );
+            let det2 = json!({"args": safe_args(&args), "approval_id": aid, "auto": true});
+            let mut result = run(
+                &ctx, &tool, &args, &task_id, &page_id, &d.risk, &det2, "APPROVED",
+            )
+            .await;
+            ctx.store
+                .resolve_approval(&aid, "approved", "ONCE", Some(&result), Some(&args), "auto")
+                .map_err(ierr)?;
+            result["approval_id"] = json!(aid);
+            result["auto_approved"] = json!(true);
+            result["summary"] = json!({"title": summ.get("title").cloned().unwrap_or(Value::Null), "reason": d.reason});
+            return Ok(Json(result));
+        }
         ctx.audit(
             "sentinel",
             &tool,
@@ -1196,6 +1224,20 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
         )
         .await,
     ))
+}
+
+/// "Auto-approve browser actions" (the browser connection's `auto_approve`, else `[browser] auto_approve` in the
+/// config) applied to this decision: see [`Decision::browser_auto_ok`] for what it never covers.
+fn browser_auto_approve(ctx: &App, tool: &str, d: &Decision) -> bool {
+    if !d.browser_auto_ok(tool) {
+        return false;
+    }
+    let setting = ctx
+        .store
+        .connection("browser")
+        .ok()
+        .and_then(|c| c["config"].get("auto_approve").and_then(Value::as_bool));
+    setting.unwrap_or(ctx.cfg.browser.auto_approve)
 }
 
 /// The broker page a call works on: the task's own page, or `<task>~<lane>` for a sub-agent's lane (letters, digits,

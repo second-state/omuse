@@ -39,9 +39,12 @@ gate = false
 [model]
 url = "http://127.0.0.1:8090/v1"
 name = "fake"
+fast = true                # every request to the system model carries service_tier "fast" (models_ui.py checks it)
+reasoning_effort = "low"
 
 [browser]
 search_engines = "empty=http://shop.test:8094/emptysearch?q=,duckduckgo=http://shop.test:8094/ddg?q="
+auto_approve = false       # the suites check the approval flow; browser_auto_approve_e2e.py turns it on itself
 
 [telegram]
 api = "http://127.0.0.1:8091"
