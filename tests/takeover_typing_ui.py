@@ -23,12 +23,12 @@ async def wait_state(pred, timeout=20.0):
     return st
 async def main():
     # this test reads the Chinese UI labels; the language is a server setting since 0.2.8
-    httpx.put(B + "api/settings", json={"language": "zh"}, headers={"X-Persona-UI": "1"}, trust_env=False)
+    httpx.put(B + "api/settings", json={"language": "zh", "ui_language": "zh"}, headers={"X-Persona-UI": "1"}, trust_env=False)
     async with async_playwright() as p:
         br = await p.chromium.launch(); pg = await br.new_page(viewport={"width": 1400, "height": 900}, locale="zh-CN")
         await pg.goto(B + "#browser"); await pg.wait_for_timeout(1500)
         await pg.click("button.take"); await wait_state(lambda st: st.get("mode") == "user" and not st.get("headless") and st.get("tasks")); await pg.wait_for_timeout(1500)
-        await pg.fill(".bbar .url", "http://shop.test:8099/popup_login.html"); await pg.click("text=前往 Go")
+        await pg.fill(".bbar .url", "http://shop.test:8099/popup_login.html"); await pg.click("text=前往")
         st = await wait_state(lambda st: "popup_login" in (st.get("url") or ""))
         assert "popup_login" in (st.get("url") or ""), f"page did not open: {st}"
         await pg.wait_for_timeout(800)

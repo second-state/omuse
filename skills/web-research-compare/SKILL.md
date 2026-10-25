@@ -6,7 +6,10 @@ description: 网页调研并做对比（如酒店、产品）Research several op
 
 1. Decide the candidate list (from the user, or with one browser_search call).
 2. Read the sources with browser_read — up to 4 URLs per call, in parallel (official pages, a review or comparison page).
-   Use delegate(role="researcher", ...) only when each candidate needs several pages of digging; it is much slower.
+   When each candidate needs several pages of digging, give the candidates one `parallel` label in the plan and
+   delegate them all in the SAME turn — one delegate(role="researcher", task=…, step=<the candidate's step>) per
+   candidate, or one call with tasks=[…]. They run at the same time and every report comes back together; never
+   delegate the candidates one turn at a time.
 3. Collect comparable fields (price with currency and date checked, rating & review count, distance/location, policies).
 4. Produce a Markdown comparison table + a short recommendation that uses the user's known preferences from memory.
 5. Facts must come from the right source (2026-10-04 campaign: an SEO blog listed "Mistral Small 3 7B" and

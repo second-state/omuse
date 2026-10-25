@@ -4,17 +4,48 @@
 
 // ------------------------------------------------------------------ i18n
 // UI strings are written in Simplified Chinese in the source and wrapped in T()/Tf(); English comes from i18n.js and
-// Traditional Chinese from i18n_tw.js. The UI language is Settings → ui_language, or the browser's language when that is
-// empty; localStorage only caches it for the first paint (syncLang reloads if the server says otherwise).
+// Traditional Chinese from i18n_tw.js. The UI language is Settings → ui_language; English until one is chosen.
+// localStorage only caches it for the first paint (syncLang reloads if the server says otherwise).
+// Whatever the language, the UI shows one language at a time: the source strings carry an English half for the
+// bilingual fallback, and a Chinese UI cuts it off (biZh), as an English UI keeps only the English half (biEn).
 const UI_LANGS = ['en', 'zh', 'tw'];
-const browserLang = () => { const l = (navigator.language || '').toLowerCase(); return !l.startsWith('zh') ? 'en' : /tw|hk|mo|hant/.test(l) ? 'tw' : 'zh'; };
 const LANG = (() => {
   try { const v = localStorage.getItem('omuse_ui'); if (UI_LANGS.includes(v)) return v; } catch (e) { /* storage blocked */ }
-  return browserLang();
+  return 'en';
 })();
 const EN = window.OMUSE_EN || {};
 const TW = window.OMUSE_TW || {};
 const CJK_RE = /[一-鿿]/;
+// Names that stay Latin inside a Chinese sentence (products, protocols, formats, currencies), plus identifiers
+// (placeholders, numbers, e-mail addresses, URLs, paths, scopes) recognised by ZH_IDENT.
+const ZH_TERMS = new Set(('OMuse Sentinel Gmail Outlook Hotmail Yahoo iCloud QQ Zoho AOL IMAP SMTP POP3 OAuth Telegram Notion Slack GitHub ' +
+  'MCP Google Microsoft Graph OpenAI Olares Fly Docker Chromium CAPTCHA Stripe DialMCP Telnyx Markdown JSON CSV PDF Excel Word ' +
+  'PowerPoint URL URLs API ID HTTP HTTPS SSL TLS STARTTLS SSE iCal ICS LLM STT TTS AI App Bot Token Key Realtime Cloud Bearer Cron ' +
+  'Ink Paper Chat Exchange CardDAV JavaScript Streamable Web webhook Enter Shift iPhone Mac Visa Decathlon BotFather James Zhan ' +
+  'Hugging Face Whisper Windows macOS Linux Android iOS Chrome Safari Firefox Python Rust SQLite cron UTC SGD USD JPY CNY HKD KRW ' +
+  'TWD THB MYR EUR GBP AUD Mini Pro Max Beta Model Context Protocol Products Provisioner OK Wi-Fi').split(' '));
+const ZH_IDENT = /^(?:\{\d+\}|v?\d[\d.]*|[A-Z]{1,5}\d*|[\w.+-]+@[\w.-]*|https?:\/\/\S*|#\w+|\d+%|[+\-*/×=…→•]|[.,;:!?()]|\/\w+|\w+[:_/.-]\S*|xox[bp]-|ntn_|[\w-]+\.(?:com|eu|org|io|md|toml)|SHA-\d+)$/;
+const zhTerm = seg => {
+  const s = seg.replace(/^[ ·,，。.;；:：()（）/\-—–]+|[ ·,，。.;；:：()（）/\-—–]+$/g, '');
+  return !s || s.split(/[\s/,·]+/).every(t => !t || ZH_TERMS.has(t) || ZH_IDENT.test(t));
+};
+// The Chinese half of a bilingual string: "中文 English" → "中文", "中文 (english)" → "中文", 「中文 English」 → 「中文」;
+// the word Agent becomes 智能体. Used for every string a Chinese UI shows, the server's bilingual texts included.
+const ZH_C = '一-鿿';   // i18n-ok: the reducer itself, not a UI string
+const ZH_RULES = [
+  [new RegExp(`([「“][^」”]*?[${ZH_C}][^」”${ZH_C}]*?)\\s+([A-Za-z][^」”${ZH_C}]*)([」”])`, 'g'), (m, a, e, q) => (zhTerm(e) ? m : a + q)],
+  [new RegExp(`\\s*[(（]([^()（）${ZH_C}]*[A-Za-z]{2,}[^()（）${ZH_C}]*)[)）]`, 'g'), (m, e) => (zhTerm(e) ? m : '')],
+  [new RegExp(`([${ZH_C}）)」》…。！？!?:：、])\\s*([A-Za-z][^${ZH_C}]*)$`), (m, a, e) => (zhTerm(e) ? m : a)],
+  [new RegExp(`([${ZH_C}）)」》：:，,])\\s*([A-Za-z][A-Za-z'&\\-]*(?: [A-Za-z'&\\-]+)*)\\s*(?=[${ZH_C}（(「《“→·])`, 'g'), (m, a, e) => (zhTerm(e) ? m : a)],
+];
+function biZh(s) {
+  if (typeof s !== 'string' || !CJK_RE.test(s) || !/[A-Za-z]{2,}/.test(s)) return s;
+  let t = s;
+  for (const [re, fn] of ZH_RULES) t = t.replace(re, fn);
+  t = t.replace(/子 Agent/g, '子智能体').replace(/\bAgent\b/g, '智能体');   // i18n-ok: the reducer itself, not a UI string
+  t = t.replace(new RegExp(`([${ZH_C}])\\s+(智能体)`, 'g'), '$1$2').replace(new RegExp(`(智能体)\\s+([${ZH_C}])`, 'g'), '$1$2');   // i18n-ok: the reducer itself, not a UI string
+  return t.replace(/\s+([，。；：、）」])/g, '$1').trim();
+}
 // Fallback for dynamic bilingual text from the server, e.g. "发送邮件 Send email" or "已拒绝 (user denied)".
 function biEn(s) {
   if (typeof s !== 'string' || !CJK_RE.test(s)) return s;
@@ -28,9 +59,9 @@ function biEn(s) {
   if (m) return (m[1] || '') + m[2];
   return s;
 }
-function T(s) { return LANG === 'en' ? (EN[s] ?? biEn(s)) : LANG === 'tw' ? (TW[s] ?? s) : s; }
-function Tf(s, ...a) { return (LANG === 'en' ? (EN[s] ?? s) : LANG === 'tw' ? (TW[s] ?? s) : s).replace(/\{(\d+)\}/g, (_, i) => (a[i] ?? '')); }
-const B = s => (LANG === 'en' ? biEn(String(s ?? '')) : s);   // server-provided bilingual text
+function T(s) { return LANG === 'en' ? (EN[s] ?? biEn(s)) : biZh(LANG === 'tw' ? (TW[s] ?? s) : s); }
+function Tf(s, ...a) { return (LANG === 'en' ? (EN[s] ?? s) : biZh(LANG === 'tw' ? (TW[s] ?? s) : s)).replace(/\{(\d+)\}/g, (_, i) => (a[i] ?? '')); }
+const B = s => (LANG === 'en' ? biEn(String(s ?? '')) : biZh(String(s ?? '')));   // server-provided bilingual text
 const ZH = s => (LANG === 'tw' ? (TW[s] ?? s) : s);           // server-provided Simplified labels (domains, profile fields)
 document.documentElement.lang = { en: 'en', zh: 'zh-CN', tw: 'zh-TW' }[LANG];
 // The theme is a server setting too (auto / ink / paper); localStorage caches it so the first paint has no flash.
@@ -56,7 +87,7 @@ async function syncLang() {
     const s = r.settings || {};
     applyTheme(s.theme);
     applyName(s.instance_name);
-    const want = UI_LANGS.includes(s.ui_language) ? s.ui_language : browserLang();
+    const want = UI_LANGS.includes(s.ui_language) ? s.ui_language : 'en';
     try { localStorage.setItem('omuse_ui', want); } catch (e) { /* ignore */ }
     if (want !== LANG) { location.reload(); return; }
     if (s.language !== 'en' && s.language !== 'zh') await api('settings', { method: 'PUT', body: { language: LANG === 'en' ? 'en' : 'zh' } });
@@ -65,14 +96,22 @@ async function syncLang() {
 function i18nStatic() {
   const set = (sel, text, attr) => { const el = document.querySelector(sel); if (el) { if (attr) el.setAttribute(attr, text); else el.textContent = text; } };
   if (LANG === 'tw') {   // the static strings of index.html, Traditional (i18n-ok: not T() keys)
-    set('#menuBtn', '選單 Menu', 'aria-label');   // i18n-ok
+    set('#menuBtn', '選單', 'aria-label');   // i18n-ok
     set('#viewTitle', '對話');   // i18n-ok
-    set('#approvalBell', '審批 Approvals', 'aria-label'); set('#approvalBell span', '審批');   // i18n-ok
-    set('.drawer-head h2', '待審批 Approvals'); set('#drawerClose', '關閉', 'aria-label');   // i18n-ok
-    set('#drawer > p', '由 Sentinel 獨立發起，與對話分離。Agent 在你決定前會暫停。');   // i18n-ok
+    set('#modelChip', '模型', 'title');   // i18n-ok
+    set('#approvalBell', '審批', 'aria-label'); set('#approvalBell span', '審批');   // i18n-ok
+    set('.drawer-head h2', '待審批'); set('#drawerClose', '關閉', 'aria-label');   // i18n-ok
+    set('#drawer > p', '由 Sentinel 獨立發起，與對話分離。智能體在你決定前會暫停。');   // i18n-ok
     return;
   }
-  if (LANG !== 'en') return;
+  if (LANG === 'zh') {   // the static strings of index.html carry an English half: Simplified only (i18n-ok)
+    set('#menuBtn', '菜单', 'aria-label');   // i18n-ok
+    set('#modelChip', '模型', 'title');   // i18n-ok
+    set('#approvalBell', '审批', 'aria-label');   // i18n-ok
+    set('.drawer-head h2', '待审批');   // i18n-ok
+    set('#drawer > p', '由 Sentinel 独立发起，与对话分离。智能体在你决定前会暂停。');   // i18n-ok
+    return;
+  }
   set('#menuBtn', 'Menu', 'aria-label');
   set('#viewTitle', 'Chat');
   set('#modelChip', 'Model', 'title'); set('#modelChip', 'Model …');
@@ -111,7 +150,7 @@ const fmtTime = ts => { if (!ts) return ''; const d = new Date(ts * 1000); retur
 const fmtClock = ts => ts ? new Date(ts * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '';
 const STATUS_ZH = { CREATED: T('已创建'), PLANNING: T('规划中'), RUNNING: T('执行中'), WAITING_APPROVAL: T('等待审批'), WAITING_EXTERNAL: T('等待外部'),
   PAUSED: T('已暂停'), FAILED: T('失败'), COMPLETED: T('已完成'), CANCELLED: T('已取消') };
-const pill = st => h('span', { class: 'pill st-' + st, title: st }, LANG === 'en' ? (STATUS_ZH[st] || st) : `${STATUS_ZH[st] || st} ${st}`);
+const pill = st => h('span', { class: 'pill st-' + st, title: st }, STATUS_ZH[st] || st);
 const riskPill = r => r ? h('span', { class: 'pill risk-' + r }, { low: T('低 low'), medium: T('中 medium'), high: T('高 high'), critical: T('极高 critical') }[r] || r) : '';
 
 async function call(url, opts = {}) {
@@ -154,8 +193,8 @@ const VIEWS = [
 function renderNav() {
   const nav = $('#navlinks'); nav.innerHTML = '';
   for (const [id, ic, zh, en] of VIEWS) {
-    const a = h('a', { href: '#' + id, class: S.view === id ? 'active' : '' }, h('span', { class: 'ic' }, ic), LANG === 'en' ? en : zh,
-      id === 'tasks' && waitingCount() ? h('span', { class: 'badge' }, waitingCount()) : null, LANG === 'en' ? null : h('span', { class: 'en' }, en));
+    const a = h('a', { href: '#' + id, class: S.view === id ? 'active' : '' }, h('span', { class: 'ic' }, ic), LANG === 'en' ? en : ZH(zh),
+      id === 'tasks' && waitingCount() ? h('span', { class: 'badge' }, waitingCount()) : null);
     nav.append(a);
   }
 }
@@ -171,7 +210,7 @@ function route() {
   if (S.browserTimer) { clearInterval(S.browserTimer); S.browserTimer = null; }
   $('#nav').classList.remove('open'); if ($('#navBack')) $('#navBack').hidden = true;
   const meta = VIEWS.find(x => x[0] === S.view);
-  $('#viewTitle').textContent = LANG === 'en' ? meta[3] : `${meta[2]} ${meta[3]}`;
+  $('#viewTitle').textContent = LANG === 'en' ? meta[3] : ZH(meta[2]);
   renderNav();
   const view = $('#view'); view.innerHTML = '';
   ({ chat: viewChat, tasks: viewTasks, browser: viewBrowser, schedules: viewSchedules, connections: viewConnections,
@@ -573,7 +612,9 @@ function planList(plan) {
   if (!plan || !plan.steps || !plan.steps.length) return null;
   const mk = { pending: '○', running: '▸', done: '✓', failed: '✕', skipped: '–' };
   return h('ol', { class: 'plan' }, plan.steps.map(s => h('li', { class: s.status || 'pending' },
-    h('span', { class: 'mk' }, mk[s.status || 'pending'] || '○'), h('span', { class: 'tx' }, s.description))));
+    h('span', { class: 'mk' }, mk[s.status || 'pending'] || '○'), h('span', { class: 'tx' }, s.description),
+    // steps that share a parallel label run at the same time (sub-agents, each with its own browser tab)
+    s.parallel ? h('span', { class: 'par', title: Tf("并行组 {0}：这些步骤同时进行", s.parallel) }, '‖ ' + s.parallel) : null)));
 }
 
 // While a task card is planning or running it shows a random verb (a new one every few seconds, like a terminal
@@ -598,12 +639,13 @@ function pickVerb() {
   verbNow = v;
   return v;
 }
+// a new verb after five flashes of the dots (the `dots` animation in app.css cycles every 1.2 s)
 setInterval(() => {
   const spans = document.querySelectorAll('.typing.verb');
   if (!spans.length) return;
   const v = pickVerb();
   spans.forEach(sp => { sp.textContent = v; });
-}, 3500);
+}, 6000);
 
 function taskCard(t) {
   const active = !['COMPLETED', 'FAILED', 'CANCELLED'].includes(t.status);
@@ -648,16 +690,19 @@ function evLine(e) {
   const d = e.data || {};
   let body;
   switch (e.type) {
-    case 'plan': body = h('span', null, Tf("📋 计划 Plan v{0}：{1} 步", (d.version || 1), ((d.steps || []).length))); break;
+    case 'plan': body = h('span', null, Tf("📋 计划 v{0}：{1} 步", (d.version || 1), ((d.steps || []).length))); break;
     case 'thinking': body = h('span', { class: 'muted' }, Tf("🤔 思考 step {0}", (d.step))); break;
     case 'reasoning': body = h('details', null, h('summary', { class: 'muted' }, T('💭 推理 reasoning')), h('pre', null, d.text)); break;
     case 'message': body = h('span', null, '💬 ', d.text); break;
-    case 'tool_call': body = h('div', null, d.sub ? '↳ ' : '🔧 ', h('span', { class: 'tool' }, d.name), h('pre', null, JSON.stringify(d.args, null, 1))); break;
+    case 'tool_call': body = h('div', null, d.sub ? '↳ ' : d.batch ? '⇶ ' : '🔧 ', d.lane ? h('span', { class: 'small muted' }, d.lane + ' ') : null,
+      h('span', { class: 'tool' }, d.name), h('pre', null, JSON.stringify(d.args, null, 1))); break;
+    case 'parallel_calls': body = h('span', { class: 'muted' }, Tf("⇶ 同时执行 {0} 个调用：{1}", (d.calls || []).length, (d.calls || []).map(x => x.name).join(', '))); break;
     case 'tool_result': body = h('details', null, h('summary', null, (d.ok === false ? '⚠️ ' : '✅ ') + d.name + T(' 结果 result')), h('pre', null, d.preview)); break;
     case 'waiting': body = h('span', { style: 'color:var(--approve)' }, d.type === 'approval' ? Tf("🛡 等待审批：{0}", B((d.summary || {}).title || d.tool)) : Tf("🖐 等待接管：{0}", (d.reason || ''))); break;
     case 'approval_resolved': body = h('span', null, Tf("🛡 审批结果：{0}", (d.decision))); break;
-    case 'subagent_start': body = h('span', null, Tf("🧩 子 Agent ({0})：{1}", (d.role), (d.task))); break;
-    case 'subagent_done': body = h('details', null, h('summary', null, Tf("🧩 子 Agent 完成 ({0})", (d.role))), h('pre', null, d.report)); break;
+    case 'subagent_start': body = h('span', null, Tf("🧩 子 Agent ({0}{1})：{2}", d.role, d.step ? ' · ' + d.step : '', d.task)); break;
+    case 'subagent_done': body = h('details', null, h('summary', null, (d.ok === false ? '⚠️ ' : '') +
+      Tf("🧩 子 Agent 完成 ({0}{1}{2})", d.role, d.step ? ' · ' + d.step : '', d.secs ? ' · ' + d.secs + ' s' : '')), h('pre', null, d.report)); break;
     case 'final': body = h('span', null, T('🏁 完成 Final')); break;
     case 'memory_saved': body = h('span', null, [
       (d.facts || []).length ? T('🧠 记住了：') + d.facts.join(T('；')) : '',
@@ -945,7 +990,7 @@ function approvalForm(a, onDone) {
         const res = (r.result && r.result.result) || {};
         const extra = res.results ? Tf("：退订成功 {0}，已打开页面 {1}，需手动/失败 {2}", (res.done || 0), (res.link_opened || 0), (res.manual_or_failed || 0)) : '';
         if (r.status === 'denied') toast(T('没有勾选任何邮件，已取消 Nothing selected'));
-        else toast(st === 'ok' ? T('已批准并执行 ✓ Approved & executed') + extra : Tf("已批准，但执行结果：{0}", ((r.result && (r.result.error || st)) || r.reason || '')), st !== 'ok');
+        else toast(st === 'ok' ? T('已批准并执行 ✓') + extra : Tf("已批准，但执行结果：{0}", ((r.result && (r.result.error || st)) || r.reason || '')), st !== 'ok');
       } else toast(T('已拒绝 Denied'));
       onDone && onDone();
       loadApprovals();
@@ -1012,6 +1057,8 @@ async function viewBrowser(root) {
   S.taskNames = S.taskNames || {};
   const nameOf = tid => {
     if (!tid || tid === 'default') return T('浏览器');
+    const lane = /^(.+)~sub(\d+)$/.exec(tid);   // a sub-agent's own tab: "<task>~sub<n>"
+    if (lane) return nameOf(lane[1]) + ' · ' + Tf("子 Agent {0}", lane[2]);
     if (!(tid in S.taskNames)) {
       S.taskNames[tid] = '';
       api('tasks/' + tid).then(t => { S.taskNames[tid] = (t && (t.goal || t.plan && t.plan.objective) || '').replace(/^\[\u6d4b\u8bd5\]\s*/, ''); refresh(true); }).catch(() => {});
@@ -1371,7 +1418,7 @@ async function viewConnections(root) {
   const byName = Object.fromEntries(r.connections.map(c => [c.name, c]));
   const gm = byName.gmail, br = byName.browser, tg = byName.telegram;
   const permRow = (conn, key, zh, en, risk) => h('div', { class: 'perm' },
-    h('div', null, h('div', null, zh + ' ', LANG === 'en' ? null : h('span', { class: 'muted small' }, en)), h('div', { class: 'small muted' }, riskPill(risk))),
+    h('div', null, h('div', null, LANG === 'en' ? en : ZH(zh)), h('div', { class: 'small muted' }, riskPill(risk))),
     h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: !!conn.permissions[key], onchange: safe(async e => {
       await sapi('connections/' + conn.name, { method: 'PUT', body: { permissions: { [key]: e.target.checked } } }); toast(T('已保存 Saved'));
     }) })));
@@ -1429,7 +1476,7 @@ async function viewConnections(root) {
   // --- Notion
   const nt = byName.notion, sl = byName.slack;
   const tokenCard = (conn, o) => {
-    const inp = h('input', { type: 'password', placeholder: conn.has_credential ? T('已保存 saved — 粘贴新令牌可替换') : o.ph, autocomplete: 'new-password' });
+    const inp = h('input', { type: 'password', placeholder: conn.has_credential ? T('已保存 — 粘贴新令牌可替换') : o.ph, autocomplete: 'new-password' });
     const connected = conn.has_credential && conn.enabled;
     return h('div', { class: 'card stack' },
       h('div', { class: 'row' }, h('h3', { style: 'flex:1' }, o.title), h('span', { class: 'chip ' + (connected ? 'ok' : '') }, connected ? Tf("已连接 {0}", (o.who(conn.config))) : T('未连接 Not connected'))),
@@ -1459,8 +1506,8 @@ async function viewConnections(root) {
     title: '💬 Slack', ph: T('xoxb-… 或 xoxp-…'), label: T('Slack 令牌 Token'), who: c => `${c.team || ''}${c.token_type === 'user' ? T(' · 用户令牌') : T(' · 机器人')}`,
     desc: T('读取频道和讨论串、在你批准后发消息；配合「自动化」可以做到「#support 有人提到 urgent 就整理给我」。'),
     steps: [h('span', null, T('打开 '), h('a', { href: 'https://api.slack.com/apps', target: '_blank', rel: 'noopener' }, 'api.slack.com/apps'), ' → Create New App → From scratch'),
-      T('OAuth & Permissions 里添加 Bot Token Scopes：channels:history, channels:read, groups:history, groups:read, im:history, im:read, users:read, chat:write（想用搜索：再加 User Token Scope search:read，并使用 xoxp- 用户令牌）'),
-      T('Install to Workspace，复制 Bot User OAuth Token（xoxb- 开头）粘贴到下面'),
+      T('在「OAuth 与权限」里添加机器人令牌权限范围：channels:history, channels:read, groups:history, groups:read, im:history, im:read, users:read, chat:write（想用搜索：再加用户令牌范围 search:read，并使用 xoxp- 用户令牌）'),
+      T('安装到工作区，复制机器人用户 OAuth 令牌（xoxb- 开头）粘贴到下面'),
       T('在要让 OMuse 读取的频道里输入 /invite @你的应用名')],
     ok: r => Tf("Slack 已连接 ✓ {0}，已加入 {1} 个频道", (r.team), (r.member_of.length)),
     perms: [['read', T('读取频道 / 讨论串 / 搜索'), 'read', 'low'], ['send', T('发送消息（每次需审批）'), 'send — approval', 'high']] });
@@ -1480,7 +1527,7 @@ async function oauthPopup(path, body) {
   const done = e => {
     if (e.origin !== location.origin || !e.data || !('omuseOAuth' in e.data)) return;
     window.removeEventListener('message', done);
-    if (e.data.omuseOAuth) { toast(T('登录完成 ✓ Signed in')); route(); }
+    if (e.data.omuseOAuth) { toast(T('登录完成 ✓')); route(); }
   };
   window.addEventListener('message', done);
   const w = window.open(r.auth_url, '_blank');
@@ -1510,9 +1557,9 @@ function phoneCard(c) {
   const from = inp(cf.from_number, '+19793471777');
   const connId = inp(cf.connection_id, '2xxxxxxxxxxxxxxxxxx');
   const pub = inp(cf.public_url, 'https://omuse.example.com');
-  const tkey = inp('', c.has_credential ? T('已保存 saved — 不改可留空') : 'KEY0…', 'password');
-  const okey = inp('', c.has_credential ? T('已保存 saved — 不改可留空') : 'sk-…', 'password');
-  const pkey = inp('', T('可选 optional — Telnyx 公钥 (webhook 签名)'), 'password');
+  const tkey = inp('', c.has_credential ? T('已保存 — 不改可留空') : 'KEY0…', 'password');
+  const okey = inp('', c.has_credential ? T('已保存 — 不改可留空') : 'sk-…', 'password');
+  const pkey = inp('', T('可选 — Telnyx 公钥（webhook 签名）'), 'password');
   const prefixes = inp((cf.allowed_prefixes || ['+65', '+1']).join(', '), '+65, +1');
   const maxm = inp(String(cf.max_minutes || 10), '10', 'number');
   const daily = inp(String(cf.daily_limit || 10), '10', 'number');
@@ -1562,13 +1609,13 @@ function phoneCard(c) {
     h('details', { open: !tReady && !dm.connected }, h('summary', null, h('b', null, tReady ? T('Telnyx 线路设置 Settings') : T('Telnyx 线路（可选）Set up'))),
       h('div', { class: 'stack', style: 'margin-top:10px' },
         h('ol', { class: 'steps-help' },
-          h('li', null, T('Telnyx 控制台 → Voice → Programmable Voice → 新建 Voice API 应用（Call Control），Webhook 填下面「公开地址」+ /voice/webhook；复制它的 Application ID')),
-          h('li', null, T('Numbers → 你的号码 → 分配给这个 Voice API 应用')),
-          h('li', null, T('Voice → Outbound Voice Profiles → 新建并关联这个应用，允许要拨打的国家（如新加坡、美国），建议设每日消费上限')),
-          h('li', null, T('Account → API Keys 新建一个 Key；OpenAI 平台新建一个 API Key')),
+          h('li', null, T('Telnyx 控制台 → 语音 → 可编程语音 → 新建语音 API 应用（呼叫控制），Webhook 填下面「公开地址」+ /voice/webhook；复制它的应用 ID')),
+          h('li', null, T('号码 → 你的号码 → 分配给这个语音 API 应用')),
+          h('li', null, T('语音 → 外呼语音配置 → 新建并关联这个应用，允许要拨打的国家（如新加坡、美国），建议设每日消费上限')),
+          h('li', null, T('账户 → API 密钥，新建一个；OpenAI 平台新建一个 API 密钥')),
           h('li', null, T('公开地址：这台 OMuse 的 https 网址（电话端口只提供通话音频接口）'))),
         field(T('你的名字（AI 会说“替 … 打电话”）'), owner),
-        h('div', { class: 'grid2' }, field(T('外呼号码 From number'), from), field(T('Voice API 应用 ID (Connection ID)'), connId)),
+        h('div', { class: 'grid2' }, field(T('外呼号码 From number'), from), field(T('语音 API 应用 ID（连接 ID）'), connId)),
         field(T('公开地址 Public URL'), pub),
         h('div', { class: 'grid2' }, field('Telnyx API Key', tkey), field('OpenAI API Key', okey)),
         field(T('Telnyx 公钥（可选）Public key'), pkey, T('填了才会接受 Telnyx 的 webhook 状态通知；不填也能打电话')),
@@ -1766,7 +1813,7 @@ function calendarCard(c, permRow) {
           h('li', null, T('打开 '), h('a', { href: 'https://console.cloud.google.com/projectcreate', target: '_blank', rel: 'noopener' }, 'Google Cloud Console'), T('，新建一个项目（名字随意，如 OMuse）')),
           h('li', null, T('在「API 和服务 → 库」里搜索并启用 '), h('a', { href: 'https://console.cloud.google.com/apis/library/calendar-json.googleapis.com', target: '_blank', rel: 'noopener' }, 'Google Calendar API')),
           h('li', null, T('「OAuth 同意屏幕 OAuth consent screen」：用户类型选「外部 External」，把你自己的 Gmail 加为测试用户；建议最后点「发布应用 Publish app」，否则授权 7 天就会过期')),
-          h('li', null, T('「凭据 Credentials → 创建凭据 → OAuth 客户端 ID」：应用类型选「Web 应用 Web application」，在「已获授权的重定向 URI」里填下面这个中转页地址（推荐，之后一键重连）：'),
+          h('li', null, T('「凭据 → 创建凭据 → OAuth 客户端 ID」：应用类型选「Web 应用」，在「已获授权的重定向 URI」里填下面这个中转页地址（推荐，之后一键重连）：'),
             h('div', { class: 'row', style: 'flex-wrap:nowrap;margin-top:4px' }, h('code', { class: 'mono small', style: 'word-break:break-all' }, relay), copyRelay)),
           h('li', null, T('把生成的「客户端 ID」和「客户端密钥」粘贴到下面，点「保存并用 Google 登录」'))),
         h('label', { class: 'field' }, h('span', null, T('客户端 ID Client ID')), cid),
@@ -1851,8 +1898,8 @@ async function mcpCard() {
       const sel = h('select', { class: 'small', onchange: e => setMode(t, e.target.value)() },
         [['auto', T('自动 Auto')], ['ask', T('每次审批 Ask')], ['off', T('关闭 Off')]].map(([v, l]) => h('option', { value: v, selected: t.mode === v }, l)));
       const badges = [];
-      if (t.status === 'new') badges.push(h('span', { class: 'pill risk-medium' }, T('新工具 New — 选择模式后启用')));
-      if (t.status === 'changed') badges.push(h('span', { class: 'pill risk-high' }, T('定义已变化 Changed — 检查后接受')));
+      if (t.status === 'new') badges.push(h('span', { class: 'pill risk-medium' }, T('新工具 — 选择模式后启用')));
+      if (t.status === 'changed') badges.push(h('span', { class: 'pill risk-high' }, T('定义已变化 — 检查后接受')));
       if (t.flags && t.flags.length) badges.push(h('span', { class: 'pill risk-high', title: t.flags.join(', ') }, T('⚠️ 描述疑似含注入指令 injection')));
       return h('div', { class: 'mcp-tool' },
         h('div', { style: 'min-width:0;flex:1' },
@@ -1864,7 +1911,7 @@ async function mcpCard() {
         h('div', { class: 'row', style: 'flex-wrap:nowrap' }, sel,
           t.status === 'changed' ? h('button', { class: 'btn small', onclick: setMode(t, null, true) }, T('接受 Accept')) : null));
     };
-    const tok = h('input', { type: 'password', placeholder: s.has_credential ? T('已保存 saved — 填新令牌可替换') : T('令牌 token'), autocomplete: 'new-password' });
+    const tok = h('input', { type: 'password', placeholder: s.has_credential ? T('已保存 — 填新令牌可替换') : T('令牌 token'), autocomplete: 'new-password' });
     const a2 = authSel(); a2.value = s.auth || 'none';
     const hn = h('input', { type: 'text', value: s.header_name || '', placeholder: 'X-API-Key' });
     const dcs = h('select', { onchange: safe(async e => { await sapi('mcp/servers/' + s.id, { method: 'PUT', body: { data_class: e.target.value } }); toast(T('已保存 Saved')); }) },
@@ -2255,7 +2302,7 @@ async function viewSettings(root) {
   const s = r.settings;
   const f = {};
   const field = (k, zh, en, type = 'text', help) => { const i = h('input', { type, value: s[k] ?? '' }); f[k] = i;
-    return h('label', { class: 'field' }, h('span', null, `${zh} `, LANG === 'en' ? null : h('span', { class: 'muted' }, en)), i, help ? h('span', null, help) : null); };
+    return h('label', { class: 'field' }, h('span', null, LANG === 'en' ? en : zh), i, help ? h('span', null, help) : null); };
   const tog = (k, zh) => { const i = h('input', { type: 'checkbox', checked: !!s[k] }); f[k] = i; return h('label', { class: 'toggle' }, i, zh); };
   const testOut = h('div', { class: 'stack', style: 'gap:2px' });
   // Settings → Models: the user's own endpoint, key and model names (r.model_user, as saved) behind a toggle. Off: the
@@ -2264,7 +2311,7 @@ async function viewSettings(root) {
   const sm = r.system_model || {};
   const MODEL_FIELDS = ['model_base_url', 'model_name', 'planner_model', 'vision_model', 'stt_model', 'image_model'];
   const mfield = (k, zh, en, required) => { const i = h('input', { type: 'text', value: mu[k] ?? '', required: required || null, autocomplete: 'off', spellcheck: 'false' }); f[k] = i;
-    return h('label', { class: 'field' }, h('span', null, `${zh} `, LANG === 'en' ? null : h('span', { class: 'muted' }, en), required ? h('span', { class: 'req', title: T('必填') }, ' *') : null), i); };
+    return h('label', { class: 'field' }, h('span', null, LANG === 'en' ? en : zh, required ? h('span', { class: 'req', title: T('必填') }, ' *') : null), i); };
   const keyIn = h('input', { type: 'password', value: '', autocomplete: 'new-password', placeholder: mu.api_key_set ? T('已保存；留空=不改') : 'sk-…' });
   f.model_api_key = keyIn;
   const modelBox = h('div', { class: 'stack', id: 'modelOverride', hidden: !s.model_override },
@@ -2277,7 +2324,7 @@ async function viewSettings(root) {
     mfield('image_model', T('图像生成模型（留空=自动）'), 'Image'));
   // the three required fields, or a message naming the first one missing ('' = fine)
   const modelMissing = () => !f.model_override.checked ? '' : !/^https?:\/\/\S+$/.test(f.model_base_url.value.trim()) ? T('请填写接口地址（http:// 或 https:// 开头）')
-    : !(keyIn.value.trim() || mu.api_key_set) ? T('请填写 API key') : !f.model_name.value.trim() ? T('请填写执行任务的 LLM 模型名') : '';
+    : !(keyIn.value.trim() || mu.api_key_set) ? T('请填写 API 密钥') : !f.model_name.value.trim() ? T('请填写执行任务的 LLM 模型名') : '';
   root.append(h('div', { class: 'grid2' },
     interfaceCard(s, f),
     h('div', { class: 'card stack', id: 'models' }, h('h3', null, T('🧠 模型 Models')),
@@ -2286,7 +2333,7 @@ async function viewSettings(root) {
         sm.planner_model ? Tf(" · 规划 {0}", modelLabel(sm.planner_model)) : '', sm.vision_model ? Tf(" · 视觉 {0}", modelLabel(sm.vision_model)) : '',
         sm.stt_model ? Tf(" · 语音转文字 {0}", modelLabel(sm.stt_model)) : '', sm.image_model ? Tf(" · 图像 {0}", modelLabel(sm.image_model)) : ''),
       h('div', null, tog('model_override', T('使用自己的模型 Use my own model')),
-        h('div', { class: 'small muted', style: 'margin-top:4px' }, T('打开后，下面填的接口、API key 和模型会代替系统默认，三项必填。关掉就回到系统默认，下面的值全部不再使用（保留着，再打开时还在）。'))),
+        h('div', { class: 'small muted', style: 'margin-top:4px' }, T('打开后，下面填的接口、API 密钥和模型会代替系统默认，三项必填。关掉就回到系统默认，下面的值全部不再使用（保留着，再打开时还在）。'))),
       modelBox,
       field('llm_timeout', T('超时（秒）'), 'Timeout s', 'number'),
       h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: safe(async () => {
@@ -2301,8 +2348,9 @@ async function viewSettings(root) {
       testOut,
       h('h3', { style: 'margin-top:12px' }, T('LLM 参数')),
       field('temperature', T('温度'), 'Temperature', 'number'), field('max_tokens', T('单次最大输出'), 'Max tokens', 'number'),
+      field('llm_concurrency', T('同时进行的模型请求数（并行子 Agent 各占一个）'), 'Parallel model requests', 'number'),
       tog('disable_thinking', T('关闭思考模式（更快，复杂任务效果可能下降）Disable thinking'))),
-    h('div', { class: 'card stack' }, h('h3', null, '🤖 Agent'),
+    h('div', { class: 'card stack' }, h('h3', null, T('🤖 智能体')),
       langField(s, f),
       field('user_name', T('你的名字'), 'Your name'), field('timezone', T('时区（定时任务）'), 'Timezone'),
       field('max_steps', T('每个任务最多步数'), 'Max steps', 'number'),
@@ -2322,7 +2370,7 @@ async function viewSettings(root) {
     if (body.model_override && body.model_api_key) { mu.api_key_set = true; keyIn.value = ''; keyIn.placeholder = T('已保存；留空=不改'); }
     applyTheme(body.theme);
     applyName(body.instance_name); f.instance_name.value = S.name;
-    const want = UI_LANGS.includes(body.ui_language) ? body.ui_language : browserLang();
+    const want = UI_LANGS.includes(body.ui_language) ? body.ui_language : 'en';
     if (want !== LANG) { try { localStorage.setItem('omuse_ui', want); } catch (e) { /* ignore */ } location.reload(); }
   }) }, T('保存设置 Save settings'))));
   f.model_override.onchange = () => { modelBox.hidden = !f.model_override.checked; if (f.model_override.checked) f.model_base_url.focus(); };
@@ -2383,7 +2431,7 @@ function subscriptionCard(sub) {
 // UI language and theme: per install (Settings), so every browser the user signs in from looks the same.
 function interfaceCard(s, f) {
   const ui = h('select', { 'aria-label': 'UI language' },
-    h('option', { value: '' }, T('跟随浏览器 Follow browser')),
+    h('option', { value: '' }, T('默认（英文）')),
     h('option', { value: 'en' }, 'English'),  // i18n-ok: language names are shown in their own language
     h('option', { value: 'zh' }, '简体中文'),  // i18n-ok
     h('option', { value: 'tw' }, '繁體中文'));  // i18n-ok
@@ -2398,11 +2446,11 @@ function interfaceCard(s, f) {
   const name = h('input', { type: 'text', value: s.instance_name || '', placeholder: 'OMuse', maxlength: '40', 'aria-label': 'Name' });
   f.instance_name = name;
   return h('div', { class: 'card stack', id: 'interface' }, h('h3', null, T('🖥 界面 Interface')),
-    h('label', { class: 'field' }, h('span', null, T('名称'), LANG === 'en' ? null : h('span', { class: 'muted' }, ' Name')), name,
+    h('label', { class: 'field' }, h('span', null, T('名称')), name,
       h('div', { class: 'small muted', style: 'font-weight:400' }, T('这台 OMuse 的名字，显示在左上角 logo 旁和浏览器标签页上。留空 = OMuse。'))),
-    h('label', { class: 'field' }, h('span', null, T('界面语言'), LANG === 'en' ? null : h('span', { class: 'muted' }, ' UI language')), ui,
-      h('div', { class: 'small muted', style: 'font-weight:400' }, T('只影响界面文字。「跟随浏览器」= 英文、简体或繁体浏览器各看各的；选定一种后，你在任何设备上登录都用它。'))),
-    h('label', { class: 'field' }, h('span', null, T('外观'), LANG === 'en' ? null : h('span', { class: 'muted' }, ' Theme')), th));
+    h('label', { class: 'field' }, h('span', null, T('界面语言')), ui,
+      h('div', { class: 'small muted', style: 'font-weight:400' }, T('只影响界面文字，而且只显示一种语言。未选择时是英文；选定一种后，你在任何设备上登录都用它。'))),
+    h('label', { class: 'field' }, h('span', null, T('外观')), th));
 }
 
 function langField(s, f) {
@@ -2417,7 +2465,7 @@ function langField(s, f) {
   rep.value = s.reply_language === 'match' ? 'match' : '';
   f.reply_language = rep;
   return h('div', null,
-    h('label', { class: 'field' }, h('span', null, T('Agent 语言'), LANG === 'en' ? null : h('span', { class: 'muted' }, ' Agent language')), sel,
+    h('label', { class: 'field' }, h('span', null, T('Agent 语言')), sel,
       h('div', { class: 'small muted', style: 'font-weight:400' }, T('Agent 用这个语言思考和工作：思考过程、任务计划、回答、通知和定时任务的汇报。界面语言在上面的「界面」里单独设置。'))),
     h('label', { class: 'field' }, h('span', null, T('回答语言')), rep,
       h('div', { class: 'small muted', style: 'font-weight:400' }, T('选「跟随我提问用的语言」时，每个任务按你那条消息的语言来思考和回答；界面、通知和定时任务汇报仍用上面的语言。'))));

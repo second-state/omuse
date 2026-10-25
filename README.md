@@ -17,6 +17,7 @@ OMuse is a local-first AI agent for [Olares](https://www.olares.com). It doesn't
 ### Features
 
 - **Chat → plan → act** – every step and tool call is visible.
+- **Parallel steps** – the planner marks steps that do not depend on each other (several candidates, sources, mailboxes); the executor runs them at the same time as sub-agents, each with its own browser tab, and continues when all are done.
 - **Email** (several mailboxes: Gmail, Outlook / Hotmail via OAuth 2.0, Yahoo, iCloud, QQ Mail, NetEase 163 / 126, Zoho, AOL, any IMAP / SMTP server) – search, read, draft, reply, send, one-click unsubscribe. Sign-in codes and reset links are hidden from the model.
 - **Notion & Slack** – look things up, write reports, update boards, read and post messages.
 - **Web browser** – its own Chromium with a restricted API, live view, and human takeover for logins/CAPTCHAs.
@@ -235,6 +236,7 @@ OMuse 是为 [Olares](https://www.olares.com) 打造的本地优先（local-firs
 ### 功能
 
 - **对话 → 计划 → 执行**：每一步、每次工具调用都看得见。
+- **并行步骤**：规划器标出互不依赖的步骤（多个候选、来源、邮箱），执行器用子智能体同时完成，每个子智能体有自己的浏览器标签页，全部完成后再继续。
 - **邮箱（支持多个）**：Gmail、Outlook / Hotmail（OAuth 2.0 授权）、Yahoo、iCloud、QQ 邮箱、网易 163 / 126、Zoho、AOL 及任何 IMAP / SMTP 邮箱；搜索、阅读、草稿、回复、发送、一键退订；验证码和重置链接对模型自动屏蔽。
 - **Notion 与 Slack**：查资料、写报告、更新任务表、读取和发送消息。
 - **浏览器**：独立 Chromium，受限 API，实时画面，登录 / 验证码（CAPTCHA）可由你接管。

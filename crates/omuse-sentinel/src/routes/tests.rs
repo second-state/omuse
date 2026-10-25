@@ -556,3 +556,15 @@ fn ledger_summary_warns_without_hits() {
         .unwrap()
         .starts_with("这个页面上的订单号不在 OMuse 的交易账本里"));
 }
+
+#[test]
+fn page_id_gives_sub_agent_lanes_their_own_browser_page() {
+    use super::act::page_id;
+    assert_eq!(page_id("task_1", ""), "task_1");
+    assert_eq!(page_id("task_1", "sub2"), "task_1~sub2");
+    assert_eq!(page_id("task_1", "../x y!"), "task_1~xy");
+    assert_eq!(
+        page_id("t", &"a".repeat(40)),
+        format!("t~{}", "a".repeat(16))
+    );
+}

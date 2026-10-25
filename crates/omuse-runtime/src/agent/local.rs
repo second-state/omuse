@@ -101,9 +101,14 @@ impl Runtime {
                     if replace {
                         let steps: Vec<Value> = new_steps.iter().enumerate().map(|(i, x)| {
                             let id = sget(x, "id");
-                            json!({"id": if id.is_empty() { format!("s{}", i + 1) } else { id },
+                            let mut st = json!({"id": if id.is_empty() { format!("s{}", i + 1) } else { id },
                                    "description": take_chars(&x.get("description").map(py_str).unwrap_or_default(), 300),
-                                   "status": x.get("status").cloned().unwrap_or(json!("pending"))})
+                                   "status": x.get("status").cloned().unwrap_or(json!("pending"))});
+                            let group = prompts::parallel_group(x);
+                            if !group.is_empty() {
+                                st["parallel"] = json!(take_chars(&group, 20));
+                            }
+                            st
                         }).collect();
                         plan["steps"] = json!(steps);
                         plan["version"] = json!(
@@ -121,6 +126,14 @@ impl Runtime {
                                 if truthy(x.get("description").unwrap_or(&Value::Null)) {
                                     s["description"] =
                                         json!(take_chars(&py_str(&x["description"]), 300));
+                                }
+                                if x.get("parallel").is_some() {
+                                    let group = prompts::parallel_group(x);
+                                    if group.is_empty() {
+                                        s.as_object_mut().map(|o| o.remove("parallel"));
+                                    } else {
+                                        s["parallel"] = json!(take_chars(&group, 20));
+                                    }
                                 }
                             }
                         }
@@ -1111,14 +1124,7 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                         .join(", ")
                 ))
             }
-            "delegate" => {
-                let role = if a.get("role").is_some() {
-                    sget(a, "role")
-                } else {
-                    "researcher".into()
-                };
-                Ok(self.subagent(t, &role, &sget(a, "task")).await)
-            }
+            "delegate" => Ok(self.delegate(t, a).await),
             _ => Ok(format!("ERROR: unknown local tool {}", name)),
         }
     }
@@ -1908,32 +1914,160 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
     }
 
     // ---------------------------------------------------------------- sub-agents
-    async fn subagent(&self, parent: &Value, role: &str, task: &str) -> String {
+    /// `delegate`: one sub-task (`role`, `task`, `step`) or several (`tasks=[…]`). Several run at the same time,
+    /// each in its own browser lane; the reports come back together, in the order given. Several `delegate` calls in
+    /// one turn are run side by side by the executor loop the same way (`PARALLEL_TOOLS`).
+    async fn delegate(&self, parent: &Value, a: &Value) -> String {
         let pid = get_str(parent, "id");
-        let count = self
+        let one = |x: &Value| {
+            let role = sget(x, "role");
+            (
+                if role.trim().is_empty() {
+                    "researcher".to_string()
+                } else {
+                    role
+                },
+                sget(x, "task"),
+                sget(x, "step"),
+            )
+        };
+        let mut jobs: Vec<(String, String, String)> = arr(a, "tasks")
+            .iter()
+            .filter(|x| x.is_object() && !sget(x, "task").trim().is_empty())
+            .map(one)
+            .collect();
+        if jobs.is_empty() {
+            if sget(a, "task").trim().is_empty() {
+                return "ERROR: 缺少参数 task（或 tasks 列表）missing task (or a tasks list)"
+                    .into();
+            }
+            jobs.push(one(a));
+        }
+        // reserve the lanes in one go: several delegate calls of the same turn run at the same time
+        let started = self
             .store
             .events(&pid, 0)
             .unwrap_or_default()
             .iter()
             .filter(|e| get_str(e, "type") == "subagent_start")
             .count();
-        if count >= 5 {
-            return "ERROR: 子 Agent 数量已达上限 (max 5 sub-agents per task)".into();
+        let (used, room) = {
+            let mut inner = self.inner.lock();
+            let n = inner.sub_lanes.entry(pid.clone()).or_insert(started);
+            let used = (*n).max(started);
+            let room = super::tools::SUBAGENT_MAX
+                .saturating_sub(used)
+                .min(jobs.len());
+            *n = used + room;
+            (used, room)
+        };
+        if room == 0 {
+            return format!(
+                "ERROR: 子 Agent 数量已达上限 (max {} sub-agents per task)",
+                super::tools::SUBAGENT_MAX
+            );
         }
+        let dropped = jobs.len() - room;
+        jobs.truncate(room);
+        let futs = jobs.iter().enumerate().map(|(i, (role, task, step))| {
+            let lane = format!("sub{}", used + i + 1);
+            async move { self.subagent(parent, role, task, step, &lane).await }
+        });
+        let mut reports = futures::future::join_all(futs).await;
+        if dropped > 0 {
+            reports.push(format!(
+                "ERROR: {dropped} 个子任务没有运行：子 Agent 数量已达上限 ({dropped} sub-task(s) not run: max {} sub-agents per task)",
+                super::tools::SUBAGENT_MAX
+            ));
+        }
+        reports.join("\n\n")
+    }
+
+    /// One sub-agent: its own transcript, the read-only tool set and browser lane; the report is returned to the
+    /// parent and the plan step it works on (`step`) is marked running, then done or failed.
+    async fn subagent(
+        &self,
+        parent: &Value,
+        role: &str,
+        task: &str,
+        step: &str,
+        lane: &str,
+    ) -> String {
+        let pid = get_str(parent, "id");
         let s = self.settings();
         let catalog = self.catalog(false).await;
+        let started = now_ts();
+        let step = if self.set_step_status(&pid, step, "running").await {
+            step.trim()
+        } else {
+            ""
+        };
         self.event(
             &pid,
             "subagent_start",
-            json!({"role": role, "task": truncate(task, 500)}),
+            json!({"role": role, "task": truncate(task, 500), "step": step, "lane": lane}),
         )
         .await;
-        let lg = agent_lang(&s);
+        let out = self
+            .subagent_run(parent, role, task, &s, &catalog, lane)
+            .await;
+        let ok = !out.starts_with("ERROR");
+        if !step.is_empty() {
+            self.set_step_status(&pid, step, if ok { "done" } else { "failed" })
+                .await;
+        }
+        self.event(
+            &pid,
+            "subagent_done",
+            json!({"role": role, "report": truncate(&out, 1500), "step": step, "lane": lane,
+                   "ok": ok, "secs": ((now_ts() - started) * 10.0).round() / 10.0}),
+        )
+        .await;
+        // the lane's browser page is not needed any more: the broker may recycle it (best effort)
+        let me = self.arc();
+        let page = format!("{pid}~{lane}");
+        tokio::spawn(async move {
+            let _ = me
+                .sentinel(
+                    "POST",
+                    "/internal/browser_release",
+                    Some(json!({"task_id": page})),
+                    10.0,
+                )
+                .await;
+        });
+        if !ok {
+            return out;
+        }
+        let attrs = if step.is_empty() {
+            format!("role=\"{role}\"")
+        } else {
+            format!("role=\"{role}\" step=\"{step}\"")
+        };
+        format!(
+            "<subagent_report {}>\n{}\n</subagent_report>",
+            attrs,
+            truncate(&out, 6000)
+        )
+    }
+
+    /// The sub-agent's own loop: up to 12 model turns, then a forced report. `ERROR: …` when it could not finish.
+    async fn subagent_run(
+        &self,
+        parent: &Value,
+        role: &str,
+        task: &str,
+        s: &Value,
+        catalog: &Value,
+        lane: &str,
+    ) -> String {
+        let pid = get_str(parent, "id");
+        let lg = agent_lang(s);
         let mut transcript = vec![
-            json!({"role": "system", "content": prompts::subagent_system(prompts::language_rule(lg), role, &prompts::now_str(&get_str(&s, "timezone"), lg))}),
+            json!({"role": "system", "content": prompts::subagent_system(prompts::language_rule(lg), role, &prompts::now_str(&get_str(s, "timezone"), lg))}),
             json!({"role": "user", "content": task}),
         ];
-        let mut tools = Runtime::tools_for(&catalog, Some(&SUBAGENT_TOOLS), false, false);
+        let mut tools = Runtime::tools_for(catalog, Some(&SUBAGENT_TOOLS), false, false);
         if lg == "en" {
             tools = prompts::strip_tools_en(&tools);
         }
@@ -1960,10 +2094,14 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
                             parent,
                             c,
                             &mut transcript,
-                            &catalog,
+                            catalog,
                             &[],
                             Some(&SUBAGENT_TOOLS),
-                            true,
+                            super::exec::CallMode {
+                                sub: true,
+                                lane,
+                                batch: false,
+                            },
                         )
                         .await;
                 }
@@ -1973,22 +2111,11 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             if force && resp.content.is_empty() {
                 continue;
             }
-            let report = if resp.content.is_empty() {
+            return if resp.content.is_empty() {
                 "(子 Agent 没有返回内容)".to_string()
             } else {
                 resp.content
             };
-            self.event(
-                &pid,
-                "subagent_done",
-                json!({"role": role, "report": truncate(&report, 1500)}),
-            )
-            .await;
-            return format!(
-                "<subagent_report role=\"{}\">\n{}\n</subagent_report>",
-                role,
-                truncate(&report, 6000)
-            );
         }
         "ERROR: 子 Agent 未能完成 (sub-agent ran out of steps)".into()
     }

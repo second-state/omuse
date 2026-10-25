@@ -33,6 +33,14 @@ asset URL with `?v=<digest>`, a stamped URL is immutable for a year, anything el
 is `no-cache` with an ETag, and text assets are gzip-compressed once at load. A
 unit test fails on an off-site asset; `tests/assets_e2e.py` checks the headers.
 
+The UI shows one language at a time: English by default, Simplified or Traditional Chinese only when Settings →
+Interface says so. Source strings in `web/app.js` are Simplified Chinese (often with an English half for the bilingual
+fallback) wrapped in `T()` / `Tf()`; `web/i18n.js` holds the English and `web/i18n_tw.js` the Traditional text. In a
+Chinese UI every string, the server's bilingual texts included, goes through `biZh`, which drops the English half and
+turns "Agent" into 智能体; product and protocol names (`ZH_TERMS`) and identifiers stay. `python3 tests/i18n_check.py`
+fails on a missing translation, on Chinese in an English value, and on a key or Traditional value that is still mixed
+after the reducer — then reword the key (or add a real term to `ZH_TERMS`), never let a second language through.
+
 ## Model settings
 
 The system's endpoint, key and model names come from `[model]` in `config.toml`
@@ -92,10 +100,25 @@ the skills (`skills/`) and the browser scripts (`crates/omuse-browser/js/`) are 
 check behaviour, texts and JSON shapes, so keep them stable. The Olares chart (`chart/`, packaged by `chart/build.sh`)
 runs the release image with one `--role` per container.
 
+### Parallel steps and sub-agents
+
+The planner (`prompts::PLANNER_SYSTEM`) gives steps that do not depend on each other the same `parallel` label; the
+status note (`prompts::parallel_hint`) tells the executor to do the next such group in one turn. The executor loop
+(`agent/runtime.rs`) runs a turn's calls that are all in `tools::PARALLEL_TOOLS` (sub-agents and reads that never touch
+the task's browser page) at the same time, with `no_ask`, and appends the results in call order; everything else runs
+one by one. `delegate` takes one sub-task or `tasks=[{role, task, step}]`; sub-agents of one call, or of one turn, run
+side by side, each on its own browser page (`lane` in `/internal/act` → broker page `<task>~sub<n>`, see
+`routes::act::page_id`), mark their plan step running / done, and are limited by `tools::SUBAGENT_MAX`. Their model
+calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restart). The scripted model has a PARALLEL
+scenario (`tests/parallel_steps_e2e.py`).
+
 ## Tests
 
 - Rust: `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --check`.
 - Full local suite: `tests/run_in_docker.sh` (fresh stack per suite).
+- Real-model runs: the travel suites with `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env` (`OMUSE_E2E_MODELS=alt` for
+  the second model pair); `tests/travel_ask_real.py` asks two research-only travel questions and checks that no
+  browser, approval or takeover was involved, with a TIMING line each.
 - Image smoke test: `tests/docker_image_smoke.sh <image>`; set `OMUSE_VERSION`
   to the tag to also check the reported version.
 - `python3 tests/i18n_check.py` must report no missing or stale translations

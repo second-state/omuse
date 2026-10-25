@@ -14,6 +14,10 @@ description: 旅行：机票/酒店比价、行程规划、签证入境、天气
 - The user lives in Singapore unless told otherwise: currency SGD, plugs Type G (UK 3-pin) → Japan uses Type A/B
   (100 V), so an adapter is needed; Singapore passport holders' rules, not China's.
 - Never repeat passport numbers, expiry dates or birth dates in an answer unless a form needs them.
+- Independent lookups run at the same time: flights and hotels, several hotels or areas, weather + visa + transport.
+  Give them one `parallel` label in the plan and start them in ONE turn — one delegate(role="researcher", task=…,
+  step=<its step id>) per lookup, or several browser_read calls in the same turn. Only work that drives one browser
+  session step by step (filling the Google Flights form, clicking through a site) stays with you, in sequence.
 
 ## 1. Flights
 - Google Flights: `https://www.google.com/travel/flights?hl=en&curr=SGD&q=Flights%20from%20SIN%20to%20NRT%20on%202026-11-20%20one%20way%20nonstop`

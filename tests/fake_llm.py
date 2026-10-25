@@ -94,6 +94,12 @@ async def chat(req: Request):
         return reply(json.dumps({"objective": "Share the Q4 plan with the team on Slack", "steps": [
             {"id": "s1", "description": "Read the Q4 plan page in Notion", "tool_hint": "notion", "risk": "read"},
             {"id": "s2", "description": "Post a short summary to #general (needs approval)", "tool_hint": "slack", "risk": "send"}]}))
+    if "planning module" in sys and "PARALLEL" in msgs[-1]["content"]:   # parallel_steps_e2e.py: three independent steps
+        return reply(json.dumps({"objective": "Compare three hotels", "steps": [
+            {"id": "s1", "description": "Research Hotel A", "tool_hint": "delegate", "risk": "read", "parallel": "p1"},
+            {"id": "s2", "description": "Research Hotel B", "tool_hint": "delegate", "risk": "read", "parallel": "p1"},
+            {"id": "s3", "description": "Research Hotel C", "tool_hint": "delegate", "risk": "read", "parallel": "p1"},
+            {"id": "s4", "description": "Compare and answer", "tool_hint": "files", "risk": "read"}]}))
     if "planning module" in sys and "LANGCHECK" in msgs[-1]["content"]:
         first = sys.split("\n", 1)[0][:40]
         return reply(json.dumps({"objective": "PLANRULE=" + first, "steps": []}))
@@ -117,6 +123,23 @@ async def chat(req: Request):
     last_tool = tools_done[-1]["content"] if tools_done else ""
     allu = "\n".join(str(m["content"]) for m in msgs if m["role"] == "user")
     tnames = [t["function"]["name"] for t in (b.get("tools") or [])]
+    if "focused sub-agent of OMuse" in sys and "SUBTASK" in goal:   # parallel_steps_e2e.py: a sub-agent opens its page in its own lane
+        url = re.search(r"https?://\S+", goal).group(0)
+        if n == 0:
+            return reply("", [tc("browser_navigate", {"url": url})])
+        m = re.search(r"Hotel[A-C]", last_tool)
+        return reply(f"SUBREPORT {m.group(0) if m else '?'} from {url}")
+    if "PARALLEL" in goal and "focused sub-agent" not in sys:   # parallel_steps_e2e.py: the parallel stage → every step in ONE turn
+        hosts = ["shop.test", "opentable.test", "shop.test"]   # the two public test hosts (loopback addresses are refused)
+        jobs = [{"role": "researcher", "step": f"s{i + 1}",
+                 "task": f"SUBTASK open http://{h}:8094/slow?s=2&name=Hotel{'ABC'[i]} and report the page title"} for i, h in enumerate(hosts)]
+        if n == 0:
+            if "PARALLELBATCH" in goal:
+                return reply("", [tc("delegate", {"tasks": jobs})])
+            return reply("", [tc("delegate", j) for j in jobs])
+        # a summary, not the raw <subagent_report> tags (angle-bracket markup is stripped from answers)
+        found = re.findall(r"SUBREPORT (Hotel\w+)", "\n".join(str(m["content"]) for m in tools_done))
+        return reply("PARALLEL RESULT: " + ", ".join(found))
     if "FAKECLAIM" in goal:   # says it sent an email without sending anything (outcome check, roadmap batch 1)
         if "（系统）你的回答说已经" in allu or "(System) Your answer says you" in allu:
             return reply("我还没有发送邮件：这个任务里没有执行发送，下面是准备好的草稿内容。")

@@ -39,6 +39,71 @@ pub const SUBAGENT_TOOLS: [&str; 29] = [
     "data_query",
 ];
 
+/// Calls that may run at the same time when one model turn holds several of them: sub-agents and reads that
+/// neither touch the task's browser page nor change anything. Everything else runs one after another, in order.
+///
+/// A concurrent batch is sent to Sentinel with `no_ask`: a read that would need an approval (`browser_read` of a URL
+/// carrying data in a tainted task) comes back as an error telling the model to call it alone next turn, so no
+/// approval dialog is ever left behind for a call the task is not waiting on.
+pub const PARALLEL_TOOLS: [&str; 27] = [
+    "delegate",
+    "calculate",
+    "data_query",
+    "files_read",
+    "files_list",
+    "files_search",
+    "memory_search",
+    "library_list",
+    "library_search",
+    "library_get",
+    "market_data",
+    "stock_fundamentals",
+    "gmail_search",
+    "gmail_get_message",
+    "gmail_get_thread",
+    "gmail_read_amounts",
+    "gmail_find_receipts",
+    "calendar_list_events",
+    "calendar_free_slots",
+    "notion_search",
+    "notion_get_page",
+    "notion_query_database",
+    "slack_read_channel",
+    "slack_read_thread",
+    "slack_search",
+    "browser_search",
+    "browser_read",
+];
+
+/// Sub-agents one task may spawn (over its whole life).
+pub const SUBAGENT_MAX: usize = 8;
+
+/// The concurrent runs in one turn's calls: maximal stretches of two or more consecutive calls that will run
+/// (`runnable`, i.e. not skipped as duplicates) and are all in [`PARALLEL_TOOLS`]. Calls outside these ranges run one
+/// by one in order, so a sub-agent fan-out followed by `update_plan` keeps the plan update after the reports.
+pub fn concurrent_runs(calls: &[(&str, bool)]) -> Vec<std::ops::Range<usize>> {
+    let par: Vec<bool> = calls
+        .iter()
+        .map(|(name, runnable)| *runnable && PARALLEL_TOOLS.contains(name))
+        .collect();
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < par.len() {
+        if !par[i] {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < par.len() && par[i] {
+            i += 1;
+        }
+        if i - start >= 2 {
+            runs.push(start..i);
+        }
+    }
+    runs
+}
+
 /// local tools that change something lasting: a golden (test) run stops at them instead of running them
 pub const DRY_RUN_LOCAL: [&str; 17] = [
     "memory_remember",
@@ -139,9 +204,11 @@ fn local_tools() -> Vec<Value> {
     let s = json!({"type": "string"});
     let app_id = prompts::app_id();
     vec![
-        fn_("update_plan", "更新任务计划 Update the task plan: mark steps done/failed/running or replace the steps when re-planning.",
+        fn_("update_plan", "更新任务计划 Update the task plan: mark steps done/failed/running or replace the steps when re-planning. \
+parallel: steps that share a label (\"p1\") are independent and run at the same time (one delegate / read call each, in one turn).",
             json!({"steps": {"type": "array", "items": {"type": "object", "properties": {
-                "id": s, "description": s, "status": {"type": "string", "enum": ["pending", "running", "done", "failed", "skipped"]}}}},
+                "id": s, "description": s, "status": {"type": "string", "enum": ["pending", "running", "done", "failed", "skipped"]},
+                "parallel": s}}},
              "objective": s, "note": s}), &["steps"]),
         fn_("files_list", &format!("列出工作区文件 List files in the workspace (Olares Files → Data/{}/workspace).", app_id), json!({"path": s}), &[]),
         fn_("files_read", "读取工作区文件的文字（文本/Markdown/CSV/JSON/PDF/Word/Excel/PowerPoint）Read the text of a workspace file \
@@ -438,8 +505,14 @@ its check schedule. Only when the user asks to remove that goal.", json!({"id": 
             json!({"key": s, "value": s}), &["key", "value"]),
         fn_("notify_user", "给用户发通知（应用内 + Telegram 如已配置）Notify the user (in-app + Telegram if configured).",
             json!({"title": s, "message": s}), &["title", "message"]),
-        fn_("delegate", "派出子 Agent 独立完成一个调研类子任务（只读工具），返回报告 Spawn a read-only sub-agent for a focused sub-task.",
-            json!({"role": s, "task": s}), &["role", "task"]),
+        fn_("delegate", "派出子 Agent 独立完成调研类子任务（只读工具），返回报告；同一轮里的多个 delegate 调用（或 tasks 列表）会同时运行 \
+Spawn read-only sub-agents for focused sub-tasks (research, reading pages or mail, gathering figures). Several delegate \
+calls in the SAME turn, or one call with tasks=[{role, task, step}, …], run at the same time — each sub-agent has its own \
+browser — and all reports come back together before your next turn. step = the id of the plan step this sub-task \
+completes (it is marked running/done for you). A sub-agent sees nothing of this conversation: put everything it \
+needs (what to find, where, what to return, in which language) in task.",
+            json!({"role": s, "task": s, "step": s,
+                   "tasks": {"type": "array", "items": {"type": "object", "properties": {"role": s, "task": s, "step": s}, "required": ["task"]}}}), &[]),
         fn_("load_skill", "加载技能说明 Load a skill's detailed instructions by name.", json!({"name": s}), &["name"]),
         fn_("library_list", "列出研究库里的课题 List the research subjects in the user's library (title, status, report file).", json!({}), &[]),
         fn_("library_search", "在研究库的报告里搜索 Search the reports in the research library (passages with their subject).", json!({"query": s}), &["query"]),
