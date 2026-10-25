@@ -9,7 +9,8 @@ description: 整理重要邮件并建议回复 Triage recent emails, find the im
    (use the period the user asked for; "今天" → `newer_than:1d`, "这周" → `newer_than:7d`). Use max_results 20–30.
 2. Classify each email from the metadata: NEEDS_REPLY (a person asks a question / requests action / waits for a decision),
    FYI, or NOISE (newsletters, receipts, notifications, no-reply senders).
-3. For every NEEDS_REPLY email, call gmail_get_message to read the full body (never guess from the snippet).
+3. For every NEEDS_REPLY email, call gmail_get_message to read the full body (never guess from the snippet) — all of
+   them in ONE turn, one call per email: same-turn reads run at the same time and come back together.
 4. Output a table: 发件人 From | 主题 Subject | 为什么重要 Why | 建议回复 Suggested reply (1–2 sentences) | message_id.
    Order by urgency. Then list FYI items in one line each. Skip NOISE.
 5. Do NOT send anything. Offer: "要我为哪几封创建草稿或直接回复？" If the user already asked for drafts, create them with

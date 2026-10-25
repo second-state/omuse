@@ -318,7 +318,27 @@ fn step_line(x: &Value) -> String {
         .get("description")
         .map(py_str)
         .unwrap_or_else(|| "None".to_string());
-    format!("{} {}: {}", step_icon(&status), id, desc)
+    let group = parallel_group(x);
+    if group.is_empty() {
+        format!("{} {}: {}", step_icon(&status), id, desc)
+    } else {
+        format!(
+            "{} {}: {} ‖ parallel:{}",
+            step_icon(&status),
+            id,
+            desc,
+            group
+        )
+    }
+}
+
+/// The step's parallel-group label ("" = runs on its own).
+pub fn parallel_group(step: &Value) -> String {
+    match step.get("parallel") {
+        Some(Value::Bool(true)) => "p1".to_string(), // a bare `true` from the model: one group
+        Some(v) if truthy(v) && !v.is_boolean() => py_str(v).trim().to_string(),
+        _ => String::new(),
+    }
 }
 
 fn plan_steps(plan: Option<&Value>) -> Option<&Vec<Value>> {
@@ -326,6 +346,48 @@ fn plan_steps(plan: Option<&Value>) -> Option<&Vec<Value>> {
         .and_then(|p| p.get("steps"))
         .and_then(Value::as_array)
         .filter(|s| !s.is_empty())
+}
+
+/// The next stage of the plan when it is a parallel group: the ids of the open steps (pending / running) that share
+/// the label of the first open step, when there are at least two of them.
+pub fn next_parallel_stage(plan: Option<&Value>) -> Option<(String, Vec<String>)> {
+    let steps = plan_steps(plan)?;
+    let open = |s: &Value| matches!(get_str(s, "status").as_str(), "pending" | "running" | "");
+    let first = steps.iter().find(|s| open(s))?;
+    let group = parallel_group(first);
+    if group.is_empty() {
+        return None;
+    }
+    let ids: Vec<String> = steps
+        .iter()
+        .filter(|s| open(s) && parallel_group(s) == group)
+        .map(|s| get_str(s, "id"))
+        .collect();
+    (ids.len() >= 2).then_some((group, ids))
+}
+
+/// The line that tells the executor to run the next parallel stage in one turn (sub-agents / read calls side by side).
+pub fn parallel_hint(plan: Option<&Value>, language: &str) -> String {
+    let Some((group, ids)) = next_parallel_stage(plan) else {
+        return String::new();
+    };
+    let list = ids.join(", ");
+    if language == "en" {
+        format!(
+            "Next: steps {list} (parallel group {group}) are independent — do them in ONE turn: one delegate call per step \
+(step=\"{}\" …; or delegate with tasks=[…]) and/or the read calls themselves (browser_read, gmail_search, market_data…) \
+in the same turn. Same-turn calls run at the same time, every result comes back together, and the plan moves on only \
+when all of them are finished. Do not run them one turn at a time.",
+            ids[0]
+        )
+    } else {
+        format!(
+            "下一步：{list}（并行组 {group}）互不依赖——在同一轮里一起做：每个步骤一个 delegate 调用（step=\"{}\" …，或者 delegate \
+的 tasks=[…]），和/或在同一轮里直接发出各自的只读调用（browser_read、gmail_search、market_data…）。同一轮的调用会同时执行，结果一起返回，\
+全部完成后计划才进入下一步。不要一轮只做一个。",
+            ids[0]
+        )
+    }
 }
 
 /// The live part of the agent's context (time, plan progress, dead ends). It goes at the END of each model request
@@ -361,6 +423,10 @@ pub fn status_note(
             "(update it with update_plan as you progress; revise it when something fails)"
                 .to_string(),
         );
+        let hint = parallel_hint(plan, language);
+        if !hint.is_empty() {
+            lines.push(hint);
+        }
     }
     if !dead_ends.is_empty() {
         lines.push(dead_ends.to_string());
@@ -732,6 +798,7 @@ Current time: {now_line}
 - Looking things up on the web: browser_search (one call returns titles, URLs and snippets), then browser_read the 2–4 most relevant URLs in ONE call (read in parallel). Use browser_navigate only to interact with a page (click, type, scroll, forms, logins) or when browser_read returned little text.
 - General knowledge, advice, checklists, explanations, writing and code need no browsing: answer from what you know. Browse only for facts that change (prices, schedules, opening hours, news, current rules) — at most 2–3 pages for those.
 - Keep the last steps for the deliverable the user asked for (the file, PDF, spreadsheet, email…). For research, read at most ~6 pages yourself; when it needs more sources or several candidates, use delegate (one sub-agent per sub-question or candidate — their steps don't count against yours), then write the result yourself. When the user asked for N things, delivering fewer than N is only acceptable if you have genuinely exhausted the sources (say so and why); otherwise delegate the rest and deliver all N.
+- Work in parallel whenever parts of the job are independent (several candidates, sources, cities, mailboxes, sub-questions, or plan steps that share a parallel label): put all of them in ONE turn — one delegate call per part (or delegate with tasks=[…]), and/or the read calls themselves (browser_read, gmail_search, gmail_get_message, market_data, calendar_list_events…). Calls in the same turn run at the same time, each sub-agent gets its own browser, and every result comes back before your next turn; then continue with the step that needs them. Never run independent sub-agents or lookups one turn at a time. Actions on the task's own page (navigate, click, type), writes and anything that needs approval stay sequential, one per turn when they may wait for the user.
 - Numbers: never do arithmetic in your head for figures the user relies on (loan payments and schedules, interest, totals, splits, conversions, percentages, growth): use calculate, then copy its results exactly.
 - Money questions: read the conditions literally — if several discounts or coupons can all be used together, work out every order of stacking them and pick the cheapest; say which option wins and by how much; state assumptions you had to make (days per year, deposit timing, fees). Every figure in the answer must come from a calculate / data_query result — if a tool result looks wrong (e.g. a NOTE about the rate), call it again with fixed inputs instead of estimating. Amounts in several currencies: convert them to the user's home currency with market_data (FX) before adding them up, and name the rates used. Spending, subscriptions, trips, bills or invoices from email: call gmail_find_receipts first (senders = the brands' domains, plus days or after/before) — one call searches all mailboxes and returns the money lines; for other hits use gmail_read_amounts with ids from gmail_search (up to 40 per call) — do not open them one by one with gmail_get_message; use ids exactly as returned, never invent them. One trip or order often has several emails (a charge summary and a receipt, a tip update, a reminder) — count each purchase once, using its final total.
 - Email follow-ups and "still waiting for a reply": a reply often arrives in a different thread (support tickets, a new subject, another of the user's mailboxes). Before listing a sent email as unanswered, search all mailboxes for later mail from that person or domain (from:<address or domain> after:<sent date>); if anything came back, it is not unanswered. Keep strictly to the time window the user gave (e.g. sent in the last 14 days).
@@ -813,9 +880,10 @@ library (library_search / library_get: reports the user had researched earlier; 
 plus any MCP connectors the user added (tools named mcp_<server>__<tool>, e.g. Notion, Slack, GitHub — use tool_hint "mcp:<server>").
 
 Given the user's request, produce a short, concrete plan. Output ONLY a JSON object:
-{"objective": "<one sentence>", "steps": [{"id": "s1", "description": "<imperative, specific>", "tool_hint": "<tool family>", "risk": "read|write|send"}]}
+{"objective": "<one sentence>", "steps": [{"id": "s1", "description": "<imperative, specific>", "tool_hint": "<tool family>", "risk": "read|write|send", "parallel": "<group label or omit>"}]}
 
 Rules: 2–7 steps for real tasks; for pure conversation or a single quick answer return {"objective": "...", "steps": []}.
+Parallel steps: when two or more steps do not need each other's results — researching each of several candidates, sources, cities or sub-questions; checking several mailboxes, calendars or markets; reading several documents — give them the same "parallel" label ("p1", a second group "p2" …). The executor runs the steps of a group at the same time (one sub-agent or read call each, with its own browser) and continues only when all of them are finished, so split such work into one step per part (one per candidate / source / sub-question) instead of one step that loops over them. Steps that need an earlier step's result, that act on one browser session in sequence (log in, then click), or that write / send / buy, have no label.
 For trips and meeting preparation, the first step is to search all mailboxes for existing bookings, cancellations, delays and confirmations for that place and date, and a later step checks the timeline (arrival before the meeting).
 For money questions, plan the calculation steps the request implies: every option the user lists, every combination they say is allowed (e.g. two coupons that can both be used → both orders of applying them), and the user's exact time basis (per day / week / year).
 Mark steps that send/submit/buy/delete/unsubscribe as risk "send" (they will need user approval via Sentinel's dialog — never plan a "wait for the user to confirm in chat" step for them). Write descriptions in the user's language."#;
@@ -1029,12 +1097,58 @@ mod tests {
                 && zh.contains("Data/omuse/workspace")
         );
         assert!(PLANNER_SYSTEM.contains("planning module"));
+        assert!(
+            PLANNER_SYSTEM.contains("\"parallel\"")
+                && PLANNER_SYSTEM.contains("same \"parallel\" label")
+        );
+        assert!(zh.contains("Work in parallel whenever parts of the job are independent"));
         assert!(MEMORY_EXTRACT.starts_with("Sort what the USER says"));
         let sa = subagent_system("RULE", "researcher", "now");
         assert!(sa.starts_with(
             "RULE\n\nYou are a focused sub-agent of OMuse with the role: researcher."
         ));
         assert!(sa.contains("Current time: now") && sa.ends_with(SECURITY_RULES));
+    }
+
+    #[test]
+    fn parallel_steps_in_plan_lines_and_hint() {
+        let plan = json!({"objective": "o", "steps": [
+            {"id": "s1", "description": "mail", "status": "done"},
+            {"id": "s2", "description": "hotel A", "status": "pending", "parallel": "p1"},
+            {"id": "s3", "description": "hotel B", "status": "running", "parallel": "p1"},
+            {"id": "s4", "description": "hotel C", "status": "done", "parallel": "p1"},
+            {"id": "s5", "description": "compare", "status": "pending"}]});
+        assert_eq!(
+            step_line(&plan["steps"][1]),
+            "[ ] s2: hotel A ‖ parallel:p1"
+        );
+        assert_eq!(step_line(&plan["steps"][0]), "[x] s1: mail");
+        // the next stage: the open steps of the first open step's group (s4 is already done)
+        assert_eq!(
+            next_parallel_stage(Some(&plan)),
+            Some(("p1".to_string(), vec!["s2".to_string(), "s3".to_string()]))
+        );
+        let en = parallel_hint(Some(&plan), "en");
+        assert!(
+            en.starts_with("Next: steps s2, s3 (parallel group p1)") && en.contains("step=\"s2\"")
+        );
+        let zh = parallel_hint(Some(&plan), "zh");
+        assert!(zh.contains("s2, s3（并行组 p1）") && zh.contains("同一轮"));
+        let note = status_note(Some(&plan), "UTC", "en", 0.0, "");
+        assert!(note.contains("‖ parallel:p1") && note.contains("Next: steps s2, s3"));
+        // a group with one open step left, or a sequential next step: no hint
+        let mut p2 = plan.clone();
+        p2["steps"][1]["status"] = json!("done");
+        assert_eq!(next_parallel_stage(Some(&p2)), None);
+        assert_eq!(parallel_hint(Some(&p2), "en"), "");
+        let seq = json!({"steps": [{"id": "s1", "description": "a", "status": "pending"},
+                                   {"id": "s2", "description": "b", "status": "pending", "parallel": "p1"},
+                                   {"id": "s3", "description": "c", "status": "pending", "parallel": "p1"}]});
+        assert_eq!(next_parallel_stage(Some(&seq)), None);
+        assert!(!status_note(Some(&seq), "UTC", "en", 0.0, "").contains("Next:"));
+        assert_eq!(parallel_group(&json!({"parallel": " p1 "})), "p1");
+        assert_eq!(parallel_group(&json!({"parallel": ""})), "");
+        assert_eq!(parallel_group(&json!({})), "");
     }
 
     #[test]

@@ -30,7 +30,7 @@ async def scenario(p, name, route_stream):
     deny_pending()
     b = await p.chromium.launch()
     pg = await b.new_page(viewport={"width": 1280, "height": 800})
-    await pg.clock.install()   # to spin the verb (a 3.5 s interval) without waiting for it
+    await pg.clock.install()   # to spin the verb (a 6 s interval) without waiting for it
     errs = []
     pg.on("pageerror", lambda e: errs.append(str(e)))
     if route_stream:
@@ -47,8 +47,8 @@ async def scenario(p, name, route_stream):
         await pg.wait_for_timeout(500)
         seen = await pg.evaluate(get_verbs)
         verbs.update(v for v, _t in seen); titles.update(t for _v, t in seen)
-        if seen and spun is None:   # 3.5 s later the card shows another verb
-            await pg.clock.run_for(3600)
+        if seen and spun is None:   # 6 s later the card shows another verb
+            await pg.clock.run_for(6200)
             after = await pg.evaluate(get_verbs)
             spun = (seen[0][0], after[0][0] if after else None)
         st = await card_state(pg)

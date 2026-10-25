@@ -884,12 +884,14 @@ fn ledger_after(
     }
 }
 
-/// `_run`: execute an authorized action and audit it.
+/// `_run`: execute an authorized action and audit it. `page` is the broker page (see [`page_id`]).
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     ctx: &App,
     tool: &str,
     args: &Value,
     task_id: &str,
+    page: &str,
     risk: &str,
     detail: &Value,
     decision: &str,
@@ -905,7 +907,7 @@ pub async fn run(
         result: result.into(),
         detail: Some(merged(detail, extra)),
     };
-    match deps::execute(ctx, tool, args, task_id).await {
+    match deps::execute(ctx, tool, args, task_id, page).await {
         Ok(result) => {
             ledger_after(ctx, tool, args, task_id, detail, &result);
             let ms = started.elapsed().as_millis() as i64;
@@ -967,6 +969,8 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
     };
     let task_id = s_or(&b, "task_id", "");
     let call_id = s_or(&b, "call_id", "");
+    // a sub-agent's browser lane: its own page in the broker; policy, taint and audit stay with the task
+    let page_id = page_id(&task_id, &s_or(&b, "lane", ""));
     let Some(t) = tool_opt(&tool) else {
         ctx.audit(
             "sentinel",
@@ -986,7 +990,7 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
     let connector = get_str(&t, "connector");
     let (mut elem, mut page) = (None, None);
     if connector == "browser" && tool != "browser_request_takeover" && tool != "browser_downloads" {
-        match context_for(&ctx, &tool, &args, &task_id).await {
+        match context_for(&ctx, &tool, &args, &page_id).await {
             Ok((e, p)) => {
                 elem = e;
                 page = p;
@@ -1024,7 +1028,7 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
                     &ctx,
                     "POST",
                     "/agent/page_text",
-                    Some(&json!({"task_id": task_id})),
+                    Some(&json!({"task_id": page_id})),
                     15.0,
                 )
                 .await
@@ -1129,9 +1133,8 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
                 ),
             ),
         );
-        return Ok(Json(
-            json!({"status": "denied", "reason": "此操作需要用户审批，子 Agent 不能执行 (needs approval; sub-agents cannot request it)"}),
-        ));
+        return Ok(Json(json!({"status": "denied", "needs_approval": true,
+                   "reason": "此操作需要用户审批，子 Agent 不能执行 (needs approval; sub-agents cannot request it)"})));
     }
     if d.decision == ASK {
         let mut summ = summary(&ctx, &tool, &mut args, elem.as_ref(), page.as_ref()).await;
@@ -1149,7 +1152,7 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
             if let Ok(BrokerOut::Bytes(img)) = deps::broker(
                 &ctx,
                 "GET",
-                &format!("/screenshot?task_id={task_id}"),
+                &format!("/screenshot?task_id={page_id}"),
                 None,
                 20.0,
             )
@@ -1188,8 +1191,26 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
         ));
     }
     Ok(Json(
-        run(&ctx, &tool, &args, &task_id, &d.risk, &detail, ALLOW).await,
+        run(
+            &ctx, &tool, &args, &task_id, &page_id, &d.risk, &detail, ALLOW,
+        )
+        .await,
     ))
+}
+
+/// The broker page a call works on: the task's own page, or `<task>~<lane>` for a sub-agent's lane (letters, digits,
+/// `_` and `-` only, at most 16 characters), so parallel sub-agents never share a tab.
+pub fn page_id(task_id: &str, lane: &str) -> String {
+    let lane: String = lane
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .take(16)
+        .collect();
+    if lane.is_empty() {
+        task_id.to_string()
+    } else {
+        format!("{task_id}~{lane}")
+    }
 }
 
 // ================================================================== resolving approvals
@@ -1453,7 +1474,11 @@ async fn resolve_inner(ctx: &App, aid: &str, b: &Value, via: &str) -> Result<Val
         },
     );
     let detail = json!({"args": safe_args(&args), "approval_id": aid});
-    let result = run(ctx, &tool, &args, &task_id, &risk, &detail, "APPROVED").await;
+    // approvals come from the task's own page: a sub-agent lane never asks (no_ask)
+    let result = run(
+        ctx, &tool, &args, &task_id, &task_id, &risk, &detail, "APPROVED",
+    )
+    .await;
     store
         .resolve_approval(aid, "approved", &scope, Some(&result), Some(&args), "user")
         .map_err(ierr)?;

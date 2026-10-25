@@ -16,9 +16,10 @@ use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 use tokio::task::JoinHandle;
 
+use super::exec::CallMode;
 use super::guards::*;
 use super::lang::{agent_lang, request_lang, with_langs};
-use super::tools::{tool_name, FINISH_TOOLS, LOCAL_TOOLS};
+use super::tools::{concurrent_runs, tool_name, FINISH_TOOLS, LOCAL_TOOLS};
 use super::util::{arr, content_of, fmt_float, sget, stored_call, tool_calls};
 use super::{is_terminal, TERMINAL};
 use crate::health::Health;
@@ -37,6 +38,14 @@ pub type Publish = Arc<dyn Fn(Value) -> BoxFuture<'static, ()> + Send + Sync>;
 /// Replaces the HTTP call to Sentinel (tests): `(method, path, payload) -> result`.
 pub type SentinelHook =
     Arc<dyn Fn(String, String, Option<Value>) -> BoxFuture<'static, Result<Value>> + Send + Sync>;
+
+/// A call of the current turn that is not run because it repeats an earlier one (`first` = that call's id); see
+/// [`Runtime::skip_duplicate`].
+struct Skip {
+    first: String,
+    search: bool,
+    typed: bool,
+}
 
 /// A tool call that must wait for the user (approval / takeover): the loop stops and the task is parked.
 #[derive(Debug, Clone)]
@@ -73,6 +82,9 @@ pub(crate) struct Inner {
     pub tool_texts: HashMap<String, Vec<String>>,
     /// task_id -> seconds spent queued for a model slot
     pub llm_wait: HashMap<String, f64>,
+    /// task_id -> sub-agent lanes handed out so far (`sub1`, `sub2`, …); seeded from the task's events, reserved
+    /// atomically so parallel `delegate` calls never share a lane or exceed `SUBAGENT_MAX`
+    pub sub_lanes: HashMap<String, usize>,
     /// sites whose bot wall was learned as a habit
     pub block_noted: HashSet<String>,
     /// task_id -> product pages that already got the cart hint
@@ -104,6 +116,8 @@ pub struct Runtime {
     /// is dropped at once instead of finishing its retries first.
     cancel_notify: tokio::sync::Notify,
     pub(crate) inner: Mutex<Inner>,
+    /// Serialises read-modify-write of a task's plan: parallel sub-agents mark their steps at the same time.
+    pub(crate) plan_mu: Mutex<()>,
 }
 
 pub(crate) fn opts(purpose: &str, task_id: &str) -> ChatOpts {
@@ -208,6 +222,7 @@ impl Runtime {
                 catalog_cache: Mutex::new((0.0, None)),
                 cancel_notify: tokio::sync::Notify::new(),
                 inner: Mutex::new(Inner::default()),
+                plan_mu: Mutex::new(()),
             }
         });
         let api: Arc<dyn RuntimeApi> = rt.clone();
@@ -615,6 +630,41 @@ work around it; write the final answer saying what you would do and how far you 
                     .await;
             });
         }
+    }
+
+    /// Mark one plan step `running` / `done` / `failed` (a sub-agent working on it), publish the plan, and say
+    /// whether the step exists. Runs under [`Runtime::plan_mu`], so parallel sub-agents never lose each other's update.
+    pub async fn set_step_status(&self, task_id: &str, step_id: &str, status: &str) -> bool {
+        if step_id.trim().is_empty() {
+            return false;
+        }
+        let plan = {
+            let _g = self.plan_mu.lock();
+            let Some(task) = self.store.task(task_id).ok().flatten() else {
+                return false;
+            };
+            let mut plan = task.get("plan").cloned().unwrap_or_else(|| json!({}));
+            let Some(st) = plan
+                .get_mut("steps")
+                .and_then(Value::as_array_mut)
+                .and_then(|sts| sts.iter_mut().find(|s| sget(s, "id") == step_id.trim()))
+            else {
+                return false;
+            };
+            if status != "running" || sget(st, "status") != "done" {
+                st["status"] = json!(status);
+            }
+            if self
+                .store
+                .update_task(task_id, &json!({"plan": plan}))
+                .is_err()
+            {
+                return false;
+            }
+            plan
+        };
+        self.event(task_id, "plan", plan).await;
+        true
     }
 
     /// The task fields the UI shows.
@@ -1462,13 +1512,19 @@ work around it; write the final answer saying what you would do and how far you 
         for (i, st) in arr(&plan, "steps").iter().enumerate() {
             if st.is_object() && st.get("description").is_some_and(truthy) {
                 let id = sget(st, "id");
-                steps.push(json!({
+                let mut step = json!({
                     "id": if id.is_empty() { format!("s{}", i + 1) } else { id },
                     "description": take_chars(&py_str(&st["description"]), 300),
                     "tool_hint": take_chars(&st.get("tool_hint").map(py_str).unwrap_or_default(), 40),
                     "risk": st.get("risk").map(py_str).unwrap_or_else(|| "read".into()),
                     "status": "pending",
-                }));
+                });
+                // steps that share a label are independent: the executor runs them at the same time
+                let group = prompts::parallel_group(st);
+                if !group.is_empty() {
+                    step["parallel"] = json!(take_chars(&group, 20));
+                }
+                steps.push(step);
             }
         }
         steps.truncate(10);
@@ -1771,7 +1827,7 @@ Your own notes and the short explanation around it stay in English.";
                             &catalog,
                             &rest[i + 1..],
                             None,
-                            false,
+                            CallMode::MAIN,
                         )
                         .await
                     {
@@ -2011,10 +2067,13 @@ answer you can from what you have — what is done, the findings and what is mis
                 }
                 self.store
                     .update_task(task_id, &json!({"transcript": transcript}))?;
+                // 1. which calls run and which are skipped as copies (decided up front, from the calls alone, so the
+                //    concurrent runs below are known before anything executes)
                 let mut seen_sigs: HashMap<String, String> = HashMap::new();
                 let mut progress = false;
                 let mut typed_this_turn = String::new();
-                for (i, call) in calls.iter().enumerate() {
+                let mut skips: Vec<Option<Skip>> = Vec::with_capacity(calls.len());
+                for call in &calls {
                     let sig = call_sig(&call.name, &call.args);
                     if let Some(first) = seen_sigs
                         .get(&sig)
@@ -2022,9 +2081,11 @@ answer you can from what you have — what is done, the findings and what is mis
                     {
                         // the model sometimes emits the same call 3-4 times in one turn: run it once, skip the copies
                         // (they are not failures, so they must not trigger a re-plan on their own)
-                        let first = first.clone();
-                        self.skip_duplicate(task_id, call, &first, &mut transcript, false, false)
-                            .await;
+                        skips.push(Some(Skip {
+                            first: first.clone(),
+                            search: false,
+                            typed: false,
+                        }));
                         continue;
                     }
                     seen_sigs.insert(sig, call.id.clone());
@@ -2032,16 +2093,11 @@ answer you can from what you have — what is done, the findings and what is mis
                         if !typed_this_turn.is_empty() {
                             // 2026-10-04 V3-03: 12 searches typed into one shop's search box in a single turn — only the
                             // last results page existed, the rest were never read, and the list was searched 3x over
-                            let first = typed_this_turn.clone();
-                            self.skip_duplicate(
-                                task_id,
-                                call,
-                                &first,
-                                &mut transcript,
-                                false,
-                                true,
-                            )
-                            .await;
+                            skips.push(Some(Skip {
+                                first: typed_this_turn.clone(),
+                                search: false,
+                                typed: true,
+                            }));
                             continue;
                         }
                         typed_this_turn = call.id.clone();
@@ -2050,21 +2106,91 @@ answer you can from what you have — what is done, the findings and what is mis
                         let qk = search_key(call.args.get("query").unwrap_or(&Value::Null));
                         if let Some(first) = searched.get(&qk).filter(|_| !qk.is_empty()) {
                             // 2026-10-04 V1-07: the same weather / hotel searches ran 3 times in one task
-                            let first = first.clone();
-                            self.skip_duplicate(
-                                task_id,
-                                call,
-                                &first,
-                                &mut transcript,
-                                true,
-                                false,
-                            )
-                            .await;
+                            skips.push(Some(Skip {
+                                first: first.clone(),
+                                search: true,
+                                typed: false,
+                            }));
                             continue;
                         }
                         if !qk.is_empty() {
                             searched.insert(qk, call.id.clone());
                         }
+                    }
+                    skips.push(None);
+                }
+                // 2. run them: stretches of independent calls (sub-agents, reads) at the same time, the rest in order
+                let shape: Vec<(&str, bool)> = calls
+                    .iter()
+                    .zip(&skips)
+                    .map(|(c, s)| (c.name.as_str(), s.is_none()))
+                    .collect();
+                let runs = concurrent_runs(&shape);
+                let mut i = 0;
+                while i < calls.len() {
+                    if let Some(run) = runs.iter().find(|r| r.start == i) {
+                        let batch = &calls[run.clone()];
+                        self.event(
+                            task_id,
+                            "parallel_calls",
+                            json!({"calls": batch.iter().map(|c| json!({"call_id": c.id, "name": c.name})).collect::<Vec<_>>()}),
+                        )
+                        .await;
+                        let base = transcript.clone();
+                        let futs = batch.iter().map(|call| {
+                            let mut tr = base.clone();
+                            let (t, catalog) = (&t, &catalog);
+                            async move {
+                                let r = self
+                                    .exec_call(
+                                        t,
+                                        call,
+                                        &mut tr,
+                                        catalog,
+                                        &[],
+                                        None,
+                                        CallMode {
+                                            batch: true,
+                                            ..CallMode::MAIN
+                                        },
+                                    )
+                                    .await;
+                                (r, tr)
+                            }
+                        });
+                        let results = futures::future::join_all(futs).await;
+                        // the results go into the transcript in call order, whatever order they finished in
+                        let mut suspend = None;
+                        for (r, tr) in results {
+                            transcript.extend(tr.into_iter().skip(base.len()));
+                            match r {
+                                Ok(out) => {
+                                    consecutive_errors =
+                                        if out.ok { 0 } else { consecutive_errors + 1 };
+                                    progress = progress || !out.refused;
+                                }
+                                Err(sp) => suspend = suspend.or(Some(sp)),
+                            }
+                        }
+                        if let Some(sp) = suspend {
+                            return self.suspend(task_id, sp, transcript).await;
+                        }
+                        i = run.end;
+                        continue;
+                    }
+                    let call = &calls[i];
+                    if let Some(sk) = &skips[i] {
+                        self.skip_duplicate(
+                            task_id,
+                            call,
+                            &sk.first,
+                            &mut transcript,
+                            sk.search,
+                            sk.typed,
+                        )
+                        .await;
+                        i += 1;
+                        continue;
                     }
                     match self
                         .exec_call(
@@ -2074,7 +2200,7 @@ answer you can from what you have — what is done, the findings and what is mis
                             &catalog,
                             &calls[i + 1..],
                             None,
-                            false,
+                            CallMode::MAIN,
                         )
                         .await
                     {
@@ -2084,6 +2210,7 @@ answer you can from what you have — what is done, the findings and what is mis
                         }
                         Err(sp) => return self.suspend(task_id, sp, transcript).await,
                     }
+                    i += 1;
                 }
                 self.store
                     .update_task(task_id, &json!({"transcript": transcript}))?;

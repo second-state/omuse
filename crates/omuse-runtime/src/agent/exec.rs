@@ -23,6 +23,30 @@ use super::{RESULT_LIMIT, SEARCH_RESULT_LIMIT};
 use crate::llm::{ChatOpts, LlmError, ToolCall};
 use crate::prompts;
 
+/// Who makes a call and how it runs.
+///
+/// * `sub`: a sub-agent's call (read-only, never waits for the user: Sentinel is asked with `no_ask`).
+/// * `lane`: the sub-agent's browser lane. Sentinel gives each lane its own page in the broker (`<task>~<lane>`), so
+///   parallel sub-agents never share a tab; policy, taint and audit still belong to the task.
+/// * `batch`: one of several calls of the same turn running at the same time. Also `no_ask`: a call that would need
+///   an approval comes back as an error asking the model to make it alone next turn, so no approval is left behind
+///   that the task is not waiting on, and its result never depends on the other calls of the batch.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CallMode<'a> {
+    pub sub: bool,
+    pub lane: &'a str,
+    pub batch: bool,
+}
+
+impl CallMode<'static> {
+    /// The main agent, one call at a time.
+    pub const MAIN: CallMode<'static> = CallMode {
+        sub: false,
+        lane: "",
+        batch: false,
+    };
+}
+
 /// What one call did: `ok` (not an error) and `refused` (a guard answered instead of running it).
 #[derive(Debug, Clone, Copy)]
 pub struct CallOutcome {
@@ -166,22 +190,26 @@ impl Runtime {
         catalog: &'a Value,
         remaining: &'a [ToolCall],
         allow: Option<&'a [&'a str]>,
-        sub: bool,
+        mode: CallMode<'a>,
     ) -> BoxFuture<'a, Result<CallOutcome, Suspend>> {
         Box::pin(async move {
             let task_id = get_str(t, "id");
             let name = call.name.as_str();
+            let sub = mode.sub;
             let args = if truthy(&call.args) {
                 call.args.clone()
             } else {
                 json!({})
             };
-            self.event(
-                &task_id,
-                "tool_call",
-                json!({"call_id": call.id, "name": name, "args": preview_args(&args), "sub": sub}),
-            )
-            .await;
+            let mut ev =
+                json!({"call_id": call.id, "name": name, "args": preview_args(&args), "sub": sub});
+            if !mode.lane.is_empty() {
+                ev["lane"] = json!(mode.lane);
+            }
+            if mode.batch {
+                ev["batch"] = json!(true);
+            }
+            self.event(&task_id, "tool_call", ev).await;
             let ext_names: Vec<&str> = arr(catalog, "tools").iter().map(tool_name).collect();
             let mut ok = true;
             let mut refused = false;
@@ -310,14 +338,13 @@ Use another source, or browser_request_takeover if this exact site is essential.
                 ok = false;
             } else if ext_names.contains(&name) {
                 let golden = get_str(t, "source") == "golden";
+                let mut act = json!({"task_id": task_id, "call_id": call.id, "tool": name,
+                        "args": args, "no_ask": sub || mode.batch, "dry_run": golden});
+                if !mode.lane.is_empty() {
+                    act["lane"] = json!(mode.lane);
+                }
                 let mut res = match self
-                    .sentinel(
-                        "POST",
-                        "/internal/act",
-                        Some(json!({"task_id": task_id, "call_id": call.id, "tool": name,
-                        "args": args, "no_ask": sub, "dry_run": golden})),
-                        240.0,
-                    )
+                    .sentinel("POST", "/internal/act", Some(act), 240.0)
                     .await
                 {
                     Ok(r) => r,
@@ -329,6 +356,11 @@ Use another source, or browser_request_takeover if this exact site is essential.
                     let why = sget(&res, "reason");
                     res = json!({"status": "denied", "reason": self.dry_run_stop(&task_id, name, &args, &why).await});
                     refused = true;
+                }
+                if mode.batch && !sub && truthy(res.get("needs_approval").unwrap_or(&Value::Null)) {
+                    // the user's approval dialog can only wait on a call the task is suspended on: ask for it again alone
+                    res = json!({"status": "denied", "reason": "这个调用需要用户审批，不能和同一轮的其他调用并行执行：下一轮单独调用它（那一轮只放这一个调用），审批对话框才会弹出。\
+ This call needs the user's approval, so it cannot run beside the other calls of this turn: call it again on its own next turn (the only call in that turn) and the approval dialog will open."});
                 }
                 let st = sget(&res, "status");
                 if st == "approval_required" && !sub {
@@ -476,9 +508,11 @@ on this site; switch to another source, or request a takeover if this site is es
             }
             transcript.push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
             self.note_tool_text(&task_id, &content);
-            self.event(&task_id, "tool_result",
-                       json!({"call_id": call.id, "name": name, "ok": ok, "sub": sub, "preview": truncate(&content, 800)}))
-                .await;
+            let mut ev = json!({"call_id": call.id, "name": name, "ok": ok, "sub": sub, "preview": truncate(&content, 800)});
+            if !mode.lane.is_empty() {
+                ev["lane"] = json!(mode.lane);
+            }
+            self.event(&task_id, "tool_result", ev).await;
             Ok(CallOutcome { ok, refused })
         })
     }

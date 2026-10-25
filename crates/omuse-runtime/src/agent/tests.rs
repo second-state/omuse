@@ -731,3 +731,252 @@ async fn cancel_interrupts_a_retry_after_sleep() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), n); // no more requests after the cancel
 }
+
+// ---------------------------------------------------------------- parallel steps and sub-agents
+#[test]
+fn concurrent_runs_groups_independent_calls_only() {
+    use super::tools::concurrent_runs;
+    // two sub-agents side by side; update_plan after them in order; a skipped copy breaks a run; a lone call runs alone
+    let shape = [
+        ("delegate", true),
+        ("delegate", true),
+        ("update_plan", true),
+        ("gmail_search", true),
+        ("gmail_search", false),
+        ("files_read", true),
+        ("browser_click", true),
+        ("delegate", true),
+    ];
+    assert_eq!(concurrent_runs(&shape), vec![0..2]);
+    let shape = [
+        ("files_read", true),
+        ("calculate", true),
+        ("market_data", true),
+        ("browser_navigate", true),
+        ("browser_read", true),
+        ("browser_search", true),
+    ];
+    assert_eq!(concurrent_runs(&shape), vec![0..3, 4..6]);
+    assert!(concurrent_runs(&[("delegate", true)]).is_empty());
+    assert!(concurrent_runs(&[("browser_click", true), ("browser_type", true)]).is_empty());
+    assert!(concurrent_runs(&[]).is_empty());
+}
+
+#[tokio::test]
+async fn update_plan_keeps_parallel_labels_and_steps_can_be_marked() {
+    let (rt, _d) = rt();
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("g", &conv, "chat", "", "", None)
+        .unwrap();
+    let tid = t["id"].as_str().unwrap().to_string();
+    let r = rt
+        .local(
+            &t,
+            "update_plan",
+            &json!({"steps": [
+                {"id": "s1", "description": "a"},
+                {"id": "s2", "description": "b", "parallel": "p1"},
+                {"id": "s3", "description": "c", "parallel": " p1 "}]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r, "计划已更新 plan updated");
+    let plan = rt.store.task(&tid).unwrap().unwrap()["plan"].clone();
+    assert_eq!(plan["steps"][1]["parallel"], "p1");
+    assert_eq!(plan["steps"][2]["parallel"], "p1");
+    assert!(plan["steps"][0].get("parallel").is_none());
+    // marking a step keeps its label; an explicit empty label removes it
+    rt.local(
+        &t,
+        "update_plan",
+        &json!({"steps": [{"id": "s2", "status": "done"}, {"id": "s3", "parallel": ""}]}),
+    )
+    .await
+    .unwrap();
+    let plan = rt.store.task(&tid).unwrap().unwrap()["plan"].clone();
+    assert_eq!(plan["steps"][1]["status"], "done");
+    assert_eq!(plan["steps"][1]["parallel"], "p1");
+    assert!(plan["steps"][2].get("parallel").is_none());
+    assert!(rt.set_step_status(&tid, "s3", "running").await);
+    assert!(!rt.set_step_status(&tid, "nope", "running").await);
+    assert!(!rt.set_step_status(&tid, "", "running").await);
+    let plan = rt.store.task(&tid).unwrap().unwrap()["plan"].clone();
+    assert_eq!(plan["steps"][2]["status"], "running");
+    // a finished step is not set back to running by a late sub-agent start
+    assert!(rt.set_step_status(&tid, "s2", "running").await);
+    assert_eq!(
+        rt.store.task(&tid).unwrap().unwrap()["plan"]["steps"][1]["status"],
+        "done"
+    );
+}
+
+/// A model that answers every chat with a report naming the task it was given, after a short delay.
+struct SubReport(Arc<std::sync::atomic::AtomicUsize>);
+
+impl crate::llm::LlmTransport for SubReport {
+    fn send(
+        &self,
+        req: crate::llm::HttpRequest,
+    ) -> futures::future::BoxFuture<'_, Result<crate::llm::HttpResponse, String>> {
+        let task = req
+            .json
+            .as_ref()
+            .and_then(|j| j.get("messages"))
+            .and_then(Value::as_array)
+            .and_then(|a| a.iter().find(|m| m["role"] == "user"))
+            .and_then(|m| m["content"].as_str())
+            .unwrap_or("")
+            .to_string();
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let body = json!({"choices": [{"message": {"role": "assistant", "content": format!("REPORT: {task}")},
+                                           "finish_reason": "stop"}]});
+            Ok(crate::llm::HttpResponse {
+                status: 200,
+                retry_after: None,
+                text: body.to_string(),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn delegate_runs_sub_agents_side_by_side_and_marks_their_steps() {
+    use omuse_common::util::get_str;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg =
+        Arc::new(Config::parse(&format!("[data]\ndir = \"{}\"\n", dir.path().display())).unwrap());
+    let publish: Publish = Arc::new(|_ev| Box::pin(async {}));
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rt = Runtime::with_llm_transport(
+        &dir.path().join("runtime"),
+        cfg,
+        publish,
+        Some(Arc::new(SubReport(hits.clone()))),
+    )
+    .unwrap();
+    let paths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let p2 = paths.clone();
+    rt.set_sentinel_hook(Some(Arc::new(move |_, path, _| {
+        p2.lock().push(path);
+        Box::pin(async { Ok(json!({})) })
+    })));
+    rt.store
+        .set_settings(&json!({"model_base_url": "http://model.test/v1", "model_name": "fake", "model_api_key": "k",
+                              "llm_concurrency": 4}))
+        .unwrap();
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("compare hotels", &conv, "chat", "", "", None)
+        .unwrap();
+    let tid = t["id"].as_str().unwrap().to_string();
+    rt.store
+        .update_task(
+            &tid,
+            &json!({"plan": {"objective": "o", "steps": [
+                {"id": "s1", "description": "mail", "status": "done"},
+                {"id": "s2", "description": "hotel A", "status": "pending", "parallel": "p1"},
+                {"id": "s3", "description": "hotel B", "status": "pending", "parallel": "p1"},
+                {"id": "s4", "description": "compare", "status": "pending"}]}}),
+        )
+        .unwrap();
+    let t = rt.store.task(&tid).unwrap().unwrap();
+    let t0 = std::time::Instant::now();
+    let out = rt
+        .local(
+            &t,
+            "delegate",
+            &json!({"tasks": [
+                {"role": "researcher", "task": "look up hotel A", "step": "s2"},
+                {"task": "look up hotel B", "step": "s3"}]}),
+        )
+        .await
+        .unwrap();
+    let took = t0.elapsed();
+    assert!(
+        out.contains(
+            "<subagent_report role=\"researcher\" step=\"s2\">\nREPORT: look up hotel A\n</subagent_report>"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("<subagent_report role=\"researcher\" step=\"s3\">\nREPORT: look up hotel B"),
+        "{out}"
+    );
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        took < std::time::Duration::from_millis(550),
+        "the two sub-agents ran one after the other: {took:?}"
+    );
+    let evs = rt.store.events(&tid, 0).unwrap();
+    let types: Vec<String> = evs.iter().map(|e| get_str(e, "type")).collect();
+    let first_done = types.iter().position(|x| x == "subagent_done").unwrap();
+    assert_eq!(
+        types[..first_done]
+            .iter()
+            .filter(|x| *x == "subagent_start")
+            .count(),
+        2,
+        "both sub-agents start before either finishes: {types:?}"
+    );
+    let starts: Vec<&Value> = evs
+        .iter()
+        .filter(|e| get_str(e, "type") == "subagent_start")
+        .collect();
+    assert_eq!(get_str(&starts[0]["data"], "lane"), "sub1");
+    assert_eq!(get_str(&starts[1]["data"], "lane"), "sub2");
+    assert_eq!(get_str(&starts[1]["data"], "step"), "s3");
+    let done: Vec<&Value> = evs
+        .iter()
+        .filter(|e| get_str(e, "type") == "subagent_done")
+        .collect();
+    assert!(done
+        .iter()
+        .all(|e| e["data"]["ok"] == true && e["data"]["secs"].is_number()));
+    let plan = rt.store.task(&tid).unwrap().unwrap()["plan"].clone();
+    assert_eq!(plan["steps"][1]["status"], "done");
+    assert_eq!(plan["steps"][2]["status"], "done");
+    assert_eq!(plan["steps"][3]["status"], "pending");
+    assert_eq!(crate::prompts::next_parallel_stage(Some(&plan)), None);
+    // each lane's browser page is handed back to the broker
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        paths
+            .lock()
+            .iter()
+            .filter(|p| p.as_str() == "/internal/browser_release")
+            .count(),
+        2
+    );
+    // the single form still works (no step → no step attribute), and lane numbers continue
+    let out = rt
+        .local(
+            &t,
+            "delegate",
+            &json!({"role": "checker", "task": "verify"}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        out.starts_with("<subagent_report role=\"checker\">\nREPORT: verify"),
+        "{out}"
+    );
+    let lanes: Vec<String> = rt
+        .store
+        .events(&tid, 0)
+        .unwrap()
+        .iter()
+        .filter(|e| get_str(e, "type") == "subagent_start")
+        .map(|e| get_str(&e["data"], "lane"))
+        .collect();
+    assert_eq!(lanes, ["sub1", "sub2", "sub3"]);
+    assert!(rt
+        .local(&t, "delegate", &json!({}))
+        .await
+        .unwrap()
+        .starts_with("ERROR"));
+}

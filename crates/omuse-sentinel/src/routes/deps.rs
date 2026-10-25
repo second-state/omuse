@@ -66,14 +66,15 @@ pub fn calendar_read_only(store: &Store) -> bool {
     actions::calendar_read_only(store)
 }
 
-/// `actions.execute(store, tool, args, task_id)`.
+/// `actions.execute(store, tool, args, task_id)`; `page` = the browser page (the task's, or a sub-agent lane's).
 pub async fn execute(
     ctx: &Ctx,
     tool: &str,
     args: &Value,
     task_id: &str,
+    page: &str,
 ) -> Result<Value, ExecError> {
-    actions::execute(ctx, tool, args, task_id).await
+    actions::execute(ctx, tool, args, task_id, page).await
 }
 
 /// `actions.calendar_call(store, tool, args, task_id)`.

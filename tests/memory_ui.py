@@ -39,7 +39,7 @@ async def main():
         rows = await pg.locator("table.memtable tbody tr").all_inner_texts()
         check("a chip filters the table to that domain", rows and all("shop.test" in r for r in rows), rows)
         await pg.fill("input[placeholder^='输入一个请求']", "帮我在 shop.test 挑一双跑鞋")
-        await pg.click("text=看看 Preview")
+        await pg.click("text=看看")
         await pg.wait_for_timeout(800)
         txt = await pg.locator(".card", has_text="试一试").inner_text()
         check("try-it shows the size and the shop habit", "43码" in txt and "shop.test" in txt, txt[:600])

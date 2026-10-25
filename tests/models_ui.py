@@ -46,7 +46,7 @@ async def main():
         await save.click()
         await pg.wait_for_timeout(300)
         t = await pg.locator(".toast.err").last.inner_text()
-        check("then the API key", "API key" in t, t)
+        check("then the API key", "API" in t and ("密钥" in t or "key" in t), t)
         await inputs.nth(1).fill("ui-key-1")
         await save.click()
         await pg.wait_for_timeout(300)

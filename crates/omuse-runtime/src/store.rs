@@ -87,7 +87,7 @@ pub fn default_settings(cfg: &Config) -> Value {
         "image_model": cfg.model.image,                // image model id; "" = auto-pick
         "temperature": 0.3,
         "max_steps": 40,
-        "llm_concurrency": 2,   // model requests in flight at once
+        "llm_concurrency": 4,   // model requests in flight at once (parallel sub-agents each use one)
         "max_minutes": 20,      // time budget per run
         "max_tokens": 4096,
         "timezone": cfg.server.timezone,

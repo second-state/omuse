@@ -55,42 +55,47 @@ async def ui():
         check("Settings has a Language selector set to English", await sel.count() == 1 and await sel.input_value() == "en")
         check("English help text under it", await pg.locator("text=The agent thinks and works in this language").count() == 1)
         await pg.screenshot(path="/tmp/claude-0/settings-lang-en.png", full_page=False)
-        # the UI language is its own setting ("" = follow the browser): pick Simplified for the UI and the agent -> saved on
-        # the server, page reloads in Chinese
+        # the UI language is its own setting ("" = English): pick Simplified for the UI and the agent -> saved on the
+        # server, page reloads in Chinese — Chinese only, the English half of the bilingual source strings is gone
         await sel.select_option("zh")
         await pg.locator("select[aria-label='UI language']").select_option("zh")
         await pg.get_by_role("button", name="Save settings").click()
         await pg.wait_for_timeout(2500)
         check("switching to 中文 in Settings saves language=zh", c.get(B + "/api/settings").json()["settings"]["language"] == "zh")
-        check("page reloaded in Chinese", await pg.locator("text=保存设置 Save settings").count() == 1)
+        check("page reloaded in Chinese, one language only", await pg.locator("text=保存设置").count() == 1
+              and await pg.locator("text=Save settings").count() == 0
+              and await pg.locator("#approvalBell").get_attribute("aria-label") == "审批")
         await pg.screenshot(path="/tmp/claude-0/settings-lang-zh.png", full_page=False)
         # another browser (English locale) follows the server setting, not its own locale
         pg2 = await (await b.new_context(locale="en-US")).new_page()
         await pg2.goto(B + "/#settings")
         await pg2.wait_for_timeout(2500)
-        check("other devices follow the saved language", await pg2.locator("text=保存设置 Save settings").count() == 1)
-        # back to "follow the browser": each browser gets its own language — including Traditional Chinese
+        check("other devices follow the saved language", await pg2.locator("text=保存设置").count() == 1)
+        # no UI language chosen = English for every browser, a Traditional Chinese one included
         c.put(B + "/api/settings", json={"ui_language": ""}, headers=H)
         pg3 = await (await b.new_context(locale="zh-TW")).new_page()
         await pg3.goto(B + "/#settings")
         await pg3.wait_for_timeout(2500)
-        check("a Traditional Chinese browser gets the Traditional UI", await pg3.locator("text=儲存設定 Save settings").count() == 1
-              and await pg3.evaluate("document.documentElement.lang") == "zh-TW")
+        check("a Traditional Chinese browser still gets English until a UI language is chosen",
+              await pg3.locator("text=Save settings").count() == 1 and await pg3.locator("text=儲存設定").count() == 0
+              and await pg3.evaluate("document.documentElement.lang") == "en")
         check("the agent language is untouched by the UI language", c.get(B + "/api/settings").json()["settings"]["language"] == "zh")
         pg4 = await (await b.new_context(locale="en-US")).new_page()
         await pg4.goto(B + "/#settings")
         await pg4.wait_for_timeout(2500)
         check("an English browser gets English while the agent speaks Chinese", await pg4.locator("text=Save settings").count() == 1
               and await pg4.locator("text=保存设置").count() == 0)
-        # a chosen UI language wins over the browser, on every device
+        # a chosen UI language applies on every device, whatever the browser's locale
         c.put(B + "/api/settings", json={"ui_language": "tw"}, headers=H)
         await pg4.reload()
         await pg4.wait_for_timeout(2500)
-        check("UI language = Traditional applies to an English browser too", await pg4.locator("text=儲存設定 Save settings").count() == 1)
+        check("UI language = Traditional applies to an English browser too, Traditional only",
+              await pg4.locator("text=儲存設定").count() == 1 and await pg4.locator("text=Save settings").count() == 0
+              and await pg4.evaluate("document.documentElement.lang") == "zh-TW")
         await pg4.screenshot(path="/tmp/claude-0/settings-lang-tw.png", full_page=False)
         # theme: Ink / Paper from Settings; "auto" follows the system
         await pg4.locator("select[aria-label=Theme]").select_option("ink")
-        await pg4.get_by_role("button", name="儲存設定 Save settings").click()
+        await pg4.get_by_role("button", name="儲存設定").click()
         await pg4.wait_for_timeout(1500)
         check("Ink theme saved and applied", c.get(B + "/api/settings").json()["settings"]["theme"] == "ink"
               and await pg4.evaluate("document.documentElement.getAttribute('data-theme')") == "ink"

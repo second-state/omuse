@@ -435,8 +435,9 @@ pub struct Llm {
     pub on_call: Option<Hook>,
     /// `async (info) -> None`: the UI shows "Retrying 1 of 3".
     pub on_retry: Option<Hook>,
-    /// Requests in flight at once (Settings → `llm_concurrency`, 1..=8).
-    sem: Semaphore,
+    /// Requests in flight at once (Settings → `llm_concurrency`, 1..=8): `(limit, semaphore)`, replaced when the
+    /// setting changes so a new value applies without a restart (requests already holding a slot finish on the old one).
+    sem: parking_lot::Mutex<(usize, Arc<Semaphore>)>,
     /// Speech-to-text runs on its own server; it must not hold an LLM slot.
     stt_sem: Semaphore,
     /// configured model -> (model actually served, until when). Only for a few minutes: while the Olares router
@@ -448,7 +449,28 @@ pub struct Llm {
     pub sleep_hook: Option<Arc<dyn Fn(f64) + Send + Sync>>,
 }
 
+/// `llm_concurrency` from the settings, 1..=8 (default 4: parallel sub-agents each hold a slot while their model
+/// answers; a local llama.cpp with fewer slots queues the extra requests itself).
+fn concurrency(settings: &Value) -> usize {
+    settings
+        .get("llm_concurrency")
+        .and_then(omuse_common::util::as_i64)
+        .filter(|n| *n > 0)
+        .unwrap_or(4)
+        .clamp(1, 8) as usize
+}
+
 impl Llm {
+    /// The semaphore for the current `llm_concurrency` setting (a new one when the setting changed).
+    fn slots(&self, settings: &Value) -> Arc<Semaphore> {
+        let want = concurrency(settings);
+        let mut g = self.sem.lock();
+        if g.0 != want {
+            *g = (want, Arc::new(Semaphore::new(want)));
+        }
+        g.1.clone()
+    }
+
     pub fn new(get_settings: SettingsFn, on_call: Option<Hook>, on_retry: Option<Hook>) -> Self {
         Self::with_transport(
             get_settings,
@@ -465,17 +487,12 @@ impl Llm {
         on_retry: Option<Hook>,
         transport: Arc<dyn LlmTransport>,
     ) -> Self {
-        // llama.cpp serves 2 slots (-np 2) and batches them, so two tasks no longer wait for each other's calls
-        let n = get_settings()
-            .get("llm_concurrency")
-            .and_then(omuse_common::util::as_i64)
-            .filter(|n| *n > 0)
-            .unwrap_or(2);
+        let n = concurrency(&get_settings());
         Self {
             get_settings,
             on_call,
             on_retry,
-            sem: Semaphore::new(n.clamp(1, 8) as usize),
+            sem: parking_lot::Mutex::new((n, Arc::new(Semaphore::new(n)))),
             stt_sem: Semaphore::new(1),
             fallback: parking_lot::Mutex::new(HashMap::new()),
             transport,
@@ -796,8 +813,8 @@ impl Llm {
         let mut stripped_kwargs = false;
         let headers = settings_auth(&s);
         let _slot = self
-            .sem
-            .acquire()
+            .slots(&s)
+            .acquire_owned()
             .await
             .map_err(|e| LlmError::Failed(e.to_string()))?;
         let wait_s = round2(now_ts() - queued);

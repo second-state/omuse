@@ -9,9 +9,12 @@ to a subject ends with the report file written; the library index is rebuilt fro
 
 1. **Plan the questions.** From the brief, list 3–7 sub-questions that together answer it (definitions, options, numbers,
    recent changes, risks, what others recommend). Write them into the plan with update_plan.
-2. **Fan out.** For each sub-question use browser_search once, then browser_read the 2–4 best URLs in ONE call. When a
-   sub-question needs several pages of digging, delegate(role="researcher", task="<the sub-question + what to return>")
-   — up to 5 sub-agents per task, run them for independent questions; keep the easy questions for yourself.
+2. **Fan out — in one turn.** The sub-questions are independent: give them the same `parallel` label in the plan, then
+   start them all in a SINGLE turn — delegate(role="researcher", task="<the sub-question + what to return + the
+   language>", step="<its step id>") once per sub-question, or one delegate call with tasks=[…]. They run at the same
+   time, each with its own browser, and the reports come back together (up to 8 sub-agents per task). Keep one or two
+   easy questions for yourself (browser_search once, then browser_read the 2–4 best URLs in ONE call); never work
+   through the sub-questions one turn at a time.
 3. **Write as you go.** Context gets compressed: after each sub-question, append its section to the report with
    files_write(path=<report file>, append=true). First call writes the frame:
    `# <title>` · `_Brief: …_` · `## Summary` (fill at the end) · one `## <sub-question>` per finding · `## Open questions` ·

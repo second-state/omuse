@@ -730,7 +730,15 @@ pub fn email_envelope(store: &Store, task_id: &str, mut msg: Value) -> anyhow::R
 }
 
 /// Run one authorized tool call.
-pub async fn execute(st: &AppState, tool: &str, args: &Value, task_id: &str) -> ActResult {
+/// `page`: the browser page the call works on — the task's own, or a sub-agent lane's (`<task>~<lane>`); everything
+/// else (taint, ledger, approvals) is keyed by `task_id`.
+pub async fn execute(
+    st: &AppState,
+    tool: &str,
+    args: &Value,
+    task_id: &str,
+    page: &str,
+) -> ActResult {
     let Some(t) = catalog::get(tool) else {
         return Err(ExecError::Internal(format!("'{tool}'")));
     };
@@ -778,7 +786,8 @@ pub async fn execute(st: &AppState, tool: &str, args: &Value, task_id: &str) -> 
         }));
     }
     if connector == "browser" {
-        return browser(st, tool, args, task_id).await;
+        let page = if page.is_empty() { task_id } else { page };
+        return browser(st, tool, args, task_id, page).await;
     }
     if connector == "telegram" {
         let text = fstr(args, "text");
@@ -1304,8 +1313,15 @@ pub fn snap_envelope(store: &Store, task_id: &str, snap: &Value) -> anyhow::Resu
     Ok(out)
 }
 
-/// The browser tools (Python `_browser`).
-pub async fn browser(st: &AppState, tool: &str, args: &Value, task_id: &str) -> ActResult {
+/// The browser tools (Python `_browser`). The broker addresses pages by `page` (the task id, or a sub-agent lane's
+/// `<task>~<lane>`); the task's context flags (taint, injection, domains) are recorded under `task_id`.
+pub async fn browser(
+    st: &AppState,
+    tool: &str,
+    args: &Value,
+    task_id: &str,
+    page: &str,
+) -> ActResult {
     let store = &st.store;
     let action = tool.strip_prefix("browser_").unwrap_or(tool);
     if action == "downloads" {
@@ -1317,7 +1333,7 @@ pub async fn browser(st: &AppState, tool: &str, args: &Value, task_id: &str) -> 
             st,
             "POST",
             "/agent/request_takeover",
-            Some(&json!({"task_id": task_id, "reason": reason})),
+            Some(&json!({"task_id": page, "reason": reason})),
             BROKER_TIMEOUT,
         )
         .await?;
@@ -1327,7 +1343,7 @@ pub async fn browser(st: &AppState, tool: &str, args: &Value, task_id: &str) -> 
         ));
     }
     if (action == "look" || action == "locate")
-        && vault::filled_here(task_id, &task_url(st, task_id).await)
+        && vault::filled_here(page, &task_url(st, page).await)
     {
         return Err(act_status(
             "这个页面上已经填了保险箱里的号码，为保护隐私不能截图给视觉模型看；请用 browser_snapshot / browser_find \
@@ -1339,7 +1355,7 @@ pub async fn browser(st: &AppState, tool: &str, args: &Value, task_id: &str) -> 
         Value::Object(_) => args.clone(),
         _ => json!({}),
     };
-    set(&mut payload, "task_id", json!(task_id));
+    set(&mut payload, "task_id", json!(page));
     if action == "fill_secret" {
         let (iid, field) = (fstr(args, "item_id"), fstr(args, "field"));
         let val = vault::value(store, &iid, &field)?;
@@ -1349,11 +1365,11 @@ pub async fn browser(st: &AppState, tool: &str, args: &Value, task_id: &str) -> 
                 "denied",
             ));
         }
-        let body = json!({"task_id": task_id, "ref": args.get("ref").cloned().unwrap_or(json!("")), "text": val,
+        let body = json!({"task_id": page, "ref": args.get("ref").cloned().unwrap_or(json!("")), "text": val,
             "keys": true, "expiry": field == "expiry"});
         let snap = broker(st, "POST", "/agent/type", Some(&body), 90.0).await?;
         vault::mark_used(store, &iid)?;
-        vault::note_fill(task_id, &fstr(&snap, "url"));
+        vault::note_fill(page, &fstr(&snap, "url"));
         let mut out = vault::scrub(store, &snap_envelope(store, task_id, &snap)?);
         let it = vault::item(store, &iid)?.unwrap_or_else(|| json!({"label": "?", "masked": ""}));
         set(
@@ -2164,7 +2180,7 @@ mod tests {
         assert_eq!(e.to_string(), "找不到邮箱账号 x@y.com（已连接: 无 none）");
         let e = telegram_send(&st, "hi").await.unwrap_err();
         assert_eq!(e.to_string(), "Telegram 通知未配置 (not configured)");
-        let e = execute(&st, "no_such_tool", &json!({}), "t")
+        let e = execute(&st, "no_such_tool", &json!({}), "t", "")
             .await
             .unwrap_err();
         assert!(matches!(e, ExecError::Internal(_)));
