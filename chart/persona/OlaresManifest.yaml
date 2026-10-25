@@ -71,6 +71,7 @@ spec:
 
     Runs on the local models served by your Olares by default — any OpenAI-compatible endpoint works. English and 中文 interface.
   upgradeDescription: |
+    0.4.1: Parallel plan steps: independent steps run at the same time as sub-agents, each with its own browser tab; the interface shows one language at a time (English by default); settings for parallel model requests
     0.4.0: Rewritten in Rust: one binary for all three services, about 9x less CPU and 6x less memory, faster start; same features and data
     0.2.76: Fixes: browser relaunch after idle shutdown; reply drafts on long threads; caption without Pillow; per-task image budget
     0.2.75: Images: make_image (text-to-image via any OpenAI-Images-compatible endpoint: Olares Router / gpt-image-1 / DALL-E / FLUX / SD; auto model pick, aspect/size fallbacks, styles, negative prompt, transparent background, formats), edit_image (inpainting by mask, prompt edits, reference images), vary_image (variations), caption_image (letter-perfect text on images, CJK), upscale_image (2x/4x local); clear not-configured / moderation / timeout handling
