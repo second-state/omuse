@@ -100,6 +100,15 @@ the skills (`skills/`) and the browser scripts (`crates/omuse-browser/js/`) are 
 check behaviour, texts and JSON shapes, so keep them stable. The Olares chart (`chart/`, packaged by `chart/build.sh`)
 runs the release image with one `--role` per container.
 
+### Browser auto-approval
+
+Settings → Agent → "auto-approve browser actions" is the browser connection's `config.auto_approve`; until the user
+sets it, `[browser] auto_approve` in `config.toml` is the default (true; `tests/run_local.sh` sets false so the
+suites keep testing the approval flow). In `routes::act::act`, an ASK that `Decision::browser_auto_ok` accepts (a
+browser tool, not `browser_fill_secret` or `browser_upload`, not per-use, not after a suspected injection) is recorded
+as an approval resolved by `auto`, audited as approved, run at once, and returned with `auto_approved`; the runtime
+adds an `approval_auto` event and the same chat card a manual approval gets. `tests/browser_auto_approve_e2e.py`.
+
 ### Parallel steps and sub-agents
 
 The planner (`prompts::PLANNER_SYSTEM`) gives steps that do not depend on each other the same `parallel` label; the
@@ -118,8 +127,16 @@ scenario (`tests/parallel_steps_e2e.py`).
 - Full local suite: `tests/run_in_docker.sh` (fresh stack per suite).
 - Real-model runs: the travel suites with `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env` (`OMUSE_E2E_MODELS=alt` for
   the second model pair); `tests/travel_ask_real.py` asks two research-only travel questions and checks that no
-  browser, approval or takeover was involved, with a TIMING line each.
+  browser, approval or takeover was involved, with a TIMING line each; `tests/browser_auto_real.py` reads a hotel booking from mail and
+  opens its address on openstreetmap.org (a data-egress check, so Sentinel always asks) with "auto-approve browser
+  actions" on (no dialog, recorded as approved by auto) and off (the same request stops at that step).
 - Image smoke test: `tests/docker_image_smoke.sh <image>`; set `OMUSE_VERSION`
   to the tag to also check the reported version.
 - `python3 tests/i18n_check.py` must report no missing or stale translations
   after any UI string change.
+- Travel skills: one scripted suite per skill (`tests/trip_today_e2e.py`, `sgac_e2e.py`, `arrival_cards_e2e.py`, `arrival_nomail_e2e.py`,
+  `entry_requirements_e2e.py`, `flight_disruption_e2e.py`, `baggage_e2e.py`, `travel_expense_e2e.py`,
+  `payments_asia_e2e.py`, `getting_around_e2e.py`, `tax_refund_e2e.py`, `emergency_e2e.py`, `hotel_requests_e2e.py`,
+  `dining_dietary_e2e.py`, `credit_card_picker_e2e.py`) on `tests/skills_common.py` (mail in the local IMAP server,
+  an iCal calendar, the travel connector, pages under `tests/pages`); the scenarios live in `tests/fake_llm.py`
+  (`travel_skill`). Knowledge files a skill ships (`load_skill(file=…)`) are described in `KNOWLEDGE.md`.

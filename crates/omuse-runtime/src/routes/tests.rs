@@ -149,8 +149,33 @@ async fn settings_model_override_rules() {
     assert_eq!(
         g["model_user"],
         json!({"model_base_url": "", "model_name": "", "planner_model": "", "vision_model": "", "stt_model": "",
-               "image_model": "", "api_key_set": false})
+               "image_model": "", "fast_mode": false, "reasoning_effort": "", "api_key_set": false})
     );
+    assert_eq!(
+        (
+            &g["system_model"]["fast_mode"],
+            &g["system_model"]["reasoning_effort"]
+        ),
+        (&json!(false), &json!(""))
+    );
+    // fast mode and reasoning can't be changed for the system's models: ignored
+    let (st, v) = call(
+        &e.app,
+        "PUT",
+        "/api/settings",
+        Some(json!({"fast_mode": true, "reasoning_effort": "high"})),
+        &[],
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        (
+            &v["settings"]["fast_mode"],
+            &v["settings"]["reasoning_effort"]
+        ),
+        (&json!(false), &json!(""))
+    );
+    assert_eq!(e.state.rt.store.user_model().unwrap()["fast_mode"], false);
     let sys = "http://127.0.0.1:9/v1";
     for (body, want) in [
         (
@@ -217,6 +242,32 @@ async fn settings_model_override_rules() {
         e.state.rt.store.saved_settings().unwrap()["model_api_key"],
         "user-key-1"
     );
+    // with the user's own model they can: saved, normalised, validated
+    let (st, v) = call(
+        &e.app,
+        "PUT",
+        "/api/settings",
+        Some(json!({"fast_mode": 1, "reasoning_effort": " Medium "})),
+        &[],
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        (
+            &v["settings"]["fast_mode"],
+            &v["settings"]["reasoning_effort"]
+        ),
+        (&json!(true), &json!("medium"))
+    );
+    let (st, _) = call(
+        &e.app,
+        "PUT",
+        "/api/settings",
+        Some(json!({"reasoning_effort": "turbo"})),
+        &[],
+    )
+    .await;
+    assert_eq!(st, 400);
     let (_, g) = call(&e.app, "GET", "/api/settings", None, &[]).await;
     assert_eq!(g["model_user"]["api_key_set"], true);
     assert!(g["model_user"].get("model_api_key").is_none());
@@ -233,6 +284,17 @@ async fn settings_model_override_rules() {
     assert_eq!(v["settings"]["model_override"], false);
     assert_eq!(v["settings"]["model_name"], "fake");
     assert_eq!(v["settings"]["model_api_key_set"], false);
+    assert_eq!(
+        (
+            &v["settings"]["fast_mode"],
+            &v["settings"]["reasoning_effort"]
+        ),
+        (&json!(false), &json!(""))
+    );
+    assert_eq!(
+        e.state.rt.store.user_model().unwrap()["reasoning_effort"],
+        "medium"
+    );
 
     let (st, v) = call(
         &e.app,

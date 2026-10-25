@@ -44,6 +44,8 @@ if [ ! -s "$CONFIG" ]; then
     kv url OMUSE_MODEL_URL; kv api_key OMUSE_MODEL_API_KEY; kv name OMUSE_MODEL
     kv planner OMUSE_PLANNER_MODEL; kv vision OMUSE_VISION_MODEL; kv stt OMUSE_STT_MODEL
     kv image OMUSE_IMAGE_MODEL; kv image_url OMUSE_IMAGE_URL; kv image_api_key OMUSE_IMAGE_API_KEY
+    case "${OMUSE_MODEL_FAST:-}" in 1|true|TRUE|yes|on) echo "fast = true";; esac
+    kv reasoning_effort OMUSE_MODEL_REASONING
     if [ -n "${OMUSE_SKILLS:-}" ]; then
       echo "[skills]"
       printf 'initial = ['; sep=""

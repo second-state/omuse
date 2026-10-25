@@ -980,3 +980,69 @@ async fn delegate_runs_sub_agents_side_by_side_and_marks_their_steps() {
         .unwrap()
         .starts_with("ERROR"));
 }
+
+// ---------------------------------------------------------------- load_skill: reference files beside SKILL.md
+#[tokio::test]
+async fn load_skill_reads_a_reference_file_inside_the_skill_folder_only() {
+    let (rt, _d) = rt();
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("g", &conv, "chat", "", "", None)
+        .unwrap();
+    let md = rt
+        .local(&t, "load_skill", &json!({"name": "credit-card-picker"}))
+        .await
+        .unwrap();
+    assert!(
+        md.starts_with("---\nname: credit-card-picker"),
+        "{}",
+        &md[..80]
+    );
+    let sg = rt
+        .local(
+            &t,
+            "load_skill",
+            &json!({"name": "credit-card-picker", "file": "cards/sg.md"}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        sg.starts_with("# Credit cards — SG") && sg.contains("| DBS | Altitude"),
+        "{}",
+        &sg[..120]
+    );
+    let missing = rt
+        .local(
+            &t,
+            "load_skill",
+            &json!({"name": "credit-card-picker", "file": "cards/xx.md"}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        missing.starts_with("ERROR") && missing.contains("cards/sg.md"),
+        "{missing}"
+    );
+    let escape = rt
+        .local(
+            &t,
+            "load_skill",
+            &json!({"name": "credit-card-picker", "file": "../trip-today/SKILL.md"}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        escape.starts_with("ERROR") && escape.contains("relative path"),
+        "{escape}"
+    );
+    let abs = rt
+        .local(
+            &t,
+            "load_skill",
+            &json!({"name": "credit-card-picker", "file": "/etc/passwd"}),
+        )
+        .await
+        .unwrap();
+    assert!(abs.starts_with("ERROR"), "{abs}");
+}

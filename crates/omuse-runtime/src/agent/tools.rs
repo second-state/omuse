@@ -513,7 +513,9 @@ completes (it is marked running/done for you). A sub-agent sees nothing of this 
 needs (what to find, where, what to return, in which language) in task.",
             json!({"role": s, "task": s, "step": s,
                    "tasks": {"type": "array", "items": {"type": "object", "properties": {"role": s, "task": s, "step": s}, "required": ["task"]}}}), &[]),
-        fn_("load_skill", "加载技能说明 Load a skill's detailed instructions by name.", json!({"name": s}), &["name"]),
+        fn_("load_skill", "加载技能说明；file 可读取技能目录里的参考文件（如 cards/sg.md）Load a skill's detailed instructions by name; \
+with file, read a reference file that skill ships (e.g. file=\"cards/sg.md\", as its instructions name it).",
+            json!({"name": s, "file": {"type": "string", "description": "optional: a reference file inside the skill's folder"}}), &["name"]),
         fn_("library_list", "列出研究库里的课题 List the research subjects in the user's library (title, status, report file).", json!({}), &[]),
         fn_("library_search", "在研究库的报告里搜索 Search the reports in the research library (passages with their subject).", json!({"query": s}), &["query"]),
         fn_("library_get", "读取研究库里一份完整报告 Read a research subject's whole report by title or slug.", json!({"subject": s}), &["subject"]),

@@ -40,6 +40,11 @@ image = ""                 # OMUSE_IMAGE_MODEL   ("" = auto-pick)
 image_url = ""             # OMUSE_IMAGE_URL     ("" = the model endpoint)
 image_api_key = ""         # OMUSE_IMAGE_API_KEY ("" = api_key)
 image_budget = 6           # OMUSE_IMAGE_BUDGET: generated pictures per task
+fast = false               # OMUSE_MODEL_FAST: true = send service_tier "fast" with every chat request (for the system's
+                           # models; with "use my own model" the user sets it in Settings → Models)
+reasoning_effort = ""      # OMUSE_MODEL_REASONING: reasoning_effort for every chat request: none | minimal | low | medium |
+                           # high | xhigh; "" = not sent (the model's default). "none" also turns thinking off on
+                           # chat-template models. Same rule: Settings changes it only for the user's own model
 
 [skills]
 # initial = ["online-shopping", "reply-email"]   # OMUSE_SKILLS: skills on at the first start of a fresh volume (unset = all)
@@ -50,6 +55,9 @@ headless = ""              # BROWSER_HEADLESS: "" auto, "1" headless, "0" headed
 display = ":99"            # BROWSER_DISPLAY: Xvfb display to start
 user_agent = ""            # BROWSER_UA
 pace_gap = 1.3             # BROWSER_PACE_GAP: min seconds between hits to one site
+auto_approve = true        # default of Settings → Agent → "auto-approve browser actions" (page loads, clicks, typing, submits run
+                           # without the approval dialog; vault fills, uploads, payments, order changes, logins and anything after a
+                           # suspected prompt injection still ask). The user's choice in Settings overrides this.
 idle_shutdown = 600        # BROWSER_IDLE_SHUTDOWN: close Chromium after this many idle seconds (0 = never)
 search_engines = ""        # SEARCH_ENGINES (tests): "name=url-prefix,name=url-prefix"
 executable = ""            # Chromium binary ("" = auto-detect)

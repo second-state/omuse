@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><title>Arrival card (test form)</title></head>
+<body>
+<h1>Electronic arrival card — test form</h1>
+<p>Free of charge. File within the window before arrival.</p>
+<form action="/arrival_done.html" method="get">
+  <label>Full name (as in passport) <input type="text" name="name"></label>
+  <label>Date of birth <input type="text" name="dob" placeholder="YYYY-MM-DD"></label>
+  <label>Nationality <input type="text" name="nationality"></label>
+  <label>Passport number <input type="text" name="passport"></label>
+  <label>Arrival flight <input type="text" name="flight"></label>
+  <label>Accommodation <input type="text" name="hotel"></label>
+  <label>Purpose <select name="purpose"><option>Holiday</option><option>Business</option></select></label>
+  <button type="submit">Submit declaration</button>
+</form>
+</body></html>

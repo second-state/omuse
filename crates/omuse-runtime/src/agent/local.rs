@@ -1103,9 +1103,61 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                 let want = sget(a, "name").trim().to_string();
                 let skills = self.skills();
                 if let Some(sk) = skills.iter().find(|s| get_str(s, "name") == want) {
-                    return Ok(
-                        String::from_utf8_lossy(&std::fs::read(get_str(sk, "path"))?).into_owned(),
-                    );
+                    let file = sget(a, "file").trim().trim_start_matches('/').to_string();
+                    if file.is_empty() {
+                        return Ok(
+                            String::from_utf8_lossy(&std::fs::read(get_str(sk, "path"))?)
+                                .into_owned(),
+                        );
+                    }
+                    // a reference file the skill ships beside its SKILL.md (knowledge tables, templates): the
+                    // skill's own folder only, text only, capped
+                    let folder = std::path::Path::new(&get_str(sk, "path"))
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                        .unwrap_or_default();
+                    let rel = std::path::Path::new(&file);
+                    if rel
+                        .components()
+                        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+                    {
+                        return Ok("ERROR: file 只能是技能目录里的相对路径 (file must be a relative path inside the skill's folder)".into());
+                    }
+                    let p = folder.join(rel);
+                    return Ok(match std::fs::read(&p) {
+                        Ok(bytes) if bytes.len() <= 400_000 => {
+                            String::from_utf8_lossy(&bytes).into_owned()
+                        }
+                        Ok(_) => "ERROR: 文件太大 (file larger than 400 KB)".into(),
+                        Err(_) => {
+                            let mut have: Vec<String> = Vec::new();
+                            if let Ok(rd) = std::fs::read_dir(&folder) {
+                                for e in rd.flatten() {
+                                    let n = e.file_name().to_string_lossy().into_owned();
+                                    if e.path().is_dir() {
+                                        if let Ok(sub) = std::fs::read_dir(e.path()) {
+                                            have.extend(sub.flatten().map(|f| {
+                                                format!("{}/{}", n, f.file_name().to_string_lossy())
+                                            }));
+                                        }
+                                    } else if n != "SKILL.md" {
+                                        have.push(n);
+                                    }
+                                }
+                            }
+                            have.sort();
+                            format!(
+                                "ERROR: 技能 {} 里没有文件 {} (no such file). Files: {}",
+                                want,
+                                file,
+                                if have.is_empty() {
+                                    "(none)".to_string()
+                                } else {
+                                    have.join(", ")
+                                }
+                            )
+                        }
+                    });
                 }
                 if self
                     .skills_dirs

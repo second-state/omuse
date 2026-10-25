@@ -101,7 +101,8 @@ pub fn default_settings(cfg: &Config) -> Value {
         "memory_extraction": true,
         "memory_consolidation": true,
         "memory_consolidate_at": "03:30",
-        "disable_thinking": false,
+        "fast_mode": false,      // the user's own model: send service_tier "fast" (system models: [model] fast)
+        "reasoning_effort": "",  // the user's own model: reasoning_effort ("" = not sent; system: [model] reasoning_effort)
         "llm_timeout": 600,
     })
 }
@@ -116,6 +117,23 @@ pub const MODEL_KEYS: [&str; 7] = [
     "image_model",
     "image_base_url",
 ];
+/// Request options that follow the same rule as [`MODEL_KEYS`]: the config's values for the system's models, the
+/// user's own (Settings → Models) only while `model_override` is on.
+pub const MODEL_OPTIONS: [&str; 2] = ["fast_mode", "reasoning_effort"];
+/// The values `reasoning_effort` may take ("" = not sent).
+pub const REASONING_EFFORTS: [&str; 7] = ["", "none", "minimal", "low", "medium", "high", "xhigh"];
+
+/// The system's [`MODEL_OPTIONS`] (`[model] fast`, `[model] reasoning_effort`); an unknown effort is not sent.
+pub fn system_options(cfg: &Config) -> Value {
+    let effort = cfg.model.reasoning_effort.trim().to_lowercase();
+    let effort = if REASONING_EFFORTS.contains(&effort.as_str()) {
+        effort
+    } else {
+        String::new()
+    };
+    json!({"fast_mode": cfg.model.fast, "reasoning_effort": effort})
+}
+
 /// What the user's own set must have before it can be switched on.
 pub const MODEL_REQUIRED: [&str; 3] = ["model_base_url", "model_api_key", "model_name"];
 
@@ -158,6 +176,9 @@ pub fn effective_model(s: &Value, cfg: &Config) -> Value {
             "model_api_key".into(),
             Value::String(system_model_api_key(cfg)),
         );
+        if let Value::Object(opts) = system_options(cfg) {
+            out.extend(opts);
+        }
     }
     Value::Object(out)
 }
@@ -765,6 +786,19 @@ impl Store {
                 .unwrap_or_default();
             out.insert(k.to_string(), Value::String(v));
         }
+        out.insert(
+            "fast_mode".into(),
+            Value::Bool(rows.get("fast_mode").is_some_and(truthy)),
+        );
+        out.insert(
+            "reasoning_effort".into(),
+            Value::String(
+                rows.get("reasoning_effort")
+                    .filter(|v| truthy(v))
+                    .map(py_str)
+                    .unwrap_or_default(),
+            ),
+        );
         out.insert(
             "api_key_set".into(),
             Value::Bool(rows.get("model_api_key").map(truthy).unwrap_or(false)),
@@ -2145,7 +2179,7 @@ mod tests {
         assert_eq!(
             st.user_model().unwrap(),
             json!({"model_base_url": "", "model_name": "", "planner_model": "", "vision_model": "", "stt_model": "",
-                   "image_model": "", "api_key_set": false})
+                   "image_model": "", "fast_mode": false, "reasoning_effort": "", "api_key_set": false})
         );
         // the user's own values saved but switched off: ignored
         st.set_settings(&json!({"model_base_url": "http://me/v1", "model_name": "my-llm", "model_api_key": "my-key"})).unwrap();
@@ -2182,6 +2216,44 @@ mod tests {
         assert!(saved.get("nope").is_none());
         assert_eq!(saved["skills_disabled"], json!(["a"]));
         assert_eq!(st.settings().unwrap()["vision_model"], ""); // system's (empty) while override is off
+    }
+
+    #[test]
+    fn fast_mode_and_reasoning_follow_the_model_in_force() {
+        let c = cfg(
+            "[model]\nurl='http://sys/v1'\nname='sys-llm'\nfast=true\nreasoning_effort='High'\n",
+        );
+        let d = tempfile::tempdir().unwrap();
+        let st = Store::new(d.path(), c).unwrap();
+        // the system's models: the config's values, whatever was saved
+        let s = st.settings().unwrap();
+        assert_eq!(
+            (&s["fast_mode"], &s["reasoning_effort"]),
+            (&json!(true), &json!("high"))
+        );
+        st.set_settings(&json!({"fast_mode": false, "reasoning_effort": "low"}))
+            .unwrap();
+        let s = st.settings().unwrap();
+        assert_eq!(
+            (&s["fast_mode"], &s["reasoning_effort"]),
+            (&json!(true), &json!("high"))
+        );
+        // the user's own model: the user's values
+        st.set_settings(&json!({"model_override": true, "model_base_url": "http://me/v1", "model_name": "m", "model_api_key": "k"}))
+            .unwrap();
+        let s = st.settings().unwrap();
+        assert_eq!(
+            (&s["fast_mode"], &s["reasoning_effort"]),
+            (&json!(false), &json!("low"))
+        );
+        assert_eq!(st.user_model().unwrap()["reasoning_effort"], "low");
+        // an unknown effort in the config is not sent
+        let c = cfg("[model]\nreasoning_effort='turbo'\n");
+        let d2 = tempfile::tempdir().unwrap();
+        assert_eq!(
+            Store::new(d2.path(), c).unwrap().settings().unwrap()["reasoning_effort"],
+            ""
+        );
     }
 
     #[test]
