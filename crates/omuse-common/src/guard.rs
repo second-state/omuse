@@ -1144,7 +1144,10 @@ mod tests {
                 2
             )
         );
-        assert_eq!(redact_secrets("sk-abcdefghijklmnopqrstuvwxyz1234 xoxb-1234567890-abc AIzaSyA-1234567890123456789012345678901 ya29.abcdefghijklmnopqrstuvwxyz 123456789:AAabcdefghijklmnopqrstuvwxyz0123456 github_pat_abcdefghijklmnopqrstuvwxyz0123456789").1, 6);
+        // a fake Google key, assembled so secret scanners do not mistake the source for a leaked credential
+        let google_key = concat!("AIza", "SyA-1234567890123456789012345678901");
+        let text = format!("sk-abcdefghijklmnopqrstuvwxyz1234 xoxb-1234567890-abc {google_key} ya29.abcdefghijklmnopqrstuvwxyz 123456789:AAabcdefghijklmnopqrstuvwxyz0123456 github_pat_abcdefghijklmnopqrstuvwxyz0123456789");
+        assert_eq!(redact_secrets(&text).1, 6);
         assert_eq!(
             redact_secrets("-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"),
             ("[REDACTED_SECRET]".into(), 1)
