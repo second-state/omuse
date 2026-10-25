@@ -215,3 +215,38 @@ It reads the user's cards from the profile (`custom:credit cards`, names only �
 table, matches by issuer + product (aliases, tiers kept apart), computes the value per card with `calculate`, and
 answers with the maths, the caveats and the verification date. A card missing from the catalog is looked up on the
 issuer's page and reported as "can be added to the catalog".
+
+## City guides (`skills/<city>/SKILL.md`)
+
+Fifteen briefings for Westerners: `beijing`, `shanghai`, `shenzhen`, `guangzhou`, `chengdu`, `tokyo`, `osaka`, `seoul`,
+`singapore`, `hong-kong`, `taipei`, `bangkok`, `kuala-lumpur`, `ho-chi-minh-city`, `hanoi`. Each guide is itself the
+curated data: facts researched from official sources and reputable press, each volatile one dated ("checked October
+2026"). The agent answers from the sheet and from data tools (`market_data` for exchange rates, the travel connector for
+flights, hotels and prices, mail and calendar for the user's bookings), **never the browser**; for a rule that decides
+whether the user can enter, it hands off to `entry-requirements`, and for tasks to the other travel skills.
+
+The rule is enforced, not only written: the guides carry `browser: off` in their front matter. When `load_skill`
+loads such a skill, the runtime records it for the task (`Inner::no_browser`): the browser tools and `delegate` are
+no longer offered to the executor or its sub-agents, a call made anyway is refused and audited (`skill_policy`,
+`browser_off`), and loading a skill without the flag (a booking skill, say) lifts it for the rest of the task. Any
+skill can use the flag.
+
+### Shape
+Frontmatter (`name` = folder, a bilingual `description` ending "use for any question about visiting, doing business in
+or moving to <City>"), then: How to use this skill (the **No browser** rule and the hand-off line naming the country's
+arrival-card skill) · Orientation · Entering … and the airports · Money · Getting online and the apps · Getting around ·
+Business scene and customs · Living here · Food · What to see · Timeline · Sources to verify against · Remember what you
+learn. 14–20 KB each (CJK, Thai and Vietnamese text counts 2–3 bytes per character); `tests/city_guides_e2e.py` checks
+the shape, the hand-offs, the absence of browser tools, the dates and the size, and that a scripted answer uses only
+the guide and `market_data`.
+
+### Refreshing a guide
+1. Work through the facts most likely to change first: visa-free lists and durations, arrival cards and entry fees,
+   airport rail fares, new metro lines and airports, payment rules for foreign cards, tax refund rules, rents and
+   school fees, population and GDP (official statistics bulletins).
+2. Check each against the official sources listed at the end of the guide; replace the fact and its date ("checked
+   <month year>"). A fact that cannot be confirmed is removed or marked "(verify)" — never estimated.
+3. Keep China-wide (or country-wide) facts identical across the guides of the same country (e.g. the 30-day visa-free
+   list and the 240-hour transit in all five Chinese guides; the RTS Link date in `singapore` and `kuala-lumpur`).
+4. Run `bash tests/run_in_docker.sh city_guides_e2e` (rebuild the test image first: skills are compiled in).
+

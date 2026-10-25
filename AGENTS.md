@@ -137,6 +137,6 @@ scenario (`tests/parallel_steps_e2e.py`).
 - Travel skills: one scripted suite per skill (`tests/trip_today_e2e.py`, `sgac_e2e.py`, `arrival_cards_e2e.py`, `arrival_nomail_e2e.py`,
   `entry_requirements_e2e.py`, `flight_disruption_e2e.py`, `baggage_e2e.py`, `travel_expense_e2e.py`,
   `payments_asia_e2e.py`, `getting_around_e2e.py`, `tax_refund_e2e.py`, `emergency_e2e.py`, `hotel_requests_e2e.py`,
-  `dining_dietary_e2e.py`, `credit_card_picker_e2e.py`) on `tests/skills_common.py` (mail in the local IMAP server,
+  `dining_dietary_e2e.py`, `credit_card_picker_e2e.py`, `city_guides_e2e.py`) on `tests/skills_common.py` (mail in the local IMAP server,
   an iCal calendar, the travel connector, pages under `tests/pages`); the scenarios live in `tests/fake_llm.py`
   (`travel_skill`). Knowledge files a skill ships (`load_skill(file=…)`) are described in `KNOWLEDGE.md`.

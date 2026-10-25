@@ -5,9 +5,8 @@
 
 ![OMuse](deploy/market/assets/featured.webp)
 
-OMuse is a local-first AI agent for [Olares](https://www.olares.com) and any machine that runs Docker. It doesn't just
-chat: it turns a request into a plan and carries it out across your email, calendar, Notion, Slack and the web. Anything
-that sends, posts, pays or deletes waits for your approval.
+OMuse is a local-first AI agent. It doesn't just chat: it turns a request into a plan and carries it out across your
+email, calendar, Notion, Slack and the web. Anything that sends, posts, pays or deletes waits for your approval.
 
 OMuse is one Rust binary (`omuse`). How it is built inside — services, crates, policy, data layout, the card catalog and
 other knowledge files — is in [KNOWLEDGE.md](KNOWLEDGE.md). Repository rules, tests and the release steps are in
@@ -64,6 +63,7 @@ photo is read once and not kept).
 | **Emergencies** | "I lost my passport in Seoul" | Police report, consulate and emergency travel document; English-speaking hospitals; the insurer's assistance line; emergency numbers and alerts. | `travel-health-emergency` |
 | **Expense report** | "Build the expense report for my Tokyo trip" + receipts | Receipts from mail, uploaded card statements and photographed paper receipts (read by the vision model), de-duplicated, converted at the transaction-date rate, an Excel ledger and a PDF claim. | `travel-expense-report` |
 | **Which card to use** | "Which card for this ¥30,000 dinner?" | Your cards from the profile (names only) against a 160-card terms catalog: value per card, the best pick, caveats and the date the terms were verified. Updating the catalog: [KNOWLEDGE.md](KNOWLEDGE.md). | `credit-card-picker` |
+| **City guides** | "I'm moving to Shanghai for work — where do expats live and what does it cost?" | Briefings for Westerners on Beijing, Shanghai, Shenzhen, Guangzhou, Chengdu, Tokyo, Osaka, Seoul, Singapore, Hong Kong, Taipei, Bangkok, Kuala Lumpur, Ho Chi Minh City and Hanoi: entry and airports, money and apps, getting around, business customs, neighbourhoods and costs, health and schools, food, sights. Answers come from the guide's dated facts and data tools (exchange rates, the travel connector), never the browser. | `beijing`, `shanghai`, `shenzhen`, `guangzhou`, `chengdu`, `tokyo`, `osaka`, `seoul`, `singapore`, `hong-kong`, `taipei`, `bangkok`, `kuala-lumpur`, `ho-chi-minh-city`, `hanoi` |
 | **Plan and book** | "Flights to Tokyo next Friday, a hotel in Ginza, a 3-star dinner" | Flights, hotels, itineraries and restaurant bookings (existing skills). | `travel-planning`, `flight-booking`, `hotel-booking`, `restaurant-booking`, `michelin-dining` |
 
 Connect a mailbox and a calendar (Settings → Connections) and fill your profile (Memory → Profile: name as in the
@@ -180,7 +180,3 @@ bash tests/docker_image_smoke.sh omuse             # the production image
 
 Some suites also run with a real model: point `OMUSE_E2E_ENV_FILE` at a file **outside the repository** with the
 endpoint, key and model names (see `tests/travel_common.py`); each prints a `TIMING` line that excludes model time.
-
----
-
-License: [MIT](LICENSE) © 2026 Lucas Lu

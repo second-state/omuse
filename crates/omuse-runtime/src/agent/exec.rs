@@ -227,7 +227,24 @@ impl Runtime {
                 reread_guard(transcript, call)
             };
             let mut content: String;
-            if let Some(r) = reread {
+            let skill_off = if !super::runtime::browser_policy_allows(name) {
+                self.inner.lock().no_browser.get(&task_id).cloned()
+            } else {
+                None
+            };
+            if let Some(skill) = skill_off {
+                content = format!("ERROR: 浏览器在这个任务里已关闭（技能 {skill} 只用自己的资料和数据工具）。The browser is off for this task: the {skill} skill answers from its own sheet and data tools (market_data, connectors). Answer from what you have and say which facts carry an older date.");
+                ok = false;
+                refused = true;
+                self.audit(
+                    "executor",
+                    name,
+                    &task_id,
+                    json!({"resource": "skill_policy", "risk": "low", "decision": "DENY",
+                    "result": "browser_off", "detail": {"skill": skill}}),
+                )
+                .await;
+            } else if let Some(r) = reread {
                 content = r;
                 refused = true; // no progress, but not a failure either (no re-plan on its own)
                 self.audit(

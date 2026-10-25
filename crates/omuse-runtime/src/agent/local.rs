@@ -1105,10 +1105,22 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                 if let Some(sk) = skills.iter().find(|s| get_str(s, "name") == want) {
                     let file = sget(a, "file").trim().trim_start_matches('/').to_string();
                     if file.is_empty() {
-                        return Ok(
-                            String::from_utf8_lossy(&std::fs::read(get_str(sk, "path"))?)
-                                .into_owned(),
-                        );
+                        let text = String::from_utf8_lossy(&std::fs::read(get_str(sk, "path"))?)
+                            .into_owned();
+                        // `browser: off` (the city guides): no browser for the rest of this task, sub-agents
+                        // included; loading a skill without it lifts the policy again
+                        let off = crate::skills::front_matter(&text)
+                            .get("browser")
+                            .is_some_and(|v| v.eq_ignore_ascii_case("off"));
+                        let mut inner = self.inner.lock();
+                        if off {
+                            inner.no_browser.insert(tid.clone(), want.clone());
+                            return Ok(format!(
+                                "{text}\n\n(System) This skill answers without the browser: the browser tools and sub-agents (delegate) are off for the rest of this task. Use this sheet and data tools (market_data, connectors); a task that needs a website goes to a skill made for it."
+                            ));
+                        }
+                        inner.no_browser.remove(&tid);
+                        return Ok(text);
                     }
                     // a reference file the skill ships beside its SKILL.md (knowledge tables, templates): the
                     // skill's own folder only, text only, capped
@@ -2125,6 +2137,8 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
         }
         for step in 0..12 {
             let force = step == 11;
+            // the parent's skill may have turned the browser off (Inner::no_browser)
+            let tools = self.without_browser_if_off(&pid, tools.clone());
             let resp = match self
                 .chat_or_cancel(
                     &pid,
