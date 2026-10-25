@@ -5,9 +5,8 @@
 
 ![OMuse](deploy/market/assets/featured.webp)
 
-OMuse is a local-first AI agent for [Olares](https://www.olares.com) and any machine that runs Docker. It doesn't just
-chat: it turns a request into a plan and carries it out across your email, calendar, Notion, Slack and the web. Anything
-that sends, posts, pays or deletes waits for your approval.
+OMuse is a local-first AI agent. It doesn't just chat: it turns a request into a plan and carries it out across your
+email, calendar, Notion, Slack and the web. Anything that sends, posts, pays or deletes waits for your approval.
 
 OMuse is one Rust binary (`omuse`). How it is built inside — services, crates, policy, data layout, the card catalog and
 other knowledge files — is in [KNOWLEDGE.md](KNOWLEDGE.md). Repository rules, tests and the release steps are in
@@ -181,7 +180,3 @@ bash tests/docker_image_smoke.sh omuse             # the production image
 
 Some suites also run with a real model: point `OMUSE_E2E_ENV_FILE` at a file **outside the repository** with the
 endpoint, key and model names (see `tests/travel_common.py`); each prints a `TIMING` line that excludes model time.
-
----
-
-License: [MIT](LICENSE) © 2026 Lucas Lu
