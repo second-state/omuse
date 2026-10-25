@@ -1,6 +1,7 @@
 ---
 name: shenzhen
 description: 深圳指南（面向西方访客、商务旅行者和外籍居民）Shenzhen for Westerners — visas and the Hong Kong border, paying and getting online, getting around, the tech scene and business customs, where to live, what to see; use for any question about visiting, doing business in or moving to Shenzhen.
+browser: off
 ---
 # Shenzhen for Westerners / 深圳指南
 
@@ -12,9 +13,18 @@ Australia. Figures were checked in October 2026 and carry their date.
 ## How to use this skill
 - Answer from this sheet; keep answers practical ("do X, then Y", with the Chinese name so the user can show it to a
   taxi driver: pinyin + characters, e.g. Shekou 蛇口).
-- **Verify before quoting** anything that changes: visa rules, border hours, payment limits, prices, new metro lines,
-  event dates. Use browser_search / browser_read on an official source (listed at the end) and give the date checked.
-  A number you did not read on a page is "not found", not a guess.
+- **No browser.** Answer from this sheet: it is the curated data, and each volatile fact carries the date it was
+  checked. For live numbers use data tools, never the browser: exchange rates → market_data; flights, hotels and
+  prices → the travel data connector (mcp_* tools) when it is connected; the user's own bookings → mail and calendar
+  via `trip-today`. When a fact here may have changed since its date (visa rules, border hours, fares, new lines),
+  say the date and name the official source from the list at the end; for a rule that decides whether the user can
+  travel or enter, hand off to `entry-requirements`. A number not on this sheet and not from a data tool is "not in
+  my data", not a guess.
+- Hand off to the specialised skills when the question is about a task: arrival card → `cn-arrival-card` (overview
+  `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`,
+  transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus →
+  `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants →
+  `restaurant-booking` / `michelin-dining`.
 - Compare to what the user knows: Hong Kong, London, New York. Say when something that is normal in the West does
   not work here (Google, credit cards, English).
 - Shenzhen is not Hong Kong: different currency (RMB, ¥), visa regime, internet rules, apps and language (Mandarin).
@@ -52,6 +62,8 @@ Australia. Figures were checked in October 2026 and carry their date.
   provinces; check the current port and province list. Otherwise apply for an L (tourist) or M (business) visa at
   a visa centre before travelling; there is no visa on arrival. Hotels register foreigners with the police automatically; in a
   private home you must register at the local police station within 24 hours.
+- **Arrival card**: the paper card has an online version since 20 November 2025 (s.nia.gov.cn or the NIA 12367
+  app), filled before arrival or at the port; the `cn-arrival-card` skill fills it.
 - **From Hong Kong** (hours checked October 2026; confirm before a late trip):
   - **Lo Wu / Luohu** 罗湖: MTR East Rail to Lo Wu, walk across; 06:30–24:00. The classic, busiest crossing.
   - **Lok Ma Chau / Futian Checkpoint** 福田口岸: East Rail to Lok Ma Chau; 06:30–22:30; lands you on Metro Line 4/10.
@@ -71,7 +83,7 @@ Australia. Figures were checked in October 2026 and carry their date.
 - **Mobile payment is universal**: Alipay 支付宝 and WeChat Pay 微信支付 accept foreign Visa, Mastercard, Amex, JCB
   and Discover linked in the app, no Chinese bank account needed. Set both up **before arrival** (passport photo page
   and a phone number that can receive SMS). Typical terms (verify): no fee under ¥200 per payment, 3 % above; limits
-  around ¥5,000 per payment and ¥50,000 per year on a foreign card; no sending money to individuals or red packets.
+  US$5,000 per payment and US$50,000 per year on a foreign card (raised in 2024); no sending money to individuals or red packets.
 - Scan-to-pay works for taxis, metro (QR in the Alipay "Transport" mini-program), street stalls, vending machines
   and temples. Foreign credit cards work in hotels, big malls and some chains only. Cash is legal tender and
   refusing it is penalised (rules tightened in 2026), but keep small notes; ATMs of Bank of China / ICBC take foreign cards.
@@ -200,3 +212,11 @@ Australia. Figures were checked in October 2026 and carry their date.
 - Metro: Shenzhen Metro szmc.net; payments: Alipay and WeChat Pay international pages.
 - Based in part on the Chinese "shenzhen" skill by leocryptoflow (ClawHub); translated, corrected (e.g. the
   Universiade was 2011) and extended for Western readers.
+
+## Remember what you learn (for next time)
+Where the user stays or lives, their office or school area, dietary needs and the apps they have set up are worth
+keeping: profile_suggest for profile fields (`custom:home city`, `custom:<city> address`, `custom:allergies`),
+memory_remember for preferences ("prefers the metro to taxis in <City>"). Never store passport, card or ID numbers
+outside the Vault.
+For Shenzhen: which border crossing they use, whether Alipay / WeChat Pay and a VPN or roaming eSIM are set up, and
+the factory or office district they visit.

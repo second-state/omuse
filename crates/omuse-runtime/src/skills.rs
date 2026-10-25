@@ -85,7 +85,8 @@ pub fn builtin_dir(runtime_data: &Path) -> PathBuf {
     target
 }
 
-/// name / description from the YAML front matter (`--- ... ---`) at the top of a SKILL.md; empty when there is none.
+/// name / description (and `browser`, a skill's browser policy) from the YAML front matter (`--- ... ---`) at the top
+/// of a SKILL.md; empty when there is none.
 pub fn front_matter(text: &str) -> HashMap<String, String> {
     static FM: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?s)^---\s*\n(.*?)\n---\s*(\n|$)").unwrap());
@@ -96,7 +97,7 @@ pub fn front_matter(text: &str) -> HashMap<String, String> {
     for line in m[1].lines() {
         if let Some((k, v)) = line.split_once(':') {
             let k = k.trim();
-            if k == "name" || k == "description" {
+            if k == "name" || k == "description" || k == "browser" {
                 out.insert(
                     k.to_string(),
                     v.trim().trim_matches(|c| c == '"' || c == '\'').to_string(),

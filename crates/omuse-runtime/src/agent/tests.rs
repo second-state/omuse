@@ -1046,3 +1046,59 @@ async fn load_skill_reads_a_reference_file_inside_the_skill_folder_only() {
         .unwrap();
     assert!(abs.starts_with("ERROR"), "{abs}");
 }
+
+// ---------------------------------------------------------------- skills with `browser: off` (the city guides)
+#[tokio::test]
+async fn a_browser_off_skill_hides_the_browser_until_another_skill_is_loaded() {
+    let (rt, _d) = rt();
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("g", &conv, "chat", "", "", None)
+        .unwrap();
+    let tid = omuse_common::util::get_str(&t, "id");
+    let tools = vec![
+        json!({"type": "function", "function": {"name": "browser_search"}}),
+        json!({"type": "function", "function": {"name": "browser_read"}}),
+        json!({"type": "function", "function": {"name": "market_data"}}),
+        json!({"type": "function", "function": {"name": "delegate"}}),
+    ];
+    let names = |v: Vec<Value>| {
+        v.iter()
+            .map(|x| tool_name(x).to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rt.without_browser_if_off(&tid, tools.clone()).len(), 4);
+    let md = rt
+        .local(&t, "load_skill", &json!({"name": "tokyo"}))
+        .await
+        .unwrap();
+    assert!(
+        md.contains("browser tools and sub-agents"),
+        "{}",
+        &md[md.len() - 200..]
+    );
+    assert_eq!(
+        names(rt.without_browser_if_off(&tid, tools.clone())),
+        ["market_data"]
+    );
+    assert_eq!(
+        rt.inner.lock().no_browser.get(&tid).map(String::as_str),
+        Some("tokyo")
+    );
+    // a reference file does not change the policy; a skill made for websites lifts it
+    let _ = rt
+        .local(
+            &t,
+            "load_skill",
+            &json!({"name": "tokyo", "file": "nope.md"}),
+        )
+        .await;
+    assert!(rt.inner.lock().no_browser.contains_key(&tid));
+    let md = rt
+        .local(&t, "load_skill", &json!({"name": "restaurant-booking"}))
+        .await
+        .unwrap();
+    assert!(!md.contains("browser tools and sub-agents"));
+    assert_eq!(rt.without_browser_if_off(&tid, tools).len(), 4);
+}

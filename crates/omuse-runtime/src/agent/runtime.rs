@@ -85,6 +85,10 @@ pub(crate) struct Inner {
     /// task_id -> sub-agent lanes handed out so far (`sub1`, `sub2`, …); seeded from the task's events, reserved
     /// atomically so parallel `delegate` calls never share a lane or exceed `SUBAGENT_MAX`
     pub sub_lanes: HashMap<String, usize>,
+    /// task_id -> the loaded skill that turned the browser off (front matter `browser: off`, e.g. the city guides):
+    /// browser tools are hidden from that task and its sub-agents, and refused if called anyway, until a skill
+    /// without that policy is loaded
+    pub no_browser: HashMap<String, String>,
     /// sites whose bot wall was learned as a habit
     pub block_noted: HashSet<String>,
     /// task_id -> product pages that already got the cart hint
@@ -805,6 +809,7 @@ work around it; write the final answer saying what you would do and how far you 
             let mut inner = self.inner.lock();
             inner.evidence.remove(&task_id);
             inner.tool_texts.remove(&task_id);
+            inner.no_browser.remove(&task_id);
         }
     }
 
@@ -1532,6 +1537,18 @@ work around it; write the final answer saying what you would do and how far you 
         json!({"objective": take_chars(if obj.is_empty() { &goal } else { &obj }, 300), "steps": steps, "version": 1})
     }
 
+    /// Drop the browser tools when a loaded skill turned the browser off for this task (see `Inner::no_browser`); and
+    /// `delegate`, since a sub-agent without the browser only wanders through the workspace.
+    pub fn without_browser_if_off(&self, task_id: &str, tools: Vec<Value>) -> Vec<Value> {
+        if !self.inner.lock().no_browser.contains_key(task_id) {
+            return tools;
+        }
+        tools
+            .into_iter()
+            .filter(|t| browser_policy_allows(tool_name(t)))
+            .collect()
+    }
+
     /// The tool list for this run: Sentinel's catalog + the local tools, minus the schedule/goal-only ones.
     pub fn tools_for(
         catalog: &Value,
@@ -1950,6 +1967,7 @@ unverified. This is an internal efficiency control — never mention a 'budget' 
                     !schedule_id.is_empty() && goal.is_none(),
                     goal.is_some(),
                 );
+                let tl = self.without_browser_if_off(task_id, tl);
                 let tl = Self::budget(&mut transcript, tl, max_steps - steps, lg);
                 tools = Some(if lg == "en" {
                     prompts::strip_tools_en(&tl)
@@ -3210,4 +3228,9 @@ impl crate::memory_tidy::TidyRuntime for Runtime {
         let (m, p) = (method.to_string(), path.to_string());
         Box::pin(async move { Runtime::sentinel(self, &m, &p, body, timeout).await })
     }
+}
+
+/// Whether a tool stays available while a skill has turned the browser off: no `browser_*`, no `delegate`.
+pub fn browser_policy_allows(name: &str) -> bool {
+    !name.starts_with("browser_") && name != "delegate"
 }

@@ -42,6 +42,7 @@ def models():
 AUTH = []   # Authorization header of each chat call ("" = none), for models_e2e.py
 
 
+CITYLIFT = {}   # city_guides_e2e.py: whether browser tools were offered after the guide was loaded
 IMAGE_CALLS = []   # Images API requests (imagegen_e2e.py): the JSON body or the multipart form fields
 
 
@@ -1316,6 +1317,28 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
             return reply(f"FILED ({skill}). Reference {ref.group(0)}; a confirmation has been emailed.")
         return reply(f"NOT SUBMITTED ({skill}): the form is still open with every field filled (LUCAS LU · 1985-04-12 · Australia · SQ 231 · Test Hotel · "
                      "passport from the vault). Press Submit in the browser tab when you are ready, or ask me again.")
+    if "CITYLIFT" in goal:   # city_guides_e2e.py: a booking skill loaded after a guide brings the browser back
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "tokyo"})])
+        if n == 1:
+            CITYLIFT["after_guide"] = any(x.startswith("browser_") for x in tnames)
+            return reply("", [tc_("load_skill", {"name": "restaurant-booking"})])
+        return reply(f"LIFT after_guide={CITYLIFT.get('after_guide')} after_booking={any(x.startswith('browser_') for x in tnames)}")
+    if "CITYGUIDE " in goal:   # city_guides_e2e.py: the guide answers from its own sheet + market_data, no browser
+        skill, sym = re.search(r"CITYGUIDE (\S+) (\S+)", goal).groups()
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": skill})])
+        if n == 1:
+            if any(x.startswith("browser_") for x in tnames) or "delegate" in tnames:
+                return reply("CITY FAIL: browser tools or delegate still offered after the guide was loaded")
+            calls = [tc_("market_data", {"symbols": [sym]})]
+            if "TRYBROWSER" in goal:   # a model that calls the browser anyway: the runtime must refuse it
+                calls.append(tc_("browser_search", {"query": "tokyo subway fare"}))
+            return reply("", calls)
+        sheet = str(tools_done[0]["content"])
+        line = next((l.strip() for l in sheet.split("## Getting around", 1)[-1].splitlines() if l.strip().startswith("- ")), "")
+        rate = re.search(re.escape(f"{sym[:3]}/{sym[3:6]}") + r"[^0-9]*([0-9][0-9,]*\.[0-9]+)", str(tools_done[1]["content"]))
+        return reply(f"CITY ANSWER ({skill}). Getting around: {line[2:200]} | FX {sym}: {rate.group(1) if rate else '?'}")
     if "IMAGEGEN" in goal:   # imagegen_e2e.py: one picture, then an edit of it
         if n == 0:
             return reply("", [tc_("make_image", {"prompt": "a red fox in fresh snow, watercolour"})])
