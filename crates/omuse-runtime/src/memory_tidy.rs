@@ -35,7 +35,7 @@ Return ONLY JSON with these optional lists (use ids exactly as given, never inve
  "rewrite": [{"id": "<id>", "fact": "<clearer, shorter sentence with the same meaning>"}],
  "demote":  [{"id": "<id>", "reason": "<why it is one-off / outdated / not about the user>"}],
  "promote": [{"id": "<id>", "reason": "<why this recent fact is durable>"}],
- "profile": [{"field": "<name_zh|name_en|preferred_name|phone|email_personal|email_work|address_home|address_work|company|job_title|birthday|nationality>", "value": "<value>", "ids": ["<id>"], "reason": "<short>"}]}
+ "profile": [{"field": "<name_zh|name_en|preferred_name|phone|email_personal|email_work|address_home|address_work|address:<label>|company|job_title|birthday|nationality>", "value": "<value>", "ids": ["<id>"], "reason": "<short>"}]}
 
 Rules:
 - merge: facts that say the same thing or are clearly about one subject and read better as one sentence. Keep every detail.

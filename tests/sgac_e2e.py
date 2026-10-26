@@ -57,4 +57,31 @@ res2 = t2.get("result") or ""
 K.check("submit-for-me: the DE number from the confirmation page is quoted", "DE202611020123" in res2, res2[:400])
 K.check("submit-for-me: the filing is remembered for later", "memory_remember" in n2, n2)
 K.check("submit-for-me: still no passport number anywhere", PASSPORT not in res2 + "\n".join(str(e.get("data")) for e in t2.get("events", [])), res2[:300])
+# ---- the user's own address in Singapore (profile): one → used without asking; two → asked to choose in the chat
+K.seed_mail(MAIL[:1])   # the flight only: no hotel booking this time
+K.set_profile(**{"address_home": "12 Harbour St, Sydney NSW 2000, Australia", "address:Singapore flat": "10 Bayfront Avenue, Singapore 018956"})
+t3 = K.run("SGAC fill in my Singapore arrival card for this trip. Health: no symptoms, no Africa or South America in the last 6 days.")
+K.trace(t3)
+typed = [str(x["args"].get("text")) for x in K.calls(t3) if x["name"] == "browser_type"]
+K.check("own address: the profile's addresses were read (address:*)",
+        any(x["name"] == "profile_get" and "address:*" in str(x["args"]) for x in K.calls(t3)), K.names(t3))
+K.check("own address: the one Singapore address is used as the accommodation, nothing asked",
+        t3["status"] == "WAITING_EXTERNAL" and "10 Bayfront Avenue, Singapore 018956" in typed
+        and not any("12 Harbour St" in v for v in typed), (t3["status"], typed))
+K.hand_back()
+t3 = K.wait_end(t3["id"])
+K.check("own address: the answer says the profile address was used", "profile address in Singapore" in (t3.get("result") or ""), (t3.get("result") or "")[:300])
+K.set_profile(**{"address:Parents in Singapore": "5 Jalan Kayu, Singapore 799487"})
+t4 = K.run("SGAC fill in my Singapore arrival card for this trip. Health: no symptoms, no Africa or South America in the last 6 days.")
+res4 = t4.get("result") or ""
+K.check("two addresses: the agent asks in the chat which one, before any browser",
+        t4["status"] == "COMPLETED" and "Which one" in res4 and "Singapore flat" in res4 and "Parents in Singapore" in res4
+        and not any(n.startswith("browser_") for n in K.names(t4)), (t4["status"], res4[:300], K.names(t4)))
+t5 = K.run("SGACPICK the Parents in Singapore one, please.", conv=t4["_conv"])
+typed5 = [str(x["args"].get("text")) for x in K.calls(t5) if x["name"] == "browser_type"]
+K.check("two addresses: the chosen one is filled in", t5["status"] == "WAITING_EXTERNAL" and "5 Jalan Kayu, Singapore 799487" in typed5, (t5["status"], typed5))
+K.hand_back()
+K.wait_end(t5["id"])
+K.c.put(K.B + "/api/profile", json={"key": "address:Parents in Singapore", "value": ""}, headers=K.H)
+K.c.put(K.B + "/api/profile", json={"key": "address:Singapore flat", "value": ""}, headers=K.H)
 K.finish()

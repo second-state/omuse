@@ -285,6 +285,8 @@ pub fn router(state: Arc<State>) -> Router {
             put(knowledge::edit_entity).delete(knowledge::del_entity),
         )
         .route("/api/profile", put(knowledge::set_profile))
+        .route("/api/profile/status", get(knowledge::profile_status))
+        .route("/api/profile/ocr", put(knowledge::profile_ocr))
         .route(
             "/api/profile/pending/{pid}",
             post(knowledge::resolve_profile),

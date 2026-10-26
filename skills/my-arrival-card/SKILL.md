@@ -12,6 +12,12 @@ This is the traveller's own legal declaration, so the user confirms every value 
   return flight if the form asks for the next destination or length of stay.
 - Accommodation: gmail_search `(hotel OR booking OR reservation) Malaysia OR Kuala Lumpur OR KUL OR Penang OR PEN OR Johor OR Kota Kinabalu newer_than:60d` → name and address; or the
   host's address from the request.
+- **The user's own address in Malaysia** (a resident going home, an owner's flat, family): profile_get the address fields
+  — `address_home`, `address_work` and any number of `address:<label>` entries. Exactly one of them is in Malaysia → use it
+  as the accommodation / address of stay without asking, and say so in the answer (a hotel booking for these dates in
+  mail wins over it). Several are in Malaysia → **ask in the chat which one to use**, listing them by label, before
+  opening the browser. None → the mail / calendar / memory sources above, then the one question. An address the
+  user gives in the chat that the profile lacks → profile_suggest `address:<label>` so it is there next time.
 - Identity: profile_get → name as in the passport, sex, date of birth, nationality, email, phone. Passport number and
   expiry are in the vault (vault_list, kind id_document) — never asked for in chat, never in the answer. Missing
   profile fields: ask the user to upload the passport data page once, file_look it for name / sex / birth date /

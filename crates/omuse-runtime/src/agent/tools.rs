@@ -447,12 +447,12 @@ fields (name, phone, email, address… → profile_suggest) and never for ID / m
 said by the user) is kept as 'to confirm' until the user OKs it on the Memory page — it is still used meanwhile.",
             json!({"fact": s, "category": s, "entity": s, "domain": s}), &["fact"]),
         fn_("profile_get", "读取用户档案 Read the user's profile (name as on passport, phone, emails, addresses, company, title, \
-birthday, nationality…). Call it ONLY when filling in a form or writing an email/message that needs these details; \
-use just the fields you need.", json!({"fields": {"type": "array", "items": s, "description": "optional: only these fields"}}), &[]),
+birthday, nationality, further addresses as address:<label>…). Call it ONLY when filling in a form or writing an email/message that needs these details; \
+use just the fields you need.", json!({"fields": {"type": "array", "items": s, "description": "optional: only these fields; \"address:*\" = every further address"}}), &[]),
         fn_("profile_suggest", "建议修改档案 Propose a change to a profile field when the user told you a new value (e.g. a new phone \
 number). It is NOT applied until the user confirms it on the Memory page. field = one of: name_zh, name_en, \
 preferred_name, phone, email_personal, email_work, address_home, address_work, company, job_title, birthday, \
-nationality, or custom:<label>.", json!({"field": s, "value": s, "reason": s}), &["field", "value"]),
+nationality, address:<label> (another address of the user's own, e.g. address:Singapore flat), or custom:<label>.", json!({"field": s, "value": s, "reason": s}), &["field", "value"]),
         fn_("vault_list", "列出保险箱条目 List the items in the user's Sentinel vault (ID documents, membership numbers, payment \
 cards) — labels and the last 4 characters only, never the values. Use with browser_fill_secret to fill one into a \
 web form; each fill needs the user's approval.", json!({}), &[]),

@@ -15,6 +15,12 @@ legal declaration by the traveller, so the user confirms every value before you 
   ("next city after Singapore" and length of stay).
 - Accommodation: gmail_search `(hotel OR booking OR reservation) Singapore newer_than:60d` → hotel name and address;
   or the host's address from the request (friends / family: residential address, postal code).
+- **The user's own address in Singapore** (a resident going home, an owner's flat, family): profile_get the address fields
+  — `address_home`, `address_work` and any number of `address:<label>` entries. Exactly one of them is in Singapore → use it
+  as the accommodation / address of stay without asking, and say so in the answer (a hotel booking for these dates in
+  mail wins over it). Several are in Singapore → **ask in the chat which one to use**, listing them by label, before
+  opening the browser. None → the mail / calendar / memory sources above, then the one question. An address the
+  user gives in the chat that the profile lacks → profile_suggest `address:<label>` so it is there next time.
 - Identity: profile_get → full name as in the passport, sex, date of birth, nationality, email, mobile number.
   Passport number, expiry and country of issue are in the vault (vault_list, kind id_document) — never ask for them in
   chat and never put them in the answer. If the profile lacks these fields, ask the user to upload a photo of the

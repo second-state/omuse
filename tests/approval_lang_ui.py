@@ -14,7 +14,7 @@ from tests import skills_common as K  # noqa: E402
 K.setup(mail=[("Singapore Airlines <noreply@singaporeair.example>", "Your e-ticket: SQ 231 SYD-SIN 2026-11-02",
                "Booking ref 9QW3PL. SQ 231 departs Sydney 2026-11-02 10:30, arrives Singapore 16:20.", 1),
               ("Marina Bayfront Hotel <stay@marinabayfront.example>", "Booking confirmed: Marina Bayfront Hotel",
-               "Confirmation MB-55120. Check-in 2026-11-02, 3 nights.", 1)])
+               "Confirmation MB-55120. Check-in 2026-11-02, 3 nights. 10 Bayfront Avenue, Singapore 018956.", 1)])
 K.set_profile(name_en="LUCAS LU", birthday="1985-04-12", nationality="Australia")
 K.vault_item("Passport Lucas", "id_document", {"number": "E1234567X", "expiry": "2031-05-01"}, domains="shop.test")
 t = K.run("SGAC fill in my Singapore arrival card for this trip. Health: nothing to declare.", approve=False)

@@ -101,6 +101,7 @@ pub fn default_settings(cfg: &Config) -> Value {
         "memory_extraction": true,
         "memory_consolidation": true,
         "memory_consolidate_at": "03:30",
+        "profile_reminder": true,   // nudge to complete the profile (name, birthday, nationality) until done or dismissed
         "fast_mode": false,      // the user's own model: send service_tier "fast" (system models: [model] fast)
         "reasoning_effort": "",  // the user's own model: reasoning_effort ("" = not sent; system: [model] reasoning_effort)
         "llm_timeout": 600,
@@ -216,7 +217,8 @@ pub const PROFILE_FIELDS: [(&str, &str, &str); 12] = [
     ("nationality", "国籍", "Nationality"),
 ];
 
-/// A fixed field, or a custom one written as `custom:<label>`; "" when neither.
+/// A fixed field, a further address written as `address:<label>` (a flat in another city, the parents' house), or a
+/// custom one written as `custom:<label>`; "" when none of these.
 pub fn profile_key(key: &str) -> String {
     static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
     let key = key.trim();
@@ -224,10 +226,12 @@ pub fn profile_key(key: &str) -> String {
         return key.to_string();
     }
     let n = key.chars().count();
-    if let Some(rest) = key.strip_prefix("custom:") {
-        if n > 1 && n <= 60 {
-            let label = WS.replace_all(rest, " ");
-            return format!("custom:{}", take_chars(label.trim(), 50));
+    for prefix in ["custom:", "address:"] {
+        if let Some(rest) = key.strip_prefix(prefix) {
+            if n > prefix.len() && n <= 60 && !rest.trim().is_empty() {
+                let label = WS.replace_all(rest, " ");
+                return format!("{}{}", prefix, take_chars(label.trim(), 50));
+            }
         }
     }
     String::new()
@@ -1991,6 +1995,11 @@ mod tests {
             profile_value_ok("phone", "+65 9123 4567") && !profile_value_ok("phone", "call me")
         );
         assert_eq!(profile_key("custom:  My   label "), "custom:My label");
+        assert_eq!(
+            profile_key("address: Singapore  flat"),
+            "address:Singapore flat"
+        );
+        assert_eq!(profile_key("address:"), "");
         assert_eq!(profile_key("nope"), "");
         let (_d, st) = store();
         st.add_fact(
