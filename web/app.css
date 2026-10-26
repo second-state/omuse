@@ -408,3 +408,6 @@ table.data tr.clickable { cursor: pointer; } table.data tr.clickable:hover { bac
 .kpi.warn .kpi-v { color: var(--danger); }
 .bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--line); }
 .bar .ok { background: var(--ok, #2e9e5b); } .bar .bad { background: var(--danger); }
+/* profile: fields prefilled from an ID photo, and the card the first-login nudge lands on */
+input.prefilled { background: var(--ok-soft, #e6f6ee); }
+.card.flash { box-shadow: 0 0 0 3px var(--accent, #0f8a5f); transition: box-shadow 1.5s ease-out 1.5s; }

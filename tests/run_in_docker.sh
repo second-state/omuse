@@ -47,6 +47,9 @@ for f in $SUITES; do
     curl -s -o /dev/null http://127.0.0.1:8082/ && curl -sf -o /dev/null http://127.0.0.1:8080/sentinel/api/health && break
     sleep 1
   done
+  # a fresh install nudges the user to complete the profile (the first chat view opens Memory → Profile); the suites
+  # start on the chat, so the reminder is off for them — profile_onboarding_ui.py switches it on itself
+  curl -s -o /dev/null -X PUT -H 'X-Persona-UI: 1' -H 'Content-Type: application/json' -d '{"profile_reminder": false}' http://127.0.0.1:8080/api/settings
   t0=$(date +%s)
   rm -f /tmp/claude-0/travel_last.json
   # real-model runs take longer

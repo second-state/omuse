@@ -76,6 +76,29 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
 5. **Answer**: an outcome check makes sure the answer doesn't claim actions that didn't happen; memory extraction
    proposes facts and profile fields for the user to confirm.
 
+## Profile
+
+The profile (Memory → Profile) holds the fixed details forms and emails need: the named fields in
+`store::PROFILE_FIELDS` (name as in the passport, phone, emails, home and work address, company, birthday,
+nationality…), any number of further addresses as `address:<label>` ("Singapore flat", "Parents in Sydney"), and free
+fields as `custom:<label>`. The agent reads it with `profile_get` (only the fields a form needs; `address:*` selects
+every further address) and proposes changes with `profile_suggest`, which the user confirms on the Memory page.
+Identity, membership and card numbers never go into the profile: they live in the Sentinel vault.
+
+**First login.** While the profile lacks the name as in the passport, the birthday or the nationality
+(`GET /api/profile/status`), the first chat view of a browser session goes straight to Memory → Profile and the chat
+shows a banner until the profile is complete or the user chooses "Later" (`profile_reminder` setting). The profile
+card takes a photo of the passport data page or an ID card: `PUT /api/profile/ocr` sends it to the vision model
+(`You read an identity document…`, JSON answer) and returns the name, birthday and nationality to prefill the form
+and the document number as a proposed vault item, which the user saves with one click. The picture is read in memory
+and never written to the workspace; the number is not logged and not stored in the runtime.
+
+The arrival-card skills use the addresses like this: a hotel booking for the dates in mail is the accommodation;
+otherwise the one profile address in the destination country is used without asking (a resident going home, an
+owner's flat); several addresses in that country → the agent asks in the chat which one, before opening the browser;
+none → calendar and memory, then one question (or an uploaded booking). `tests/sgac_e2e.py` covers the one-address and
+the two-address cases.
+
 ## Sentinel policy
 
 - **Data classes and taint**: reading mail, the vault or private connectors taints the task; a tainted task that

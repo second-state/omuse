@@ -25,7 +25,7 @@ other knowledge files — is in [KNOWLEDGE.md](KNOWLEDGE.md). Repository rules, 
 - **Telegram remote control** – give tasks and approve actions from your phone.
 - **Research library** – in-depth Markdown reports you refine and refresh later.
 - **Travel skills for Asia** – see [Travel use cases](#travel-use-cases) below.
-- **Memory, profile & skills**, **English and Chinese UI**.
+- **Memory, profile & skills** – the profile (name as in the passport, birthday, nationality, any number of addresses) can be filled from a photo of your ID; the number goes to the Vault, the photo is not kept. **English and Chinese UI**.
 
 ## Safe by design
 
@@ -50,7 +50,7 @@ photo is read once and not kept).
 |---|---|---|---|
 | **Today on the trip** | "What do I have today in Tokyo?" | Pulls flights, hotels, tables and meetings from mail and calendar into one timeline; flags a night without a hotel, a missing transfer, a meeting before landing; reminds you about travel insurance. | `trip-today` |
 | **Which arrival cards** | "What do I need to file for Bangkok then Seoul?" | Lists every card / authorisation the trip needs by passport, when each window opens, sets reminders, calls the country skill. | `arrival-cards` |
-| **Fill an arrival card** | "Fill in my Singapore arrival card" | Flight and hotel from mail (or calendar / memory; with no mailbox it asks once, or reads an uploaded e-ticket), identity from the profile, passport from the Vault; fills the official form and hands you the Submit. Too early → a reminder for the day the window opens. | `sg-arrival-card`, `th-arrival-card`, `my-arrival-card`, `kr-arrival-card`, `jp-visit-japan-web`, `cn-arrival-card`, `tw-arrival-card`, `id-arrival-card`, `ph-etravel`, `kh-arrival-card`, `uk-eta` |
+| **Fill an arrival card** | "Fill in my Singapore arrival card" | Flight and hotel from mail (or calendar / memory; with no mailbox it asks once, or reads an uploaded e-ticket), identity from the profile (the profile holds any number of addresses: the one in the destination country is used, and you are asked to choose when there are several), passport from the Vault; fills the official form and hands you the Submit. Too early → a reminder for the day the window opens. | `sg-arrival-card`, `th-arrival-card`, `my-arrival-card`, `kr-arrival-card`, `jp-visit-japan-web`, `cn-arrival-card`, `tw-arrival-card`, `id-arrival-card`, `ph-etravel`, `kh-arrival-card`, `uk-eta` |
 | **EU entry** | "Do I need ETIAS for Paris?" | Reads the official status page: EES needs no form; ETIAS is not live yet (announced for 2027) and any site selling it is a scam. | `eu-etias` |
 | **Entry requirements** | "Visa, passport validity and customs for Vietnam?" | Visa / visa-free rules, passport validity, medication and customs limits from official pages, with the date checked and reminders. | `entry-requirements` |
 | **Flight disrupted** | "My flight SQ 638 is delayed, what now?" | Live status, rebooking options from the data connector, what the airline and local rules owe you, the proof an insurance claim needs, a watch until departure. | `flight-disruption` |

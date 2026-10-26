@@ -558,13 +558,21 @@ facts hidden; they are only used for forms, check-in or document-expiry checks)"
                     .filter(|x| truthy(x))
                     .map(py_str)
                     .collect();
-                let pick = |k: &str| want.is_empty() || want.iter().any(|w| w == k);
+                let pick = |k: &str| {
+                    want.is_empty()
+                        || want.iter().any(|w| {
+                            w == k || w.strip_suffix('*').is_some_and(|p| k.starts_with(p))
+                        })
+                };
                 let label = |k: &str| {
                     crate::store::PROFILE_FIELDS
                         .iter()
                         .find(|(key, _, _)| *key == k)
                         .map(|(_, _, en)| en.to_string())
-                        .unwrap_or_else(|| k.strip_prefix("custom:").unwrap_or(k).to_string())
+                        .unwrap_or_else(|| match k.strip_prefix("address:") {
+                            Some(l) => format!("Address — {l}"),
+                            None => k.strip_prefix("custom:").unwrap_or(k).to_string(),
+                        })
                 };
                 let map = prof.as_object().cloned().unwrap_or_default();
                 let lines: Vec<String> = map

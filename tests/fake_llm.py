@@ -111,6 +111,9 @@ async def chat(req: Request):
                 return reply(title)
         users = re.findall(r"User: (.*)", str(last))   # the latest request: deterministic, and the title follows the chat
         return reply("Topic: " + (users[-1].split()[0][:16] if users and users[-1].split() else "chat"))
+    if sys.startswith("You read an identity document"):   # /api/profile/ocr (profile_onboarding_ui.py)
+        return reply(json.dumps({"document_type": "passport", "number": "E1234567X", "surname": "LU", "given_names": "LUCAS", "name": "LU LUCAS",
+                                 "sex": "M", "date_of_birth": "1985-04-12", "nationality": "Australia", "expiry": "2031-05-01", "country": "AUS"}))
     if sys.startswith("You look at a file"):   # file_look / attachment reading
         txt = json.dumps(msgs[-1]["content"], ensure_ascii=False)
         if "merchant" in txt and "JSON" in txt:   # travel_expense_e2e.py: a photographed restaurant receipt
@@ -1154,14 +1157,29 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         return reply("TRIP TIMELINE (from your mail and calendar):\n" + "\n".join(f"- {x}" for x in subs) +
                      "\n\nGAP: no hotel for the night of 2026-11-23 (Hotel Ginza Grand checks out 23 Nov, SQ 637 flies 24 Nov).\n"
                      "Insurance: no travel insurance email was found — delays and lost luggage are common claims; are you covered?")
-    if "SGAC" in goal or str(goal).startswith(SHOW_SGAC):   # sg-arrival-card: gather, fill, hand the Submit to the user (or click it when told to)
+    if "SGAC" in goal or "SGACPICK" in goal or str(goal).startswith(SHOW_SGAC):   # sg-arrival-card: gather, fill, hand the Submit to the user (or click it when told to)
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "sg-arrival-card"})])
         if n == 1:
             return reply("", [tc_("gmail_search", {"query": "(Singapore OR SIN OR Changi) (flight OR e-ticket) newer_than:60d"}),
                               tc_("gmail_search", {"query": "(hotel OR booking) Singapore newer_than:60d"})])
         if n == 3:
-            return reply("", [tc_("profile_get", {"fields": ["name_en", "birthday", "nationality", "email_personal", "phone"]})])
+            return reply("", [tc_("profile_get", {"fields": ["name_en", "birthday", "nationality", "email_personal", "phone",
+                                                              "address_home", "address_work", "address:*"]})])
+        # the accommodation: a hotel booking in mail wins; else the profile address in Singapore (one → use it, several →
+        # ask in the chat which, unless the user already picked one); else ask
+        hotel = "Marina Bayfront Hotel" if n >= 3 and "Marina Bayfront Hotel" in str(tools_done[2]["content"]) else None
+        prof = str(tools_done[3]["content"]) if n > 3 else ""
+        sg_addr = [(lab, val) for lab, val in re.findall(r"Address — ([^(]+?) \(address:[^)]*\): (.+)", prof) if "Singapore" in val]
+        if n > 3 and not hotel:
+            if "SGACPICK" in goal:
+                sg_addr = [x for x in sg_addr if x[0].lower() in goal.lower()] or sg_addr[:1]
+            if len(sg_addr) > 1 and n == 4:
+                return reply("You have " + str(len(sg_addr)) + " addresses in Singapore in your profile: " +
+                             " / ".join(f"**{lab}** ({val})" for lab, val in sg_addr) + ". Which one are you staying at? Reply with the name and I'll fill the card.")
+            if not sg_addr and n == 4:
+                return reply("WAITING FOR DATA: where are you staying in Singapore (hotel name or address)? Or upload the booking confirmation.")
+        stay = hotel or (sg_addr[0][1] if sg_addr else "?")
         if n == 4:
             return reply("", [tc_("vault_list", {})])
         if n == 5:
@@ -1170,7 +1188,7 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
             page = last_tool
             vals = [("Full name", "LUCAS LU"), ("Date of birth", "1985-04-12"), ("Nationality", "Australia"),
                     ("Arrival flight", "SQ 231"), ("Arrival date", (re.search(r"SQ 231 SYD-SIN (20\d\d-\d\d-\d\d)", str(tools_done[1]["content"])) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-02")).group(1)),
-                    ("Accommodation", "Marina Bayfront Hotel")]
+                    ("Accommodation", stay)]
             return reply("", [tc_("browser_type", {"ref": _snap_ref(page, lab) or "e1", "text": v}) for lab, v in vals])
         if n == 12:
             vid = re.search(r"id=(vlt_\w+) · Passport", str(tools_done[4]["content"]))
@@ -1187,8 +1205,9 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
             if not any(c["function"]["name"] == "memory_remember" for m in msgs if m.get("role") == "assistant" for c in (m.get("tool_calls") or [])):
                 return reply("", [tc_("memory_remember", {"fact": "SG Arrival Card filed for the Nov 2026 Singapore trip", "domain": "place"})])
             return reply(f"FILED. DE Number: {de.group(0)} for LUCAS LU, arriving on SQ 231. Show your passport at the checkpoint; ICA emails an acknowledgement.")
-        return reply("NOT SUBMITTED: the SG Arrival Card is still open with every field filled (LUCAS LU · 1985-04-12 · Australia · SQ 231 · "
-                     "Marina Bayfront Hotel · passport from the vault). Press Submit in the browser tab when you are ready, or ask me again.")
+        used = "" if hotel else " (your profile address in Singapore)"
+        return reply(f"NOT SUBMITTED: the SG Arrival Card is still open with every field filled (LUCAS LU · 1985-04-12 · Australia · SQ 231 · "
+                     f"{stay}{used} · passport from the vault). Press Submit in the browser tab when you are ready, or ask me again.")
     if "ENTRYREQ" in goal:   # entry-requirements: official pages read, reminder set
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "entry-requirements"})])

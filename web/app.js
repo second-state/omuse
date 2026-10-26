@@ -233,6 +233,7 @@ async function viewChat(root) {
   const thread = h('div', { class: 'thread' });
   wrap.append(list, thread, convResizer(wrap)); root.append(wrap);
   passwordReminder();
+  await profileReminder();
   await loadConvs();
   if (S.conv && !S.convs.some(c => c.id === S.conv)) { S.conv = null; S.convData = null; }
   renderConvList(list);
@@ -394,6 +395,7 @@ function renderThread(thread) {
     h('button', { class: 'btn small primary', onclick: newChat, title: T('开始新对话（新的上下文）') }, T('＋ 新对话')),
     S.conv ? h('button', { class: 'btn small', onclick: () => safe(deleteConv)(S.conv), title: T('删除当前对话') }, '🗑') : null);
   if (S.passwordDefault) thread.insertBefore(pwBanner(), oldComp || null);
+  if (S.profileNudge) thread.insertBefore(profileBanner(), oldComp || null);
   thread.insertBefore(head, oldComp || null);
   const msgs = h('div', { class: 'msgs', 'aria-live': 'polite' });
   if (!d || !d.messages.length) {
@@ -1975,6 +1977,10 @@ async function viewMemory(root) {
     h('div', { class: 'grid2', style: 'margin-top:16px' }, memTryCard(r), memEntitiesCard(r)),
     h('div', { class: 'grid2', style: 'margin-top:16px' }, memRecentCard(r), memVaultCard(v)),
     h('div', { style: 'margin-top:16px' }, memEpisodesCard(r)));
+  if ((location.hash.split('/')[1] || '') === 'profile') {   // #memory/profile (the first-login nudge, the chat banner)
+    const card = document.getElementById('profile');
+    if (card) { card.scrollIntoView({ block: 'start' }); card.classList.add('flash'); card.querySelector('input')?.focus({ preventScroll: true }); }
+  }
 }
 
 const domLabel = (r, k) => { const d = (r.domains || []).find(x => x.key === k); return d ? (LANG === 'en' ? d.en : ZH(d.zh)) : (k || ''); };
@@ -2041,10 +2047,57 @@ function memProfileCard(r) {
     const i = h('input', { type: 'text', value: prof[f.key] || '', autocomplete: 'off' }); inputs[f.key] = i;
     return h('label', { class: 'field' }, h('span', null, LANG === 'en' ? f.en : ZH(f.zh)), i);
   });
+  // further addresses (address:<label>): a flat in another city, the parents' house — forms such as arrival cards pick
+  // the one in the destination country
+  for (const k of Object.keys(prof).filter(k => k.startsWith('address:'))) {
+    const i = h('input', { type: 'text', value: prof[k], autocomplete: 'off' }); inputs[k] = i;
+    rows.push(h('label', { class: 'field' }, h('span', null, Tf("地址 · {0}", k.slice(8))), i));
+  }
   for (const k of Object.keys(prof).filter(k => k.startsWith('custom:'))) {
     const i = h('input', { type: 'text', value: prof[k], autocomplete: 'off' }); inputs[k] = i;
     rows.push(h('label', { class: 'field' }, h('span', null, k.slice(7)), i));
   }
+  // an ID photo read by the vision model prefills the form; the number goes to the Vault, the picture is not kept
+  const required = ['name_en', 'birthday', 'nationality'];
+  const incomplete = required.some(k => !(prof[k] || '').trim());
+  const ocrOut = h('div', { class: 'stack', style: 'gap:6px' });
+  const picker = h('input', { type: 'file', accept: 'image/*', style: 'display:none', 'aria-hidden': 'true' });
+  picker.onchange = safe(async () => {
+    const f = picker.files && picker.files[0];
+    if (!f) return;
+    ocrOut.replaceChildren(h('span', { class: 'small muted' }, T('正在识别证件…')));
+    let r;
+    try {
+      const x = await fetch('api/profile/ocr', { method: 'PUT', body: f, headers: { 'X-Persona-UI': '1', 'Content-Type': f.type || 'application/octet-stream' } });
+      r = await x.json();
+      if (!x.ok) throw new Error(r.detail || x.statusText);
+    } catch (e) { ocrOut.replaceChildren(h('span', { class: 'small', style: 'color:var(--bad)' }, T('识别失败：') + (e.message || e))); picker.value = ''; return; }
+    const got = Object.entries(r.profile || {});
+    for (const [k, v] of got) { if (inputs[k]) { inputs[k].value = v; inputs[k].classList.add('prefilled'); } }
+    const lines = [h('div', { class: 'small' }, got.length ? Tf("已从证件读出 {0} 项，请核对后点「保存档案」。", got.length) : T('证件上没有读到可用的信息，请手动填写。'))];
+    if (r.document && r.document.values && r.document.values.number) {
+      const num = String(r.document.values.number);
+      const saveBtn = h('button', { class: 'btn small primary' }, T('存入保险箱 Save to Vault'));
+      saveBtn.onclick = safe(async () => {
+        await sapi('vault', { method: 'POST', body: { label: r.document.label, kind: 'id_document', values: r.document.values, domains: '' } });
+        saveBtn.replaceWith(h('span', { class: 'small', style: 'color:var(--ok)' }, T('已存入保险箱 ✓')));
+      });
+      lines.push(h('div', { class: 'row', style: 'align-items:center;gap:8px' },
+        h('span', { class: 'small' }, Tf("证件号 ••••{0}（不会写进档案或记忆）：", num.slice(-4))), saveBtn));
+    }
+    lines.push(h('div', { class: 'small muted' }, T('照片只用于这一次识别，不会保存。')));
+    ocrOut.replaceChildren(...lines);
+    picker.value = '';
+  });
+  const ocrBox = h('div', { class: 'banner user', style: 'flex-direction:column;align-items:stretch;gap:6px' },
+    h('div', null, h('b', null, incomplete ? T('先完善档案') : T('用证件照片更新档案')), ' ',
+      h('span', { class: 'small' }, T('上传护照资料页或身份证的照片：姓名、生日、国籍会自动填入下面的表单，证件号可一键存入保险箱。'))),
+    h('div', { class: 'row' }, h('button', { class: 'btn small primary', onclick: () => picker.click() }, T('📷 上传证件照片 Upload ID photo')),
+      incomplete ? h('button', { class: 'btn small', onclick: safe(async () => { await api('settings', { method: 'PUT', body: { profile_reminder: false } }); S.profileNudge = false; toast(T('好的，不再提醒。你随时可以回到这里完善。')); }) }, T('以后再说 Later')) : null,
+      picker),
+    ocrOut);
+  const aLabel = h('input', { type: 'text', placeholder: T('再加一个地址：名称，如：新加坡的家'), style: 'flex:1' });
+  const aVal = h('input', { type: 'text', placeholder: T('完整地址（含邮编）'), style: 'flex:1' });
   const cLabel = h('input', { type: 'text', placeholder: T('自定义字段名，如：常用航空公司'), style: 'flex:1' });
   const cVal = h('input', { type: 'text', placeholder: T('内容'), style: 'flex:1' });
   const save = safe(async () => {
@@ -2052,19 +2105,22 @@ function memProfileCard(r) {
     for (const [k, el] of Object.entries(inputs)) {
       if ((el.value || '').trim() !== (prof[k] || '')) { await api('profile', { method: 'PUT', body: { key: k, value: el.value } }); n++; }
     }
+    if (aLabel.value.trim() && aVal.value.trim()) { await api('profile', { method: 'PUT', body: { key: 'address:' + aLabel.value.trim(), value: aVal.value } }); n++; }
     if (cLabel.value.trim() && cVal.value.trim()) { await api('profile', { method: 'PUT', body: { key: 'custom:' + cLabel.value.trim(), value: cVal.value } }); n++; }
-    toast(n ? Tf("已保存 {0} 项", n) : T('没有改动 No changes')); route();
+    toast(n ? Tf("已保存 {0} 项", n) : T('没有改动 No changes')); S.profileNudge = undefined; route();
   });
-  return h('div', { class: 'card stack' }, h('h3', null, T('🪪 档案 Profile')),
+  return h('div', { class: 'card stack', id: 'profile' }, h('h3', null, T('🪪 档案 Profile')),
     h('p', { class: 'sub' }, T('填表、写邮件时才会用到的固定信息。Agent 只在需要时读取；它发现的新信息会先放到「待确认」，你同意后才会修改。证件号、会员号、卡号请放进下面的保险箱。')),
+    ocrBox,
     h('div', { class: 'grid2', style: 'gap:4px 12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))' }, rows),
+    h('div', { class: 'row' }, aLabel, aVal),
     h('div', { class: 'row' }, cLabel, cVal),
     h('div', null, h('button', { class: 'btn primary', onclick: save }, T('保存档案 Save profile'))));
 }
 
 function memPendingCard(r) {
   const list = r.pending || [];
-  const label = (k) => { const f = (r.profile_fields || []).find(x => x.key === k); return f ? (LANG === 'en' ? f.en : ZH(f.zh)) : k.replace(/^custom:/, ''); };
+  const label = (k) => { const f = (r.profile_fields || []).find(x => x.key === k); return f ? (LANG === 'en' ? f.en : ZH(f.zh)) : k.startsWith('address:') ? Tf("地址 · {0}", k.slice(8)) : k.replace(/^custom:/, ''); };
   return h('div', { class: 'card stack' },
     h('div', { class: 'row' }, h('h3', { style: 'flex:1' }, T('📝 待确认的档案修改 Pending')), list.length ? h('span', { class: 'chip bad' }, String(list.length)) : h('span', { class: 'chip ok' }, T('无 None'))),
     list.length ? list.map(p => {
@@ -2088,7 +2144,7 @@ function memTidyCard(r) {
       h('span', { style: 'flex:1' }),
       h('button', { class: 'btn small', onclick: show(x.id) }, T('详情 Details')),
       x.kind === 'dry_run' && !x.applied ? h('button', { class: 'btn primary small', disabled: !!job.running, onclick: start({ from_run: x.id }) }, T('按此执行 Apply')) : null),
-    (x.lines || []).map(l => h('div', { class: 'muted' }, l)),
+    ((LANG === 'en' ? x.lines_en : x.lines_zh) || x.lines || []).map(l => h('div', { class: 'muted' }, l)),
     (x.errors || []).length ? h('div', { class: 'small', style: 'color:var(--danger)' }, Tf("模型出错，部分未整理：{0}", x.errors.join('; '))) : null));
   return h('div', { class: 'card stack' }, h('h3', null, T('🧹 记忆整理 Memory tidy')),
     h('p', { class: 'sub' }, Tf("每天 {0} 自动合并重复、清理过期、把一次性的内容降为近期，并把报告发到 Telegram。不会直接改档案，也不会直接删除长期记忆（降为近期后 30 天才过期）。", (r.settings || {}).memory_consolidate_at || '03:30')),
@@ -2419,6 +2475,26 @@ function passwordReminder() {
   if (S.passwordDefault !== undefined) return;
   sapi('password').then(r => { S.passwordDefault = !!(r.enabled && r.default); if (S.passwordDefault && S.view === 'chat') renderThread(); }).catch(() => {});
 }
+// First login: the profile is empty (name as in the passport, birthday, nationality), so forms such as arrival cards
+// would have to ask. The first chat view of a session goes straight to the profile page; afterwards a banner reminds
+// until the profile is complete or the user says "later" (Settings: profile_reminder).
+async function profileReminder() {
+  try {
+    const st = await api('profile/status');
+    S.profileNudge = !st.complete && st.reminder;
+  } catch (e) { S.profileNudge = false; }
+  if (!S.profileNudge) return;
+  let nudged = false;
+  try { nudged = !!sessionStorage.getItem('omuse_profile_nudged'); } catch (e) { /* ignore */ }
+  if (!nudged) {
+    try { sessionStorage.setItem('omuse_profile_nudged', '1'); } catch (e) { /* ignore */ }
+    location.hash = '#memory/profile';
+  }
+}
+const profileBanner = () => h('div', { class: 'banner user', id: 'profileReminder', style: 'margin:10px 24px 0' },
+  h('span', { style: 'flex:1' }, T('🪪 请先完善你的档案（证件上的姓名、生日、国籍）：填表和订票时就不用再问你。可以上传证件照片自动识别。')),
+  h('a', { href: '#memory/profile', class: 'btn small' }, T('去完善 Complete profile')),
+  h('button', { class: 'btn small', onclick: safe(async () => { await api('settings', { method: 'PUT', body: { profile_reminder: false } }); S.profileNudge = false; renderThread(); }) }, T('以后再说 Later')));
 const pwBanner = () => h('div', { class: 'banner user', id: 'pwReminder', style: 'margin:10px 24px 0' },
   h('span', { style: 'flex:1' }, T('🔑 你还在用初始密码。请到「设置」里改成自己的密码。')),
   h('a', { href: '#settings/password', class: 'btn small' }, T('去修改 Change')));

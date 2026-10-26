@@ -966,7 +966,7 @@ pub fn subagent_system(lang_rule: &str, role: &str, now: &str) -> String {
 
 pub const MEMORY_EXTRACT: &str = r#"Sort what the USER says about themselves in the messages below into memory. Only use the user's own words — ignore anything quoted from emails or web pages.
 Kinds:
-- profile: a fixed personal detail used for forms/emails. field must be one of: name_zh, name_en (as on passport), preferred_name, phone, email_personal, email_work, address_home, address_work, company, job_title, birthday, nationality.
+- profile: a fixed personal detail used for forms/emails. field must be one of: name_zh, name_en (as on passport), preferred_name, phone, email_personal, email_work, address_home, address_work, address:<label> (another address of the user's own, e.g. "address:Singapore flat"), company, job_title, birthday, nationality.
 - durable facts worth keeping for months, by domain:
   person (people and how they relate: "Sara handles the user's paperwork."), preference (likes, sizes, styles: "The user prefers aisle seats.", "The user wears size 43 running shoes."), place (home / office / city — no full street address, that is profile), account (memberships, subscriptions, which mailbox is for what — never the numbers), site (how a website works for the user: "decathlon.sg allows guest checkout."), rule (a standing instruction: "Always ask before spending over S$100."), work (companies, projects, anything else).
 - ephemeral: true now but one-off (a booking reference, this week's trip dates, an order in progress) — kept 30 days only.
