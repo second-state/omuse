@@ -18,12 +18,13 @@ def check(name, cond, info=""):
 
 r = c.post(B + "/api/settings/test-models", json={}, headers=H).json()
 by = {x["kind"]: x for x in r["results"]}
-check("every model kind is reported once", [x["kind"] for x in r["results"]] == ["llm", "planner", "vision", "stt", "image"], r)
+check("every model kind is reported once", [x["kind"] for x in r["results"]] == ["llm", "planner", "vision", "stt", "image", "video"], r)
 check("LLM: a standard chat request succeeds", by["llm"]["ok"] and by["llm"]["model"] == "fake" and by["llm"].get("reply"), by["llm"])
 check("planner: empty = same as the LLM", by["planner"]["ok"] and by["planner"].get("same_as") == "llm", by["planner"])
 check("vision: a standard image request succeeds (falls back to the LLM)", by["vision"]["ok"] and by["vision"]["model"] == "fake", by["vision"])
 check("speech-to-text: the fake endpoint has none, said plainly", not by["stt"]["ok"] and "speech-to-text" in by["stt"]["error"], by["stt"])
 check("image: no image model on the fake endpoint, said plainly", not by["image"]["ok"] and "image" in by["image"]["error"].lower(), by["image"])
+check("video: no video model on the fake endpoint, said plainly", not by["video"]["ok"] and "video" in by["video"]["error"].lower(), by["video"])
 
 # unsaved form values are tested, not the saved ones (own-model values count only with the toggle on)
 SYS_URL = c.get(B + "/api/settings", headers=H).json()["settings"]["model_base_url"]
@@ -41,7 +42,9 @@ LLM = "http://127.0.0.1:8090"
 g = c.get(B + "/api/settings", headers=H).json()
 check("the key never leaves the runtime: only whether one is set", "model_api_key" not in g["settings"] and g["settings"]["model_api_key_set"] is False, g["settings"])
 check("the system model names are listed without the endpoint", g["system_model"].get("model_name") == "fake" and "model_base_url" not in g["system_model"], g.get("system_model"))
-check("own-model form starts empty", g["model_user"] == {"model_base_url": "", "model_name": "", "planner_model": "", "vision_model": "", "stt_model": "", "image_model": "", "fast_mode": False, "reasoning_effort": "", "api_key_set": False}, g["model_user"])
+check("own-model form starts empty", g["model_user"] == {"model_base_url": "", "model_name": "", "planner_model": "", "vision_model": "", "stt_model": "", "image_model": "",
+                                                          "image_base_url": "", "video_model": "", "video_base_url": "", "fast_mode": False, "reasoning_effort": "",
+                                                          "api_key_set": False, "image_api_key_set": False, "video_api_key_set": False}, g["model_user"])
 sys_url = g["settings"]["model_base_url"]
 for body, what in (({"model_override": True}, "nothing filled"),
                    ({"model_override": True, "model_base_url": sys_url, "model_name": "fake"}, "no key"),

@@ -31,7 +31,7 @@ on 8083.
 | `omuse-sentinel-core` | store, vault, password, catalog, **policy**, ledger (no HTTP) |
 | `omuse-mail`, `omuse-apps`, `omuse-mcp`, `omuse-phone` | connectors: mailboxes; Notion / Slack / calendars / market data / billing; MCP client and OAuth; phone |
 | `omuse-sentinel` | Sentinel routes, actions, Telegram bot, watchers |
-| `omuse-runtime` | agent loop, prompts, LLM client, scheduler, goals, memory, library, skills, image generation, attachments |
+| `omuse-runtime` | agent loop, prompts, LLM client, scheduler, goals, memory, library, skills, image and video generation, attachments |
 | `omuse-browser` | the browser broker and its page scripts (`js/`) |
 
 The web UI, the skills (`skills/`) and the broker scripts are compiled into the binary (`include_dir`); built-in skills
@@ -66,8 +66,9 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
    own choice (Settings → Models) only while "use my own model" is on — the API ignores changes otherwise
    (`store::MODEL_OPTIONS`). An endpoint that rejects either field by name gets the request again without it;
    `reasoning_effort = "none"` also sends `chat_template_kwargs: {enable_thinking: false}` for chat-template models.
-   Both are chat options only: image generation, edits and variations (`imagegen.rs`, the Images API) and speech to
-   text build their own requests and never carry them (`imagegen_e2e.py` and the unit tests check it).
+   Both are chat options only: image generation, edits and variations (`imagegen.rs`, the Images API), video
+   generation (`videogen.rs`) and speech to text build their own requests and never carry them (`imagegen_e2e.py`,
+   `videogen_e2e.py` and the unit tests check it).
 3. **Skills**: the executor loads a skill (`load_skill(name)`) when the request matches its description; a skill can
    ship reference files read with `load_skill(name, file=…)` (relative path, 400 KB cap).
 4. **Act**: every action goes through Sentinel (`/internal/act`), which decides ALLOW / DENY / ASK, runs it, audits
@@ -75,6 +76,41 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
    `WAITING_EXTERNAL` for a takeover (the user drives the live browser, then hands it back).
 5. **Answer**: an outcome check makes sure the answer doesn't claim actions that didn't happen; memory extraction
    proposes facts and profile fields for the user to confirm.
+
+## Image and video generation
+
+`make_image` (`imagegen.rs`, the OpenAI Images API: `POST {base}/images/generations`, `/images/edits`) and
+`make_video` (`videogen.rs`, the OpenAI Videos API: `POST {base}/videos` starts a job, `GET {base}/videos/{id}` polls
+it, `GET {base}/videos/{id}/content` downloads the clip; a server that answers the POST with `data[0].b64_json` /
+`url` is taken as it is) share one pattern:
+
+- **Endpoint and key are optional.** Each kind resolves `<kind>_base_url` ("" = the model endpoint) and
+  `<kind>_model` ("" = auto-pick from the endpoint's `/models` by mode or name) from the settings in force, and its
+  bearer key with `imagegen::media_auth_headers`: `<kind>_api_key` when set, else the model endpoint's key. One
+  provider for everything needs nothing but the model fields; a chat model at one provider and pictures or clips at
+  another needs the extra URL (and key, if different).
+- **Never a mix of the system's and the user's.** With the system's models the values are `[model] image_url` /
+  `image` / `image_api_key` and `video_url` / `video` / `video_api_key` from `config.toml` (`store::system_model`,
+  `effective_model`). With "use my own model" (Settings → Models) they are the user's own, optional, values; the
+  system's media endpoints and keys are never used with the user's set, and the user's never with the system's.
+  The defaults of `image_base_url` / `video_base_url` in the settings table are therefore "" — the system's URLs are
+  overlaid by `system_model()` only while the system's models are in force.
+- **Keys never leave the runtime.** `store::SECRET_KEYS` (`model_api_key`, `image_api_key`, `video_api_key`) are
+  stripped by `redacted()` and reported as `<key>_set`; the audit log carries `(set)` / `(cleared)`. `PUT
+  /api/settings` keeps a saved key on "" and clears it on `null`.
+- **Vendor differences are absorbed, not configured.** Optional request fields (`quality`, `background`,
+  `response_format`, … for images; `seconds`, `size`, `aspect_ratio` for video) are dropped one by one when a server
+  rejects them by name; sizes walk a fallback list, and after the first rejected size of a non-square shape the shape
+  is sent once as `aspect_ratio` without a size (xAI's grok-imagine models take ratios and only 1k/2k squares as
+  sizes; OpenAI answers "unknown parameter" and the next size is tried). A video length the server does not offer is
+  snapped to OpenAI's 4 / 8 / 12 once, then left to the server. Moderation refusals are relayed as such, without a
+  retry.
+- **Cost guards.** `[model] image_budget` (6) pictures and `[model] video_budget` (2) clips per task; the tools tell
+  the model when the budget is spent, and the prompt says to generate once and offer changes.
+- **Tests.** Unit tests with a fake transport in both modules; `tests/imagegen_e2e.py` and `tests/videogen_e2e.py`
+  against the fake server (`/v1` and a second provider at `/vid/v1`, which records the bearer of every call);
+  `tests/media_real.py` makes one picture and one clip with a real gateway (`xai/grok-imagine-image`,
+  `xai/grok-imagine-video`) and is not in the default list.
 
 ## Profile
 

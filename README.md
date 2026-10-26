@@ -129,7 +129,7 @@ the entrypoint then writes the config from these variables. A mounted `config.to
 | Section | Keys (environment variable without a config file) |
 |---|---|
 | `[auth]` | `password` (`OMUSE_PASSWORD`, required), `user` (`OMUSE_USER`), `enabled = false` (`OMUSE_AUTH=off`) |
-| `[model]` | `url`, `name`, `api_key`, `planner`, `vision`, `stt`, `image` (`OMUSE_MODEL_URL`, `OMUSE_MODEL`, …), `fast` (`OMUSE_MODEL_FAST`), `reasoning_effort` (`OMUSE_MODEL_REASONING`) |
+| `[model]` | `url`, `name`, `api_key`, `planner`, `vision`, `stt`, `image`, `video` (`OMUSE_MODEL_URL`, `OMUSE_MODEL`, …), `fast` (`OMUSE_MODEL_FAST`), `reasoning_effort` (`OMUSE_MODEL_REASONING`); optional `image_url` / `image_api_key` and `video_url` / `video_api_key` when pictures or clips come from another provider (blank = the model endpoint and key) |
 | `[server]` | `port`, `timezone` (`TZ`) |
 | `[skills]` | `initial` (`OMUSE_SKILLS`), `dir` |
 | `[browser]` | `headless` (`BROWSER_HEADLESS`), `executable`, `auto_approve` |

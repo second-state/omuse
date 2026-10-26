@@ -1,9 +1,10 @@
 //! Image generation client: the OpenAI-compatible Images API (POST {base}/images/generations) — the Olares Router,
 //! OpenAI (gpt-image-1 / DALL·E 3), or any local server that speaks the same schema. Replaceable by design, like llm.py.
 //!
-//! Settings (runtime Settings): image_base_url ("" = the model endpoint), image_model ("" = auto-pick an image model
-//! the endpoint serves). The key comes from the configuration only (`[model] image_api_key`, the Python
-//! `OMUSE_IMAGE_API_KEY`, else the model key), never from Settings.
+//! Settings in force (`store::effective_model`): image_base_url ("" = the model endpoint), image_model ("" = auto-pick
+//! an image model the endpoint serves), image_api_key ("" = the model endpoint's key). With the system's models these
+//! are `[model] image_url` / `image` / `image_api_key` from the config; with "use my own model" the user's own,
+//! optional, values from Settings → Models — never a mix (`media_auth_headers`).
 
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -173,17 +174,43 @@ pub fn with_style(prompt: &str, style: Option<&str>) -> String {
     format!("{}, {}", prompt.trim_end_matches(['.', ' ']), suf)
 }
 
-/// The key for the image endpoint: with the user's own model settings in force, their key (the system's image key
-/// must never go to a user's endpoint); otherwise `[model] image_api_key`, else the model endpoint's key.
-pub fn image_auth_headers(settings: Option<&Value>, cfg: &Config) -> Vec<(String, String)> {
-    if settings.is_some_and(|s| get_truthy(s, "model_override")) {
+/// The bearer header for a media endpoint (`kind` = "image" or "video"): the `<kind>_api_key` of the settings in
+/// force when one is set — the user's own with their model set on, the config's `[model] <kind>_api_key` otherwise
+/// (`store::effective_model` puts the right one there; the config's is also read here for raw settings) — else the
+/// model endpoint's key. The system's keys never go to a user's endpoint, nor the user's to the system's.
+pub fn media_auth_headers(
+    kind: &str,
+    settings: Option<&Value>,
+    cfg: &Config,
+) -> Vec<(String, String)> {
+    let field = format!("{}_api_key", kind);
+    let mut key = settings
+        .map(|s| get_str(s, &field).trim().to_string())
+        .unwrap_or_default();
+    if key.is_empty() && !settings.is_some_and(|s| get_truthy(s, "model_override")) {
+        key = match kind {
+            "video" => cfg.model.video_api_key.trim().to_string(),
+            _ => cfg.model.image_api_key.trim().to_string(),
+        };
+    }
+    if key.is_empty() {
         return auth_headers(settings, cfg);
     }
-    let key = cfg.model.image_api_key.trim();
-    if !key.is_empty() {
-        return vec![("Authorization".to_string(), format!("Bearer {}", key))];
+    vec![("Authorization".to_string(), format!("Bearer {}", key))]
+}
+
+/// [`media_auth_headers`] for the image endpoint.
+pub fn image_auth_headers(settings: Option<&Value>, cfg: &Config) -> Vec<(String, String)> {
+    media_auth_headers("image", settings, cfg)
+}
+
+/// The aspect ratio of a shape name, for servers that take `aspect_ratio` instead of a pixel size.
+pub fn aspect_ratio(shape: &str) -> &'static str {
+    match shape {
+        "landscape" => "16:9",
+        "portrait" => "9:16",
+        _ => "1:1",
     }
-    auth_headers(settings, cfg)
 }
 
 /// The first model that generates images: an explicit image mode wins, else judge by the name. Loading models are
@@ -704,8 +731,25 @@ impl ImageClient {
             }
         }
         let headers = image_auth_headers(Some(settings), &self.cfg);
-        for sz in &sizes {
-            body.insert("size".into(), json!(sz));
+        // what to try, in order: the sizes, best first; once the first size of a non-square shape is rejected, the
+        // shape as `aspect_ratio` without a size (xAI's grok-imagine and other ratio-based servers take that and
+        // accept only 1k/2k squares as sizes), then the remaining sizes
+        let ratio = aspect_ratio(&shape);
+        let mut attempts: Vec<(Option<String>, Option<String>)> =
+            sizes.iter().map(|s| (Some(s.clone()), None)).collect();
+        if ratio != "1:1" && attempts.len() > 1 {
+            attempts.insert(1, (None, Some(ratio.to_string())));
+        }
+        for (sz, ar) in &attempts {
+            body.shift_remove("size");
+            body.shift_remove("aspect_ratio");
+            if let Some(sz) = sz {
+                body.insert("size".into(), json!(sz));
+            }
+            if let Some(ar) = ar {
+                body.insert("aspect_ratio".into(), json!(ar));
+            }
+            let label = sz.clone().or_else(|| ar.clone()).unwrap_or_default();
             let mut resp: Option<ImageResponse> = None;
             let mut next_size = false;
             for _ in 0..OPTIONAL_FIELDS.len() + 1 {
@@ -735,6 +779,11 @@ impl ImageClient {
                 let low = txt.to_lowercase();
                 if moderated(r.status, &txt) {
                     return ierr("内容被模型的安全策略拒绝 (the image model's safety policy declined this prompt) — 换一个描述；不要重试同样的内容 rephrase; do not retry the same prompt");
+                }
+                if ar.is_some() && r.status == 400 && low.contains("aspect") {
+                    last = txt;
+                    next_size = true;
+                    break; // the server doesn't take aspect_ratio: on to the next size
                 }
                 let mut hit: Vec<&str> = OPTIONAL_FIELDS
                     .iter()
@@ -789,7 +838,7 @@ impl ImageClient {
             return Ok(ImageResult {
                 images: out,
                 model: mdl,
-                size: sz.clone(),
+                size: label,
                 shape,
                 latency_s: round1(now_ts() - t0),
                 revised_prompt: items
@@ -1155,6 +1204,21 @@ mod tests {
             image_auth_headers(Some(&own), &cfg),
             vec![("Authorization".into(), "Bearer my-key".into())]
         );
+        // the user's optional image key for their own image endpoint; the system's image key never
+        let own = json!({"model_override": true, "model_api_key": "my-key", "image_api_key": "my-img-key"});
+        assert_eq!(
+            image_auth_headers(Some(&own), &cfg),
+            vec![("Authorization".into(), "Bearer my-img-key".into())]
+        );
+        assert_eq!(
+            media_auth_headers("video", Some(&own), &cfg),
+            vec![("Authorization".into(), "Bearer my-key".into())]
+        );
+        let cfg = Config::parse("[model]\napi_key='sys-key'\nvideo_api_key='sys-vid-key'").unwrap();
+        assert_eq!(
+            media_auth_headers("video", Some(&s), &cfg),
+            vec![("Authorization".into(), "Bearer sys-vid-key".into())]
+        );
     }
 
     // ---------------------------------------------------------------- fake Images API
@@ -1169,6 +1233,8 @@ mod tests {
         single_image_only: bool,
         has_variations: bool,
         no_edits: bool,
+        /// takes `aspect_ratio` (xAI-style); otherwise it is an unknown parameter, as at OpenAI
+        aspect_ok: bool,
         /// generations: the JSON body; edits/variations: {"url", "data", "parts"}.
         calls: Mutex<Vec<Value>>,
     }
@@ -1221,6 +1287,12 @@ mod tests {
                                     json!({"error": {"message": format!("Unknown parameter: '{}'", f)}}),
                                 );
                             }
+                        }
+                        if j.get("aspect_ratio").is_some() && !self.aspect_ok {
+                            return r(
+                                400,
+                                json!({"error": {"message": "Unknown parameter: 'aspect_ratio'."}}),
+                            );
                         }
                         let size = get_str(&j, "size");
                         if self.reject_sizes.contains(&size.as_str()) {
@@ -1321,6 +1393,57 @@ mod tests {
         assert_eq!(calls[0]["model"], "FLUX.1-dev");
         assert_eq!(calls[0]["prompt"], "a red fox in snow");
         assert_eq!(calls[0]["n"], 2);
+    }
+
+    #[tokio::test]
+    async fn ratio_servers_get_aspect_ratio_instead_of_a_size() {
+        // xAI-style: pixel sizes other than 1k/2k squares are rejected, `aspect_ratio` is taken → a real landscape
+        let (c, f) = client(Fake {
+            reject_sizes: vec!["1536x1024", "1792x1024", "1344x768"],
+            aspect_ok: true,
+            ..Default::default()
+        });
+        let s = json!({"model_base_url": "http://x/v1", "image_model": "grok-imagine-image"});
+        let res = c
+            .generate(
+                &s,
+                "a fox",
+                &GenerateOpts {
+                    aspect: Some("landscape".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.size, "16:9");
+        {
+            let calls = f.calls.lock();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0]["size"], "1536x1024");
+            assert!(calls[1].get("size").is_none());
+            assert_eq!(calls[1]["aspect_ratio"], "16:9");
+        }
+        // an OpenAI-style server: the ratio attempt is an unknown parameter and the next size is tried
+        let (c, f) = client(Fake {
+            reject_sizes: vec!["1536x1024"],
+            ..Default::default()
+        });
+        let res = c
+            .generate(
+                &s,
+                "a fox",
+                &GenerateOpts {
+                    aspect: Some("landscape".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.size, "1792x1024");
+        let calls = f.calls.lock();
+        assert_eq!(calls[1]["aspect_ratio"], "16:9");
+        assert_eq!(calls[2]["size"], "1792x1024");
+        assert!(calls[2].get("aspect_ratio").is_none());
     }
 
     #[tokio::test]

@@ -36,6 +36,10 @@ stringData:
     image_url = {{ (.Values.olaresEnv).OMUSE_IMAGE_URL | default "" | toJson }}
     image_api_key = {{ (.Values.olaresEnv).OMUSE_IMAGE_API_KEY | default "" | toJson }}
     image = {{ (.Values.olaresEnv).OMUSE_IMAGE_MODEL | default "" | toJson }}
+    # optional: the same for make_video (an OpenAI-Videos-compatible endpoint: POST /videos, GET /videos/<id>[/content])
+    video_url = {{ (.Values.olaresEnv).OMUSE_VIDEO_URL | default "" | toJson }}
+    video_api_key = {{ (.Values.olaresEnv).OMUSE_VIDEO_API_KEY | default "" | toJson }}
+    video = {{ (.Values.olaresEnv).OMUSE_VIDEO_MODEL | default "" | toJson }}
 
     [voice]
     port = 8083

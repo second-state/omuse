@@ -58,7 +58,7 @@ async def main():
         await pg.reload()
         await pg.wait_for_selector("#models")
         await toggle.click()
-        check("toggle on opens the section with 7 fields", await box.is_visible() and await box.locator("input:not([type=checkbox])").count() == 7,
+        check("toggle on opens the section with 12 fields (endpoint, key, 5 models, the optional image/video endpoints and keys)", await box.is_visible() and await box.locator("input:not([type=checkbox])").count() == 12,
               await box.locator("input:not([type=checkbox])").count())
         fast = box.locator("label.toggle", has_text="快速模式").locator("input")
         effort = box.locator("select")

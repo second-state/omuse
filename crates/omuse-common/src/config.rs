@@ -152,6 +152,14 @@ pub struct ModelConfig {
     pub image_api_key: String,
     /// `OMUSE_IMAGE_BUDGET`: generated pictures per task.
     pub image_budget: u32,
+    /// `OMUSE_VIDEO_MODEL` ("" = auto-pick a video model the endpoint serves).
+    pub video: String,
+    /// `OMUSE_VIDEO_URL`: an OpenAI-Videos-compatible endpoint for `make_video` ("" = the model endpoint).
+    pub video_url: String,
+    /// `OMUSE_VIDEO_API_KEY` ("" = `api_key`).
+    pub video_api_key: String,
+    /// `OMUSE_VIDEO_BUDGET`: generated clips per task.
+    pub video_budget: u32,
     /// `OMUSE_MODEL_FAST`: send `service_tier: "fast"` with every chat request to the system's endpoint (Settings
     /// may change it only for the user's own model).
     pub fast: bool,
@@ -173,6 +181,10 @@ impl Default for ModelConfig {
             image_url: String::new(),
             image_api_key: String::new(),
             image_budget: 6,
+            video: String::new(),
+            video_url: String::new(),
+            video_api_key: String::new(),
+            video_budget: 2,
             fast: false,
             reasoning_effort: String::new(),
         }
@@ -537,6 +549,15 @@ impl Config {
             self.model.api_key.clone()
         } else {
             self.model.image_api_key.clone()
+        }
+    }
+
+    /// `OMUSE_VIDEO_API_KEY` or the model key.
+    pub fn video_api_key(&self) -> String {
+        if self.model.video_api_key.is_empty() {
+            self.model.api_key.clone()
+        } else {
+            self.model.video_api_key.clone()
         }
     }
 

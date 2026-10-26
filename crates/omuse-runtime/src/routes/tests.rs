@@ -149,7 +149,9 @@ async fn settings_model_override_rules() {
     assert_eq!(
         g["model_user"],
         json!({"model_base_url": "", "model_name": "", "planner_model": "", "vision_model": "", "stt_model": "",
-               "image_model": "", "fast_mode": false, "reasoning_effort": "", "api_key_set": false})
+               "image_model": "", "image_base_url": "", "video_model": "", "video_base_url": "",
+               "fast_mode": false, "reasoning_effort": "", "api_key_set": false,
+               "image_api_key_set": false, "video_api_key_set": false})
     );
     assert_eq!(
         (

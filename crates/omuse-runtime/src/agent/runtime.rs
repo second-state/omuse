@@ -62,6 +62,10 @@ pub(crate) struct Inner {
     pub last_image: HashMap<String, String>,
     /// task_id -> pictures generated so far (cost guard, image budget)
     pub img_count: HashMap<String, i64>,
+    /// task_id -> latest generated clip
+    pub last_video: HashMap<String, String>,
+    /// task_id -> clips generated so far (cost guard, video budget)
+    pub vid_count: HashMap<String, i64>,
     /// (task, tool, output) -> files made, see REMAKE_MAX
     pub remakes: HashMap<(String, String, String), i64>,
     /// task -> id-like tokens seen in its tool results (survives compression)
@@ -109,6 +113,10 @@ pub struct Runtime {
     pub images: crate::imagegen::ImageClient,
     /// `IMAGE_BUDGET_PER_TASK` (`[model] image_budget`; tests lower it).
     pub image_budget: AtomicI64,
+    /// The video-generation client (`videogen`).
+    pub videos: crate::videogen::VideoClient,
+    /// `[model] video_budget`: clips per task (tests lower it).
+    pub video_budget: AtomicI64,
     http: reqwest::Client,
     sentinel_hook: Mutex<Option<SentinelHook>>,
     health: OnceLock<Arc<Health>>,
@@ -210,6 +218,8 @@ impl Runtime {
             Runtime {
                 me: weak.clone(),
                 image_budget: AtomicI64::new(crate::imagegen::image_budget(&cfg) as i64),
+                video_budget: AtomicI64::new(crate::videogen::video_budget(&cfg) as i64),
+                videos: crate::videogen::VideoClient::new(cfg.clone()),
                 cfg: cfg.clone(),
                 store: store.clone(),
                 llm,

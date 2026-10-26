@@ -594,6 +594,26 @@ async fn image_budget_per_task() {
 }
 
 #[tokio::test]
+async fn video_budget_per_task() {
+    let (rt, _d) = rt();
+    rt.video_budget
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    // the first call is allowed through to the (unreachable) client and fails there, not at the budget
+    let r = rt
+        .make_video(&json!({"id": "tv1"}), &json!({"prompt": "a cat"}))
+        .await;
+    assert!(r.starts_with("ERROR") && !r.contains("上限"), "{r}");
+    let r = rt
+        .make_video(&json!({"id": "tv1"}), &json!({"prompt": "a cat"}))
+        .await;
+    assert!(r.starts_with("ERROR") && r.contains("上限"), "{r}");
+    assert!(rt
+        .make_video(&json!({"id": "tv2"}), &json!({}))
+        .await
+        .contains("prompt required"));
+}
+
+#[tokio::test]
 async fn present_choices_clarify_and_files_roundtrip() {
     let (rt, _d) = rt();
     let conv = rt.store.create_conv("c", "chat", None).unwrap();

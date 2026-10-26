@@ -1007,5 +1007,16 @@ window.OMUSE_EN = {
 "退出登录 Sign out": "Sign out",
 "{0} 步": "{0} steps",
 "名称": "Name",
-"这台 OMuse 的名字，显示在左上角 logo 旁和浏览器标签页上。留空 = OMuse。": "This install's name, shown next to the logo and in the browser tab. Blank = OMuse."
+"这台 OMuse 的名字，显示在左上角 logo 旁和浏览器标签页上。留空 = OMuse。": "This install's name, shown next to the logo and in the browser tab. Blank = OMuse.",
+"留空=同上面的 API key": "Blank = the API key above",
+"已清除 Cleared": "Cleared",
+"图像接口 API key（可选）": "Image endpoint API key (optional)",
+"视频接口 API key（可选）": "Video endpoint API key (optional)",
+"图像接口地址（可选，留空=同上面的接口地址）": "Image endpoint (optional, blank = Base URL)",
+"视频生成模型（留空=自动）": "Video generation (empty = auto-pick)",
+"视频接口地址（可选，留空=同上面的接口地址）": "Video endpoint (optional, blank = Base URL)",
+"图像和视频可以用另一家服务：填它们的接口地址和密钥；留空就用上面的接口地址和密钥。": "Images and video can come from another provider: give its endpoint and API key. Blank uses the endpoint and key above.",
+" · 视频 {0}": " · video {0}",
+"视频 Video": "Video",
+"🎬 生成视频：{0}": "🎬 Video: {0}"
 };

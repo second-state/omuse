@@ -83,8 +83,13 @@ pub fn default_settings(cfg: &Config) -> Value {
         "planner_model": cfg.model.planner.trim(),
         "vision_model": cfg.model.vision.trim(),       // "" = the executor model
         "stt_model": cfg.model.stt.trim(),             // speech-to-text; "" = a whisper-like model on the endpoint, if any
-        "image_base_url": cfg.model.image_url,         // OpenAI-Images-compatible endpoint for make_image; "" = the model endpoint
+        "image_base_url": "",     // the user's own Images endpoint for make_image ("" = their model endpoint); the system's
+                                  // `[model] image_url` applies through system_model() while the system's models are in force
+        "image_api_key": "",      // the user's own key for that endpoint ("" = model_api_key); never returned by the API
         "image_model": cfg.model.image,                // image model id; "" = auto-pick
+        "video_base_url": "",     // the same for make_video (an OpenAI-Videos-compatible endpoint)
+        "video_api_key": "",
+        "video_model": cfg.model.video.trim(),         // video model id; "" = auto-pick
         "temperature": 0.3,
         "max_steps": 40,
         "llm_concurrency": 4,   // model requests in flight at once (parallel sub-agents each use one)
@@ -109,7 +114,7 @@ pub fn default_settings(cfg: &Config) -> Value {
 }
 
 /// The model settings a user may override as a set (Settings → Models → "use my own model").
-pub const MODEL_KEYS: [&str; 7] = [
+pub const MODEL_KEYS: [&str; 9] = [
     "model_base_url",
     "model_name",
     "planner_model",
@@ -117,7 +122,12 @@ pub const MODEL_KEYS: [&str; 7] = [
     "stt_model",
     "image_model",
     "image_base_url",
+    "video_model",
+    "video_base_url",
 ];
+/// Bearer keys saved in Settings: the user's own model key and the optional keys of their image and video endpoints.
+/// None of them is ever returned by the API or written to the audit log; `redacted()` reports `<key>_set` instead.
+pub const SECRET_KEYS: [&str; 3] = ["model_api_key", "image_api_key", "video_api_key"];
 /// Request options that follow the same rule as [`MODEL_KEYS`]: the config's values for the system's models, the
 /// user's own (Settings → Models) only while `model_override` is on.
 pub const MODEL_OPTIONS: [&str; 2] = ["fast_mode", "reasoning_effort"];
@@ -138,13 +148,16 @@ pub fn system_options(cfg: &Config) -> Value {
 /// What the user's own set must have before it can be switched on.
 pub const MODEL_REQUIRED: [&str; 3] = ["model_base_url", "model_api_key", "model_name"];
 
-/// `SYSTEM_MODEL`: the system's values of [`MODEL_KEYS`] (from the config).
+/// `SYSTEM_MODEL`: the system's values of [`MODEL_KEYS`] (from the config), including its optional image and video
+/// endpoints (`[model] image_url` / `video_url`; "" = the model endpoint).
 pub fn system_model(cfg: &Config) -> Value {
     let d = default_settings(cfg);
     let mut m = Map::new();
     for k in MODEL_KEYS {
         m.insert(k.to_string(), d[k].clone());
     }
+    m.insert("image_base_url".into(), json!(cfg.model.image_url.trim()));
+    m.insert("video_base_url".into(), json!(cfg.model.video_url.trim()));
     Value::Object(m)
 }
 
@@ -154,19 +167,21 @@ pub fn system_model_api_key(cfg: &Config) -> String {
     cfg.model.api_key.trim().to_string()
 }
 
-/// The model settings in force: the user's own endpoint, key and model names when `model_override` is on, else the
-/// system's (from the config) — never a mix, so the system's key is never sent to a user's endpoint and the user's
-/// key never to the system's. The user's own set has no separate image endpoint: images use their endpoint.
+/// The model settings in force: the user's own endpoint, keys and model names when `model_override` is on, else the
+/// system's (from the config) — never a mix, so the system's keys are never sent to a user's endpoint and the user's
+/// keys never to the system's. The image and video endpoints and keys are optional on both sides: "" means the
+/// model endpoint and its key (`imagegen::media_auth_headers`).
 pub fn effective_model(s: &Value, cfg: &Config) -> Value {
     let mut out = s.as_object().cloned().unwrap_or_default();
     if get_truthy(s, "model_override") {
-        let key = s
-            .get("model_api_key")
-            .filter(|v| truthy(v))
-            .map(py_str)
-            .unwrap_or_default();
-        out.insert("model_api_key".into(), Value::String(key));
-        out.insert("image_base_url".into(), Value::String(String::new()));
+        for k in SECRET_KEYS {
+            let key = s
+                .get(k)
+                .filter(|v| truthy(v))
+                .map(py_str)
+                .unwrap_or_default();
+            out.insert(k.into(), Value::String(key));
+        }
     } else {
         if let Value::Object(sys) = system_model(cfg) {
             for (k, v) in sys {
@@ -177,6 +192,14 @@ pub fn effective_model(s: &Value, cfg: &Config) -> Value {
             "model_api_key".into(),
             Value::String(system_model_api_key(cfg)),
         );
+        out.insert(
+            "image_api_key".into(),
+            Value::String(cfg.model.image_api_key.trim().to_string()),
+        );
+        out.insert(
+            "video_api_key".into(),
+            Value::String(cfg.model.video_api_key.trim().to_string()),
+        );
         if let Value::Object(opts) = system_options(cfg) {
             out.extend(opts);
         }
@@ -184,20 +207,19 @@ pub fn effective_model(s: &Value, cfg: &Config) -> Value {
     Value::Object(out)
 }
 
-/// Settings as the API returns them: the key itself never leaves the runtime, only whether one is saved.
+/// Settings as the API returns them: no key ever leaves the runtime, only whether one is saved (`<key>_set`).
 pub fn redacted(s: &Value) -> Value {
     let mut out = Map::new();
     if let Some(o) = s.as_object() {
         for (k, v) in o {
-            if k != "model_api_key" {
+            if !SECRET_KEYS.contains(&k.as_str()) {
                 out.insert(k.clone(), v.clone());
             }
         }
     }
-    out.insert(
-        "model_api_key_set".into(),
-        Value::Bool(get_truthy(s, "model_api_key")),
-    );
+    for k in SECRET_KEYS {
+        out.insert(format!("{}_set", k), Value::Bool(get_truthy(s, k)));
+    }
     Value::Object(out)
 }
 
@@ -774,15 +796,12 @@ impl Store {
         Ok(self.effective_model(&self.saved_settings()?))
     }
 
-    /// The user's own model settings as saved (Settings → Models form), "" where never saved; the key only as
-    /// `api_key_set`.
+    /// The user's own model settings as saved (Settings → Models form), "" where never saved; the keys only as
+    /// `api_key_set` / `image_api_key_set` / `video_api_key_set`.
     pub fn user_model(&self) -> Result<Value> {
         let rows: Map<String, Value> = self.setting_rows()?.into_iter().collect();
         let mut out = Map::new();
         for k in MODEL_KEYS {
-            if k == "image_base_url" {
-                continue;
-            }
             let v = rows
                 .get(k)
                 .filter(|v| truthy(v))
@@ -807,6 +826,12 @@ impl Store {
             "api_key_set".into(),
             Value::Bool(rows.get("model_api_key").map(truthy).unwrap_or(false)),
         );
+        for k in ["image_api_key", "video_api_key"] {
+            out.insert(
+                format!("{}_set", k),
+                Value::Bool(rows.get(k).map(truthy).unwrap_or(false)),
+            );
+        }
         Ok(Value::Object(out))
     }
 
@@ -2176,7 +2201,7 @@ mod tests {
 
     #[test]
     fn model_override_effective_settings() {
-        let c = cfg("[model]\nurl='http://sys/v1'\nname='sys-llm'\nplanner='sys-planner'\napi_key='sys-key'\nimage_url='http://sys-img/v1'\n");
+        let c = cfg("[model]\nurl='http://sys/v1'\nname='sys-llm'\nplanner='sys-planner'\napi_key='sys-key'\nimage_url='http://sys-img/v1'\nimage_api_key='sys-img-key'\n");
         let d = tempfile::tempdir().unwrap();
         let st = Store::new(d.path(), c).unwrap();
         let s = st.settings().unwrap();
@@ -2188,8 +2213,14 @@ mod tests {
         assert_eq!(
             st.user_model().unwrap(),
             json!({"model_base_url": "", "model_name": "", "planner_model": "", "vision_model": "", "stt_model": "",
-                   "image_model": "", "fast_mode": false, "reasoning_effort": "", "api_key_set": false})
+                   "image_model": "", "image_base_url": "", "video_model": "", "video_base_url": "",
+                   "fast_mode": false, "reasoning_effort": "", "api_key_set": false,
+                   "image_api_key_set": false, "video_api_key_set": false})
         );
+        // the system's models: its image endpoint and image key (the config's), the user's never
+        assert_eq!(s["image_base_url"], "http://sys-img/v1");
+        assert_eq!(s["image_api_key"], "sys-img-key");
+        assert_eq!(s["video_base_url"], "");
         // the user's own values saved but switched off: ignored
         st.set_settings(&json!({"model_base_url": "http://me/v1", "model_name": "my-llm", "model_api_key": "my-key"})).unwrap();
         let s = st.settings().unwrap();
@@ -2207,16 +2238,30 @@ mod tests {
         assert_eq!(s["model_api_key"], "my-key");
         // never saved by the user: the default (the system's planner) shows through, as DEFAULT_SETTINGS did in Python
         assert_eq!(s["planner_model"], "sys-planner");
+        // but never the system's image endpoint or key: the user's own (none saved = their model endpoint and key)
         assert_eq!(s["image_base_url"], "");
+        assert_eq!(s["image_api_key"], "");
         let red = redacted(&s);
         assert!(red.get("model_api_key").is_none());
         assert_eq!(red["model_api_key_set"], true);
+        assert_eq!(red["image_api_key_set"], false);
         assert_eq!(red["model_name"], "my-llm");
         let txt = pyjson::dumps(&red);
-        assert!(!txt.contains("sys-key") && !txt.contains("my-key"));
+        assert!(
+            !txt.contains("sys-key") && !txt.contains("my-key") && !txt.contains("sys-img-key")
+        );
+        // the user's optional video endpoint and key, used only while their set is on
+        st.set_settings(&json!({"video_base_url": "http://me-vid/v1", "video_api_key": "vid-key", "video_model": "sora-2"})).unwrap();
+        let s = st.settings().unwrap();
+        assert_eq!(s["video_base_url"], "http://me-vid/v1");
+        assert_eq!(s["video_api_key"], "vid-key");
+        assert_eq!(st.user_model().unwrap()["video_api_key_set"], true);
+        assert!(redacted(&s).get("video_api_key").is_none());
         // off again: back to the system's, the user's values kept
         st.set_settings(&json!({"model_override": false})).unwrap();
         assert_eq!(st.settings().unwrap()["model_name"], "sys-llm");
+        assert_eq!(st.settings().unwrap()["video_base_url"], "");
+        assert_eq!(st.settings().unwrap()["video_api_key"], "");
         assert_eq!(st.user_model().unwrap()["model_name"], "my-llm");
         // unknown keys are ignored; saved values round-trip through JSON
         st.set_settings(&json!({"nope": 1, "skills_disabled": ["a"], "vision_model": "saved-v"}))
