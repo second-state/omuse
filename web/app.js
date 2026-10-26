@@ -725,6 +725,7 @@ function evLine(e) {
     case 'llm_retry': body = h('span', { style: 'color:var(--warn)' }, Tf("🔁 模型重试 {0}/{1}：{2}，{3} 秒后再试", d.attempt, d.of, d.reason || '', d.wait_s)); break;
     case 'chart': body = h('span', null, Tf("📊 图表：{0}", (d.title || d.path || ''))); break;
     case 'image': body = h('span', null, Tf("🎨 生成图片：{0}", ((d.paths || []).join(', ') || d.path || '') + (d.model ? '  (' + d.model + ', ' + (d.size || '') + ', ' + (d.latency_s || '') + 's)' : ''))); break;
+    case 'video': body = h('span', null, Tf("🎬 生成视频：{0}", ((d.paths || []).join(', ') || d.path || '') + (d.model ? '  (' + d.model + ', ' + (d.size || '') + ', ' + (d.seconds || '') + 's, ' + (d.latency_s || '') + 's)' : ''))); break;
     case 'gave_up': body = h('span', { style: 'color:var(--warn)' }, T('🛑 同样的来源反复失败，停止重试，按已有信息作答')); break;
     case 'error': case 'planner_error': body = h('span', { style: 'color:var(--danger)' }, '❌ ' + (d.message || '')); break;
     default: body = h('span', { class: 'muted' }, e.type + ' ' + JSON.stringify(d).slice(0, 200));
@@ -2382,7 +2383,8 @@ async function viewSettings(root) {
   // section is closed and the system's values (from the environment) are in force; on: the three required fields must be filled
   const mu = r.model_user || {};
   const sm = r.system_model || {};
-  const MODEL_FIELDS = ['model_base_url', 'model_name', 'planner_model', 'vision_model', 'stt_model', 'image_model'];
+  const MODEL_FIELDS = ['model_base_url', 'model_name', 'planner_model', 'vision_model', 'stt_model', 'image_model', 'image_base_url', 'video_model', 'video_base_url'];
+  const MEDIA_KEYS = ['image_api_key', 'video_api_key'];   // optional keys of the image / video endpoints (blank = the model key)
   const mfield = (k, zh, en, required) => { const i = h('input', { type: 'text', value: mu[k] ?? '', required: required || null, autocomplete: 'off', spellcheck: 'false' }); f[k] = i;
     return h('label', { class: 'field' }, h('span', null, LANG === 'en' ? en : zh, required ? h('span', { class: 'req', title: T('必填') }, ' *') : null), i); };
   // fast mode and reasoning effort: the user's own model only (the system's come from config.toml, shown read-only)
@@ -2392,6 +2394,10 @@ async function viewSettings(root) {
   const effortIn = h('select', null, EFFORTS.map(([v, label]) => h('option', { value: v, selected: (mu.reasoning_effort || '') === v || null }, label))); f.reasoning_effort = effortIn;
   const keyIn = h('input', { type: 'password', value: '', autocomplete: 'new-password', placeholder: mu.api_key_set ? T('已保存；留空=不改') : 'sk-…' });
   f.model_api_key = keyIn;
+  // the optional image / video endpoints with their own keys: blank = the endpoint and key above (one provider for all)
+  const mediaKey = k => { const i = h('input', { type: 'password', value: '', autocomplete: 'new-password', placeholder: mu[k + '_set'] ? T('已保存；留空=不改') : T('留空=同上面的 API key') }); f[k] = i;
+    const clear = h('button', { class: 'btn small', type: 'button', hidden: !mu[k + '_set'], onclick: safe(async () => { await api('settings', { method: 'PUT', body: { [k]: null } }); mu[k + '_set'] = false; i.placeholder = T('留空=同上面的 API key'); clear.hidden = true; toast(T('已清除 Cleared')); }) }, T('清除 Clear'));
+    return h('label', { class: 'field' }, h('span', null, k === 'image_api_key' ? T('图像接口 API key（可选）') : T('视频接口 API key（可选）')), h('div', { class: 'row', style: 'gap:6px' }, h('div', { style: 'flex:1;min-width:160px' }, i), clear)); };
   const modelBox = h('div', { class: 'stack', id: 'modelOverride', hidden: !s.model_override },
     mfield('model_base_url', T('接口地址'), 'Base URL', true),
     h('label', { class: 'field' }, h('span', null, 'API key', h('span', { class: 'req', title: T('必填') }, ' *')), keyIn),
@@ -2400,6 +2406,12 @@ async function viewSettings(root) {
     mfield('vision_model', T('视觉模型（看截图和图片，留空=同 LLM）'), 'Vision'),
     mfield('stt_model', T('语音转文字模型（留空=自动寻找 whisper 类模型）'), 'Speech-to-text'),
     mfield('image_model', T('图像生成模型（留空=自动）'), 'Image'),
+    mfield('image_base_url', T('图像接口地址（可选，留空=同上面的接口地址）'), 'Image endpoint (optional, blank = Base URL)'),
+    mediaKey('image_api_key'),
+    mfield('video_model', T('视频生成模型（留空=自动）'), 'Video'),
+    mfield('video_base_url', T('视频接口地址（可选，留空=同上面的接口地址）'), 'Video endpoint (optional, blank = Base URL)'),
+    mediaKey('video_api_key'),
+    h('div', { class: 'small muted' }, T('图像和视频可以用另一家服务：填它们的接口地址和密钥；留空就用上面的接口地址和密钥。')),
     h('label', { class: 'toggle' }, fastIn, T('快速模式（请求里加 service_tier=fast）')),
     h('label', { class: 'field' }, h('span', null, T('推理强度')), effortIn));
   // the three required fields, or a message naming the first one missing ('' = fine)
@@ -2411,7 +2423,8 @@ async function viewSettings(root) {
       h('p', { class: 'sub' }, T('任何 OpenAI 兼容接口都可以用。每类请求可以交给不同的模型，没有哪家模型提供商能看到你的全部信息；推理、网页浏览和工具调用都在云端完成。')),
       h('div', { class: 'small muted', id: 'systemModel' }, Tf("系统默认：LLM {0}", modelLabel(sm.model_name)),
         sm.planner_model ? Tf(" · 规划 {0}", modelLabel(sm.planner_model)) : '', sm.vision_model ? Tf(" · 视觉 {0}", modelLabel(sm.vision_model)) : '',
-        sm.stt_model ? Tf(" · 语音转文字 {0}", modelLabel(sm.stt_model)) : '', sm.image_model ? Tf(" · 图像 {0}", modelLabel(sm.image_model)) : ''),
+        sm.stt_model ? Tf(" · 语音转文字 {0}", modelLabel(sm.stt_model)) : '', sm.image_model ? Tf(" · 图像 {0}", modelLabel(sm.image_model)) : '',
+        sm.video_model ? Tf(" · 视频 {0}", modelLabel(sm.video_model)) : ''),
       h('div', { class: 'small muted', id: 'systemOptions' }, Tf("系统默认的快速模式：{0} · 推理强度：{1}（在 config.toml 中设置，使用自己的模型时才能在这里修改）",
         sm.fast_mode ? T('开') : T('关'), effortName(sm.reasoning_effort))),
       h('div', null, tog('model_override', T('使用自己的模型 Use my own model')),
@@ -2421,9 +2434,9 @@ async function viewSettings(root) {
       h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: safe(async () => {
         testOut.replaceChildren(h('span', { class: 'small muted' }, T('测试中…')));
         const body = { model_override: f.model_override.checked };
-        if (body.model_override) { for (const k of MODEL_FIELDS) body[k] = f[k].value; if (f.model_api_key.value) body.model_api_key = f.model_api_key.value; }
+        if (body.model_override) { for (const k of MODEL_FIELDS) body[k] = f[k].value; for (const k of ['model_api_key', ...MEDIA_KEYS]) if (f[k].value) body[k] = f[k].value; }
         const t = await api('settings/test-models', { method: 'POST', body });
-        const label = { llm: 'LLM', planner: T('规划 Planner'), vision: T('视觉 Vision'), stt: T('语音转文字 STT'), image: T('图像 Image') };
+        const label = { llm: 'LLM', planner: T('规划 Planner'), vision: T('视觉 Vision'), stt: T('语音转文字 STT'), image: T('图像 Image'), video: T('视频 Video') };
         testOut.replaceChildren(...t.results.map(x => h('div', { class: 'small' }, (x.ok ? '✓ ' : '✕ ') + (label[x.kind] || x.kind) + (x.model ? ` (${x.model})` : '') + ': ',
           x.same_as ? T('同 LLM') : x.ok ? `${x.latency_s}s — ${x.reply || ''}` : (x.error || ''))));
       }) }, T('测试所有模型 Test models'))),
@@ -2445,12 +2458,13 @@ async function viewSettings(root) {
   ), h('div', { style: 'margin-top:16px' }, h('button', { class: 'btn primary', onclick: safe(async () => {
     const body = {};
     for (const [k, el] of Object.entries(f)) body[k] = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value;
-    if (!body.model_override) { for (const k of [...MODEL_FIELDS, 'fast_mode', 'reasoning_effort']) delete body[k]; }   // off: the saved values stay but are ignored
-    if (!body.model_api_key) delete body.model_api_key;                              // empty: keep the saved key
+    if (!body.model_override) { for (const k of [...MODEL_FIELDS, ...MEDIA_KEYS, 'fast_mode', 'reasoning_effort']) delete body[k]; }   // off: the saved values stay but are ignored
+    for (const k of ['model_api_key', ...MEDIA_KEYS]) if (!body[k]) delete body[k];   // empty: keep the saved key
     const miss = modelMissing();
     if (miss) { toast(miss, true); (!/^https?:/.test(f.model_base_url.value.trim()) ? f.model_base_url : !(keyIn.value.trim() || mu.api_key_set) ? keyIn : f.model_name).focus(); return; }
     await api('settings', { method: 'PUT', body }); toast(T('已保存 Saved')); refreshModelChip();
     if (body.model_override && body.model_api_key) { mu.api_key_set = true; keyIn.value = ''; keyIn.placeholder = T('已保存；留空=不改'); }
+    for (const k of MEDIA_KEYS) if (body.model_override && body[k]) { mu[k + '_set'] = true; f[k].value = ''; f[k].placeholder = T('已保存；留空=不改'); f[k].closest('label').querySelector('button').hidden = false; }
     applyTheme(body.theme);
     applyName(body.instance_name); f.instance_name.value = S.name;
     const want = UI_LANGS.includes(body.ui_language) ? body.ui_language : 'en';

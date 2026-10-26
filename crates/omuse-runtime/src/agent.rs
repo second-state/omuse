@@ -13,6 +13,7 @@
 //! * [`exec`] — one tool call: guards, Sentinel `/internal/act`, result formatting, vision helpers, evidence.
 //! * [`local`] — the local tools (files, documents, data, memory, schedules, goals, choices, …).
 //! * [`images`] — `make_image` / `edit_image` / `vary_image` / `caption_image` / `upscale_image`.
+//! * [`videos`] — `make_video` (a short clip from an AI video model through `videogen`).
 //! * [`market_text`] — the text the agent gets for `market_data` / `stock_fundamentals` (Sentinel's `market.describe*`).
 //! * [`ext`] — thin adapters to the sibling runtime modules (context, library, skills, imagegen, attachments, goals,
 //!   scheduler, outcome), kept in one place.
@@ -30,6 +31,7 @@ pub mod market_text;
 pub mod runtime;
 pub mod tools;
 pub(crate) mod util;
+pub mod videos;
 
 #[cfg(test)]
 mod tests;

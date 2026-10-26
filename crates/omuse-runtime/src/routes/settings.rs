@@ -13,7 +13,9 @@ use serde_json::{json, Map, Value};
 
 use super::{body_obj, body_opt, round2, St, R};
 use crate::llm::{ChatOpts, Llm};
-use crate::store::{redacted, system_model, system_options, MODEL_OPTIONS, REASONING_EFFORTS};
+use crate::store::{
+    redacted, system_model, system_options, MODEL_OPTIONS, REASONING_EFFORTS, SECRET_KEYS,
+};
 
 /// settings: the values in force (the model key only as model_api_key_set). model_user: the user's own model
 /// settings as saved in Settings → Models, whether or not they are switched on.
@@ -90,9 +92,31 @@ pub fn check_model_override(b: &mut Map<String, Value>, saved: &Value) -> Result
     } else {
         b.insert("model_api_key".into(), json!(given_key));
     }
-    for k in ["planner_model", "vision_model", "stt_model", "image_model"] {
+    for k in [
+        "planner_model",
+        "vision_model",
+        "stt_model",
+        "image_model",
+        "video_model",
+    ] {
         if b.contains_key(k) {
             let v = s_or_empty(b.get(k)).trim().to_string();
+            b.insert(k.into(), json!(v));
+        }
+    }
+    // the optional image / video endpoints: an http(s) URL or blank (= the model endpoint above)
+    for k in ["image_base_url", "video_base_url"] {
+        if b.contains_key(k) {
+            let v = s_or_empty(b.get(k))
+                .trim()
+                .trim_end_matches('/')
+                .to_string();
+            if !v.is_empty() && !URL.is_match(&v) {
+                return Err(ApiError::new(
+                    400,
+                    "图像/视频接口地址必须是以 http:// 或 https:// 开头的网址，或留空 (the image / video endpoint must be an http(s) URL or blank)",
+                ));
+            }
             b.insert(k.into(), json!(v));
         }
     }
@@ -151,6 +175,22 @@ pub async fn put_settings(st: St, body: Bytes) -> R {
     if b.contains_key("model_api_key") && s_or_empty(b.get("model_api_key")).trim().is_empty() {
         b.shift_remove("model_api_key"); // an empty key field means "keep the saved one"
     }
+    // the optional image / video keys: "" keeps the saved one, null clears it (back to the model key)
+    for k in ["image_api_key", "video_api_key"] {
+        match b.get(k) {
+            Some(Value::Null) => {
+                b.insert(k.into(), json!(""));
+            }
+            Some(v) if py_str(v).trim().is_empty() => {
+                b.shift_remove(k);
+            }
+            Some(v) => {
+                let v = py_str(v).trim().to_string();
+                b.insert(k.into(), json!(v));
+            }
+            None => {}
+        }
+    }
     if b.contains_key("instance_name") {
         // one line, at most 40 characters; blank = the default
         let joined = s_or_empty(b.get("instance_name"))
@@ -171,8 +211,8 @@ pub async fn put_settings(st: St, body: Bytes) -> R {
         .map(|(k, v)| {
             (
                 k.clone(),
-                if k == "model_api_key" {
-                    json!("(set)")
+                if SECRET_KEYS.contains(&k.as_str()) {
+                    json!(if truthy(v) { "(set)" } else { "(cleared)" })
                 } else {
                     v.clone()
                 },
@@ -305,9 +345,28 @@ async fn image_ok(images: &crate::imagegen::ImageClient, s: &Value) -> Result<Va
     )
 }
 
+async fn video_ok(videos: &crate::videogen::VideoClient, s: &Value) -> Result<Value, String> {
+    let (base, model) = videos.resolve(s).await.map_err(|e| e.to_string())?;
+    let listed = match videos.list_models(&base, 15.0, s).await {
+        Ok(list) => Some(list.iter().any(|m| get_str(m, "id") == model)),
+        Err(_) => None,
+    };
+    if listed == Some(false) {
+        return Err(format!(
+            "endpoint reachable, but it does not list {}",
+            model
+        ));
+    }
+    Ok(
+        json!({"reply": format!("{} @ {}{} — not generated (billed)", model, base,
+                               if listed == Some(true) { " (listed)" } else { "" }),
+              "resolved_model": model}),
+    )
+}
+
 /// One standard request per configured model — LLM, planner, vision, speech-to-text — and a reachability check for
-/// the image model (a generation would be billed). The body may carry the form's current values, so the user can
-/// test before saving.
+/// the image and video models (a generation would be billed). The body may carry the form's current values, so the
+/// user can test before saving.
 pub async fn test_models(st: St, headers: HeaderMap, body: Bytes) -> R {
     let b = body_opt(&headers, &body, &["0", ""])?;
     let store = &st.rt.store;
@@ -320,15 +379,20 @@ pub async fn test_models(st: St, headers: HeaderMap, body: Bytes) -> R {
         "vision_model",
         "stt_model",
         "image_model",
+        "image_base_url",
+        "video_model",
+        "video_base_url",
         "llm_timeout",
     ] {
         if let Some(v) = b.get(k) {
             s[k] = v.clone();
         }
     }
-    let key = s_or_empty(b.get("model_api_key")).trim().to_string();
-    if !key.is_empty() {
-        s["model_api_key"] = json!(key);
+    for k in SECRET_KEYS {
+        let key = s_or_empty(b.get(k)).trim().to_string();
+        if !key.is_empty() {
+            s[k] = json!(key);
+        }
     }
     let s = store.effective_model(&s); // the form's own-model values with the toggle on, else the system's
     let llm = fixed_llm(s.clone());
@@ -397,6 +461,16 @@ pub async fn test_models(st: St, headers: HeaderMap, body: Bytes) -> R {
     results.push(row(
         "image",
         if image.is_empty() { "(auto)" } else { &image },
+        t0,
+        r,
+    ));
+
+    let video = s_or_empty(s.get("video_model"));
+    let t0 = Instant::now();
+    let r = video_ok(&st.rt.videos, &s).await;
+    results.push(row(
+        "video",
+        if video.is_empty() { "(auto)" } else { &video },
         t0,
         r,
     ));

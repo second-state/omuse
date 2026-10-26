@@ -74,6 +74,72 @@ def image_calls():
     return IMAGE_CALLS
 
 
+# ---- the Videos API (videogen_e2e.py): POST /videos starts a job, GET /videos/{id} polls it (done after two polls),
+# GET /videos/{id}/content is the clip. Served twice: at /v1 (the model endpoint) and at /vid/v1 (a separate video
+# provider, so a suite can check that the video endpoint and ITS key are used). Every call records its Authorization.
+VIDEO_CALLS = []
+VIDEO_JOBS = {}
+
+
+def _mp4():
+    # a tiny but well-formed MP4 header (ftyp box) — enough for a file card, a mime by extension and a download
+    return b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00\x00\x00\x08free"
+
+
+def _video_app(prefix: str):
+    from fastapi.responses import JSONResponse, Response
+
+    @app.post(prefix + "/videos")
+    async def videos_create(req: Request):
+        b = await req.json()
+        vid = "video_" + uuid.uuid4().hex[:10]
+        VIDEO_CALLS.append({"url": "videos", "prefix": prefix, "body": b, "auth": req.headers.get("authorization") or ""})
+        if not b.get("model"):
+            return JSONResponse({"error": {"message": "Missing 'model' field"}}, status_code=400)
+        if b.get("aspect_ratio"):
+            return JSONResponse({"error": {"message": "Unknown parameter: 'aspect_ratio'."}}, status_code=400)
+        if "storm" in str(b.get("prompt", "")).lower():   # a prompt the safety policy declines
+            return JSONResponse({"error": {"code": "content_policy_violation", "message": "rejected as a result of our safety system"}},
+                                status_code=400)
+        VIDEO_JOBS[vid] = {"polls": 0, "seconds": b.get("seconds", "4"), "size": b.get("size", "1280x720")}
+        return {"id": vid, "object": "video", "model": b["model"], "status": "queued", "progress": 0,
+                "seconds": VIDEO_JOBS[vid]["seconds"], "size": VIDEO_JOBS[vid]["size"]}
+
+    @app.get(prefix + "/videos/{vid}")
+    def videos_get(vid: str, req: Request):
+        VIDEO_CALLS.append({"url": "poll", "prefix": prefix, "id": vid, "auth": req.headers.get("authorization") or ""})
+        j = VIDEO_JOBS.get(vid)
+        if not j:
+            return JSONResponse({"error": {"message": "no such video"}}, status_code=404)
+        j["polls"] += 1
+        st = "completed" if j["polls"] >= 2 else "in_progress"
+        return {"id": vid, "object": "video", "status": st, "progress": 100 if st == "completed" else 50,
+                "seconds": j["seconds"], "size": j["size"], "error": None}
+
+    @app.get(prefix + "/videos/{vid}/content")
+    def videos_content(vid: str, req: Request):
+        VIDEO_CALLS.append({"url": "content", "prefix": prefix, "id": vid, "auth": req.headers.get("authorization") or ""})
+        j = VIDEO_JOBS.get(vid)
+        if not j or j["polls"] < 2:
+            return JSONResponse({"error": {"code": "video_not_completed", "message": "not completed"}}, status_code=409)
+        return Response(_mp4(), media_type="video/mp4")
+
+    if prefix != "/v1":
+        @app.get(prefix + "/models")
+        def vid_models(req: Request):
+            VIDEO_CALLS.append({"url": "models", "prefix": prefix, "auth": req.headers.get("authorization") or ""})
+            return {"data": [{"id": "fake-chat"}, {"id": "sora-2"}, {"id": "fake-video-gen"}]}
+
+
+_video_app("/v1")
+_video_app("/vid/v1")
+
+
+@app.get("/video_calls")
+def video_calls():
+    return VIDEO_CALLS
+
+
 @app.get("/last_auth")
 def last_auth():
     return {"authorization": AUTH[-1] if AUTH else None, "calls": len(AUTH)}
@@ -1423,6 +1489,13 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         line = next((l.strip() for l in sheet.split("## Getting around", 1)[-1].splitlines() if l.strip().startswith("- ")), "")
         rate = re.search(re.escape(f"{sym[:3]}/{sym[3:6]}") + r"[^0-9]*([0-9][0-9,]*\.[0-9]+)", str(tools_done[1]["content"]))
         return reply(f"CITY ANSWER ({skill}). Getting around: {line[2:200]} | FX {sym}: {rate.group(1) if rate else '?'}")
+    if "VIDEOGEN" in goal:   # videogen_e2e.py: one short clip, shown in the chat
+        if n == 0:
+            prompt = "a violent storm at sea" if "storm" in goal else "a paper boat drifting across a calm pond at sunrise, gentle ripples"
+            return reply("", [tc_("make_video", {"prompt": prompt, "seconds": 4, "aspect": "landscape", "title": "paper boat"})])
+        if "VIDEOGEN twice" in goal and n == 1:   # a model that ignores the advice and asks for a second clip
+            return reply("", [tc_("make_video", {"prompt": "the same boat, closer", "seconds": 4})])
+        return reply("VIDEO DONE: " + str(last_tool)[:300])
     if "IMAGEGEN" in goal:   # imagegen_e2e.py: one picture, then an edit of it
         if n == 0:
             return reply("", [tc_("make_image", {"prompt": "a red fox in fresh snow, watercolour"})])

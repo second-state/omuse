@@ -37,9 +37,14 @@ planner = ""               # OMUSE_PLANNER_MODEL ("" = name)
 vision = ""                # OMUSE_VISION_MODEL  ("" = name)
 stt = ""                   # OMUSE_STT_MODEL     ("" = a whisper-like model on the endpoint, if any)
 image = ""                 # OMUSE_IMAGE_MODEL   ("" = auto-pick)
-image_url = ""             # OMUSE_IMAGE_URL     ("" = the model endpoint)
+image_url = ""             # OMUSE_IMAGE_URL     ("" = the model endpoint; optional, for a provider that serves only the image model)
 image_api_key = ""         # OMUSE_IMAGE_API_KEY ("" = api_key)
 image_budget = 6           # OMUSE_IMAGE_BUDGET: generated pictures per task
+video = ""                 # OMUSE_VIDEO_MODEL   ("" = auto-pick)
+video_url = ""             # OMUSE_VIDEO_URL     ("" = the model endpoint; optional, for a provider that serves only the
+                           #                      video model: POST <url>/videos, GET <url>/videos/<id>[/content])
+video_api_key = ""         # OMUSE_VIDEO_API_KEY ("" = api_key)
+video_budget = 2           # OMUSE_VIDEO_BUDGET: generated clips per task
 fast = false               # OMUSE_MODEL_FAST: true = send service_tier "fast" with every chat request (for the system's
                            # models; with "use my own model" the user sets it in Settings → Models)
 reasoning_effort = ""      # OMUSE_MODEL_REASONING: reasoning_effort for every chat request: none | minimal | low | medium |

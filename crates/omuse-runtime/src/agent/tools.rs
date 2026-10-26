@@ -125,12 +125,13 @@ pub const DRY_RUN_LOCAL: [&str; 17] = [
     "pdf_form_fill",
 ];
 
-pub const REMAKE_TOOLS: [&str; 9] = [
+pub const REMAKE_TOOLS: [&str; 10] = [
     "make_xlsx",
     "make_pdf",
     "make_docx",
     "make_chart",
     "make_image",
+    "make_video",
     "edit_image",
     "vary_image",
     "caption_image",
@@ -138,7 +139,7 @@ pub const REMAKE_TOOLS: [&str; 9] = [
 ];
 
 /// In the last 2 steps only delivery tools remain.
-pub const FINISH_TOOLS: [&str; 30] = [
+pub const FINISH_TOOLS: [&str; 31] = [
     "update_plan",
     "files_write",
     "files_read",
@@ -149,6 +150,7 @@ pub const FINISH_TOOLS: [&str; 30] = [
     "make_docx",
     "make_chart",
     "make_image",
+    "make_video",
     "edit_image",
     "vary_image",
     "caption_image",
@@ -362,6 +364,26 @@ sent to the chat automatically; to change it, call again with a new prompt.",
              "output_format": {"type": "string", "enum": ["png", "jpeg", "webp"], "description": "输出格式，默认 png"},
              "title": {"type": "string", "description": "文件名用的短标题 short title for the file name"},
              "output": {"type": "string", "description": "保存路径，默认 images/<标题>.png output .png path"},
+             "send": {"type": "boolean", "description": "是否发到对话里（默认 true）show it in the chat (default true)"}}),
+            &["prompt"]),
+        fn_("make_video", "用 AI 根据文字描述生成一段几秒钟的短视频（像 Sora / Veo / Grok Imagine）并直接显示在对话里：产品短片、\
+动画片段、氛围镜头、社交媒体短视频。用户说「做个/生成一段…视频、把…做成短片、来段…动画」时就用它——不要去打开在线视频网站，\
+也不要用 make_image（那是静态图）。prompt 用英文写得具体：主体、动作、镜头运动、场景、光线、风格；用户给的中文描述你翻译并补全。\
+seconds 默认 5（1-15），aspect 按用途选：手机/竖屏 portrait，横屏 landscape。每次调用都要付费、要等一两分钟：只生成一次；\
+要改就换 prompt 再调一次。\
+ Generate a short video clip (a few seconds) from a text description with an AI video model (like Sora / Veo / \
+Grok Imagine) and show it in the chat: product teasers, animated scenes, mood shots, social clips. Use it when the \
+user asks for a video / clip / animation — never open an online video site, and not make_image (that is a still). \
+Write the prompt in English and concretely (subject, motion, camera movement, setting, lighting, style); translate \
+and enrich a Chinese request. seconds defaults to 5 (1-15); pick aspect by use. Each call is billed and takes a \
+minute or two: generate once; to change it, call again with a new prompt.",
+            json!({"prompt": {"type": "string", "description": "英文、具体的画面和动作描述 a concrete English description of the scene and motion"},
+             "seconds": {"type": "integer", "description": "时长秒数 1-15（默认 5）clip length in seconds"},
+             "aspect": {"type": "string", "enum": ["landscape", "portrait", "square"],
+                        "description": "画幅：landscape 横屏(默认)，portrait 竖屏(手机/短视频)，square 方形"},
+             "size": {"type": "string", "description": "或明确尺寸 or an explicit size like 1280x720 / 720x1280"},
+             "title": {"type": "string", "description": "文件名用的短标题 short title for the file name"},
+             "output": {"type": "string", "description": "保存路径，默认 videos/<标题>.mp4 output .mp4 path"},
              "send": {"type": "boolean", "description": "是否发到对话里（默认 true）show it in the chat (default true)"}}),
             &["prompt"]),
         fn_("edit_image", "用 AI 修改一张已有图片（像 Midjourney 编辑器 / ChatGPT 选区编辑）：换颜色、加/去掉东西、换背景、改风格、\

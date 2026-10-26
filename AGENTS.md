@@ -135,6 +135,10 @@ scenario (`tests/parallel_steps_e2e.py`).
   `<dir>/market/*.webp` and `overview.png` into `deploy/market/assets`. Rebuild the test image first.
 - Image smoke test: `tests/docker_image_smoke.sh <image>`; set `OMUSE_VERSION`
   to the tag to also check the reported version.
+- Image and video generation: `tests/imagegen_e2e.py` and `tests/videogen_e2e.py` (scripted, in the default list);
+  `tests/media_real.py` makes one picture and one short clip with the gateway in the e2e env file
+  (`xai/grok-imagine-image`, `xai/grok-imagine-video`, billed): `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env
+  bash tests/run_in_docker.sh media_real`.
 - `python3 tests/i18n_check.py` must report no missing or stale translations
   after any UI string change.
 - Travel skills: one scripted suite per skill (`tests/trip_today_e2e.py`, `sgac_e2e.py`, `arrival_cards_e2e.py`, `arrival_nomail_e2e.py`,

@@ -25,6 +25,7 @@ pub mod scheduler;
 pub mod skills;
 pub mod state;
 pub mod store;
+pub mod videogen;
 
 /// Start the runtime HTTP API on `[server] runtime_host:runtime_port` and serve until the process ends.
 pub async fn serve(cfg: Arc<Config>) -> anyhow::Result<()> {
