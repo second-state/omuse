@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "omuse"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "clap",
@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "omuse-apps"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "axum",
  "chrono",
@@ -2357,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "omuse-browser"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "axum",
@@ -2386,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "omuse-common"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "aes 0.8.4",
  "anyhow",
@@ -2436,7 +2436,7 @@ dependencies = [
 
 [[package]]
 name = "omuse-docs"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "calamine",
  "chrono",
@@ -2454,7 +2454,7 @@ dependencies = [
 
 [[package]]
 name = "omuse-mail"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "omuse-mcp"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2505,7 +2505,7 @@ dependencies = [
 
 [[package]]
 name = "omuse-phone"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "axum",
@@ -2530,7 +2530,7 @@ dependencies = [
 
 [[package]]
 name = "omuse-runtime"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2594,7 +2594,7 @@ dependencies = [
 
 [[package]]
 name = "omuse-sentinel"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2644,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "omuse-sentinel-core"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2675,7 +2675,7 @@ dependencies = [
 
 [[package]]
 name = "omuse-web"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "axum",

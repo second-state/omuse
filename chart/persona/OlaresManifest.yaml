@@ -72,6 +72,7 @@ spec:
 
     Runs on the local models served by your Olares by default — any OpenAI-compatible endpoint works. English and 中文 interface.
   upgradeDescription: |
+    0.4.8: Google Drive connection (one Google sign-in covers Calendar and Drive, your own Google client or the managed one); trip videos in Drive joined, cut, resized, captioned and put back (edit_video over ffmpeg); a photo story book PDF from the trip photos in Drive; Drive clean-up that finds the large and long-unused files and moves the ones you confirm to the bin
     0.4.7: Short AI video clips in the chat (make_video, any OpenAI-style Videos API such as Sora or Grok Imagine); pictures and clips can come from another provider than the chat model, with their own optional endpoint and key, also with your own model in Settings; landscape and portrait pictures from ratio-based image models
     0.4.6: Unlimited addresses in the profile, used by the arrival-card skills for the destination country (the agent asks in chat when there are several); first login opens the profile page, where an ID photo prefills name, date of birth and nationality and the document number goes to the Vault; the Memory tidy card follows the UI language
     0.4.4: Fly.io deployments can read a config file injected outside the data volume
