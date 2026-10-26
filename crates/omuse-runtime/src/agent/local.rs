@@ -338,6 +338,7 @@ impl Runtime {
             "make_chart" => self.make_chart(t, a).await,
             "make_image" => Ok(self.make_image(t, a).await),
             "make_video" => Ok(self.make_video(t, a).await),
+            "edit_video" => Ok(self.edit_video(t, a).await),
             "edit_image" | "vary_image" => Ok(self.edit_image(t, a, name == "vary_image").await),
             "caption_image" => Ok(self.caption_image(t, a).await),
             "upscale_image" => Ok(self.upscale_image(t, a).await),

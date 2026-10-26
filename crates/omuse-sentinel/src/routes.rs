@@ -52,8 +52,8 @@ mod tests;
 pub use act::resolve_core;
 
 /// Connectors shown on the Connections page and in the runtime catalog (Python `CONNECTORS`).
-pub const CONNECTORS: [&str; 7] = [
-    "gmail", "browser", "telegram", "notion", "slack", "calendar", "phone",
+pub const CONNECTORS: [&str; 8] = [
+    "gmail", "browser", "telegram", "notion", "slack", "calendar", "drive", "phone",
 ];
 /// MCP OAuth callback path.
 pub const OAUTH_CALLBACK: &str = "/sentinel/api/oauth/callback";
@@ -595,6 +595,18 @@ pub fn router(ctx: App) -> Router {
         .route(
             "/sentinel/api/connections/calendar/test",
             post(connections::calendar_test),
+        )
+        .route(
+            "/sentinel/api/connections/drive/start",
+            post(connections::drive_start),
+        )
+        .route(
+            "/sentinel/api/connections/drive/google/start",
+            post(connections::drive_google_start),
+        )
+        .route(
+            "/sentinel/api/connections/drive/test",
+            post(connections::drive_test),
         )
         .route(
             "/sentinel/api/connections/slack/credential",

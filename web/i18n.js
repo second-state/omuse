@@ -1018,5 +1018,21 @@ window.OMUSE_EN = {
 "图像和视频可以用另一家服务：填它们的接口地址和密钥；留空就用上面的接口地址和密钥。": "Images and video can come from another provider: give its endpoint and API key. Blank uses the endpoint and key above.",
 " · 视频 {0}": " · video {0}",
 "视频 Video": "Video",
-"🎬 生成视频：{0}": "🎬 Video: {0}"
+"🎬 生成视频：{0}": "🎬 Video: {0}",
+"用 Google 登录（日历 + Drive）Sign in with Google": "Sign in with Google (Calendar + Drive)",
+"🗂 Google Drive": "🗂 Google Drive",
+"找大文件和很久没打开的文件（确认后移到回收站）、剪辑 Drive 里的视频、把照片做成故事书，结果放回 Drive。一次 Google 登录同时连上日历和 Drive；授权信息加密保存在本机 Sentinel 保险箱里，Agent 和模型看不到。": "Find large and long-unused files (moved to the bin after you confirm), edit videos kept in Drive, turn photos into story books, and put the results back. One Google sign-in connects Calendar and Drive together; the authorisation is encrypted in this device's Sentinel vault and never seen by the agent or the model.",
+" · 已用 {0} GB / {1} GB": " · {0} GB used of {1} GB",
+"一键授权：在弹出的 Google 页面登录并点「允许」，勾选日历和 Drive 即可。": "One click: sign in on the Google page that opens and allow Calendar and Drive.",
+"用自己的 Google Cloud 客户端连接": "Connect with your own Google Cloud client",
+"，新建一个项目（名字随意，如 OMuse）；日历已经连接的话，用同一个项目和客户端即可": ", create a project (any name, e.g. OMuse); if the calendar is already connected, use the same project and client",
+"（和 Google Calendar API）": " (and the Google Calendar API)",
+"「OAuth 同意屏幕」：用户类型选「外部 External」，把你自己的 Gmail 加为测试用户。Drive 权限属于 Google 的受限范围：自己的客户端在测试状态下可以直接用，不需要审核": "OAuth consent screen: user type External, add your own Gmail as a test user. Drive access is a restricted scope at Google: your own client in Testing status can use it without a review",
+"「凭据 → 创建凭据 → OAuth 客户端 ID」：应用类型选「Web 应用」，在「已获授权的重定向 URI」里填下面这个中转页地址：": "Credentials → Create credentials → OAuth client ID: type Web application, and add this relay page as an authorised redirect URI:",
+"查看、搜索和下载文件": "View, search and download files",
+"上传文件、新建文件夹（上传需审批）": "Upload files and create folders (uploads ask for approval)",
+"移动、重命名、移到回收站（需审批；不会永久删除）": "Move, rename and move to the bin (asks for approval; never a permanent delete)",
+"正常 ✓ {0}，已用 {1} GB": "OK ✓ {0}, {1} GB used",
+"断开 Google Drive？授权会被删除（日历连接保留）。": "Disconnect Google Drive? The authorisation is deleted (the calendar connection stays).",
+"方式 {0}": "Method {0}"
 };

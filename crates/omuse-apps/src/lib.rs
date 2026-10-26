@@ -3,6 +3,7 @@
 
 pub mod billing;
 pub mod gcal;
+pub mod gdrive;
 pub mod ical;
 pub mod market;
 pub mod notion;

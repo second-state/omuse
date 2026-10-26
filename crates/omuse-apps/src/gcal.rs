@@ -22,9 +22,41 @@ use serde_json::{json, Map, Value};
 use crate::py::{httpx_name, py_int, quote, str_or_empty, urlencode};
 use crate::pydt::{py_max, py_min, PyDt, PyTz};
 
-/// OAuth scopes requested at consent.
+/// OAuth scopes requested at consent for the calendar.
 pub const SCOPES: &str =
     "openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly";
+/// The Drive scope (full access: the agent lists, downloads, uploads and trashes the user's own files; `drive.file`
+/// would only see files the app created). Google classes it as restricted: fine for the user's own OAuth client.
+pub const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
+
+/// The scope string for one Google sign-in covering `services` (any of "calendar", "drive"; both when empty).
+pub fn scopes_for(services: &[String]) -> String {
+    let want = |s: &str| services.is_empty() || services.iter().any(|x| x == s);
+    let mut out = vec!["openid", "email"];
+    if want("calendar") {
+        out.extend(
+            SCOPES
+                .split_whitespace()
+                .filter(|s| !matches!(*s, "openid" | "email")),
+        );
+    }
+    if want("drive") {
+        out.push(DRIVE_SCOPE);
+    }
+    out.join(" ")
+}
+
+/// Which services a token's granted `scope` string covers (Google lets the user untick scopes at consent).
+pub fn granted_services(scope: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if scope.contains("auth/calendar") {
+        out.push("calendar".to_string());
+    }
+    if scope.contains("auth/drive") {
+        out.push("drive".to_string());
+    }
+    out
+}
 /// HTTP timeout (seconds) of every Google call.
 pub const TIMEOUT: f64 = 30.0;
 /// The relay page Google redirects to when no other is configured.
@@ -58,6 +90,9 @@ pub struct GoogleSettings {
     pub token_url: String,
     /// `GCAL_API`.
     pub gcal_api: String,
+    /// `GDRIVE_API` / `GDRIVE_UPLOAD_API`.
+    pub gdrive_api: String,
+    pub gdrive_upload_api: String,
     /// `GOOGLE_USERINFO_URL`.
     pub userinfo_url: String,
     /// `GOOGLE_RELAY_URL` or [`DEFAULT_RELAY`] (`Config::google_relay_url()`).
@@ -86,6 +121,8 @@ impl GoogleSettings {
             auth_url: g.auth_url.clone(),
             token_url: g.token_url.clone(),
             gcal_api: g.gcal_api.clone(),
+            gdrive_api: g.gdrive_api.clone(),
+            gdrive_upload_api: g.gdrive_upload_api.clone(),
             userinfo_url: g.userinfo_url.clone(),
             relay_url: cfg.google_relay_url(),
             relay_override: g.relay_url.clone(),
@@ -320,11 +357,30 @@ pub fn auth_url(
     state: &str,
     code_challenge: &str,
 ) -> String {
+    auth_url_for(
+        settings,
+        client_id,
+        redirect_uri,
+        state,
+        code_challenge,
+        SCOPES,
+    )
+}
+
+/// [`auth_url`] with an explicit scope string (`scopes_for`).
+pub fn auth_url_for(
+    settings: &GoogleSettings,
+    client_id: &str,
+    redirect_uri: &str,
+    state: &str,
+    code_challenge: &str,
+    scope: &str,
+) -> String {
     let mut q: Vec<(&str, &str)> = vec![
         ("client_id", client_id),
         ("redirect_uri", redirect_uri),
         ("response_type", "code"),
-        ("scope", SCOPES),
+        ("scope", scope),
         ("access_type", "offline"),
         ("prompt", "consent"),
         ("include_granted_scopes", "true"),
@@ -610,6 +666,16 @@ impl GCal {
     /// The calendar's time zone name.
     pub fn tz(&self) -> &str {
         &self.tz
+    }
+
+    /// A valid access token (refreshed when needed) — for sibling Google APIs such as Drive.
+    pub async fn access_token(&self) -> Result<String, GCalError> {
+        self.token().await
+    }
+
+    /// The HTTP client and Google settings, for sibling Google APIs.
+    pub fn parts(&self) -> (&reqwest::Client, &GoogleSettings) {
+        (&self.client, &self.settings)
     }
 
     // ------------------------------------------------------------ auth
@@ -1243,6 +1309,8 @@ mod tests {
             auth_url: format!("{}/g/auth", base),
             token_url: format!("{}/g/token", base),
             gcal_api: format!("{}/cal", base),
+            gdrive_api: format!("{}/drive", base),
+            gdrive_upload_api: format!("{}/drive-upload", base),
             userinfo_url: format!("{}/g/userinfo", base),
             relay_url: DEFAULT_RELAY.into(),
             relay_override: String::new(),

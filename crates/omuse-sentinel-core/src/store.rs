@@ -92,6 +92,11 @@ pub fn default_connections() -> Value {
             "permissions": {"read": true, "write": true},
             "enabled": 0,
         },
+        "drive": {
+            "config": {"email": "", "client_id": ""},
+            "permissions": {"read": true, "upload": true, "write": true},
+            "enabled": 0,
+        },
         "phone": {
             "config": {"from_number": "", "connection_id": "", "public_url": "", "owner_name": "",
                        "allowed_prefixes": ["+65", "+1"], "max_minutes": 10, "daily_limit": 10, "voice": "marin",

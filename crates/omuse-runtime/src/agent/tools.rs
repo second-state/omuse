@@ -45,7 +45,7 @@ pub const SUBAGENT_TOOLS: [&str; 29] = [
 /// A concurrent batch is sent to Sentinel with `no_ask`: a read that would need an approval (`browser_read` of a URL
 /// carrying data in a tainted task) comes back as an error telling the model to call it alone next turn, so no
 /// approval dialog is ever left behind for a call the task is not waiting on.
-pub const PARALLEL_TOOLS: [&str; 27] = [
+pub const PARALLEL_TOOLS: [&str; 30] = [
     "delegate",
     "calculate",
     "data_query",
@@ -65,6 +65,9 @@ pub const PARALLEL_TOOLS: [&str; 27] = [
     "gmail_find_receipts",
     "calendar_list_events",
     "calendar_free_slots",
+    "drive_search",
+    "drive_get",
+    "drive_storage",
     "notion_search",
     "notion_get_page",
     "notion_query_database",
@@ -125,13 +128,14 @@ pub const DRY_RUN_LOCAL: [&str; 17] = [
     "pdf_form_fill",
 ];
 
-pub const REMAKE_TOOLS: [&str; 10] = [
+pub const REMAKE_TOOLS: [&str; 11] = [
     "make_xlsx",
     "make_pdf",
     "make_docx",
     "make_chart",
     "make_image",
     "make_video",
+    "edit_video",
     "edit_image",
     "vary_image",
     "caption_image",
@@ -139,7 +143,7 @@ pub const REMAKE_TOOLS: [&str; 10] = [
 ];
 
 /// In the last 2 steps only delivery tools remain.
-pub const FINISH_TOOLS: [&str; 31] = [
+pub const FINISH_TOOLS: [&str; 32] = [
     "update_plan",
     "files_write",
     "files_read",
@@ -151,6 +155,7 @@ pub const FINISH_TOOLS: [&str; 31] = [
     "make_chart",
     "make_image",
     "make_video",
+    "edit_video",
     "edit_image",
     "vary_image",
     "caption_image",
@@ -386,6 +391,32 @@ minute or two: generate once; to change it, call again with a new prompt.",
              "output": {"type": "string", "description": "保存路径，默认 videos/<标题>.mp4 output .mp4 path"},
              "send": {"type": "boolean", "description": "是否发到对话里（默认 true）show it in the chat (default true)"}}),
             &["prompt"]),
+        fn_("edit_video", "用 ffmpeg 在本机剪辑工作区里的视频（不上传、不用浏览器）：op 选一种——info 看时长/分辨率；\
+concat 把 paths 里的几段按顺序拼成一段（分辨率不同会统一到第一段）；trim 截取 path 的 start–end 秒；resize 缩放到 width/height 或 \
+preset（720p/1080p/square/vertical）；speed 变速 factor（2 = 两倍快）；mute 去掉声音；add_audio 加上 audio_path 的配乐（按视频长度截断）；\
+caption 在画面上叠加 text（position top/bottom/center，可选 start/end 秒）；gif 转成动图。输出 videos/<title>.mp4，默认发到对话里。\
+用户说「把这几段视频拼起来 / 剪掉前 10 秒 / 加个标题 / 配上音乐 / 做成竖屏」时用它；一步一个 op，上一步的输出就是下一步的 path。\
+ Edit videos in the workspace with ffmpeg, locally (no upload, no browser). One op per call: info (duration, size); \
+concat (join paths in order; mixed sizes are scaled to the first); trim (start–end seconds of path); resize (width/height \
+or preset 720p / 1080p / square / vertical); speed (factor, 2 = twice as fast); mute; add_audio (audio_path as the \
+soundtrack, cut to the video's length); caption (overlay text at position top / bottom / center, optional start / end \
+seconds); gif. Output videos/<title>.mp4, shown in the chat by default. Chain ops: the output of one is the path of \
+the next. Downloaded Drive videos are under drive/.",
+            json!({"op": {"type": "string", "enum": ["info", "concat", "trim", "resize", "speed", "mute", "add_audio", "caption", "gif"]},
+             "path": {"type": "string", "description": "工作区里的视频 input video (all ops but concat)"},
+             "paths": {"type": "array", "items": {"type": "string"}, "description": "concat：按顺序的几段 clips in order"},
+             "start": {"type": "number", "description": "秒 seconds (trim / caption)"},
+             "end": {"type": "number", "description": "秒 seconds (trim / caption)"},
+             "width": {"type": "integer"}, "height": {"type": "integer"},
+             "preset": {"type": "string", "enum": ["720p", "1080p", "square", "vertical"]},
+             "factor": {"type": "number", "description": "speed：>1 快 faster, <1 慢 slower (0.25-4)"},
+             "audio_path": {"type": "string", "description": "add_audio：工作区里的音频 workspace audio file"},
+             "text": {"type": "string", "description": "caption 文字 caption text"},
+             "position": {"type": "string", "enum": ["top", "bottom", "center"]},
+             "title": {"type": "string", "description": "输出文件名用的短标题 short title for the output name"},
+             "output": {"type": "string", "description": "保存路径，默认 videos/<标题>.mp4"},
+             "send": {"type": "boolean", "description": "是否发到对话里（默认 true；info 不发）show it in the chat (default true)"}}),
+            &["op"]),
         fn_("edit_image", "用 AI 修改一张已有图片（像 Midjourney 编辑器 / ChatGPT 选区编辑）：换颜色、加/去掉东西、换背景、改风格、\
 按参考图改。path 是工作区里的图（刚生成的、用户附件、browser_save_media 存的）；不给 path 就改本任务最近那张。\
 mask 可选：一张 PNG，透明的地方就是要重画的区域（局部重绘 inpainting）；不给 mask 就整张按 prompt 改。\

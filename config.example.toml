@@ -85,11 +85,13 @@ customer_id = ""
 subscription_id = ""
 api = "https://api.stripe.com"   # STRIPE_API
 
-[google]                   # GOOGLE_*: OAuth for Gmail / Calendar
+[google]                   # GOOGLE_*: OAuth for Google Calendar and Google Drive (one sign-in covers both)
 auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
 token_url = "https://oauth2.googleapis.com/token"
 userinfo_url = "https://www.googleapis.com/oauth2/v3/userinfo"
 gcal_api = "https://www.googleapis.com/calendar/v3"
+gdrive_api = "https://www.googleapis.com/drive/v3"
+gdrive_upload_api = "https://www.googleapis.com/upload/drive/v3"
 relay_url = ""             # GOOGLE_RELAY_URL ("" = the default relay page)
 managed_file = ""          # GOOGLE_MANAGED_FILE
 managed_client_id = ""     # GOOGLE_MANAGED_CLIENT_ID

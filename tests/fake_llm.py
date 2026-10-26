@@ -1489,6 +1489,65 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         line = next((l.strip() for l in sheet.split("## Getting around", 1)[-1].splitlines() if l.strip().startswith("- ")), "")
         rate = re.search(re.escape(f"{sym[:3]}/{sym[3:6]}") + r"[^0-9]*([0-9][0-9,]*\.[0-9]+)", str(tools_done[1]["content"]))
         return reply(f"CITY ANSWER ({skill}). Getting around: {line[2:200]} | FX {sym}: {rate.group(1) if rate else '?'}")
+    if "DRIVECLEAN" in goal:   # drive_cleanup_e2e.py: quota + two searches in one turn, a list the user confirms, one trash batch
+        def ids_in(txt):
+            return [m for m in re.findall(r'"id": "([a-z]+-\d+)"', txt)]
+        if "yes" in goal.lower():   # the follow-up: the user picked numbers 1 and 2 → one drive_trash call with names
+            if n == 0:
+                return reply("", [tc_("drive_trash", {"file_ids": ["big-1", "big-2"], "names": ["backup-2022.zip", "old-render.mov"]})])
+            return reply("CLEANUP DONE: " + str(last_tool)[:300])
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "drive-cleanup"})])
+        if n == 1:
+            return reply("", [tc_("drive_storage", {}),
+                              tc_("drive_search", {"min_size_mb": 100, "order_by": "size", "max_results": 50}),
+                              tc_("drive_search", {"unused_days": 365, "min_size_mb": 20, "order_by": "size"})])
+        big = str(tools_done[2]["content"]); unused = str(tools_done[3]["content"])
+        names = re.findall(r'"name": "([^"]+)"', big)
+        return reply(f"CLEANUP LIST ({len(set(ids_in(big) + ids_in(unused)))} candidates: {', '.join(names)}). "
+                     "1. backup-2022.zip 2560 MB never opened; 2. old-render.mov 900 MB last opened 2023-02-01; 3. wedding-raw.mov 4096 MB opened 2026-10-01 (recent). "
+                     "Move all of these to the bin, or only some (numbers)?")
+    if "DRIVEVIDEO" in goal:   # drive_video_e2e.py: search → download both → concat (quiet) → caption → upload back
+        def out_path(txt):
+            m = re.search(r"(videos/[^\s（(]+\.mp4)", str(txt))
+            return m.group(1) if m else "videos/missing.mp4"
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "drive-video-edit"})])
+        if n == 1:
+            return reply("", [tc_("drive_search", {"kind": "video", "query": "kyoto", "order_by": "modified"})])
+        if n == 2:
+            ids = re.findall(r'"id": "(vid-\d+)"', str(last_tool))
+            return reply("", [tc_("drive_download", {"file_id": i}) for i in sorted(ids)])
+        if n == 4:
+            paths = re.findall(r"(drive/[^\s（(]+\.mp4)", "\n".join(str(x["content"]) for x in tools_done))
+            return reply("", [tc_("edit_video", {"op": "concat", "paths": sorted(set(paths)), "title": "kyoto", "send": False})])
+        if n == 5:
+            return reply("", [tc_("edit_video", {"op": "caption", "path": out_path(last_tool), "text": "Kyoto 2026", "position": "top",
+                                                 "start": 0, "end": 2, "title": "Kyoto highlights"})])
+        if n == 6:
+            return reply("", [tc_("drive_upload", {"path": out_path(last_tool), "folder_id": "fld-trip"})])
+        return reply("VIDEO EDIT DONE: " + str(last_tool)[:300])
+    if "DRIVEBOOK" in goal:   # drive_storybook_e2e.py: photos → download → one edit → the PDF → upload back
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "drive-photo-storybook"})])
+        if n == 1:
+            return reply("", [tc_("drive_search", {"kind": "image", "folder_id": "fld-bday", "order_by": "name"})])
+        if n == 2:
+            ids = re.findall(r'"id": "(img-\d+)"', str(last_tool))
+            return reply("", [tc_("drive_download", {"file_id": i}) for i in sorted(ids)])
+        if n == 5:
+            return reply("", [tc_("edit_image", {"path": "drive/mia-cake.jpg", "prompt": "soft watercolour children's book style", "title": "cake-watercolour"})])
+        if n == 6:
+            md = ("# Mia's Birthday\n\nA story book\n\n## The cake\n\n![cake](images/cake-watercolour.png)\n\nMia blew out five candles.\n\n"
+                  "## Balloons\n\n![balloons](drive/mia-balloons.jpg)\n\nBlue balloons floated to the ceiling.\n\n"
+                  "## Friends\n\n![friends](drive/mia-friends.jpg)\n\nEveryone sang.\n")
+            return reply("", [tc_("make_pdf", {"markdown": md, "output": "reports/Mia-birthday-storybook.pdf"})])
+        if n == 7:   # make_pdf does not send: show the book, then put it back in Drive
+            m = re.search(r"created locally: (\S+)", str(last_tool))
+            return reply("", [tc_("send_file", {"path": m.group(1) if m else "reports/Mia-birthday-storybook.pdf", "note": "Mia's birthday story book"})])
+        if n == 8:
+            return reply("", [tc_("drive_upload", {"path": "reports/Mia-birthday-storybook.pdf", "folder_id": "fld-bday", "name": "Mia birthday storybook.pdf"})])
+        return reply("STORYBOOK DONE: " + str(last_tool)[:300])
     if "VIDEOGEN" in goal:   # videogen_e2e.py: one short clip, shown in the chat
         if n == 0:
             prompt = "a violent storm at sea" if "storm" in goal else "a paper boat drifting across a calm pond at sunrise, gentle ripples"

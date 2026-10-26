@@ -39,7 +39,7 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
         let c = store.connection(name).map_err(ierr)?;
         let conf = &c["config"];
         let mut ready = truthy(&c["enabled"]);
-        if matches!(name, "notion" | "slack" | "calendar") {
+        if matches!(name, "notion" | "slack" | "calendar" | "drive") {
             ready = ready && store.has_secret(&format!("cred_{name}_1")).unwrap_or(false);
         }
         if name == "gmail" {
@@ -91,7 +91,7 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
                 ("workspace", workspace),
                 (
                     "account",
-                    if matches!(name, "gmail" | "calendar") {
+                    if matches!(name, "gmail" | "calendar" | "drive") {
                         conf.get("email").cloned().unwrap_or(json!(""))
                     } else {
                         json!("")

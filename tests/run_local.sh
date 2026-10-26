@@ -68,6 +68,8 @@ auth_url = "http://127.0.0.1:8094/g/auth"
 token_url = "http://127.0.0.1:8094/g/token"
 userinfo_url = "http://127.0.0.1:8094/g/userinfo"
 gcal_api = "http://127.0.0.1:8094/cal"
+gdrive_api = "http://127.0.0.1:8094/drive"
+gdrive_upload_api = "http://127.0.0.1:8094/drive-upload"
 relay_url = "http://127.0.0.1:8094/relay/callback"
 managed_file = "$T/google_managed.json"
 

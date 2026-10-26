@@ -18,7 +18,7 @@ const TW = window.OMUSE_TW || {};
 const CJK_RE = /[一-鿿]/;
 // Names that stay Latin inside a Chinese sentence (products, protocols, formats, currencies), plus identifiers
 // (placeholders, numbers, e-mail addresses, URLs, paths, scopes) recognised by ZH_IDENT.
-const ZH_TERMS = new Set(('OMuse Sentinel Gmail Outlook Hotmail Yahoo iCloud QQ Zoho AOL IMAP SMTP POP3 OAuth Telegram Notion Slack GitHub ' +
+const ZH_TERMS = new Set(('OMuse Sentinel Gmail Drive Outlook Hotmail Yahoo iCloud QQ Zoho AOL IMAP SMTP POP3 OAuth Telegram Notion Slack GitHub ' +
   'MCP Google Microsoft Graph OpenAI Olares Fly Docker Chromium CAPTCHA Stripe DialMCP Telnyx Markdown JSON CSV PDF Excel Word ' +
   'PowerPoint URL URLs API ID HTTP HTTPS SSL TLS STARTTLS SSE iCal ICS LLM STT TTS AI App Bot Token Key Realtime Cloud Bearer Cron ' +
   'Ink Paper Chat Exchange CardDAV JavaScript Streamable Web webhook Enter Shift iPhone Mac Visa Decathlon BotFather James Zhan ' +
@@ -1525,10 +1525,11 @@ async function viewConnections(root) {
     ok: r => Tf("Slack 已连接 ✓ {0}，已加入 {1} 个频道", (r.team), (r.member_of.length)),
     perms: [['read', T('读取频道 / 讨论串 / 搜索'), 'read', 'low'], ['send', T('发送消息（每次需审批）'), 'send — approval', 'high']] });
   const calendar = calendarCard(byName.calendar, permRow);
+  const drive = driveCard(byName.drive, permRow);
   const phoneC = phoneCard(byName.phone);
   const mcp = await mcpCard();
   root.append(h('div', { class: 'grid2' }, gmail, h('div', { class: 'stack' }, browser, telegram)), h('div', { style: 'height:16px' }),
-    h('div', { class: 'grid2' }, notion, slack), h('div', { style: 'height:16px' }), calendar, h('div', { style: 'height:16px' }), phoneC, h('div', { style: 'height:16px' }), mcp,
+    h('div', { class: 'grid2' }, notion, slack), h('div', { style: 'height:16px' }), calendar, h('div', { style: 'height:16px' }), drive, h('div', { style: 'height:16px' }), phoneC, h('div', { style: 'height:16px' }), mcp,
     h('div', { style: 'height:16px' }), grants);
 }
 
@@ -1855,6 +1856,61 @@ function calendarCard(c, permRow) {
       h('button', { class: 'btn small', onclick: safe(async () => { const t = await sapi('connections/calendar/test', { method: 'POST', body: {} }); toast(t.ok ? Tf("正常 ✓ 未来 7 天有 {0} 个日程", (t.upcoming)) : t.error, !t.ok); }) }, T('测试')),
       h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: c.enabled, onchange: safe(async e => { await sapi('connections/calendar', { method: 'PUT', body: { enabled: e.target.checked } }); }) }), T('启用')),
       h('button', { class: 'btn danger small', onclick: safe(async () => { if (!confirmInline(T('断开 Google 日历？授权会被删除。'))) return; await sapi('connections/calendar/credential', { method: 'DELETE' }); route(); }) }, T('断开 Disconnect'))) : null);
+}
+
+// --- Google Drive: the same Google sign-in as the calendar (one consent covers both), the token in Sentinel's vault
+function driveCard(c, permRow) {
+  c = c || { name: 'drive', config: {}, permissions: {}, enabled: false, has_credential: false };
+  const connected = c.has_credential && c.enabled;
+  const mode = c.mode || '';
+  const quota = c.config.quota || null;
+  const cid = h('input', { type: 'text', placeholder: '1234567890-abc….apps.googleusercontent.com', autocomplete: 'off' });
+  const csec = h('input', { type: 'password', placeholder: mode === 'google_own' ? T('已保存 saved（同一个客户端可留空）') : 'GOCSPX-…', autocomplete: 'new-password' });
+  const relay = c.relay_url || 'https://drlucaslu.github.io/omuse-oauth/';
+  const copyRelay = h('button', { class: 'btn small', onclick: safe(async () => { await navigator.clipboard.writeText(relay); toast(T('已复制 Copied')); }) }, T('复制 Copy'));
+  const modeLabel = { google: T('Google 登录'), google_own: T('自己的 Google Cloud 客户端') }[mode] || '';
+  const start = async (e, path) => {
+    e.target.disabled = true;
+    try { const r = await sapi(path, { method: 'POST', body: { origin: location.origin, services: ['calendar', 'drive'] } }); location.href = r.auth_url; }
+    finally { e.target.disabled = false; }
+  };
+  const googleBtn = h('button', { class: 'btn primary', onclick: safe(e => start(e, 'connections/drive/google/start')) },
+    connected && mode === 'google' ? T('重新用 Google 登录 Sign in again') : T('用 Google 登录（日历 + Drive）Sign in with Google'));
+  return h('div', { class: 'card stack', id: 'drive' },
+    h('div', { class: 'row' }, h('h3', { style: 'flex:1' }, T('🗂 Google Drive')),
+      h('span', { class: 'chip ' + (connected ? 'ok' : '') }, connected ? Tf("已连接 {0}", (c.config.email || '')) : T('未连接 Not connected'))),
+    h('p', { class: 'sub' }, T('找大文件和很久没打开的文件（确认后移到回收站）、剪辑 Drive 里的视频、把照片做成故事书，结果放回 Drive。一次 Google 登录同时连上日历和 Drive；授权信息加密保存在本机 Sentinel 保险箱里，Agent 和模型看不到。')),
+    connected ? h('div', { class: 'small muted' }, Tf("方式 {0}", modeLabel), quota && quota.used_gb != null ? Tf(" · 已用 {0} GB / {1} GB", quota.used_gb, quota.limit_gb == null ? '∞' : quota.limit_gb) : '') : null,
+    c.managed_available ? h('div', { class: 'stack' },
+      h('div', null, googleBtn),
+      h('div', { class: 'small muted' }, T('一键授权：在弹出的 Google 页面登录并点「允许」，勾选日历和 Drive 即可。'))) : null,
+    h('details', { open: !c.has_credential && !c.managed_available },
+      h('summary', null, h('b', null, c.managed_available ? T('高级：用自己的 Google Cloud 客户端') : T('用自己的 Google Cloud 客户端连接'))),
+      h('div', { class: 'stack', style: 'margin-top:10px' },
+        h('ol', { class: 'steps-help' },
+          h('li', null, T('打开 '), h('a', { href: 'https://console.cloud.google.com/projectcreate', target: '_blank', rel: 'noopener' }, 'Google Cloud Console'), T('，新建一个项目（名字随意，如 OMuse）；日历已经连接的话，用同一个项目和客户端即可')),
+          h('li', null, T('在「API 和服务 → 库」里搜索并启用 '), h('a', { href: 'https://console.cloud.google.com/apis/library/drive.googleapis.com', target: '_blank', rel: 'noopener' }, 'Google Drive API'), T('（和 Google Calendar API）')),
+          h('li', null, T('「OAuth 同意屏幕」：用户类型选「外部 External」，把你自己的 Gmail 加为测试用户。Drive 权限属于 Google 的受限范围：自己的客户端在测试状态下可以直接用，不需要审核')),
+          h('li', null, T('「凭据 → 创建凭据 → OAuth 客户端 ID」：应用类型选「Web 应用」，在「已获授权的重定向 URI」里填下面这个中转页地址：'),
+            h('div', { class: 'row', style: 'flex-wrap:nowrap;margin-top:4px' }, h('code', { class: 'mono small', style: 'word-break:break-all' }, relay), copyRelay)),
+          h('li', null, T('把生成的「客户端 ID」和「客户端密钥」粘贴到下面，点「保存并用 Google 登录」'))),
+        h('label', { class: 'field' }, h('span', null, T('客户端 ID Client ID')), cid),
+        h('label', { class: 'field' }, h('span', null, T('客户端密钥 Client secret')), csec),
+        h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: safe(async e => {
+          e.target.disabled = true;
+          try {
+            if (cid.value.trim()) await sapi('connections/calendar/google/client', { method: 'POST', body: { client_id: cid.value.trim(), client_secret: csec.value.trim() } });
+            const r = await sapi('connections/drive/google/start', { method: 'POST', body: { origin: location.origin, services: ['calendar', 'drive'] } }); location.href = r.auth_url;
+          } finally { e.target.disabled = false; }
+        }) }, T('保存并用 Google 登录 Save & sign in'))))),
+    h('div', null, h('b', null, T('权限 Permissions')),
+      permRow(c, 'read', T('查看、搜索和下载文件'), 'View, search and download files', 'low'),
+      permRow(c, 'upload', T('上传文件、新建文件夹（上传需审批）'), 'Upload files and create folders (uploads ask for approval)', 'medium'),
+      permRow(c, 'write', T('移动、重命名、移到回收站（需审批；不会永久删除）'), 'Move, rename and move to the bin (asks for approval; never a permanent delete)', 'high')),
+    c.has_credential ? h('div', { class: 'row' },
+      h('button', { class: 'btn small', onclick: safe(async () => { const t = await sapi('connections/drive/test', { method: 'POST', body: {} }); toast(t.ok ? Tf("正常 ✓ {0}，已用 {1} GB", t.email, t.used_gb) : t.error, !t.ok); }) }, T('测试')),
+      h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: c.enabled, onchange: safe(async e => { await sapi('connections/drive', { method: 'PUT', body: { enabled: e.target.checked } }); }) }), T('启用')),
+      h('button', { class: 'btn danger small', onclick: safe(async () => { if (!confirmInline(T('断开 Google Drive？授权会被删除（日历连接保留）。'))) return; await sapi('connections/drive/credential', { method: 'DELETE' }); route(); }) }, T('断开 Disconnect'))) : null);
 }
 
 // --- MCP connectors (Model Context Protocol)
