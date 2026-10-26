@@ -64,6 +64,9 @@ enabled = false
 [voice]
 port = 0
 TOML
+# Exercise the same private mode used by Fly file secrets.  The root-starting
+# release image must stage this file before dropping to the omuse user.
+chmod 600 "$work/config.toml"
 docker volume create "$volume" >/dev/null
 docker network create "$network" >/dev/null
 start() {

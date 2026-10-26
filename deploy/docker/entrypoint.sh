@@ -9,7 +9,19 @@ DATA=/omuse
 # started as root (Dockerfile.fly: Fly.io mounts its volume root-owned): hand the data dir to the service user, drop privileges
 if [ "$(id -u)" = 0 ]; then
   mkdir -p "$DATA"
-  # a read-only mount inside the volume (config.toml) keeps its owner; everything else goes to the service user
+  # Fly file secrets are materialized before a volume is mounted.  A config file
+  # outside the data volume therefore has to be staged while we are still root:
+  # Fly gives injected files mode 0600 and the service user must be able to read
+  # the staged copy after privileges are dropped.  The normal /omuse/config.toml
+  # path is left alone for desktop Docker users who bind-mount it there.
+  if [ "$CONFIG" != "$DATA/config.toml" ] && [ -s "$CONFIG" ]; then
+    staged_config=$(mktemp /tmp/omuse-config.XXXXXX)
+    cp -- "$CONFIG" "$staged_config"
+    chown omuse:omuse "$staged_config"
+    chmod 600 "$staged_config"
+    CONFIG="$staged_config"
+  fi
+  # A read-only mount inside the volume (config.toml) keeps its owner; everything else goes to the service user.
   [ "$(stat -c %U "$DATA")" = omuse ] || find "$DATA" -xdev ! -user omuse -exec chown omuse:omuse {} + 2>/dev/null || true
   exec setpriv --reuid=omuse --regid=omuse --init-groups env HOME=/home/omuse OMUSE_CONFIG="$CONFIG" "$0" "$@"
 fi
