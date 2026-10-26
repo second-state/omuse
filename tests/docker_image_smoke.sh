@@ -170,11 +170,13 @@ with sync_playwright() as p:
     page.fill('input[name=user]', 'omuse')
     page.fill('input[name=password]', os.environ['OMUSE_PASSWORD'])
     page.click('button[type=submit]')
-    page.wait_for_url(b + '/')
+    page.wait_for_url(lambda u: u.split('#')[0] == b + '/')
     page.wait_for_function("document.querySelector('#modelChip').textContent.includes('smoke')")
+    # first login with an empty profile: the chat view sends the user to Memory → Profile, once per session
+    page.wait_for_url(lambda u: u == b + '/#memory/profile')
     page.reload()
     page.wait_for_function("document.querySelector('#modelChip').textContent.includes('smoke')")
-    assert page.url == b + '/'
+    assert page.url == b + '/#memory/profile', page.url
     page.goto(b + '/logout')
     page.wait_for_url(b + '/login')
     page.goto(b + '/')
