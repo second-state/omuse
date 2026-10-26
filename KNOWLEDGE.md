@@ -77,6 +77,48 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
 5. **Answer**: an outcome check makes sure the answer doesn't claim actions that didn't happen; memory extraction
    proposes facts and profile fields for the user to confirm.
 
+## Google Drive
+
+One Google sign-in covers Calendar and Drive. The Drive card (Settings → Connections) starts the same OAuth flow as
+the calendar (`connections/drive/google/start` with the managed client and the relay page, or `connections/drive/start`
+with the user's own client and this box's callback) with `services: ["calendar", "drive"]`; `gcal::scopes_for` builds
+the consent's scope string and the pending flow (`calendar_oauth` kv) records the services. The shared callback
+(`/sentinel/api/connections/calendar/callback`, so no new redirect URI has to be registered) narrows the services to
+the scopes Google actually granted (`gcal::granted_services`; the user can untick one), verifies each (a calendar
+listing, a Drive `about`), stores the same refresh token as `cred_calendar_1` and/or `cred_drive_1`, and enables the
+connections (a Drive row made before this version gets `read` / `upload` / `write` seeded once). Disconnecting one
+leaves the other. The Drive scope (`auth/drive`) is restricted at Google: the user's own OAuth client in Testing
+status may use it; the managed client would need Google's verification first.
+
+`omuse-apps/src/gdrive.rs` is the Drive v3 client (`about`, `list` with the Drive query language, `get`, `download`
+with Google Docs / Sheets / Slides exported as PDF / XLSX / PDF, multipart `upload`, `create_folder`, `update` =
+move / rename, `trash` — never a permanent delete). It borrows `GCal`'s token refresh (`access_token()`); access
+tokens are cached in `cred_drive_access`. Sentinel's `actions::drive_call` runs the tools: `drive_search` (`drive_query`
+turns kind / folder / dates / `unused_days` into `q`; `min_size_mb` is filtered after fetching pages ordered by
+`quotaBytesUsed`, since the query language has no size term; files never opened count as unused), `drive_get`,
+`drive_download` (≤ 200 MB, bytes handed to the runtime, which writes `workspace/drive/<name>` like a mail
+attachment), `drive_upload` (the runtime serves the workspace file; approval), `drive_create_folder`, `drive_move`
+(approval), `drive_trash` (≤ 50 ids per call; approval card lists the names; policy reason says the bin keeps them
+30 days), `drive_storage`. Reads taint the task like mail; an upload from a tainted task is a possible egress (high
+risk). File names and metadata are untrusted (`untrusted()` scans them).
+
+`edit_video` (`agent/videos.rs`) is local ffmpeg: `info`, `concat` (every clip fitted to the first's frame; audio only
+when every clip has it), `trim`, `resize` (presets 720p / 1080p / square / vertical), `speed` (`atempo` chained),
+`mute`, `add_audio` (looped and cut to the video), `caption` (drawtext with the Noto CJK font, text via a temp file),
+`gif`. Outputs go to `videos/`, a `video` event is emitted and the file is sent to the chat unless `send=false`.
+
+Skills: `drive-cleanup` (quota, big and unused files in one turn, a numbered list the user confirms, one `drive_trash`
+batch, the 30-day note), `drive-video-edit` (search → download → `edit_video` chain with `send=false` on intermediate
+steps → upload back), `drive-photo-storybook` (photos → `file_look` → optional edits → text → one `make_pdf` with
+`![…](drive/…)` pages → upload). All three are `browser: off`.
+
+Tests: `tests/fake_apps.py` serves a Drive fake (`/drive`, `/drive-upload`: seeded folders, two real MP4 clips made with
+ffmpeg at start, three JPEG photos, big and old files with metadata only, a shared file, a trashed one; `/drive/_state`
+and `/drive/_reset` for the suites) behind the same fake Google OAuth as the calendar; `tests/drive_connect_e2e.py`
+(one sign-in connects both, a sign-in where Drive was unticked, catalog tools and permissions, disconnect one),
+`drive_cleanup_e2e.py`, `drive_video_e2e.py`, `drive_storybook_e2e.py` (scripted flows `DRIVECLEAN`, `DRIVEVIDEO`,
+`DRIVEBOOK` in `tests/fake_llm.py`).
+
 ## Image and video generation
 
 `make_image` (`imagegen.rs`, the OpenAI Images API: `POST {base}/images/generations`, `/images/edits`) and

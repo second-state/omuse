@@ -701,6 +701,60 @@ pub async fn summary(
         if !big.is_empty() {
             s.insert("body".into(), json!(big.join("\n\n")));
         }
+    } else if tool.starts_with("drive_") {
+        let title = match tool {
+            "drive_upload" => "上传到 Google Drive Upload to Drive",
+            "drive_trash" => "移到 Google Drive 回收站 Move to the Drive bin",
+            "drive_move" => "移动 / 重命名 Drive 文件 Move or rename in Drive",
+            "drive_create_folder" => "新建 Drive 文件夹 New Drive folder",
+            other => other,
+        };
+        s.insert("title".into(), json!(title));
+        let conf = ctx
+            .store
+            .connection("drive")
+            .map(|c| c["config"].clone())
+            .unwrap_or(json!({}));
+        fields = vec![field(
+            "账号 Account",
+            py_str(&g_or(&conf, "email", json!(""))),
+        )];
+        if tool == "drive_trash" {
+            let ids = args["file_ids"].as_array().cloned().unwrap_or_default();
+            let names = args["names"].as_array().cloned().unwrap_or_default();
+            fields.push(field("文件数 Files", ids.len().to_string()));
+            fields.push(field(
+                "说明 Note",
+                "移到回收站，30 天内可在 Drive 回收站恢复 (to the bin; recoverable for 30 days)",
+            ));
+            let lines: Vec<String> = ids
+                .iter()
+                .enumerate()
+                .take(60)
+                .map(|(i, id)| {
+                    let n = names.get(i).map(py_str).unwrap_or_default();
+                    if n.is_empty() {
+                        py_str(id)
+                    } else {
+                        n
+                    }
+                })
+                .collect();
+            s.insert("body".into(), json!(lines.join("\n")));
+        } else {
+            for (k, label) in [
+                ("path", "文件 File"),
+                ("name", "Drive 里的名称 Name in Drive"),
+                ("new_name", "新名称 New name"),
+                ("file_id", "文件 File id"),
+                ("folder_id", "目标文件夹 Folder"),
+                ("parent_id", "上级文件夹 Parent"),
+            ] {
+                if args.get(k).is_some_and(truthy) {
+                    fields.push(field(label, a(args, k)));
+                }
+            }
+        }
     } else {
         s.insert("title".into(), json!(tool));
         if let Some(m) = args.as_object() {

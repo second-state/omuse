@@ -319,6 +319,9 @@ pub struct GoogleConfig {
     pub token_url: String,
     pub userinfo_url: String,
     pub gcal_api: String,
+    /// `GDRIVE_API` / `GDRIVE_UPLOAD_API`: the Drive REST base and its upload base.
+    pub gdrive_api: String,
+    pub gdrive_upload_api: String,
     /// `GOOGLE_RELAY_URL` ("" = the default relay page).
     pub relay_url: String,
     /// `GOOGLE_MANAGED_FILE` ("" = `google_managed.json` next to the binary's data).
@@ -336,6 +339,8 @@ impl Default for GoogleConfig {
             token_url: "https://oauth2.googleapis.com/token".into(),
             userinfo_url: "https://www.googleapis.com/oauth2/v3/userinfo".into(),
             gcal_api: "https://www.googleapis.com/calendar/v3".into(),
+            gdrive_api: "https://www.googleapis.com/drive/v3".into(),
+            gdrive_upload_api: "https://www.googleapis.com/upload/drive/v3".into(),
             relay_url: String::new(),
             managed_file: String::new(),
             managed_client_id: String::new(),

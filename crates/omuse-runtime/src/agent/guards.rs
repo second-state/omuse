@@ -43,7 +43,7 @@ static REPEAT_READ: LazyLock<Regex> =
 pub const HOST_FAIL_MAX: i64 = 3;
 pub const MAX_REPLANS: i64 = 4;
 /// chars of context: compress old tool results in one batch
-pub const COMPRESS_HIGH: usize = 70000;
+pub const COMPRESS_HIGH: usize = 80000;
 pub const COMPRESS_LOW: usize = 40000;
 /// share of the time budget (Settings → max_minutes) after which the agent is told to wrap up
 pub const TIME_NUDGE: f64 = 0.7;

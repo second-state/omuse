@@ -839,6 +839,29 @@ pub fn decide(
         }
     }
 
+    // ---------------------------------------------------------------- Google Drive rules
+    if connector == "drive" {
+        if !store.has_secret("cred_drive_1")? {
+            return Ok(Decision::new(
+                DENY,
+                &t_risk,
+                "Google Drive 尚未连接：请在「连接 Connections」页用 Google 登录并勾选 Drive (not connected)",
+            ));
+        }
+        if tool == "drive_trash" {
+            let n = args["file_ids"].as_array().map(|a| a.len()).unwrap_or(0);
+            reasons.push(format!(
+                "把 {n} 个文件移到 Google Drive 回收站，30 天内可恢复 (moves {n} files to the Drive bin; recoverable for 30 days)"
+            ));
+        }
+        if tool == "drive_upload" && tainted {
+            bump(&mut risk, "high");
+            reasons.push(
+                "本任务读取过机密数据，正在把文件上传到 Google Drive (possible data egress)".into(),
+            );
+        }
+    }
+
     // ---------------------------------------------------------------- phone rules
     if connector == "phone" {
         let h = hooks();

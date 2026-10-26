@@ -135,6 +135,8 @@ scenario (`tests/parallel_steps_e2e.py`).
   `<dir>/market/*.webp` and `overview.png` into `deploy/market/assets`. Rebuild the test image first.
 - Image smoke test: `tests/docker_image_smoke.sh <image>`; set `OMUSE_VERSION`
   to the tag to also check the reported version.
+- Google Drive: `tests/drive_connect_e2e.py` (one Google sign-in for Calendar + Drive), `drive_cleanup_e2e.py`,
+  `drive_video_e2e.py` (ffmpeg in the test image), `drive_storybook_e2e.py`; the Drive fake is in `tests/fake_apps.py`.
 - Image and video generation: `tests/imagegen_e2e.py` and `tests/videogen_e2e.py` (scripted, in the default list);
   `tests/media_real.py` makes one picture and one short clip with the gateway in the e2e env file
   (`xai/grok-imagine-image`, `xai/grok-imagine-video`, billed): `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env

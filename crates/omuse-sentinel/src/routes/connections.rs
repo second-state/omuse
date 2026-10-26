@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::Engine;
 use omuse_apps::gcal::{self, GCal};
+use omuse_apps::gdrive::GDrive;
 use omuse_apps::ical::{self, ICalFeed};
 use omuse_apps::notion::Notion;
 use omuse_apps::slack::Slack;
@@ -121,6 +122,28 @@ pub fn conn_view(ctx: &Ctx, name: &str) -> Result<Value, ApiError> {
             .map(|m| m.relay)
             .filter(|r| !r.is_empty())
             .unwrap_or_else(|| ctx.google.relay_url.clone()));
+    }
+    if name == "drive" {
+        let sec = store
+            .get_secret("cred_drive_1")
+            .map_err(ierr)?
+            .unwrap_or(json!({}));
+        let mode = if truthy(&g(&sec, "managed")) {
+            "google"
+        } else if truthy(&sec) {
+            "google_own"
+        } else {
+            ""
+        };
+        c["mode"] = json!(mode);
+        let m = gcal::managed(&ctx.google, Some(store));
+        c["managed_available"] = json!(m.is_some());
+        c["managed_source"] = json!(m.as_ref().map(|m| m.source.clone()).unwrap_or_default());
+        c["relay_url"] = json!(m
+            .map(|m| m.relay)
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| ctx.google.relay_url.clone()));
+        c["calendar_connected"] = json!(store.has_secret("cred_calendar_1").unwrap_or(false));
     }
     if name == "phone" {
         let d = &ctx.phone.dial;
@@ -238,7 +261,10 @@ pub async fn delete_cred_named(ctx: &App, name: &str) -> JsonResult {
         store.delete_secret("cred_calendar_access").map_err(ierr)?;
         store.delete_secret("cred_calendar_client").map_err(ierr)?;
     }
-    if matches!(name, "notion" | "slack" | "calendar" | "phone") {
+    if name == "drive" {
+        store.delete_secret("cred_drive_access").map_err(ierr)?;
+    }
+    if matches!(name, "notion" | "slack" | "calendar" | "drive" | "phone") {
         store
             .save_connection(name, None, None, Some(false))
             .map_err(ierr)?;
@@ -1136,13 +1162,50 @@ fn client_inputs(b: &Value, old: &Value) -> Result<(String, String), ApiError> {
 /// `POST /sentinel/api/connections/calendar/start`: save the user's OAuth client and return Google's consent URL.
 pub async fn calendar_start(State(ctx): State<App>, headers: HeaderMap, body: Bytes) -> JsonResult {
     let b = body_obj(&body)?;
+    let services = services_of(&b, &["calendar"]);
+    google_own_start(&ctx, &headers, &b, &services).await
+}
+
+/// `POST /sentinel/api/connections/drive/start`: the same, for Drive — one sign-in covers Drive and the calendar
+/// unless `services` says otherwise.
+pub async fn drive_start(State(ctx): State<App>, headers: HeaderMap, body: Bytes) -> JsonResult {
+    let b = body_obj(&body)?;
+    let services = services_of(&b, &["calendar", "drive"]);
+    google_own_start(&ctx, &headers, &b, &services).await
+}
+
+/// The Google services a sign-in should cover: the body's `services` (any of calendar / drive), else `default`.
+fn services_of(b: &Value, default: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = b["services"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|x| py_str(x).trim().to_lowercase())
+                .filter(|x| x == "calendar" || x == "drive")
+                .collect()
+        })
+        .unwrap_or_default();
+    if out.is_empty() {
+        out = default.iter().map(|s| s.to_string()).collect();
+    }
+    out.dedup();
+    out
+}
+
+/// A Google sign-in with the user's own client and this box's callback address (no relay).
+async fn google_own_start(
+    ctx: &App,
+    headers: &HeaderMap,
+    b: &Value,
+    services: &[String],
+) -> JsonResult {
     let old = ctx
         .store
         .get_secret("cred_calendar_client")
         .map_err(ierr)?
         .unwrap_or(json!({}));
-    let (cid, secret) = client_inputs(&b, &old)?;
-    let redirect = browser_origin(&headers, &b) + CAL_CALLBACK;
+    let (cid, secret) = client_inputs(b, &old)?;
+    let redirect = browser_origin(headers, b) + CAL_CALLBACK;
     let state = token_urlsafe(24);
     let store = &ctx.store;
     store
@@ -1155,7 +1218,7 @@ pub async fn calendar_start(State(ctx): State<App>, headers: HeaderMap, body: By
     store
         .kv_set(
             "calendar_oauth",
-            &json!({"state": state, "ts": now_ts(), "redirect": redirect}),
+            &json!({"state": state, "ts": now_ts(), "redirect": redirect, "services": services}),
         )
         .map_err(ierr)?;
     ctx.audit(
@@ -1164,11 +1227,13 @@ pub async fn calendar_start(State(ctx): State<App>, headers: HeaderMap, body: By
         audit_user(
             "calendar",
             "success",
-            Some(json!({"client_id": take_chars(&cid, 24)})),
+            Some(json!({"client_id": take_chars(&cid, 24), "services": services})),
         ),
     );
+    let scope = gcal::scopes_for(services);
     Ok(Json(
-        json!({"auth_url": gcal::auth_url(&ctx.google, &cid, &redirect, &state, ""), "redirect_uri": redirect}),
+        json!({"auth_url": gcal::auth_url_for(&ctx.google, &cid, &redirect, &state, "", &scope), "redirect_uri": redirect,
+               "services": services}),
     ))
 }
 
@@ -1178,14 +1243,35 @@ pub async fn calendar_google_start(
     headers: HeaderMap,
     body: Bytes,
 ) -> JsonResult {
+    let b = body_obj(&body)?;
+    let services = services_of(&b, &["calendar"]);
+    google_managed_start(&ctx, &headers, &b, &services).await
+}
+
+/// `POST /sentinel/api/connections/drive/google/start`: one-click sign-in covering Drive and the calendar.
+pub async fn drive_google_start(
+    State(ctx): State<App>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> JsonResult {
+    let b = body_obj(&body)?;
+    let services = services_of(&b, &["calendar", "drive"]);
+    google_managed_start(&ctx, &headers, &b, &services).await
+}
+
+async fn google_managed_start(
+    ctx: &App,
+    headers: &HeaderMap,
+    b: &Value,
+    services: &[String],
+) -> JsonResult {
     let Some(m) = gcal::managed(&ctx.google, Some(&ctx.store)) else {
         return Err(ApiError::new(
             400,
             "这个版本还没有内置 OMuse 的 Google 登录，请用下面的「自己的 Google Cloud 客户端」或 iCal 地址 (not available in this build)",
         ));
     };
-    let b = body_obj(&body)?;
-    let back = browser_origin(&headers, &b) + CAL_CALLBACK;
+    let back = browser_origin(headers, b) + CAL_CALLBACK;
     let verifier = token_urlsafe(48);
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let challenge = b64.encode(sha2::Sha256::digest(verifier.as_bytes()));
@@ -1195,16 +1281,23 @@ pub async fn calendar_google_start(
     ctx.store
         .kv_set(
             "calendar_oauth",
-            &json!({"state": state, "ts": now_ts(), "redirect": m.relay, "mode": "managed", "verifier": verifier}),
+            &json!({"state": state, "ts": now_ts(), "redirect": m.relay, "mode": "managed", "verifier": verifier,
+                    "services": services}),
         )
         .map_err(ierr)?;
     ctx.audit(
         "user",
         "credential.calendar.start",
-        audit_user("calendar", "success", Some(json!({"mode": "managed"}))),
+        audit_user(
+            "calendar",
+            "success",
+            Some(json!({"mode": "managed", "services": services})),
+        ),
     );
+    let scope = gcal::scopes_for(services);
     Ok(Json(
-        json!({"auth_url": gcal::auth_url(&ctx.google, &m.client_id, &m.relay, &state, &challenge)}),
+        json!({"auth_url": gcal::auth_url_for(&ctx.google, &m.client_id, &m.relay, &state, &challenge, &scope),
+               "services": services}),
     ))
 }
 
@@ -1315,7 +1408,7 @@ fn cal_page(ok: bool, msg: &str) -> Response {
     let body = format!(
         "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'><title>OMuse</title>\
          <body style='font-family:system-ui;padding:40px;max-width:560px;margin:auto'><h2 style='color:{color}'>\
-         {} Google Calendar</h2><p>{}</p><p><a href='../../../../#connections'>\
+         {} Google</h2><p>{}</p><p><a href='../../../../#connections'>\
          返回 OMuse 连接页 Back to Connections</a></p>{}</body>",
         if ok { "✓" } else { "✗" },
         py_html_escape(msg),
@@ -1405,6 +1498,13 @@ async fn calendar_callback_inner(
             String::new(),
         )
     };
+    // which Google services this sign-in was started for; the token's granted scopes may narrow it (the user can
+    // untick a scope on Google's consent page)
+    let asked: Vec<String> = pend["services"]
+        .as_array()
+        .map(|a| a.iter().map(py_str).collect())
+        .filter(|v: &Vec<String>| !v.is_empty())
+        .unwrap_or_else(|| vec!["calendar".to_string()]);
     let r = async {
         let tok = gcal::exchange_code(
             &ctx.http,
@@ -1417,27 +1517,50 @@ async fn calendar_callback_inner(
             &turl,
         )
         .await?;
+        let granted = get_str(&tok, "scope");
+        let services: Vec<String> = if granted.is_empty() {
+            asked.clone()
+        } else {
+            let got = gcal::granted_services(&granted);
+            asked.iter().filter(|s| got.contains(s)).cloned().collect()
+        };
+        if services.is_empty() {
+            return Err(gcal::GCalError("Google 没有授予日历或 Drive 权限：请重新登录并在 Google 的页面上勾选需要的权限 (no calendar or Drive permission granted)".into()));
+        }
         let exp = py_int(&g(&tok, "expires_in"))
             .filter(|n| *n != 0)
             .unwrap_or(3600);
-        let gc = GCal::new(
-            ctx.http.clone(),
-            &ctx.google,
-            &cid,
-            &csecret,
-            &get_str(&tok, "refresh_token"),
-            "",
-        )
-        .with_access_token(&get_str(&tok, "access_token"), now_ts() + exp as f64)
-        .with_token_url(&turl);
+        let mk = || {
+            GCal::new(
+                ctx.http.clone(),
+                &ctx.google,
+                &cid,
+                &csecret,
+                &get_str(&tok, "refresh_token"),
+                "",
+            )
+            .with_access_token(&get_str(&tok, "access_token"), now_ts() + exp as f64)
+            .with_token_url(&turl)
+        };
+        let gc = mk();
         let who = gc.userinfo().await?;
-        let tz = gc.settings_tz().await;
-        gc.list_events(&Value::Null, &Value::Null, "", "primary", 1)
-            .await?;
-        Ok::<_, gcal::GCalError>((tok, who, tz))
+        let mut tz = String::new();
+        if services.iter().any(|s| s == "calendar") {
+            tz = gc.settings_tz().await;
+            gc.list_events(&Value::Null, &Value::Null, "", "primary", 1)
+                .await?;
+        }
+        let mut quota = Value::Null;
+        if services.iter().any(|s| s == "drive") {
+            quota = GDrive::new(mk(), &ctx.google)
+                .about()
+                .await
+                .map_err(|e| gcal::GCalError(e.0))?;
+        }
+        Ok::<_, gcal::GCalError>((tok, who, tz, services, quota))
     }
     .await;
-    let (tok, who, tz) = match r {
+    let (tok, who, tz, services, quota) = match r {
         Ok(x) => x,
         Err(e) => {
             ctx.audit(
@@ -1446,51 +1569,103 @@ async fn calendar_callback_inner(
                 audit_user(
                     "calendar",
                     "failed",
-                    Some(json!({"error": take_chars(&e.to_string(), 300)})),
+                    Some(json!({"error": take_chars(&e.to_string(), 300), "services": asked})),
                 ),
             );
             return Ok(cal_page(false, &e.to_string()));
         }
     };
-    if managed {
-        // the secret is OMuse's (built in or kept by the broker): store only what is ours
-        store
-            .put_secret(
-                "calendar",
-                &json!({"client_id": cid, "managed": true, "refresh_token": tok["refresh_token"]}),
-                None,
-            )
-            .map_err(ierr)?;
-        store.delete_secret("cred_calendar_client").map_err(ierr)?;
-    } else {
-        store
-            .put_secret("calendar", &json!({"client_id": cid, "client_secret": csecret, "refresh_token": tok["refresh_token"]}), None)
-            .map_err(ierr)?;
-    }
-    store.delete_secret("cred_calendar_access").map_err(ierr)?;
     let email = get_str(&who, "email");
-    store
-        .save_connection(
-            "calendar",
-            Some(&json!({"email": email, "time_zone": tz, "client_id": cid,
-                         "mode": if managed { "google" } else { "google_own" }, "calendar_name": ""})),
-            None,
-            Some(true),
-        )
-        .map_err(ierr)?;
+    let mode = if managed { "google" } else { "google_own" };
+    // the secret is OMuse's for a managed client (built in or kept by the broker): store only what is ours
+    let record = if managed {
+        json!({"client_id": cid, "managed": true, "refresh_token": tok["refresh_token"]})
+    } else {
+        json!({"client_id": cid, "client_secret": csecret, "refresh_token": tok["refresh_token"]})
+    };
+    for svc in &services {
+        store.put_secret(svc, &record, None).map_err(ierr)?; // cred_<service>_1
+        store
+            .delete_secret(&format!("cred_{svc}_access"))
+            .map_err(ierr)?;
+        if svc == "calendar" {
+            store
+                .save_connection(
+                    "calendar",
+                    Some(&json!({"email": email, "time_zone": tz, "client_id": cid, "mode": mode, "calendar_name": ""})),
+                    None,
+                    Some(true),
+                )
+                .map_err(ierr)?;
+        } else {
+            // a connection row made before this version has no permissions yet: seed the defaults once
+            let cur = store.connection("drive").map_err(ierr)?;
+            let perms = if cur["permissions"]
+                .as_object()
+                .is_some_and(|m| !m.is_empty())
+            {
+                None
+            } else {
+                Some(json!({"read": true, "upload": true, "write": true}))
+            };
+            store
+                .save_connection(
+                    "drive",
+                    Some(&json!({"email": email, "client_id": cid, "mode": mode, "quota": quota})),
+                    perms.as_ref(),
+                    Some(true),
+                )
+                .map_err(ierr)?;
+        }
+    }
+    if managed {
+        store.delete_secret("cred_calendar_client").map_err(ierr)?;
+    }
     ctx.audit(
         "user",
         "credential.calendar.set",
         audit_user(
             "calendar",
             "success",
-            Some(json!({"email": email, "tz": tz})),
+            Some(json!({"email": email, "tz": tz, "services": services})),
         ),
     );
+    let what = services
+        .iter()
+        .map(|s| {
+            if s == "drive" {
+                "Google Drive"
+            } else {
+                "Google Calendar"
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" + ");
     Ok(cal_page(
         true,
-        &format!("已连接 {email}（时区 {tz}）。Connected."),
+        &format!(
+            "已连接 {email}：{what}{}。Connected.",
+            if tz.is_empty() {
+                String::new()
+            } else {
+                format!("（时区 {tz}）")
+            }
+        ),
     ))
+}
+
+/// `POST /sentinel/api/connections/drive/test`.
+pub async fn drive_test(State(ctx): State<App>) -> JsonResult {
+    let d = match crate::actions::drive_client(&ctx) {
+        Ok(d) => d,
+        Err(e) => return Ok(Json(json!({"ok": false, "error": e.to_string()}))),
+    };
+    Ok(Json(match d.about().await {
+        Ok(a) => {
+            json!({"ok": true, "email": a["email"], "used_gb": a["used_gb"], "limit_gb": a["limit_gb"], "trash_gb": a["trash_gb"]})
+        }
+        Err(e) => json!({"ok": false, "error": e.to_string()}),
+    }))
 }
 
 /// `POST /sentinel/api/connections/calendar/test`.

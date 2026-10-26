@@ -1,4 +1,5 @@
 """Fake Notion (/v1/...) and Slack (/api/...) APIs for tests (port 8094)."""
+import json
 import time
 import uuid
 from datetime import datetime, timezone
@@ -262,7 +263,14 @@ async def g_token(req: Request):
             ch = _b64.urlsafe_b64encode(_hl.sha256(f.get("code_verifier", "").encode()).digest()).rstrip(b"=").decode()
             if ch != c["challenge"]:
                 return JSONResponse({"error": "invalid_grant", "error_description": "PKCE"}, status_code=400)
-        return {"access_token": "gat-1", "refresh_token": "grt-1", "expires_in": 3600}
+        scope = c.get("scope", "")
+        if DRIVE["deny_drive_scope"]:
+            scope = " ".join(x for x in scope.split() if "auth/drive" not in x)
+            DRIVE["deny_drive_scope"] = False
+        out = {"access_token": "gat-1", "refresh_token": "grt-1", "expires_in": 3600}
+        if scope:
+            out["scope"] = scope
+        return out
     if f.get("grant_type") == "refresh_token":
         if not G["refresh_ok"] or f.get("refresh_token") != "grt-1":
             return JSONResponse({"error": "invalid_grant"}, status_code=400)
@@ -548,3 +556,296 @@ async def stripe_state(req: Request):
     if req.method == "POST":
         STRIPE["sub"].update(await req.json())
     return STRIPE
+
+
+# ------------------------------------------------------------------ Google Drive (drive_*_e2e.py): the Drive REST API v3 behind the
+# same fake Google OAuth as the calendar. Seeded with folders, two real MP4 clips (ffmpeg), three JPEG photos, big and old
+# files with metadata only, a shared file and a trashed one. /drive/_state and /drive/_reset serve the suites.
+import base64 as _b64
+import io as _io
+import os as _os
+import re as _re
+import subprocess as _sp
+import tempfile as _tmp
+
+DRIVE = {"files": {}, "calls": [], "uploads": [], "deny_drive_scope": False}
+
+
+def _mp4(label: str) -> bytes:
+    """A 2-second 320x240 test clip with a silent audio track (ffmpeg is in the test image)."""
+    d = _tmp.mkdtemp()
+    out = _os.path.join(d, "clip.mp4")
+    try:
+        _sp.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"testsrc=duration=2:size=320x240:rate=10",
+                 "-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                 "-metadata", f"title={label}", out], check=True, timeout=60)
+        return open(out, "rb").read()
+    except Exception:
+        return b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 200
+
+
+def _jpg(color, text: str) -> bytes:
+    from PIL import Image, ImageDraw
+    im = Image.new("RGB", (640, 480), color)
+    ImageDraw.Draw(im).text((20, 20), text, fill=(255, 255, 255))
+    buf = _io.BytesIO()
+    im.save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
+def _seed_drive():
+    f = {}
+
+    def add(fid, name, mime, *, size=0, modified, viewed=None, parents=("root",), data=None, mine=True, shared=False, trashed=False, video=None, image=None):
+        f[fid] = {"id": fid, "name": name, "mimeType": mime, "size": str(len(data) if data is not None else size),
+                  "quotaBytesUsed": str(len(data) if data is not None else size) if mine else "0",
+                  "modifiedTime": modified + "T10:00:00.000Z", "createdTime": modified + "T09:00:00.000Z",
+                  "viewedByMeTime": (viewed + "T12:00:00.000Z") if viewed else None,
+                  "owners": [{"emailAddress": "lucas@example.com" if mine else "other@example.com", "displayName": "Lucas Lu" if mine else "Someone", "me": mine}],
+                  "parents": list(parents), "webViewLink": f"https://drive.google.com/file/d/{fid}/view", "trashed": trashed, "shared": shared,
+                  "_data": data, "videoMediaMetadata": video, "imageMediaMetadata": image}
+
+    add("fld-trip", "Kyoto trip", "application/vnd.google-apps.folder", modified="2026-04-12", viewed="2026-04-12")
+    add("fld-bday", "Mia birthday", "application/vnd.google-apps.folder", modified="2026-09-20", viewed="2026-09-21")
+    add("vid-1", "kyoto-arrival.mp4", "video/mp4", modified="2026-04-10", viewed="2026-04-11", parents=("fld-trip",), data=_mp4("arrival"),
+        video={"width": 320, "height": 240, "durationMillis": "2000"})
+    add("vid-2", "kyoto-temple.mp4", "video/mp4", modified="2026-04-11", viewed="2026-04-11", parents=("fld-trip",), data=_mp4("temple"),
+        video={"width": 320, "height": 240, "durationMillis": "2000"})
+    add("img-1", "mia-cake.jpg", "image/jpeg", modified="2026-09-20", viewed="2026-09-21", parents=("fld-bday",), data=_jpg((200, 60, 80), "cake"),
+        image={"width": 640, "height": 480})
+    add("img-2", "mia-balloons.jpg", "image/jpeg", modified="2026-09-20", viewed="2026-09-21", parents=("fld-bday",), data=_jpg((60, 120, 200), "balloons"),
+        image={"width": 640, "height": 480})
+    add("img-3", "mia-friends.jpg", "image/jpeg", modified="2026-09-20", viewed=None, parents=("fld-bday",), data=_jpg((60, 160, 90), "friends"),
+        image={"width": 640, "height": 480})
+    add("big-1", "backup-2022.zip", "application/zip", size=2_684_354_560, modified="2022-05-01", viewed=None)
+    add("big-2", "old-render.mov", "video/quicktime", size=943_718_400, modified="2023-01-15", viewed="2023-02-01",
+        video={"width": 1920, "height": 1080, "durationMillis": "600000"})
+    add("big-3", "wedding-raw.mov", "video/quicktime", size=4_294_967_296, modified="2026-09-01", viewed="2026-10-01",
+        video={"width": 3840, "height": 2160, "durationMillis": "5400000"})
+    add("doc-1", "Tax 2019", "application/vnd.google-apps.document", size=0, modified="2019-04-02", viewed="2019-04-15")
+    add("pdf-1", "manual.pdf", "application/pdf", size=12_582_912, modified="2024-03-03", viewed="2025-12-01")
+    add("shared-1", "team-roadmap.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", size=41_943_040,
+        modified="2026-08-08", viewed="2026-08-09", mine=False, shared=True)
+    add("trash-1", "already-gone.mp4", "video/mp4", size=314_572_800, modified="2025-05-05", viewed="2025-05-06", trashed=True)
+    DRIVE["files"] = f
+    DRIVE["calls"], DRIVE["uploads"] = [], []
+
+
+_seed_drive()
+
+
+def _public(x):
+    out = {k: v for k, v in x.items() if not k.startswith("_") and v is not None}
+    return out
+
+
+def _drive_auth(req: Request):
+    return gauth(req)
+
+
+@app.post("/drive/_reset")
+async def drive_reset():
+    _seed_drive()
+    DRIVE["deny_drive_scope"] = False
+    return {"ok": True}
+
+
+@app.get("/drive/_state")
+async def drive_state():
+    return {"trashed": sorted(k for k, v in DRIVE["files"].items() if v["trashed"]), "uploads": DRIVE["uploads"], "calls": DRIVE["calls"],
+            "files": {k: {"name": v["name"], "parents": v["parents"], "trashed": v["trashed"]} for k, v in DRIVE["files"].items()}}
+
+
+@app.post("/g/_deny_drive")
+async def g_deny_drive(req: Request):
+    """The next token exchange reports a scope without Drive (the user unticked it on Google's consent page)."""
+    DRIVE["deny_drive_scope"] = True
+    return {"ok": True}
+
+
+def _q_match(f, q: str) -> bool:
+    """A small evaluator for the Drive query language subset the app sends (terms joined by `and`, plus the
+    `unused_days` clause: viewed before a date, or never viewed and modified before it)."""
+    q = q.strip()
+    m = _re.search(r"\(viewedByMeTime < '([^']+)' or \(not viewedByMeTime > '[^']+' and modifiedTime < '([^']+)'\)\)", q)
+    if m:
+        cutoff = m.group(1)
+        v = f.get("viewedByMeTime")
+        if not ((v and v < cutoff) or (not v and f["modifiedTime"] < cutoff)):
+            return False
+        q = q.replace(m.group(0), "")
+    for term in [t.strip() for t in _re.split(r"\band\b", q) if t.strip()]:
+        if term == "trashed = false":
+            if f["trashed"]:
+                return False
+        elif term == "trashed = true":
+            if not f["trashed"]:
+                return False
+        elif (mm := _re.fullmatch(r"mimeType contains '([^']+)'", term)):
+            if mm.group(1) not in f["mimeType"]:
+                return False
+        elif (mm := _re.fullmatch(r"mimeType = '([^']+)'", term)):
+            if f["mimeType"] != mm.group(1):
+                return False
+        elif (mm := _re.fullmatch(r"(name|fullText) contains '((?:[^'\\]|\\.)*)'", term)):
+            needle = mm.group(2).replace("\\'", "'").lower()
+            if needle not in f["name"].lower():
+                return False
+        elif (mm := _re.fullmatch(r"'((?:[^'\\]|\\.)*)' in parents", term)):
+            if mm.group(1) not in f["parents"]:
+                return False
+        elif term == "'me' in owners":
+            if not f["owners"][0]["me"]:
+                return False
+        elif (mm := _re.fullmatch(r"modifiedTime (<|>) '([^']+)'", term)):
+            if mm.group(1) == "<" and not f["modifiedTime"] < mm.group(2):
+                return False
+            if mm.group(1) == ">" and not f["modifiedTime"] > mm.group(2):
+                return False
+        elif (mm := _re.fullmatch(r"viewedByMeTime (<|>) '([^']+)'", term)):
+            v = f.get("viewedByMeTime")
+            if not v:
+                return False
+            if mm.group(1) == "<" and not v < mm.group(2):
+                return False
+            if mm.group(1) == ">" and not v > mm.group(2):
+                return False
+        else:
+            DRIVE["calls"].append({"unknown_term": term})
+            return False
+    return True
+
+
+@app.get("/drive/about")
+async def drive_about(req: Request):
+    if not _drive_auth(req):
+        return JSONResponse({"error": {"message": "auth"}}, status_code=401)
+    DRIVE["calls"].append({"about": 1})
+    mine = [v for v in DRIVE["files"].values() if v["owners"][0]["me"]]
+    live = sum(int(v["quotaBytesUsed"]) for v in mine if not v["trashed"])
+    trash = sum(int(v["quotaBytesUsed"]) for v in mine if v["trashed"])
+    return {"user": {"emailAddress": "lucas@example.com", "displayName": "Lucas Lu"},
+            "storageQuota": {"limit": str(16 * 1024 ** 3), "usage": str(live + trash), "usageInDrive": str(live + trash), "usageInDriveTrash": str(trash)}}
+
+
+@app.get("/drive/files")
+async def drive_list(req: Request):
+    if not _drive_auth(req):
+        return JSONResponse({"error": {"message": "auth"}}, status_code=401)
+    qp = dict(req.query_params)
+    q = qp.get("q", "")
+    order = qp.get("orderBy", "")
+    size = int(qp.get("pageSize", "100"))
+    token = int(qp.get("pageToken") or 0)
+    DRIVE["calls"].append({"list": q, "orderBy": order, "pageSize": size, "pageToken": token})
+    rows = [v for v in DRIVE["files"].values() if _q_match(v, q)] if q else list(DRIVE["files"].values())
+    key = order.split(",")[0].strip()
+    if key.startswith("quotaBytesUsed"):
+        rows.sort(key=lambda v: int(v["quotaBytesUsed"]), reverse="desc" in key)
+    elif key.startswith("modifiedTime"):
+        rows.sort(key=lambda v: v["modifiedTime"], reverse="desc" in key)
+    elif key.startswith("viewedByMeTime"):
+        rows.sort(key=lambda v: v.get("viewedByMeTime") or "", reverse="desc" in key)
+    elif key.startswith("name"):
+        rows.sort(key=lambda v: v["name"].lower())
+    page = rows[token:token + size]
+    out = {"files": [_public(v) for v in page]}
+    if token + size < len(rows):
+        out["nextPageToken"] = str(token + size)
+    return out
+
+
+@app.post("/drive/files")
+async def drive_create(req: Request):
+    if not _drive_auth(req):
+        return JSONResponse({"error": {"message": "auth"}}, status_code=401)
+    b = await req.json()
+    fid = "new-" + uuid.uuid4().hex[:6]
+    DRIVE["files"][fid] = {"id": fid, "name": b.get("name", "untitled"), "mimeType": b.get("mimeType", "application/octet-stream"),
+                           "size": "0", "quotaBytesUsed": "0", "modifiedTime": "2026-10-26T10:00:00.000Z", "createdTime": "2026-10-26T10:00:00.000Z",
+                           "viewedByMeTime": "2026-10-26T10:00:00.000Z", "owners": [{"emailAddress": "lucas@example.com", "displayName": "Lucas Lu", "me": True}],
+                           "parents": b.get("parents") or ["root"], "webViewLink": f"https://drive.google.com/drive/folders/{fid}", "trashed": False,
+                           "shared": False, "_data": None, "videoMediaMetadata": None, "imageMediaMetadata": None}
+    DRIVE["calls"].append({"create": b})
+    return _public(DRIVE["files"][fid])
+
+
+@app.get("/drive/files/{fid}/export")
+async def drive_export(fid: str, req: Request):
+    if not _drive_auth(req):
+        return JSONResponse({"error": {"message": "auth"}}, status_code=401)
+    f = DRIVE["files"].get(fid)
+    if not f:
+        return JSONResponse({"error": {"message": "File not found"}}, status_code=404)
+    DRIVE["calls"].append({"export": fid, "mimeType": req.query_params.get("mimeType")})
+    return Response(b"%PDF-1.4\n% fake export of " + f["name"].encode() + b"\n%%EOF\n", media_type=req.query_params.get("mimeType", "application/pdf"))
+
+
+@app.get("/drive/files/{fid}")
+async def drive_get(fid: str, req: Request):
+    if not _drive_auth(req):
+        return JSONResponse({"error": {"message": "auth"}}, status_code=401)
+    f = DRIVE["files"].get(fid)
+    if not f:
+        return JSONResponse({"error": {"message": "File not found"}}, status_code=404)
+    if req.query_params.get("alt") == "media":
+        DRIVE["calls"].append({"download": fid})
+        if f["_data"] is None:
+            return JSONResponse({"error": {"message": "This file's content is not available in the fake"}}, status_code=403)
+        return Response(f["_data"], media_type=f["mimeType"])
+    DRIVE["calls"].append({"get": fid})
+    return _public(f)
+
+
+@app.patch("/drive/files/{fid}")
+async def drive_patch(fid: str, req: Request):
+    if not _drive_auth(req):
+        return JSONResponse({"error": {"message": "auth"}}, status_code=401)
+    f = DRIVE["files"].get(fid)
+    if not f:
+        return JSONResponse({"error": {"message": "File not found"}}, status_code=404)
+    b = await req.json()
+    qp = dict(req.query_params)
+    DRIVE["calls"].append({"patch": fid, "body": b, "addParents": qp.get("addParents"), "removeParents": qp.get("removeParents")})
+    if "trashed" in b:
+        if not f["owners"][0]["me"]:
+            return JSONResponse({"error": {"message": "The user does not have sufficient permissions for this file."}}, status_code=403)
+        f["trashed"] = bool(b["trashed"])
+    if b.get("name"):
+        f["name"] = b["name"]
+    if qp.get("addParents"):
+        f["parents"] = [p for p in f["parents"] if p not in (qp.get("removeParents") or "").split(",")] + [qp["addParents"]]
+    return _public(f)
+
+
+@app.post("/drive-upload/files")
+async def drive_upload(req: Request):
+    if not _drive_auth(req):
+        return JSONResponse({"error": {"message": "auth"}}, status_code=401)
+    ctype = req.headers.get("content-type", "")
+    m = _re.search(r'boundary="?([^";]+)"?', ctype)
+    raw = await req.body()
+    if not m or "multipart/related" not in ctype:
+        return JSONResponse({"error": {"message": "multipart/related expected"}}, status_code=400)
+    b = m.group(1).encode()
+    parts = [p for p in raw.split(b"--" + b) if p.strip() and p.strip() != b"--"]
+    meta, data, mime = {}, b"", "application/octet-stream"
+    for i, p in enumerate(parts[:2]):
+        head, _, body = p.lstrip(b"\r\n").partition(b"\r\n\r\n")
+        body = body[:-2] if body.endswith(b"\r\n") else body
+        if i == 0:
+            meta = json.loads(body.decode())
+        else:
+            data = body
+            mm = _re.search(rb"Content-Type:\s*([^\r\n]+)", head, _re.I)
+            mime = mm.group(1).decode().strip() if mm else mime
+    fid = "up-" + uuid.uuid4().hex[:6]
+    DRIVE["files"][fid] = {"id": fid, "name": meta.get("name", "upload"), "mimeType": mime, "size": str(len(data)), "quotaBytesUsed": str(len(data)),
+                           "modifiedTime": "2026-10-26T11:00:00.000Z", "createdTime": "2026-10-26T11:00:00.000Z", "viewedByMeTime": "2026-10-26T11:00:00.000Z",
+                           "owners": [{"emailAddress": "lucas@example.com", "displayName": "Lucas Lu", "me": True}], "parents": meta.get("parents") or ["root"],
+                           "webViewLink": f"https://drive.google.com/file/d/{fid}/view", "trashed": False, "shared": False, "_data": data,
+                           "videoMediaMetadata": None, "imageMediaMetadata": None}
+    DRIVE["uploads"].append({"id": fid, "name": meta.get("name"), "mime": mime, "size": len(data), "parents": meta.get("parents"),
+                             "head": data[:8].hex()})
+    DRIVE["calls"].append({"upload": meta.get("name"), "size": len(data)})
+    return _public(DRIVE["files"][fid])

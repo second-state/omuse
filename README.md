@@ -6,7 +6,8 @@
 ![OMuse](deploy/market/assets/featured.webp)
 
 OMuse is a local-first AI agent. It doesn't just chat: it turns a request into a plan and carries it out across your
-email, calendar, Notion, Slack and the web. Anything that sends, posts, pays or deletes waits for your approval.
+email, calendar, Google Drive, Notion, Slack and the web. Anything that sends, posts, pays or deletes waits for your
+approval.
 
 OMuse is one Rust binary (`omuse`). How it is built inside — services, crates, policy, data layout, the card catalog and
 other knowledge files — is in [KNOWLEDGE.md](KNOWLEDGE.md). Repository rules, tests and the release steps are in
@@ -25,6 +26,9 @@ other knowledge files — is in [KNOWLEDGE.md](KNOWLEDGE.md). Repository rules, 
 - **Telegram remote control** – give tasks and approve actions from your phone.
 - **Research library** – in-depth Markdown reports you refine and refresh later.
 - **Travel skills for Asia** – see [Travel use cases](#travel-use-cases) below.
+- **Trip photos and videos** – the clips and photos of a trip in your Google Drive become a highlights video (join,
+  cut, vertical for phones, title, music) or a photo story book PDF, edited on your own machine and put back in
+  Drive; Drive clean-up before the next trip. One Google sign-in connects Calendar and Drive.
 - **Memory, profile & skills** – the profile (name as in the passport, birthday, nationality, any number of addresses) can be filled from a photo of your ID; the number goes to the Vault, the photo is not kept. **English and Chinese UI**.
 
 ## Safe by design
@@ -61,12 +65,16 @@ photo is read once and not kept).
 | **Tax refunds** | "How does the tax refund work in Japan now?" | Japan's refund at departure from 1 November 2026, Korea, Singapore eTRS, Thailand, Taiwan: thresholds, paperwork, airport steps and a departure-day reminder. | `tax-refund-shopping` |
 | **Food and language** | "Make me a peanut-allergy card in Japanese" + a menu photo | Dietary cards in the local language; menus and signs translated with the vision model; table customs. | `dining-dietary-translate` |
 | **Emergencies** | "I lost my passport in Seoul" | Police report, consulate and emergency travel document; English-speaking hospitals; the insurer's assistance line; emergency numbers and alerts. | `travel-health-emergency` |
+| **Trip highlights video** | "Join the clips from my Kyoto trip, add a title and make it vertical for Instagram" | Finds the clips in your Google Drive, downloads them and edits locally with ffmpeg (join, cut, resize, caption, music, speed, mute), shows the cut in the chat and puts it back in the trip folder with your approval. | `drive-video-edit` |
+| **Trip photo story book** | "Make a story book from our Kyoto photos for the kids" | Picks and orders the trip photos from Drive, restyles or captions them where asked, writes the story or captions, lays out a PDF, shows it and uploads it next to the photos. | `drive-photo-storybook` |
+| **Room for the next trip** | "My Drive is full — what can go?" | Lists the large and long-unused files (old backups, raw footage) with size and last-opened date, you pick, and one approved step moves them to the bin — never a permanent delete. | `drive-cleanup` |
 | **Expense report** | "Build the expense report for my Tokyo trip" + receipts | Receipts from mail, uploaded card statements and photographed paper receipts (read by the vision model), de-duplicated, converted at the transaction-date rate, an Excel ledger and a PDF claim. | `travel-expense-report` |
 | **Which card to use** | "Which card for this ¥30,000 dinner?" | Your cards from the profile (names only) against a 160-card terms catalog: value per card, the best pick, caveats and the date the terms were verified. Updating the catalog: [KNOWLEDGE.md](KNOWLEDGE.md). | `credit-card-picker` |
 | **City guides** | "I'm moving to Shanghai for work — where do expats live and what does it cost?" | Briefings for Westerners on Beijing, Shanghai, Shenzhen, Guangzhou, Chengdu, Tokyo, Osaka, Seoul, Singapore, Hong Kong, Taipei, Bangkok, Kuala Lumpur, Ho Chi Minh City and Hanoi: entry and airports, money and apps, getting around, business customs, neighbourhoods and costs, health and schools, food, sights. Answers come from the guide's dated facts and data tools (exchange rates, the travel connector), never the browser. | `beijing`, `shanghai`, `shenzhen`, `guangzhou`, `chengdu`, `tokyo`, `osaka`, `seoul`, `singapore`, `hong-kong`, `taipei`, `bangkok`, `kuala-lumpur`, `ho-chi-minh-city`, `hanoi` |
 | **Plan and book** | "Flights to Tokyo next Friday, a hotel in Ginza, a 3-star dinner" | Flights, hotels, itineraries and restaurant bookings (existing skills). | `travel-planning`, `flight-booking`, `hotel-booking`, `restaurant-booking`, `michelin-dining` |
 
-Connect a mailbox and a calendar (Settings → Connections) and fill your profile (Memory → Profile: name as in the
+Connect a mailbox, a calendar and Google Drive (Settings → Connections; one Google sign-in covers Calendar and
+Drive) and fill your profile (Memory → Profile: name as in the
 passport, birthday, nationality; the passport number goes into the Vault) to get the most out of them.
 
 ## Build and run from source
@@ -129,6 +137,7 @@ the entrypoint then writes the config from these variables. A mounted `config.to
 | Section | Keys (environment variable without a config file) |
 |---|---|
 | `[auth]` | `password` (`OMUSE_PASSWORD`, required), `user` (`OMUSE_USER`), `enabled = false` (`OMUSE_AUTH=off`) |
+| `[google]` | `auth_url`, `token_url`, `gcal_api`, `gdrive_api`, `gdrive_upload_api`, `relay_url`, the managed client (`GOOGLE_*`) |
 | `[model]` | `url`, `name`, `api_key`, `planner`, `vision`, `stt`, `image`, `video` (`OMUSE_MODEL_URL`, `OMUSE_MODEL`, …), `fast` (`OMUSE_MODEL_FAST`), `reasoning_effort` (`OMUSE_MODEL_REASONING`); optional `image_url` / `image_api_key` and `video_url` / `video_api_key` when pictures or clips come from another provider (blank = the model endpoint and key) |
 | `[server]` | `port`, `timezone` (`TZ`) |
 | `[skills]` | `initial` (`OMUSE_SKILLS`), `dir` |
