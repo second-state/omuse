@@ -59,6 +59,8 @@ if [ ! -s "$CONFIG" ]; then
     kv video OMUSE_VIDEO_MODEL; kv video_url OMUSE_VIDEO_URL; kv video_api_key OMUSE_VIDEO_API_KEY
     case "${OMUSE_MODEL_FAST:-}" in 1|true|TRUE|yes|on) echo "fast = true";; esac
     kv reasoning_effort OMUSE_MODEL_REASONING
+    echo "[search]"
+    kv brave_key OMUSE_BRAVE_KEY; kv tavily_key OMUSE_TAVILY_KEY; kv exa_key OMUSE_EXA_KEY; kv serpapi_key OMUSE_SERPAPI_KEY
     if [ -n "${OMUSE_SKILLS:-}" ]; then
       echo "[skills]"
       printf 'initial = ['; sep=""

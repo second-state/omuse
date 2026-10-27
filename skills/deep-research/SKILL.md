@@ -13,7 +13,7 @@ to a subject ends with the report file written; the library index is rebuilt fro
    start them all in a SINGLE turn — delegate(role="researcher", task="<the sub-question + what to return + the
    language>", step="<its step id>") once per sub-question, or one delegate call with tasks=[…]. They run at the same
    time, each with its own browser, and the reports come back together (up to 8 sub-agents per task). Keep one or two
-   easy questions for yourself (browser_search once, then browser_read the 2–4 best URLs in ONE call); never work
+   easy questions for yourself (web_search once, then browser_read the 2–4 best URLs in ONE call); never work
    through the sub-questions one turn at a time.
 3. **Write as you go.** Context gets compressed: after each sub-question, append its section to the report with
    files_write(path=<report file>, append=true). First call writes the frame:

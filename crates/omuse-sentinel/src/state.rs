@@ -44,6 +44,7 @@ impl AppState {
     /// Build the state. The Telegram bot is created but not started (`state.bot.start()`), and has no
     /// approval resolver until the routes layer calls `state.bot.set_resolver(..)`.
     pub fn new(cfg: Arc<Config>, store: Arc<Store>) -> AppState {
+        seed_default_keys(&cfg, &store);
         let proxy_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(600))
             .connect_timeout(Duration::from_secs(10))
@@ -75,4 +76,60 @@ impl AppState {
             store,
         }
     }
+}
+
+/// The server's default keys from `[search]`: the Flights & hotels and Web search connections are switched on the
+/// first time a default appears (the user can switch them off again, and their own key always wins); the
+/// connection config records the default so the policy and the page know (`default_key`, `default_provider`).
+pub fn seed_default_keys(cfg: &Config, store: &Store) {
+    let seed = |name: &str, present: bool, mut config: serde_json::Value| {
+        let Ok(conn) = store.connection(name) else {
+            return;
+        };
+        let known = omuse_common::util::truthy(&conn["config"]["default_seeded"]);
+        config["default_seeded"] = serde_json::json!(present);
+        // the first time a default key is seen the connection goes on; afterwards the user's choice stands
+        let enable = if present && !known { Some(true) } else { None };
+        if present != known || enable.is_some() {
+            let _ = store.save_connection(name, Some(&config), None, enable);
+        }
+    };
+    let serp = !cfg.search.serpapi_key.trim().is_empty();
+    seed("travel", serp, serde_json::json!({"default_key": serp}));
+    let mut d: Vec<&str> = cfg
+        .search
+        .default_keys()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    if cfg.search.free_exa {
+        d.insert(0, "exa-mcp"); // the keyless first choice counts as a default: the connection starts on
+    }
+    // the providers that can answer right now (the user's keys, the defaults, the free one), in try order
+    let user = store
+        .get_secret("cred_search_1")
+        .ok()
+        .flatten()
+        .and_then(|s| s.get("keys").cloned())
+        .unwrap_or(serde_json::json!({}));
+    let providers: Vec<&str> = omuse_apps::websearch::Provider::ORDER
+        .iter()
+        .filter(|p| {
+            (!p.needs_key() && cfg.search.free_exa)
+                || omuse_common::util::truthy(&user[p.id()])
+                || d.contains(&p.id())
+        })
+        .map(|p| p.id())
+        .collect();
+    let _ = store.save_connection(
+        "search",
+        Some(&serde_json::json!({"providers": providers})),
+        None,
+        None,
+    );
+    seed(
+        "search",
+        !d.is_empty(),
+        serde_json::json!({"default_providers": d}),
+    );
 }

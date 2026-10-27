@@ -100,6 +100,21 @@ broker_url = ""            # GOOGLE_BROKER_URL
 
 [endpoints]                # third-party API bases (tests point them at fakes)
 notion = "https://api.notion.com"        # NOTION_API
+serpapi = "https://serpapi.com"          # Google Flights / Hotels / Maps for the travel tools (SerpApi)
+brave = "https://api.search.brave.com/res/v1"   # Brave Search API
+tavily = "https://api.tavily.com"        # Tavily
+exa = "https://api.exa.ai"               # Exa
+exa_mcp = "https://mcp.exa.ai/mcp"       # Exa's public MCP server (the keyless first choice of web search)
+kiwi_mcp = "https://mcp.kiwi.com/"       # Kiwi.com's public MCP server (flight data behind flights_search without a SerpApi key)
+
+[search]                   # the server's default keys for web search (web_search) and Flights & hotels; a key the
+                           # user enters in Settings → Connections wins per provider. Web search tries Exa's free MCP,
+                           # then Tavily, Brave, Exa (the one that worked last goes first next time), then the browser's engines.
+brave_key = ""             # OMUSE_BRAVE_KEY
+tavily_key = ""            # OMUSE_TAVILY_KEY
+exa_key = ""               # OMUSE_EXA_KEY
+free_exa = true            # Exa's public MCP server (no key, rate-limited) as the first choice of the chain
+serpapi_key = ""           # OMUSE_SERPAPI_KEY — flights, hotels and restaurants only (Google Flights / Hotels / Maps), never web search
 slack = "https://slack.com/api"          # SLACK_API
 ms_login = "https://login.microsoftonline.com"   # MS_LOGIN_URL
 github_raw = "https://raw.githubusercontent.com" # GITHUB_RAW_URL

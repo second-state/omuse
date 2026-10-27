@@ -83,6 +83,16 @@ impl From<NotionError> for ExecError {
         ExecError::Action(ActionError::new(e.0))
     }
 }
+impl From<omuse_apps::kiwi::KiwiError> for ExecError {
+    fn from(e: omuse_apps::kiwi::KiwiError) -> Self {
+        ExecError::Action(ActionError::new(e.0))
+    }
+}
+impl From<omuse_apps::serpapi::SerpError> for ExecError {
+    fn from(e: omuse_apps::serpapi::SerpError) -> Self {
+        ExecError::Action(ActionError::new(e.0))
+    }
+}
 impl From<SlackError> for ExecError {
     fn from(e: SlackError) -> Self {
         ExecError::Action(ActionError::new(e.0))
@@ -794,6 +804,18 @@ pub async fn execute(
         let text = fstr(args, "text");
         return telegram_send(st, take_chars(&text, 3500)).await;
     }
+    if connector == "travel" {
+        let res = travel_sync(st, tool, args, task_id).await?;
+        if read {
+            store.update_task_ctx(task_id, Some(&data_class), None, None)?;
+        }
+        return Ok(res);
+    }
+    if connector == "search" {
+        let res = web_search_sync(st, args, task_id).await?;
+        store.update_task_ctx(task_id, Some(&data_class), None, None)?;
+        return Ok(res);
+    }
     if connector == "notion" || connector == "slack" {
         let res = if connector == "notion" {
             notion_sync(st, tool, args, task_id).await?
@@ -1405,37 +1427,6 @@ pub async fn browser(
             "next": format!("用 send_file 发给用户（多张一起用 paths），或用 file_look 查看 — send_file it to the user (several at once with paths) or file_look it.{shot}"),
         }));
     }
-    if action == "search" {
-        let res = broker(st, "POST", "/agent/search", Some(&payload), 90.0).await?;
-        let results: Vec<Value> = opt_val(&res, "results")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let txt = results
-            .iter()
-            .map(|r| format!("{} {}", fstr(r, "title"), fstr(r, "snippet")))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let flags = guard::scan_injection(&txt);
-        if !flags.is_empty() {
-            store.update_task_ctx(task_id, None, Some(&flags), None)?;
-        }
-        let engine = opt_arg(&res, "engine").unwrap_or_else(|| "none".into());
-        let mut out = json!({
-            "trust": "untrusted", "source": format!("web search ({engine}): {}", fstr(args, "query")),
-            "results": results,
-            "next": "用 browser_read 一次读 2–4 个最相关的网址 — browser_read the 2–4 most relevant URLs in one call.",
-        });
-        if let Some(e) = opt_val(&res, "error") {
-            if out["results"].as_array().is_some_and(Vec::is_empty) {
-                set(&mut out, "error", e.clone());
-            }
-        }
-        if !flags.is_empty() {
-            set(&mut out, "injection_warning", strings_value(&flags));
-        }
-        return Ok(out);
-    }
     if action == "read" {
         let res = broker(st, "POST", "/agent/read", Some(&payload), 120.0).await?;
         let mut pages: Vec<Value> = Vec::new();
@@ -1619,6 +1610,265 @@ pub fn notion_client(st: &AppState) -> ActResult<Notion> {
         &st.cfg.endpoints.notion,
         &token,
     ))
+}
+
+/// The web-search clients to try, in order: per provider the user's key (`cred_search_1` = `{"keys": {id: token}}`)
+/// wins over the server's default from `[search]`; the provider that worked last (`last_ok` in the connection config)
+/// comes first, then Tavily, Brave, Exa, Google (SerpApi). Empty when the connection is off or has no key.
+pub fn search_clients(st: &AppState) -> Vec<omuse_apps::websearch::WebSearch> {
+    use omuse_apps::websearch::{order, Provider, WebSearch};
+    let Ok(conn) = st.store.connection("search") else {
+        return vec![];
+    };
+    if !truthy(&conn["enabled"]) {
+        return vec![];
+    }
+    let keys = search_keys(st);
+    let available: Vec<Provider> = keys.iter().map(|(p, _, _)| *p).collect();
+    let last = Provider::parse(&fstr(&conn["config"], "last_ok"));
+    let base = |p: Provider| match p {
+        Provider::Brave => st.cfg.endpoints.brave.as_str(),
+        Provider::Tavily => st.cfg.endpoints.tavily.as_str(),
+        Provider::Exa => st.cfg.endpoints.exa.as_str(),
+        Provider::ExaMcp => st.cfg.endpoints.exa_mcp.as_str(),
+    };
+    order(last, &available)
+        .into_iter()
+        .filter_map(|p| {
+            keys.iter()
+                .find(|(q, _, _)| *q == p)
+                .map(|(_, key, _)| WebSearch::new(st.http.clone(), p, base(p), key))
+        })
+        .collect()
+}
+
+/// Every provider that can answer, in try order: `(provider, key, source)` where source is "free" (Exa's keyless
+/// MCP, `[search] free_exa`), "user" or "server" (a default key from the config).
+pub fn search_keys(st: &AppState) -> Vec<(omuse_apps::websearch::Provider, String, &'static str)> {
+    use omuse_apps::websearch::Provider;
+    let user = st
+        .store
+        .get_secret("cred_search_1")
+        .ok()
+        .flatten()
+        .and_then(|s| s.get("keys").cloned())
+        .unwrap_or_else(|| json!({}));
+    let defaults = st.cfg.search.default_keys();
+    Provider::ORDER
+        .into_iter()
+        .filter_map(|p| {
+            if !p.needs_key() {
+                return st.cfg.search.free_exa.then(|| (p, String::new(), "free"));
+            }
+            let own = fstr(&user, p.id());
+            if !own.is_empty() {
+                return Some((p, own, "user"));
+            }
+            defaults
+                .iter()
+                .find(|(n, _)| *n == p.id())
+                .map(|(_, k)| (p, (*k).to_string(), "server"))
+        })
+        .collect()
+}
+
+/// The search API chain for a query: the first provider that answers (remembered for next time), with the failures
+/// before it; `None` when none answered (or none is configured).
+pub async fn search_via_api(st: &AppState, query: &str, n: usize) -> (Option<Value>, Vec<String>) {
+    let mut failed: Vec<String> = Vec::new();
+    for ws in search_clients(st) {
+        match ws.search(query, n).await {
+            Ok(r) => {
+                remember_search_ok(st, ws.provider());
+                return (Some(r), failed);
+            }
+            Err(e) => failed.push(format!(
+                "{}: {}",
+                ws.provider().label(),
+                take_chars(&e.to_string(), 120)
+            )),
+        }
+    }
+    (None, failed)
+}
+
+/// The result envelope of `web_search`: the rows, untrusted, with the engine in the source and an injection scan
+/// over titles and snippets.
+fn search_envelope(
+    store: &Store,
+    task_id: &str,
+    query: &str,
+    res: &Value,
+    note: &str,
+) -> ActResult {
+    let results: Vec<Value> = opt_val(res, "results")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let txt = results
+        .iter()
+        .map(|r| format!("{} {}", fstr(r, "title"), fstr(r, "snippet")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let flags = guard::scan_injection(&txt);
+    if !flags.is_empty() {
+        store.update_task_ctx(task_id, None, Some(&flags), None)?;
+    }
+    let engine = opt_arg(res, "engine").unwrap_or_else(|| "none".into());
+    let mut out = json!({
+        "trust": "untrusted", "source": format!("web search ({engine}): {query}"),
+        "results": results,
+        "next": "用 browser_read 一次读 2–4 个最相关的网址 — browser_read the 2–4 most relevant URLs in one call.",
+    });
+    if let Some(e) = opt_val(res, "error") {
+        if out["results"].as_array().is_some_and(Vec::is_empty) {
+            set(&mut out, "error", e.clone());
+        }
+    }
+    if !note.is_empty() {
+        set(&mut out, "note", json!(note));
+    }
+    if !flags.is_empty() {
+        set(&mut out, "injection_warning", strings_value(&flags));
+    }
+    Ok(out)
+}
+
+/// `web_search`: the search API chain — Exa's free MCP, then the keys in order — and, when none answers (or none is
+/// configured), the browser's own search engines; the result's `note` says what was skipped.
+pub async fn web_search_sync(st: &AppState, args: &Value, task_id: &str) -> ActResult {
+    let query = fstr(args, "query");
+    if query.trim().is_empty() {
+        return Err(act("query is required"));
+    }
+    let n = args.get("max_results").and_then(Value::as_u64).unwrap_or(8) as usize;
+    let (api, failed) = search_via_api(st, &query, n).await;
+    let (res, note) = match api {
+        Some(r) => {
+            let note = if failed.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "search API failed ({}); the next one answered",
+                    failed.join("; ")
+                )
+            };
+            (r, note)
+        }
+        None => {
+            let mut payload = match args {
+                Value::Object(_) => args.clone(),
+                _ => json!({}),
+            };
+            set(&mut payload, "task_id", json!(task_id));
+            let r = broker(st, "POST", "/agent/search", Some(&payload), 90.0)
+                .await
+                .map_err(|e| {
+                    act(if failed.is_empty() {
+                        e.to_string()
+                    } else {
+                        format!(
+                            "search API failed ({}) and the browser's engines too: {}",
+                            failed.join("; "),
+                            take_chars(&e.to_string(), 200)
+                        )
+                    })
+                })?;
+            let note = if failed.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "search API failed ({}); the browser's engines were used",
+                    failed.join("; ")
+                )
+            };
+            (r, note)
+        }
+    };
+    search_envelope(&st.store, task_id, &query, &res, &note)
+}
+
+/// Remember the provider that answered, so it is tried first next time.
+fn remember_search_ok(st: &AppState, p: omuse_apps::websearch::Provider) {
+    let cur = st
+        .store
+        .connection("search")
+        .map(|c| fstr(&c["config"], "last_ok"))
+        .unwrap_or_default();
+    if cur != p.id() {
+        let _ = st
+            .store
+            .save_connection("search", Some(&json!({"last_ok": p.id()})), None, None);
+    }
+}
+
+/// The SerpApi key in force for the Flights & hotels connection: the user's, else the server's default; "" = none.
+pub fn serpapi_key(st: &AppState) -> String {
+    let sec = st
+        .store
+        .get_secret("cred_travel_1")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| json!({}));
+    let own = sarg(&sec, "token");
+    if !own.is_empty() {
+        own
+    } else {
+        st.cfg.search.serpapi_key.trim().to_string()
+    }
+}
+
+/// The SerpApi client behind the Flights & hotels connection (Google Flights / Google Hotels data), when a key is
+/// on hand.
+pub fn travel_client(st: &AppState) -> ActResult<omuse_apps::serpapi::SerpApi> {
+    let token = serpapi_key(st);
+    if token.is_empty() {
+        return Err(act(
+            "酒店和餐厅搜索需要「机票与酒店搜索」的 SerpApi 密钥：请在「连接 Connections」页填写（机票搜索不用密钥，用 Kiwi.com 的数据）(hotels and restaurants need the SerpApi key of Flights & hotels; flights work without it)",
+        ));
+    }
+    Ok(omuse_apps::serpapi::SerpApi::new(
+        st.http.clone(),
+        &st.cfg.endpoints.serpapi,
+        &token,
+    ))
+}
+
+/// The Flights & hotels tools. Flights: Google Flights data when a SerpApi key is on hand, else Kiwi.com's public
+/// MCP (free, information only — the booking links are dropped). Hotels: Google Hotels data, key required.
+pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str) -> ActResult {
+    let store = &st.store;
+    let keyed = !serpapi_key(st).is_empty();
+    let offer = fstr(args, "offer_id");
+    let (src, data) = match tool {
+        "flights_search" if keyed => ("Google Flights", travel_client(st)?.flights(args).await?),
+        "flights_search" => (
+            "Kiwi.com flights (information only)",
+            omuse_apps::kiwi::KiwiMcp::new(st.http.clone(), &st.cfg.endpoints.kiwi_mcp)
+                .flights(args)
+                .await?,
+        ),
+        "flight_offer" if offer.starts_with("kw_") => (
+            "Kiwi.com flight (information only)",
+            omuse_apps::kiwi::offer_details(&offer).ok_or_else(|| {
+                act(format!("unknown offer id {offer}: search again with flights_search and use an offer_id from that result"))
+            })?,
+        ),
+        "flight_offer" => (
+            "Google Flights booking options",
+            travel_client(st)?.flight_offer(args).await?,
+        ),
+        "hotels_search" => ("Google Hotels", travel_client(st)?.hotels(args).await?),
+        "places_search" => ("Google Maps places", travel_client(st)?.places(args).await?),
+        "place_details" => ("Google Maps place", travel_client(st)?.place(args).await?),
+        "hotel_rooms" => (
+            "Google Hotels property",
+            travel_client(st)?.hotel_rooms(args).await?,
+        ),
+        other => return Err(act(format!("unknown travel tool {other}"))),
+    };
+    let text = take_chars(&serde_json::to_string(&data).unwrap_or_default(), 30000).to_string();
+    Ok(untrusted(store, task_id, src, data, &text)?)
 }
 
 /// The Slack client for the stored token.

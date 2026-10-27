@@ -7,11 +7,18 @@ description: 订酒店：先用旅行数据连接器查酒店、房型、价格�
 Search and compare with data tools; open the browser only for the provider's booking page at the end.
 
 ## 0. Pick the source (no browser yet)
-- Look for a travel data connector in your tools: `mcp_<server>__hotels_search` and `mcp_<server>__hotel_rooms`
-  (e.g. `mcp_travel__hotels_search`). If present, use them for all searching and comparing — no Booking.com / Agoda /
-  Google pages, no search engine.
-- No connector connected: browser_search + browser_read (1–4 result pages, no snapshots) as in the travel-planning
-  skill; still open the browser interactively only to book.
+- Built in: `hotels_search` and `hotel_rooms` (Google Hotels data; Settings → Connections → Flights & hotels). If
+  they are in your tool list, use them for all searching and comparing — no Booking.com / Agoda / Google pages, no
+  search engine.
+- Else a travel MCP connector: `mcp_<server>__hotels_search` and `mcp_<server>__hotel_rooms`.
+- Neither, but the Web search connection is on (Brave / Tavily / Google): `web_search` answers from the API (so does web_search). 2–3
+  focused queries in ONE turn ("Ginza Tokyo hotel 20–23 Nov 2026 4 star price", "site:booking.com Ginza 2026-11-20",
+  "best hotels near Ginza station free cancellation"), compile names, stars, prices and links from the snippets, say the
+  prices come from search snippets, and do NOT open Booking, Agoda, Google Hotels or hotel search pages in the browser —
+  the browser is for the final booking page only.
+- None of the above: say in ONE line that real hotel search needs the Flights & hotels connection (a SerpApi key, free
+  tier) or the Web search connection (Brave / Tavily key), then web_search + browser_read (1–4 result pages, no
+  snapshots) as in the travel-planning skill; still open the browser interactively only to book.
 
 ## 1. Understand the request
 - City (and area / near what), check-in and check-out dates (compute exact YYYY-MM-DD from relative dates and say them;

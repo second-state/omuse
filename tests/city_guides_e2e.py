@@ -72,7 +72,7 @@ for skill, (sym, _a) in CITIES.items():
             line and line.group(1)[:30] in sheet and rate and f"FX {sym}: {rate.group(1)}" in res, res[:300])
 # a model that calls the browser anyway after loading a guide: refused by the runtime, audited, the answer still comes
 t = K.run("CITYGUIDE tokyo USDJPY=X TRYBROWSER how do I get around Tokyo?")
-bs = K.results(t, "browser_search")
+bs = K.results(t, "browser_read")
 K.check("browser call after a guide: refused by the runtime (skill policy), nothing fetched",
         t["status"] == "COMPLETED" and bs and bs[0].get("ok") is False and "browser is off" in str(bs[0].get("preview") or bs[0].get("error")),
         bs)

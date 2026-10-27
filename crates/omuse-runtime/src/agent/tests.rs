@@ -774,7 +774,7 @@ fn concurrent_runs_groups_independent_calls_only() {
         ("market_data", true),
         ("browser_navigate", true),
         ("browser_read", true),
-        ("browser_search", true),
+        ("web_search", true),
     ];
     assert_eq!(concurrent_runs(&shape), vec![0..3, 4..6]);
     assert!(concurrent_runs(&[("delegate", true)]).is_empty());
@@ -1078,7 +1078,7 @@ async fn a_browser_off_skill_hides_the_browser_until_another_skill_is_loaded() {
         .unwrap();
     let tid = omuse_common::util::get_str(&t, "id");
     let tools = vec![
-        json!({"type": "function", "function": {"name": "browser_search"}}),
+        json!({"type": "function", "function": {"name": "web_search"}}),
         json!({"type": "function", "function": {"name": "browser_read"}}),
         json!({"type": "function", "function": {"name": "market_data"}}),
         json!({"type": "function", "function": {"name": "delegate"}}),
@@ -1098,9 +1098,10 @@ async fn a_browser_off_skill_hides_the_browser_until_another_skill_is_loaded() {
         "{}",
         &md[md.len() - 200..]
     );
+    // web_search stays: it is on every request and needs no browser page of its own
     assert_eq!(
         names(rt.without_browser_if_off(&tid, tools.clone())),
-        ["market_data"]
+        ["web_search", "market_data"]
     );
     assert_eq!(
         rt.inner.lock().no_browser.get(&tid).map(String::as_str),

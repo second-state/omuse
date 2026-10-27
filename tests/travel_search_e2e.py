@@ -1,0 +1,93 @@
+"""Flights & hotels connection (Google Flights / Google Hotels / Google Maps through SerpApi, tests/fake_apps.py's stand-in): a bad key is
+refused, a good key is accepted with the plan and searches left, the four tools appear in the catalog, the flight-booking
+skill searches flights (one call, IATA codes resolved from city names, SGD), fetches the booking options of the cheapest
+direct offer, searches hotels near Ginza (4+ stars) and one hotel's rates — compact results with offer and hotel ids — all
+without the browser; the card shows the plan; disconnecting removes the tools and the policy explains how to connect."""
+import datetime as dt
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tests import skills_common as K  # noqa: E402
+
+B, H = K.B, K.H
+RT = {"X-Persona-Runtime": "rt-test"}
+FAKE = "http://127.0.0.1:8094"
+KEY = "serp-test-key-0123456789abcdef"
+DATE = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+c = K.c
+
+
+def cat_names():
+    return [t["function"]["name"] for t in c.get(B + "/internal/catalog", headers=RT).json()["tools"]]
+
+
+def conn():
+    return next(x for x in c.get(B + "/sentinel/api/connections", headers=H).json()["connections"] if x["name"] == "travel")
+
+
+K.setup(language="en")
+c.post(FAKE + "/serpapi/_reset")
+r = c.post(B + "/sentinel/api/connections/travel/credential", headers=H, json={"token": "wrong-key-0123456789abcdef"})
+K.check("a refused key is reported", r.status_code == 400 and "refused" in r.text, r.text[:200])
+r = c.post(B + "/sentinel/api/connections/travel/credential", headers=H, json={"token": "short"})
+K.check("a malformed key is rejected before any call", r.status_code == 400 and "API key" in r.text, r.text[:200])
+r = c.post(B + "/sentinel/api/connections/travel/credential", headers=H, json={"token": KEY})
+K.check("a good key connects with the plan and the searches left", r.status_code == 200 and r.json()["plan"] == "Free Plan" and r.json()["searches_left"] == 238, r.text[:300])
+cv = conn()
+K.check("the connection view carries the plan and a credential", cv["has_credential"] and cv["enabled"] and cv["config"]["plan"] == "Free Plan"
+        and cv["config"]["searches_left"] == 238, cv)
+names = cat_names()
+K.check("the six travel tools are in the catalog", all(x in names for x in ("flights_search", "flight_offer", "hotels_search", "hotel_rooms", "places_search", "place_details")), names)
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-p1", "call_id": "p1", "tool": "places_search", "args": {"query": "ramen", "city": "Tokyo", "area": "Ginza", "min_rating": 4.0, "open_now": True}}).json()
+pl = (r.get("result") or {}).get("content") or {}
+K.check("places_search: Google Maps places with type, rating, price, address, hours, phone, website and a place_id", r.get("status") == "ok" and pl.get("count") == 2
+        and pl["places"][0]["name"] == "Kyushu Jangara Ginza" and pl["places"][0]["rating"] == 4.4 and pl["places"][0]["website"].startswith("https://kyushujangara")
+        and pl["places"][0]["place_id"] == "ChIJ7YW0VOaLGGARhGuFEiGbqS0" and pl["places"][0]["service_options"] == ["dine_in", "takeout"] and "restaurant's own site" in pl["book"], str(r)[:400])
+mq = [q for q in c.get(FAKE + "/serpapi/_log").json() if q.get("engine") == "google_maps" and q.get("type") == "search"]
+K.check("the query named the dish, area and city, the rating floor and open now", mq and mq[-1]["q"] == "ramen near Ginza, Tokyo" and mq[-1]["min_rating"] == "4.0" and mq[-1]["open_state"] == "now", mq[-1:])
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-p1", "call_id": "p2", "tool": "place_details", "args": {"place_id": "ChIJ7YW0VOaLGGARhGuFEiGbqS0"}}).json()
+pd = (r.get("result") or {}).get("content") or {}
+K.check("place_details: hours per day, phone, website, the rating breakdown and review snippets", r.get("status") == "ok" and pd.get("hours") == ["wednesday: 11 AM–10:30 PM", "thursday: 11 AM–10:30 PM"]
+        and pd["phone"] == "+81 3-3572-3025" and pd["rating_summary"][0] == "5★ 1500" and pd["review_snippets"][0].startswith("Great tonkotsu"), str(r)[:400])
+K.check("with the key the connection view says flights come from Google", conn().get("flights_source") == "google", conn())
+r = c.post(B + "/sentinel/api/connections/travel/test", headers=H)
+K.check("Test reads the account again", r.status_code == 200 and r.json()["plan"] == "Free Plan", r.text[:200])
+
+t = K.run(f"TRAVELSEARCH cheapest flight Singapore to Tokyo on {DATE} and a 4-star hotel near Ginza for 3 nights DATE={DATE}")
+K.trace(t)
+names = K.names(t)
+K.check("the task completed with the flights and the hotel", t["status"] == "COMPLETED" and "SQ 638" in (t.get("result") or "") and "Hotel Ginza Grand" in (t.get("result") or ""),
+        (t["status"], t.get("error"), (t.get("result") or "")[:300]))
+K.check("skill, flights, booking options, hotels, rooms — no browser",
+        names == ["load_skill", "flights_search", "flight_offer", "hotels_search", "hotel_rooms"], names)
+log = c.get(FAKE + "/serpapi/_log").json()
+fl = [q for q in log if q.get("engine") == "google_flights" and not q.get("booking_token")]
+K.check("flights: one Google Flights search, city names resolved to IATA codes, one way, sorted by price, in SGD",
+        len(fl) == 1 and fl[0]["departure_id"] == "SIN" and fl[0]["arrival_id"] == "HND,NRT" and fl[0]["outbound_date"] == DATE
+        and fl[0]["type"] == "2" and fl[0]["sort_by"] == "2" and fl[0]["currency"] == "SGD" and fl[0]["adults"] == "1", fl)
+bo = [q for q in log if q.get("booking_token")]
+K.check("the booking options were fetched with the offer's token", len(bo) == 1 and bo[0]["booking_token"].startswith("WlRCdz"), bo)
+ht = [q for q in log if q.get("engine") == "google_hotels" and not q.get("property_token")]
+K.check("hotels: one Google Hotels search near Ginza, the dates, 2 guests, 4 and 5 stars",
+        len(ht) == 1 and ht[0]["q"] == "hotels near Ginza Tokyo" and ht[0]["check_in_date"] == DATE and ht[0]["adults"] == "2" and ht[0]["hotel_class"] == "4,5", ht)
+pt = [q for q in log if q.get("property_token")]
+K.check("the hotel's rates were fetched with its property token", len(pt) == 1 and pt[0]["property_token"].startswith("ChkI"), pt)
+res = {r["name"]: r for r in K.results(t, "flights_search")}
+prev = (K.results(t, "flights_search") or [{}])[0].get("preview", "")
+K.check("the flights result is compact: airline, route with local times, price, stops, an offer id",
+        "Singapore Airlines" in prev and "SQ 638" in prev and '"price": 620' in prev and "fl_" in prev, prev[:400])
+prev = (K.results(t, "hotels_search") or [{}])[0].get("preview", "")
+K.check("the hotels result is compact: name, stars, rating, price per night, a hotel id",
+        "Hotel Ginza Grand" in prev and '"stars": 4' in prev and '"price_per_night": 210' in prev and "ht_" in prev, prev[:400])
+K.check("no approval was needed (reads only)", not t["_approvals"], t["_approvals"])
+r = c.delete(B + "/sentinel/api/connections/travel/credential", headers=H)
+K.check("disconnect removes the key; the flight tools stay (Kiwi.com data), the hotel tools stay too but say they need the key", r.status_code == 200 and not conn()["has_credential"] and "flights_search" in cat_names(), r.text[:100])
+a = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-t1", "call_id": "c1", "tool": "hotels_search", "args": {"city": "Tokyo", "check_in": DATE, "check_out": DATE}}).json()
+K.check("without the key the hotel tools are refused with the way to connect, flights still work (Kiwi.com data)",
+        a.get("status") in ("denied", "error") and "SerpApi" in str(a) and "flights work without it" in str(a), str(a)[:300])
+a = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-t1", "call_id": "c3", "tool": "places_search", "args": {"query": "ramen", "city": "Tokyo"}}).json()
+K.check("without the key the places tools are refused the same way", a.get("status") in ("denied", "error") and "restaurants" in str(a) and "SerpApi" in str(a), str(a)[:300])
+a = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-t1", "call_id": "c2", "tool": "flights_search", "args": {"origin": "SIN", "destination": "NRT", "date": DATE}}).json()
+K.check("flights_search without the key answers from Kiwi.com data", a.get("status") == "ok" and "Kiwi.com" in (a.get("result") or {}).get("source", ""), str(a)[:200])
+K.finish()

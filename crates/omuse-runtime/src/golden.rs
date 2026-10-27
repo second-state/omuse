@@ -47,7 +47,7 @@ pub static CASES: LazyLock<Vec<Value>> = LazyLock::new(|| {
                           "answer_all": [r"129"], "answer_any": [r"重复|两笔|2 笔|两次|duplicate|twice"]}}),
         json!({"id": "G02", "title": "餐厅查空位（不预订）", "lane": 1,
                "prompt": "帮我找这周六晚上 7 点、2 个人、新加坡 Raffles Place 附近有空位的餐厅，给我 3 个选择。先不要预订。",
-               "expect": {"status": ["COMPLETED"], "tools_any": ["browser_search", "browser_navigate", "browser_read"],
+               "expect": {"status": ["COMPLETED"], "tools_any": ["web_search", "browser_navigate", "browser_read"],
                           "answer_any": [r"餐厅|restaurant|Restaurant"], "not_reached": ["purchase_confirm"]}}),
         json!({"id": "G03", "title": "比价并加入购物车", "lane": 0,
                "prompt": "在 decathlon.sg 找 S$15 以内的运动水壶，比较 2–3 款，把最便宜的一款加入购物车，不要结账。",

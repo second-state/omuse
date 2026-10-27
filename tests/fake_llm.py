@@ -566,9 +566,9 @@ async def _chat(req: Request, b: dict):
         if n == 1:
             return reply("", [tc("make_chart", {"type": "line", "title": "汇丰 vs 渣打", "symbols": ["0005.HK", "2888.HK"], "range": "2y"})])
         return reply("MARKET RESULTS:\n" + "\n=====\n".join(str(m["content"])[:8000] for m in tools_done))
-    if "WEBREAD" in goal:   # browser_search then browser_read several pages in one call
+    if "WEBREAD" in goal:   # web_search then browser_read several pages in one call
         if n == 0:
-            return reply("", [tc("browser_search", {"query": "olares one"})])
+            return reply("", [tc("web_search", {"query": "olares one"})])
         if n == 1:
             return reply("", [tc("browser_read", {"urls": ["http://shop.test:8094/slow?s=1&name=PageA",
                                                            "http://shop.test:8094/slow?s=1&name=PageB",
@@ -603,7 +603,7 @@ async def _chat(req: Request, b: dict):
     if "WEBLOOP" in goal:   # 2026-10-02 R4-04b: endless searching for a cleaner product list → web-budget nudge
         if "web budget" in allu:
             return reply(f"WRAPPED after {n} calls")
-        return reply("", [tc("browser_search", {"query": f"anker power bank variant {n}"})])
+        return reply("", [tc("web_search", {"query": f"anker power bank variant {n}"})])
     if "DATAQTEST" in goal:   # data_query: exact counts from a table (the 2026-10-02 NPS miscount), a log via pattern
         csv_text = "id,age,nps\n" + "\n".join(f"u{i},{20 + i},{[2, 5, 7, 8, 9, 10][i % 6]}" for i in range(40))
         log_text = "\n".join(f'2026-10-01T{h:02d}:00:00 1.1.1.1 "GET /api/{p}" {st} {ms}ms'
@@ -1342,6 +1342,58 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
                      "| Thailand | TDAC digital arrival card | within 3 days before arrival | reminder set | tdac.immigration.go.th | 2026-10-25 |\n"
                      "| Singapore | SG Arrival Card + health declaration | within 3 days before arrival | I can fill it (sg-arrival-card) | eservices.ica.gov.sg | 2026-10-25 |\n"
                      "Passport: at least 6 months validity for Thailand (page read today).")
+    if "BRAVETRAVEL" in goal:   # flight-booking without the travel tools, the Web search API on: snippets, no browser pages
+        api = re.search(r"Web search \(web_search, always available\): search services connected", sys)
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
+        if n == 1:
+            if not api:
+                return reply("NO_SEARCH_API")
+            # flights_search (Kiwi.com data without a key) and the web searches for flights, hotel and car in ONE turn
+            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": "2026-11-20", "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"}),
+                              tc_("web_search", {"query": "SIN to NRT flights 20 Nov 2026 cheapest", "max_results": 5}),
+                              tc_("web_search", {"query": "Ginza Tokyo hotel 20-23 Nov 2026 4 star price", "max_results": 5}),
+                              tc_("web_search", {"query": "Tokyo Narita airport car rental 20 Nov 2026 compact", "max_results": 5})])
+        allt = "\n".join(str(m["content"]) for m in tools_done)
+        srcs = re.findall(r"web search \(([^)]+)\)", allt)
+        kiwi = "Kiwi.com" in allt and "kiwi.com/u/" not in allt.lower()
+        return reply(f"SEARCHED VIA {sorted(set(srcs))}: flights SIN–NRT 20 Nov — {'Kiwi.com data (information only): SQ638 09:25 → 17:15 SGD 620 direct, CX via HKG SGD 510' if kiwi else 'from search snippets'}, "
+                     "fare page singaporeair.com (web_search); hotels near Ginza (Brave result 1); compact car at Narita (Brave result 1). "
+                     "Book the flight on singaporeair.com or with the agency you choose — never through Kiwi.")
+    if "KIWIFLIGHTS" in goal:   # flight-booking with no key: flights_search (Kiwi.com data) and web_search in ONE turn; book on the airline's site
+        date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
+        if n == 1:
+            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": date, "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"}),
+                              tc_("web_search", {"query": f"Singapore Airlines SIN NRT {date} fare", "max_results": 5})])
+        allt = "\n".join(str(m["content"]) for m in tools_done)
+        kiwi = "Kiwi.com" in allt and "kiwi.com/u/" not in allt.lower()
+        return reply(f"FLIGHTS {date} SIN → NRT (flight data{' from Kiwi.com, information only' if kiwi else ''}): cheapest direct Singapore Airlines SQ638 09:25 → 17:15, SGD 620, 1 checked bag; "
+                     "cheapest overall Cathay Pacific via HKG SGD 510 (one stop). The fare page: singaporeair.com (from web_search). "
+                     "Book it on singaporeair.com, or tell me the agency you prefer — say the word and I open the booking page.")
+    if "TRAVELSEARCH" in goal:   # flight-booking with the built-in Flights & hotels tools (Google data through SerpApi)
+        date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
+        import datetime as _dt
+        out = (_dt.date.fromisoformat(date) + _dt.timedelta(days=3)).isoformat()
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
+        if n == 1:
+            return reply("", [tc_("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": date, "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"})])
+        if n == 2:
+            m = re.search(r'offer_id\\?"?: \\?"(fl_[0-9a-f]+)', str(last_tool)) or re.search(r"(fl_[0-9a-f]{10})", str(last_tool))
+            return reply("", [tc_("flight_offer", {"offer_id": m.group(1) if m else "fl_missing", "currency": "SGD"})])
+        if n == 3:
+            return reply("", [tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": date, "check_out": out, "guests": 2, "min_stars": 4, "currency": "SGD"})])
+        if n == 4:
+            m = re.search(r"(ht_[0-9a-f]{10})", str(last_tool))
+            return reply("", [tc_("hotel_rooms", {"hotel_id": m.group(1) if m else "ht_missing", "check_in": date, "check_out": out, "guests": 2, "currency": "SGD"})])
+        allt = "\n".join(str(m["content"]) for m in tools_done)
+        seller = re.search(r'book_with\\?"?: \\?"([^"\\]+)', allt)
+        return reply(f"FLIGHTS {date} Singapore → Tokyo (Google Flights): cheapest direct SQ 638 09:25 → 17:15, SGD 620, sold by {seller.group(1) if seller else '?'} "
+                     f"(Trip.com has it at SGD 612); cheapest overall Cathay via HKG SGD 510 (one stop, 12 h 35). "
+                     f"HOTELS Ginza (Google Hotels): Hotel Ginza Grand 4★ rating 4.4, SGD 210/night, SGD 630 for 3 nights, free cancellation on Booking.com; "
+                     f"the hotel's own site has a Deluxe Twin at SGD 199/night. Book the flight on singaporeair.com and the room on the hotel site — say the word.")
     if "CSRCLAIM" in goal:   # csr-trip-claim: mail in one turn, the arithmetic, the airline letter, the packet, the portal, hand-over
         import datetime as _dt
         loss = (re.search(r"LOSS=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-10-20")).group(1)
@@ -1589,7 +1641,7 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
                 return reply("CITY FAIL: browser tools or delegate still offered after the guide was loaded")
             calls = [tc_("market_data", {"symbols": [sym]})]
             if "TRYBROWSER" in goal:   # a model that calls the browser anyway: the runtime must refuse it
-                calls.append(tc_("browser_search", {"query": "tokyo subway fare"}))
+                calls.append(tc_("browser_read", {"urls": ["https://www.tokyometro.jp/en/ticket/regular/"]}))
             return reply("", calls)
         sheet = str(tools_done[0]["content"])
         line = next((l.strip() for l in sheet.split("## Getting around", 1)[-1].splitlines() if l.strip().startswith("- ")), "")

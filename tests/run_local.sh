@@ -73,8 +73,17 @@ gdrive_upload_api = "http://127.0.0.1:8094/drive-upload"
 relay_url = "http://127.0.0.1:8094/relay/callback"
 managed_file = "$T/google_managed.json"
 
+[search]
+brave_key = "brave-test-key-0123456789"   # a server default (the fake accepts it): the user's own key overrides it
+
 [endpoints]
 notion = "http://127.0.0.1:8094"
+serpapi = "${OMUSE_E2E_SERPAPI_EP:-http://127.0.0.1:8094/serpapi}"
+brave = "${OMUSE_E2E_BRAVE_EP:-http://127.0.0.1:8094/brave}"
+tavily = "${OMUSE_E2E_TAVILY_EP:-http://127.0.0.1:8094/tavily}"
+exa = "${OMUSE_E2E_EXA_EP:-http://127.0.0.1:8094/exa}"
+exa_mcp = "${OMUSE_E2E_EXA_MCP_EP:-http://127.0.0.1:8094/exa-mcp/mcp}"
+kiwi_mcp = "${OMUSE_E2E_KIWI_MCP_EP:-http://127.0.0.1:8094/kiwi-mcp/}"
 slack = "http://127.0.0.1:8094/api"
 github_raw = "http://127.0.0.1:8094/ghraw"
 ms_login = "http://127.0.0.1:18999"

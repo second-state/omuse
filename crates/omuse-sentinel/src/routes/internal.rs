@@ -42,6 +42,12 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
         if matches!(name, "notion" | "slack" | "calendar" | "drive") {
             ready = ready && store.has_secret(&format!("cred_{name}_1")).unwrap_or(false);
         }
+        if name == "travel" {
+            ready = true; // flights_search always works (Kiwi.com data); the hotel tools say when they need the key
+        }
+        if name == "search" {
+            ready = true; // web_search is always offered: the browser's engines answer when no service does
+        }
         if name == "gmail" {
             ready = ready && ctx.gmail_ready();
         }
@@ -57,12 +63,34 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
             enabled.insert(name.to_string());
         }
         // Python precedence: `workspace or team or ("" if notion/slack else "")`
-        let workspace = [conf.get("workspace"), conf.get("team")]
+        let mut workspace = [conf.get("workspace"), conf.get("team")]
             .into_iter()
             .flatten()
             .find(|v| truthy(v))
             .cloned()
             .unwrap_or(json!(""));
+        if name == "search" {
+            // the providers with a key, in the order they are tried, for the agent's prompt
+            let names: Vec<String> = crate::actions::search_keys(&ctx)
+                .into_iter()
+                .map(|(p, _, _)| p.id().to_string())
+                .collect();
+            let last = get_str(conf, "last_ok");
+            workspace = json!(if last.is_empty() {
+                names.join(", ")
+            } else {
+                format!("{} (last used: {last})", names.join(", "))
+            });
+        }
+        if name == "travel" {
+            let keyed = store.has_secret("cred_travel_1").unwrap_or(false)
+                || !ctx.cfg.search.serpapi_key.trim().is_empty();
+            workspace = json!(if keyed {
+                "google flights + google hotels + google maps places (key)"
+            } else {
+                "flights: kiwi.com data (free, information only); hotels and restaurants: need the key"
+            });
+        }
         let accounts: Value = if name == "gmail" {
             let mut accs = mailboxes::ready_accounts(store).map_err(ierr)?;
             let def = mailboxes::default_id(store).map_err(ierr)?;

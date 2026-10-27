@@ -179,12 +179,12 @@ pub fn chat_context(subject: &Value, report: &str, language: &str) -> String {
     }
     if language == "en" {
         return format!(
-            "\n## Research subject: {}\nThis conversation is about a research subject in the user's library. Its report is the file {}; the current text is below. When the user asks a question, answer from the report (and research further with browser_search / browser_read when it lacks the answer). When the user asks for a change, addition or correction, edit the report file with files_write (rewrite the affected section; keep the rest), append a dated entry to its '## Changelog' section, and tell the user what changed. Keep the report's structure.\n### Current report\n{}\n",
+            "\n## Research subject: {}\nThis conversation is about a research subject in the user's library. Its report is the file {}; the current text is below. When the user asks a question, answer from the report (and research further with web_search / browser_read when it lacks the answer). When the user asks for a change, addition or correction, edit the report file with files_write (rewrite the affected section; keep the rest), append a dated entry to its '## Changelog' section, and tell the user what changed. Keep the report's structure.\n### Current report\n{}\n",
             title, path, body
         );
     }
     format!(
-        "\n## 研究课题 Research subject: {}\n这个对话围绕用户研究库里的一个课题。报告文件是 {}，当前内容在下面。用户提问时依据报告回答（报告里没有的再用 browser_search / browser_read 查）；用户要求修改、补充或纠正时，用 files_write 改报告文件（重写受影响的章节，其余保留），在「## Changelog」末尾追加带日期的条目，并告诉用户改了什么。保持报告结构。\n### 当前报告 Current report\n{}\n",
+        "\n## 研究课题 Research subject: {}\n这个对话围绕用户研究库里的一个课题。报告文件是 {}，当前内容在下面。用户提问时依据报告回答（报告里没有的再用 web_search / browser_read 查）；用户要求修改、补充或纠正时，用 files_write 改报告文件（重写受影响的章节，其余保留），在「## Changelog」末尾追加带日期的条目，并告诉用户改了什么。保持报告结构。\n### 当前报告 Current report\n{}\n",
         title, path, body
     )
 }

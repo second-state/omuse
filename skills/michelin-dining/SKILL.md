@@ -4,11 +4,16 @@ description: 米其林餐厅：用旅行数据连接器查米其林星级/必比
 ---
 # MICHELIN dining / 米其林订位
 
+Data first: `places_search` / `place_details` (Google Maps data — rating, price, hours, phone, website, menu or
+reservation links; needs the SerpApi key of Settings → Connections → Flights & hotels) together with `web_search` in
+the same turn come before any browsing. Book on the restaurant's own site or the platform the user names; the browser
+is for that booking page only.
+
 ## 0. Pick the source (no browser yet)
 - Look for a travel data connector: `mcp_<server>__michelin_search` and `mcp_<server>__restaurant_availability`
   (e.g. `mcp_travel__michelin_search`). If present, use them for finding restaurants and checking times — no guide
   website, no Google Maps, no search engine.
-- No connector: browser_search + browser_read (guide.michelin.com pages, no snapshots) to find candidates, then the
+- No connector: web_search + browser_read (guide.michelin.com pages, no snapshots) to find candidates, then the
   restaurant-booking skill for availability.
 
 ## 1. Understand the request

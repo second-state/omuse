@@ -82,6 +82,78 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
 5. **Answer**: an outcome check makes sure the answer doesn't claim actions that didn't happen; memory extraction
    proposes facts and profile fields for the user to confirm.
 
+## Flights & hotels search
+
+`flights_search` is always on: with a SerpApi key it is Google Flights data (below); without one Sentinel asks
+Kiwi.com's public MCP server itself (`omuse_apps::kiwi`, `https://mcp.kiwi.com/`, two JSON-RPC calls, no key, no
+connector registration) and compacts the itineraries — airlines, flight numbers, local times, stops, price, baggage —
+with the booking links dropped (`compact_flights`; the `kw_…` offer ids resolve to the same details through
+`flight_offer`, with an empty link and the note that the booking happens on the airline's own site or with an agency
+the user chooses). The executor's prompt and the flight skills say so and call `flights_search` together with
+`web_search` in the same turn. The hotel tools need the key (the policy says so; `tests/kiwi_flights_e2e.py`,
+`tests/flights_real.py`).
+
+Sentinel's `travel` connector: a SerpApi key (`cred_travel_1`, `POST /sentinel/api/connections/travel/credential`,
+checked against `/account.json`, which costs no search; `/test` reads it again) behind six read-only tools —
+`flights_search`, `flight_offer`, `hotels_search`, `hotel_rooms`, `places_search`, `place_details` (`catalog.rs`,
+connector `travel`, permission `search`). The places tools are Google Maps (`engine=google_maps`, `type=search` with
+the query "<what> near <area>, <city>", `min_rating`, `open_state=now`, price levels; `place_id` for the details) —
+rating, reviews, price, address, hours, phone, website, menu or reservation links when Google lists them.
+`omuse_apps::serpapi` builds the Google Flights / Google Hotels requests (city names → the airports Google takes, e.g.
+Tokyo → HND,NRT; a return date makes a round trip; cabin, stops, price cap, sort, currency) and compacts the replies:
+itineraries with airlines, legs, local times, duration, stops, price and an `offer_id`; hotels with stars, rating, price
+per night and total, nearby places and a `hotel_id`. The long booking and property tokens stay in a per-process table
+behind those short ids (`short_id` / `token_of`; a flight token is kept together with the route and dates of its search, which SerpApi wants
+repeated on the booking-options request), so a second call (`flight_offer` → the booking options and the seller;
+`hotel_rooms` → rates per seller and room types) needs no token in the chat. Without the key the policy denies with the
+way to connect: the card (Settings → Connections → Flights & hotels) or Kiwi.com's free MCP server
+(`https://mcp.kiwi.com/`, streamable HTTP, no auth, one `search-flight` tool — the MCP card has a preset button that fills
+the add form). The travel skills name the built-in tools first, then an MCP connector's, then the browser with a one-line
+note on how to connect. `[endpoints] serpapi` points the client at `tests/fake_apps.py`'s stand-in (`/serpapi/*`);
+`tests/travel_search_e2e.py`, `tests/travel_card_ui.py`.
+
+## Search services: who answers what
+
+- `web_search` (every model call): Exa's free MCP → Tavily → Brave → Exa (the keys on hand, user over server) → the
+  browser's own search engines. The one that worked last goes first next time. The SerpApi key is never used here.
+- `flights_search` / `flight_offer`: Google Flights data with the SerpApi key, else Kiwi.com's public MCP (free,
+  information only, links stripped). Booking: the airline's own site or an agency the user chooses, never Kiwi.
+- `hotels_search` / `hotel_rooms`: Google Hotels data, SerpApi key required (the policy says so without it).
+- `places_search` / `place_details`: restaurants and other places, Google Maps data, SerpApi key required. Booking: the
+  restaurant's own site or the platform the user names.
+- Keys: the user's (Settings → Connections) win per provider over the server's defaults (`[search]` in config.toml);
+  the cards mark each key as "your key" or "server key"; removing an own key falls back to the server's.
+
+## Web search providers and default keys
+
+The one `web_search` tool (catalog connector `search`, always listed and always allowed by the policy, open to the
+executor, sub-agents and skills that run with the browser off; the old `browser_search` is gone) goes through the
+search services when the `search` connection is on and ends in the browser's own search engines (`/agent/search` on
+the browser service) when none answers or none is configured. Keys are per provider: the user's
+(`cred_search_1` = `{"keys": {id: token}}`, `POST /sentinel/api/connections/search/credential` with `provider`, checked
+with one small search; `DELETE …/credential/{provider}` removes one) win over the server's defaults from `[search]`
+(`tavily_key`, `brave_key`, `exa_key`, `serpapi_key`; `SearchConfig::default_keys`). `actions::search_clients` builds
+the clients in try order — `websearch::order`: the provider that worked last (`last_ok` in the connection config) first,
+then Exa's public MCP server (`https://mcp.exa.ai/mcp`, keyless, rate-limited, `[search] free_exa`, spoken in
+`websearch::search_exa_mcp` as initialize + `tools/call web_search_exa`, its text reply parsed by
+`parse_exa_mcp_text`), Tavily, Brave, Exa, Google (SerpApi) — and `actions::browser` tries them in turn: the first that answers wins and is
+remembered (`remember_search_ok`), a failure moves on (the result's `note` says so), and when none answers the browser's
+engines are used. `omuse_apps::websearch` speaks
+Brave (`GET /web/search`, `X-Subscription-Token`; the free plan allows one request a second, so a 429 is retried once
+after the wait asked), Tavily (`POST /search`, bearer) and Exa (`POST /search`, `x-api-key`, highlights as snippets) and returns the browser's own shape (`{query, engine, results: [{title, url, snippet, age?}]}`), so
+nothing downstream changes. The same `[search] serpapi_key` is the default for the Flights & hotels connection
+(`travel_client`). `state::seed_default_keys` runs at startup: the first time a default appears the connection is
+switched on and its config records it (`default_key` / `default_providers` + `default_seeded`), so the policy
+(`travel` without a key) and the page (chip "server key") know; the user's own key always wins, deleting it falls back
+to the default, and switching the connection off is respected. `[endpoints] brave / tavily / serpapi` point the clients
+at `tests/fake_apps.py` (`/brave/web/search`, `/tavily/search`, `/serpapi/search.json?engine=google`).
+`tests/web_search_e2e.py`, `tests/search_card_ui.py` (the test stack ships a default Brave key in `tests/run_local.sh`, so
+the override and the fall-back to the server key are exercised). The search providers are never tools of their own: the
+model sees `web_search` (and `web_search`) and OMuse picks the provider (`tests/web_search_e2e.py` asserts no
+provider-named tool). Kiwi.com's MCP server is used the same way inside `flights_search` (`omuse_apps::kiwi`), never as a connector
+of its own, so no Kiwi tool or booking link reaches the model; Exa's hosted MCP is the first link of the chain, called by Sentinel itself (two JSON-RPC calls, no connector
+registration), rather than an MCP connector of its own, which would add a provider-named tool.
+
 ## Streamed answers
 
 The executor's model calls are `stream: true` (`stream_options.include_usage` for the token counts) when Settings

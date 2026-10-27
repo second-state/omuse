@@ -145,11 +145,6 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
                    "remove_labels": {"type": "array", "items": {"type": S}},
                    "mark_read": {"type": "boolean"}}), &["message_ids"])));
     // ------------------------------------------------------------------ Browser
-    add("browser_search", tool("browser", "browse", "read", "low", "PUBLIC",
-        "网页搜索（一次调用返回标题、网址和摘要，比打开搜索页快）。Web search: one call returns titles, URLs and \
-         snippets — faster than opening a search page. Then read the best results with browser_read.",
-        obj(json!({"query": {"type": S, "description": "搜索词 search words"},
-                   "max_results": {"type": "integer", "description": "1-10, default 8"}}), &["query"])));
     add("browser_read", tool("browser", "browse", "read", "low", "PUBLIC",
         "一次读取 1–4 个网页的正文（并行，不做页面快照），用来查资料。要点击、填表或页面需要交互时用 browser_navigate。\
          \u{20}Read the main text of 1–4 web pages at once (in parallel, no snapshot) — for looking things up. Use \
@@ -457,6 +452,57 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
     add("notify_telegram", tool("telegram", "notify", "send", "low", "PERSONAL",
         "通过 Telegram 给用户本人发送通知。Send a notification to the user's own Telegram chat (configured in Connections).",
         obj(json!({"text": {"type": S}}), &["text"])));
+    // ------------------------------------------------------------------ Web search (a search API: Tavily / Brave / Exa / Google through SerpApi)
+    add("web_search", tool("search", "search", "search", "low", "PUBLIC",
+        "网页搜索：一次调用返回标题、网址和摘要（由已配置的搜索服务回答，没有时用浏览器的搜索引擎）Web search: one call returns titles, \
+         URLs and snippets — from the configured search services, else the browser's own search engines (OMuse picks). Use it for any \
+         lookup — facts, prices, fares, hotels, news — then browser_read the best URLs when you need the page text.",
+        obj(json!({"query": {"type": S, "description": "搜索词 search words"},
+                   "max_results": {"type": "integer", "description": "1-20, default 8"}}), &["query"])));
+    // ------------------------------------------------------------------ Flights & hotels (Google Flights / Google Hotels through SerpApi)
+    add("flights_search", tool("travel", "search", "search", "low", "PUBLIC",
+        "搜索航班（Google Flights 数据）：出发地和目的地用机场三字码或城市名，日期是出发地的当地日期；可选回程日期、人数、舱位、只要直飞、最高价、排序、币种 \
+         Search flights (Google Flights data). origin / destination: IATA codes (SIN; HND,NRT for several) or a city name; date: the local \
+         departure date YYYY-MM-DD; return_date makes it a round trip. Returns itineraries (airlines, flight numbers, local times, duration, \
+         stops, price) with an offer_id for flight_offer, and Google's price insight.",
+        obj(json!({"origin": {"type": S}, "destination": {"type": S}, "date": {"type": S}, "return_date": {"type": S},
+                   "adults": {"type": "integer", "minimum": 1, "maximum": 9},
+                   "cabin": {"type": S, "enum": ["economy", "premium_economy", "business", "first"]},
+                   "nonstop_only": {"type": "boolean"}, "max_price": {"type": "number", "description": "per adult, in currency"},
+                   "sort": {"type": S, "enum": ["best", "price", "departure", "arrival", "duration"]},
+                   "currency": {"type": S, "description": "ISO code, default USD"}}), &["origin", "destination", "date"])));
+    add("flight_offer", tool("travel", "search", "read", "low", "PUBLIC",
+        "一个航班行程的预订选项：由谁出售（航空公司或代理）、价格、链接、行李费 Booking options for one itinerary from flights_search (its \
+         offer_id): who sells it (the airline or an agency), the price, the hand-off link and baggage fees when Google lists them. The \
+         booking itself happens on the seller's own site.",
+        obj(json!({"offer_id": {"type": S}, "currency": {"type": S}}), &["offer_id"])));
+    add("hotels_search", tool("travel", "search", "search", "low", "PUBLIC",
+        "搜索酒店（Google Hotels 数据）：城市或区域、入住和退房日期、人数；可选最低星级、每晚最高价、免费取消、最低评分、排序、币种 Search \
+         hotels (Google Hotels data): city (and area), check_in / check_out YYYY-MM-DD, guests; optional min_stars, max_price_per_night, \
+         free_cancellation, min_rating, sort (price | rating | reviews), currency. Returns hotels with stars, rating, price per night and \
+         total, nearby places, amenities and a hotel_id for hotel_rooms.",
+        obj(json!({"city": {"type": S}, "area": {"type": S}, "check_in": {"type": S}, "check_out": {"type": S},
+                   "guests": {"type": "integer", "minimum": 1}, "min_stars": {"type": "integer", "minimum": 2, "maximum": 5},
+                   "max_price_per_night": {"type": "number"}, "free_cancellation": {"type": "boolean"}, "min_rating": {"type": "number"},
+                   "sort": {"type": S, "enum": ["best", "price", "rating", "reviews"]}, "currency": {"type": S}}), &["city", "check_in", "check_out"])));
+    add("places_search", tool("travel", "search", "search", "low", "PUBLIC",
+        "餐厅和地点搜索（Google Maps 数据）：要找什么（拉面、寿司、咖啡馆、药店…）、城市、区域；可选最低评分、现在营业、价位 1–4 Restaurants and other \
+         places (Google Maps data): query = what (ramen, sushi, omakase, cafe, pharmacy …), city, area; optional min_rating, open_now, \
+         min_price_level / max_price_level (1–4). Returns places with type, rating, reviews, price, address, open state, phone, website \
+         and a place_id for place_details. Book on the restaurant's own site or the platform the user names.",
+        obj(json!({"query": {"type": S}, "city": {"type": S}, "area": {"type": S}, "min_rating": {"type": "number"},
+                   "open_now": {"type": "boolean"}, "min_price_level": {"type": "integer", "minimum": 1, "maximum": 4},
+                   "max_price_level": {"type": "integer", "minimum": 1, "maximum": 4}}), &["query", "city"])));
+    add("place_details", tool("travel", "search", "read", "low", "PUBLIC",
+        "一个地点的详情（Google Maps 数据）：每天的营业时间、电话、网站、菜单或预订链接、评分分布、几条评论 One place's details (Google Maps data, \
+         place_id from places_search): hours per day, phone, website, menu or reservation links when Google lists them, the rating \
+         breakdown and a few review snippets.",
+        obj(json!({"place_id": {"type": S}}), &["place_id"])));
+    add("hotel_rooms", tool("travel", "search", "read", "low", "PUBLIC",
+        "一家酒店在指定日期的详情和各渠道价格：地址、电话、每晚价和总价、免费取消、房型、预订链接 One hotel's details and rates per seller for \
+         the dates (hotel_id from hotels_search): address, phone, rate per night and total, free cancellation, room types, booking links.",
+        obj(json!({"hotel_id": {"type": S}, "check_in": {"type": S}, "check_out": {"type": S}, "guests": {"type": "integer", "minimum": 1},
+                   "currency": {"type": S}}), &["hotel_id", "check_in", "check_out"])));
     // ------------------------------------------------------------------ Phone (Telnyx + OpenAI Realtime)
     add("phone_call", tool("phone", "call", "call", "high", "CONFIDENTIAL",
         "打电话：OMuse 用自己的号码替用户拨打一个电话，由语音 AI 按 purpose 和对方通话（每通都需要用户批准）。\
@@ -574,7 +620,7 @@ mod tests {
     #[test]
     fn table_shape() {
         let t = builtin_tools();
-        assert_eq!(t.len(), 63); // 55 before the eight Drive tools
+        assert_eq!(t.len(), 69); // 55 before the eight Drive tools, 63 before the travel tools (now six); browser_search became web_search
         let keys: Vec<&String> = t.keys().collect();
         assert_eq!(keys[0], "gmail_search");
         assert_eq!(keys[keys.len() - 1], "phone_hangup");

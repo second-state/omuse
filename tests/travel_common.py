@@ -245,7 +245,7 @@ def verify(suite: str, kind: str, skill: str, data_tools: tuple[str, ...], run_i
     br = [i for i, n in enumerate(names) if n.startswith(BROWSER_TOOLS)]
     check("all data tools ran before the first browser call", mcp and (not br or max(mcp) < min(br)), names)
     check("no web search / page reading: the data came from the connector",
-          not any(n in ("browser_search", "browser_read") for n in names), names)
+          not any(n in ("web_search", "browser_read") for n in names), names)
     navs = [x["args"].get("url", "") for x in calls if x["name"] == "browser_navigate"]
     check("the browser only opened the provider's booking page", navs and all("shop.test:8097/book/" in u for u in navs), navs)
     check(f"few browser calls ({len(br)} <= {max_browser})", 0 < len(br) <= max_browser, [names[i] for i in br])
