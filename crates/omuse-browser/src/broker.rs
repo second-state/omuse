@@ -85,7 +85,7 @@ pub struct State {
     pub view_pinned_until: f64,
     /// task_id -> when the task ended (its page may be recycled)
     pub finished: HashMap<String, f64>,
-    /// short-lived pages of browser_search / browser_read (target ids)
+    /// short-lived pages of web_search / browser_read (target ids)
     pub temp_pages: HashSet<String>,
     pub last_used: HashMap<String, f64>,
     /// registered domain -> when it was last requested (pacing)

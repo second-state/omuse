@@ -26,7 +26,10 @@ async def main():
         await pg.click("button.newchat")
         await pg.fill("#chatInput", "STREAMSLOW tell me a bedtime story")
         await pg.keyboard.press("Enter")
-        await pg.wait_for_selector(".msg.assistant.live .bubble", timeout=30000)
+        await pg.wait_for_selector(".msg.assistant.live.wait .dance", timeout=30000)   # dots first: the agent is thinking
+        check("the reply bubble starts with the dancing dots and the activity verb", await pg.locator(".msg.assistant.live.wait .dance").count() == 1
+              and len((await pg.locator(".msg.assistant.live.wait .verb").inner_text()).strip()) > 2)
+        await pg.wait_for_function("() => { const b = document.querySelector('.msg.assistant.live:not(.wait) .bubble'); return b && b.textContent.length > 20; }", timeout=30000)
         live = pg.locator(".msg.assistant.live .bubble")
         first = await live.inner_text()
         await pg.wait_for_timeout(600)
@@ -35,6 +38,7 @@ async def main():
         running = [t for t in (tasks.get("tasks") if isinstance(tasks, dict) else tasks) if t["status"] in ("RUNNING", "PLANNING")]
         check("the live bubble shows the answer while the task still runs", first and len(second) > len(first) and running, (len(first), len(second), [t["status"] for t in (tasks.get("tasks") if isinstance(tasks, dict) else tasks)][:3]))
         check("the live bubble sits under the task card", await pg.evaluate("() => { const l = document.querySelector('.msg.assistant.live'); const c = l && l.previousElementSibling; return !!(c && c.querySelector('.taskcard, [id^=tc-]')); }"))
+        check("the dots are gone once the answer is being written", await pg.locator(".msg.assistant.live .dance").count() == 0)
         check("no reasoning in the live text", "<think>" not in second and "keep it short" not in second, second[:100])
         await pg.wait_for_selector(".msg.assistant.live", state="detached", timeout=60000)
         await pg.wait_for_function("() => [...document.querySelectorAll('.msg.assistant:not(.live) .bubble')].some(b => b.textContent.includes('THE END.'))", timeout=30000)

@@ -16,7 +16,7 @@ description: 网购：搜索商品、用视觉挑选、加入购物车（不结�
    S$2.49, and qty 2 became 1): the product you pick must have the listed size / weight / pack count; note its title,
    size and price as shown on the page; multiply by the qty column; totals with calculate. No matching size → say so.
    **A shop's own search finds nothing, or the shop blocks you** (Cloudflare "You have been blocked", robot check): do not
-   conclude the product is not sold there. Search the web once — browser_search("<product> site:<shop domain>", e.g.
+   conclude the product is not sold there. Search the web once — web_search("<product> site:<shop domain>", e.g.
    "Dyson V15 Detect site:courts.com.sg") — and browser_read the product page it returns. Still nothing → say "not
    verified at <shop>" (not "not sold"). Only use shop domains you have seen in search results; never guess one.
    **"The cheapest X"**: sorting by lowest price (Amazon `&s=price-asc-rank`) lists accessories first (cases, covers,

@@ -1,6 +1,6 @@
 """Chat timeline: while a task runs its card shows the plan; once it is finished the plan folds away under a one-line
 head and only the answer is shown. A tap on the head opens the plan again (and stays open across re-renders)."""
-import asyncio, sys
+import asyncio, re, sys
 from playwright.async_api import async_playwright
 
 B = "http://127.0.0.1:8080/"
@@ -31,8 +31,9 @@ async def main():
         await pg.wait_for_selector("details.taskfold", timeout=20000)
         fold = pg.locator("details.taskfold").last
         check("the finished task's plan is folded", not await fold.evaluate("d => d.open"))
-        check("...only its one-line head shows, with the status and step count", await fold.locator("summary .pill").is_visible()
-              and "步" in await fold.locator(":scope > summary").inner_text(), await fold.locator(":scope > summary").inner_text())
+        head = await fold.locator(":scope > summary").inner_text()
+        check("...only its one-line head shows, with the status, the time taken and the step count", await fold.locator("summary .pill").is_visible()
+              and "步" in head and re.search(r"\d+ s", head) and "Details" not in head and "详情" not in head, head)
         check("...the plan and the activity are hidden", not await fold.locator("ol.plan").is_visible() and not await fold.locator("details.trace summary").is_visible())
         check("the answer is shown", await pg.locator(".msg.assistant .bubble").last.is_visible())
         await fold.locator(":scope > summary").click()

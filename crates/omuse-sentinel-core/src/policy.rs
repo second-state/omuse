@@ -314,6 +314,27 @@ pub fn decide(
         return decide_mcp(store, tool, &t, args, task_id);
     }
     let conn = store.connection(&connector)?;
+    // web search is read-only and always on: the search services when configured, else the browser's own engines
+    if connector == "search" {
+        return Ok(Decision::new(ALLOW, &t_risk, String::new()));
+    }
+    // flights come free (Kiwi.com data); hotels and places need the SerpApi key (the user's, or the server's default)
+    let keyed_tool = tool.starts_with("hotel") || tool.starts_with("place");
+    if connector == "travel"
+        && keyed_tool
+        && !store.has_secret("cred_travel_1")?
+        && !truthy(&conn["config"]["default_key"])
+    {
+        return Ok(Decision::new(
+            DENY,
+            &t_risk,
+            "酒店和餐厅搜索需要「机票与酒店搜索」的 SerpApi 密钥：请在「连接 Connections」页填写；机票搜索不用密钥 (hotels and restaurants need the SerpApi key of Flights & hotels; flights work without it)".to_string(),
+        ));
+    }
+    if connector == "travel" && !truthy(&conn["enabled"]) && !keyed_tool {
+        // the connection off still leaves the free flight data: the switch is about the key
+        return Ok(Decision::new(ALLOW, &t_risk, String::new()));
+    }
     if !truthy(&conn["enabled"]) {
         return Ok(Decision::new(
             DENY,
@@ -2383,6 +2404,30 @@ mod tests {
         assert_eq!(r.decision, DENY);
         assert_eq!(r.reason, "这个 MCP 工具已被移除 (tool removed)");
         catalog::remove("mcp_t__x");
+    }
+
+    #[test]
+    fn travel_without_a_key_says_how_to_connect_and_a_server_default_counts() {
+        let (_t, store) = store();
+        let args = json!({"origin": "SIN", "destination": "NRT", "date": "2026-11-20"});
+        // flights are free (Kiwi.com data) even without a key; hotels need the SerpApi key
+        let r = decide(&store, "flights_search", &args, "t1", None, None, false).unwrap();
+        assert_eq!(r.decision, ALLOW, "{}", r.reason);
+        let hargs = json!({"city": "Tokyo", "check_in": "2026-11-20", "check_out": "2026-11-23"});
+        let r = decide(&store, "hotels_search", &hargs, "t1", None, None, false).unwrap();
+        assert_eq!(r.decision, DENY);
+        assert!(r.reason.contains("SerpApi") && r.reason.contains("flights work without it"));
+        // the server's default key (seeded into the connection config at startup) connects the hotels too
+        store
+            .save_connection(
+                "travel",
+                Some(&json!({"default_key": true})),
+                None,
+                Some(true),
+            )
+            .unwrap();
+        let r = decide(&store, "hotels_search", &hargs, "t1", None, None, false).unwrap();
+        assert_eq!(r.decision, ALLOW, "{}", r.reason);
     }
 }
 

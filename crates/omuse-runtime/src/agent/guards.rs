@@ -391,7 +391,7 @@ run gmail_search and copy the ids it returns exactly (including prefixes like g2
 /// every following model call) bigger: answer with a pointer instead. A compressed or failed earlier result is re-read.
 static REREAD_TOOLS: LazyLock<Regex> = LazyLock::new(|| {
     rx(
-        r"^(gmail_get_message|gmail_get_thread|notion_get_page|notion_read|files_read|web_read|browser_read|browser_search|gmail_search|gmail_find_receipts|gmail_read_amounts)$",
+        r"^(gmail_get_message|gmail_get_thread|notion_get_page|notion_read|files_read|web_read|browser_read|web_search|gmail_search|gmail_find_receipts|gmail_read_amounts)$",
     )
 });
 
@@ -443,7 +443,7 @@ If you have what you need, move on or write the final answer.{}",
 /// A concrete, copyable next call for a model that keeps repeating a search (2026-10-04 TC27, M3-21).
 fn next_step_hint(name: &str, call: &ToolCall, earlier: &str) -> String {
     static URL: LazyLock<Regex> = LazyLock::new(|| rx(r#"https?://[^\s"'<>]+"#));
-    if name == "browser_search" {
+    if name == "web_search" {
         let mut urls: Vec<String> = Vec::new();
         for m in URL.find_iter(earlier) {
             let u = m
@@ -601,9 +601,9 @@ pub fn parked_domain_hint(_url: &str, title: &str, snapshot: &str) -> String {
     if !PARKED.is_match(&probe) {
         return String::new();
     }
-    "（提示）这是一个停放/出售中的域名，不是这家公司的官网——网址可能猜错了。用 browser_search 搜索\
+    "（提示）这是一个停放/出售中的域名，不是这家公司的官网——网址可能猜错了。用 web_search 搜索\
 「<公司名> official site」找到正确网址再继续。 (Hint) This is a parked / for-sale domain, not the company's site — \
-the address was probably guessed wrong. browser_search \"<company> official site\" for the right one."
+the address was probably guessed wrong. web_search \"<company> official site\" for the right one."
         .to_string()
 }
 

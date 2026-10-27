@@ -24,6 +24,7 @@ pub struct Config {
     pub stripe: StripeConfig,
     pub google: GoogleConfig,
     pub endpoints: EndpointsConfig,
+    pub search: SearchConfig,
     pub internal: InternalConfig,
     pub web: WebConfig,
     /// Where the file was loaded from (not a TOML key).
@@ -350,12 +351,72 @@ impl Default for GoogleConfig {
     }
 }
 
+/// `[search]` — the server's default keys for web search (behind `web_search`) and for the Flights & hotels
+/// connection. A key the user enters in Settings → Connections wins per provider; these apply where they entered
+/// none. Web search tries Exa's keyless MCP server first, then Tavily, Brave, Exa (the one that worked last first
+/// next time); the SerpApi key is for flights, hotels and restaurants only.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SearchConfig {
+    /// Brave Search API subscription token.
+    pub brave_key: String,
+    /// Tavily API key.
+    pub tavily_key: String,
+    /// Exa API key.
+    pub exa_key: String,
+    /// SerpApi key — for the travel tools only (Google Flights, Google Hotels, Google Maps places), never for web
+    /// search.
+    pub serpapi_key: String,
+    /// Exa's hosted MCP server, keyless and rate-limited, as the first choice of the chain (default on).
+    pub free_exa: bool,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            brave_key: String::new(),
+            tavily_key: String::new(),
+            exa_key: String::new(),
+            serpapi_key: String::new(),
+            free_exa: true,
+        }
+    }
+}
+
+impl SearchConfig {
+    /// The server's default web-search keys by provider id, in the order the providers are tried (only those with
+    /// a key; the SerpApi key is not a web-search key).
+    pub fn default_keys(&self) -> Vec<(&'static str, &str)> {
+        [
+            ("tavily", self.tavily_key.trim()),
+            ("brave", self.brave_key.trim()),
+            ("exa", self.exa_key.trim()),
+        ]
+        .into_iter()
+        .filter(|(_, k)| !k.is_empty())
+        .collect()
+    }
+}
+
 /// `[endpoints]` — third-party API bases (tests point them at fakes).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct EndpointsConfig {
     /// `NOTION_API`.
     pub notion: String,
+    /// SerpApi (Google Flights / Google Hotels behind the Flights & hotels connection, Google web search); tests
+    /// point it at the fake.
+    pub serpapi: String,
+    /// Brave Search API base.
+    pub brave: String,
+    /// Tavily API base.
+    pub tavily: String,
+    /// Exa API base.
+    pub exa: String,
+    /// Exa's hosted MCP endpoint (the keyless first choice of the web-search chain).
+    pub exa_mcp: String,
+    /// Kiwi.com's public MCP endpoint (flight data behind `flights_search` when there is no SerpApi key).
+    pub kiwi_mcp: String,
     /// `SLACK_API`.
     pub slack: String,
     /// `MS_LOGIN_URL` (Outlook OAuth).
@@ -378,6 +439,12 @@ impl Default for EndpointsConfig {
     fn default() -> Self {
         Self {
             notion: "https://api.notion.com".into(),
+            serpapi: "https://serpapi.com".into(),
+            brave: "https://api.search.brave.com/res/v1".into(),
+            tavily: "https://api.tavily.com".into(),
+            exa: "https://api.exa.ai".into(),
+            exa_mcp: "https://mcp.exa.ai/mcp".into(),
+            kiwi_mcp: "https://mcp.kiwi.com/".into(),
             slack: "https://slack.com/api".into(),
             ms_login: "https://login.microsoftonline.com".into(),
             github_raw: "https://raw.githubusercontent.com".into(),

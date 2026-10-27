@@ -10,7 +10,8 @@ newer_than:60d` and calendar_list_events for the day: booking reference, passeng
 connecting flights, whether the ticket is one booking or separate tickets (matters for missed connections).
 
 ## 2. Live status (data first, browser second)
-- A connected data tool wins: look for `mcp_<server>__flight_status` / `flights_search` and use it.
+- A connected data tool wins: the built-in `flights_search` (Google Flights data with the key, else Kiwi.com data for
+  information only — rebook on the airline's site, never through Kiwi), or an MCP connector's `flight_status`.
 - Else browser_read (no clicking) the airline's own flight status page, or FlightAware / Flightradar24 for the flight
   number, and the airport's departures page. Quote the new time, gate, and the airline's wording ("delayed",
   "cancelled"); never estimate a new departure time yourself.
@@ -20,7 +21,7 @@ connecting flights, whether the ticket is one booking or separate tickets (matte
 ## 3. Options
 - **Rebooking**: the airline rebooks for free on its own cancellations and long delays; show the alternatives it
   offers (its app / site, or the airport desk and the phone line — phone_call if configured, with the user's approval).
-  To compare, use the data connector (`flights_search` same route, same day and next morning) and present_choices;
+  To compare, use `flights_search` (built in, or the connector's) — same route, same day and next morning — and present_choices;
   book a new ticket only if the user asks (then the `flight-booking` skill, approvals as usual).
 - **Separate tickets / self-transfer**: the next carrier owes nothing; say so plainly and look for the cheapest fix.
 - **Care while waiting**: meals, hotel and transport rules differ by airline and country. There is no EU261-style

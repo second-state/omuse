@@ -14,7 +14,9 @@ use omuse_apps::gcal::{self, GCal};
 use omuse_apps::gdrive::GDrive;
 use omuse_apps::ical::{self, ICalFeed};
 use omuse_apps::notion::Notion;
+use omuse_apps::serpapi::SerpApi;
 use omuse_apps::slack::Slack;
+use omuse_apps::websearch::{Provider, WebSearch};
 use omuse_common::api::ApiError;
 use omuse_common::util::{get_str, now_ts, py_str, take_chars, token_urlsafe, truthy};
 use omuse_mail::{mailboxes, mailproviders};
@@ -65,6 +67,40 @@ pub fn conn_view(ctx: &Ctx, name: &str) -> Result<Value, ApiError> {
     let mut c = store.connection(name).map_err(ierr)?;
     let has = store.has_secret(&format!("cred_{name}_1")).map_err(ierr)?;
     c["has_credential"] = json!(has);
+    if name == "travel" {
+        c["default_key"] = json!(!ctx.cfg.search.serpapi_key.trim().is_empty());
+        c["flights_source"] = json!(if has || !ctx.cfg.search.serpapi_key.trim().is_empty() {
+            "google"
+        } else {
+            "kiwi"
+        });
+    }
+    if name == "search" {
+        // every provider in the order it is tried, with where its key comes from ("user", "server" or "")
+        let user = search_user_keys(ctx);
+        let defaults = ctx.cfg.search.default_keys();
+        let rows: Vec<Value> = Provider::ORDER
+            .iter()
+            .map(|p| {
+                let source = if !p.needs_key() {
+                    if ctx.cfg.search.free_exa {
+                        "free"
+                    } else {
+                        "off"
+                    }
+                } else if user.get(p.id()).is_some_and(truthy) {
+                    "user"
+                } else if defaults.iter().any(|(n, _)| *n == p.id()) {
+                    "server"
+                } else {
+                    ""
+                };
+                json!({"id": p.id(), "label": p.label(), "source": source})
+            })
+            .collect();
+        c["providers"] = json!(rows);
+        c["default_providers"] = json!(defaults.iter().map(|(n, _)| *n).collect::<Vec<_>>());
+    }
     c["credential_handle"] = json!(if has {
         format!("cred_{name}_1")
     } else {
@@ -264,9 +300,21 @@ pub async fn delete_cred_named(ctx: &App, name: &str) -> JsonResult {
     if name == "drive" {
         store.delete_secret("cred_drive_access").map_err(ierr)?;
     }
-    if matches!(name, "notion" | "slack" | "calendar" | "drive" | "phone") {
+    if matches!(
+        name,
+        "notion" | "slack" | "calendar" | "drive" | "travel" | "search" | "phone"
+    ) {
+        // a connection with a server default key stays on without the user's own key
+        let default_on = (name == "travel" && !ctx.cfg.search.serpapi_key.trim().is_empty())
+            || (name == "search"
+                && (!ctx.cfg.search.default_keys().is_empty() || ctx.cfg.search.free_exa));
+        let cfg = if name == "search" {
+            Some(search_config(ctx))
+        } else {
+            None
+        };
         store
-            .save_connection(name, None, None, Some(false))
+            .save_connection(name, cfg.as_ref(), None, Some(default_on))
             .map_err(ierr)?;
     }
     ctx.audit(
@@ -289,6 +337,8 @@ delete_cred_for!(delete_cred_gmail, "gmail");
 delete_cred_for!(delete_cred_phone, "phone");
 delete_cred_for!(delete_cred_telegram, "telegram");
 delete_cred_for!(delete_cred_notion, "notion");
+delete_cred_for!(delete_cred_travel, "travel");
+delete_cred_for!(delete_cred_search, "search");
 delete_cred_for!(delete_cred_slack, "slack");
 
 // ================================================================== phone (Telnyx + OpenAI Realtime, DialMCP)
@@ -990,6 +1040,252 @@ pub async fn telegram_detect(State(ctx): State<App>, body: Bytes) -> JsonResult 
 }
 
 // ================================================================== Notion / Slack
+
+static SERP_RE: LazyLock<Regex> = LazyLock::new(|| re(r"^[A-Za-z0-9_-]{20,}$"));
+
+/// The connection's config from the key's account (plan and searches left).
+fn travel_config(acc: &Value) -> Value {
+    json!({"plan": acc["plan"], "searches_per_month": acc["searches_per_month"],
+           "this_month_usage": acc["this_month_usage"], "searches_left": acc["searches_left"]})
+}
+
+/// `POST /sentinel/api/connections/travel/credential`: the SerpApi key behind the Flights & hotels connection
+/// (Google Flights / Google Hotels data); checked against the account endpoint, which costs no search.
+pub async fn travel_cred(State(ctx): State<App>, body: Bytes) -> JsonResult {
+    let b = body_obj(&body)?;
+    let token = s_or(&b, "token", "").trim().to_string();
+    if !SERP_RE.is_match(&token) {
+        return Err(ApiError::new(
+            400,
+            "请粘贴 SerpApi 密钥（serpapi.com → Dashboard → API key）(API key)",
+        ));
+    }
+    let api = SerpApi::new(ctx.http.clone(), &ctx.cfg.endpoints.serpapi, &token);
+    let acc = match api.account().await {
+        Ok(a) => a,
+        Err(e) => {
+            ctx.audit(
+                "user",
+                "credential.travel.set",
+                audit_user(
+                    "travel",
+                    "failed",
+                    Some(json!({"error": take_chars(&e.to_string(), 300)})),
+                ),
+            );
+            return Err(ApiError::new(
+                400,
+                format!("SerpApi 拒绝了这个密钥 (key refused): {e}"),
+            ));
+        }
+    };
+    let store = &ctx.store;
+    store
+        .put_secret("travel", &json!({"token": token}), None)
+        .map_err(ierr)?;
+    store
+        .save_connection("travel", Some(&travel_config(&acc)), None, Some(true))
+        .map_err(ierr)?;
+    ctx.audit(
+        "user",
+        "credential.travel.set",
+        audit_user("travel", "success", Some(json!({"plan": acc["plan"]}))),
+    );
+    Ok(Json(
+        json!({"ok": true, "plan": acc["plan"], "searches_per_month": acc["searches_per_month"],
+                   "this_month_usage": acc["this_month_usage"], "searches_left": acc["searches_left"]}),
+    ))
+}
+
+/// `POST /sentinel/api/connections/travel/test`: the key's account again (plan, searches left).
+pub async fn travel_test(State(ctx): State<App>) -> JsonResult {
+    let sec = ctx
+        .store
+        .get_secret("cred_travel_1")
+        .map_err(ierr)?
+        .unwrap_or_else(|| json!({}));
+    let token = s_or(&sec, "token", "");
+    if token.is_empty() {
+        return Err(ApiError::new(400, "机票与酒店搜索尚未连接 (not connected)"));
+    }
+    let api = SerpApi::new(ctx.http.clone(), &ctx.cfg.endpoints.serpapi, &token);
+    let acc = api
+        .account()
+        .await
+        .map_err(|e| ApiError::new(400, format!("SerpApi: {e}")))?;
+    ctx.store
+        .save_connection("travel", Some(&travel_config(&acc)), None, None)
+        .map_err(ierr)?;
+    Ok(Json(
+        json!({"ok": true, "plan": acc["plan"], "searches_per_month": acc["searches_per_month"],
+                   "this_month_usage": acc["this_month_usage"], "searches_left": acc["searches_left"]}),
+    ))
+}
+
+/// The user's keys by provider id (`cred_search_1` = `{"keys": {id: token}}`).
+fn search_user_keys(ctx: &Ctx) -> Map<String, Value> {
+    ctx.store
+        .get_secret("cred_search_1")
+        .ok()
+        .flatten()
+        .and_then(|s| s.get("keys").and_then(Value::as_object).cloned())
+        .unwrap_or_default()
+}
+
+/// The connection config after a change of keys: the providers that have one (user or server), in order.
+fn search_config(ctx: &Ctx) -> Value {
+    let user = search_user_keys(ctx);
+    let defaults = ctx.cfg.search.default_keys();
+    let have: Vec<&str> = Provider::ORDER
+        .iter()
+        .filter(|p| {
+            (!p.needs_key() && ctx.cfg.search.free_exa)
+                || user.get(p.id()).is_some_and(truthy)
+                || defaults.iter().any(|(n, _)| *n == p.id())
+        })
+        .map(|p| p.id())
+        .collect();
+    json!({"providers": have})
+}
+
+/// `POST /sentinel/api/connections/search/credential`: one provider's key (`provider`: tavily | brave | exa |
+/// serpapi), checked with one small search and kept beside the other providers' keys.
+pub async fn search_cred(State(ctx): State<App>, body: Bytes) -> JsonResult {
+    let b = body_obj(&body)?;
+    let Some(provider) = Provider::parse(&s_or(&b, "provider", "")).filter(|p| p.needs_key())
+    else {
+        return Err(ApiError::new(
+            400,
+            "请选择搜索服务：tavily、brave 或 exa (provider)",
+        ));
+    };
+    let token = s_or(&b, "token", "").trim().to_string();
+    if token.len() < 12 || token.chars().any(char::is_whitespace) {
+        return Err(ApiError::new(400, "请粘贴搜索服务的 API 密钥 (API key)"));
+    }
+    let ws = WebSearch::new(
+        ctx.http.clone(),
+        provider,
+        search_base(&ctx, provider),
+        &token,
+    );
+    let r = match ws.test().await {
+        Ok(r) => r,
+        Err(e) => {
+            ctx.audit(
+                "user",
+                "credential.search.set",
+                audit_user(
+                    "search",
+                    "failed",
+                    Some(json!({"provider": provider.id(), "error": take_chars(&e.to_string(), 300)})),
+                ),
+            );
+            return Err(ApiError::new(
+                400,
+                format!("搜索服务拒绝了这个密钥 (key refused): {e}"),
+            ));
+        }
+    };
+    let store = &ctx.store;
+    let mut keys = search_user_keys(&ctx);
+    keys.insert(provider.id().to_string(), json!(token));
+    store
+        .put_secret("search", &json!({"keys": keys}), None)
+        .map_err(ierr)?;
+    store
+        .save_connection("search", Some(&search_config(&ctx)), None, Some(true))
+        .map_err(ierr)?;
+    ctx.audit(
+        "user",
+        "credential.search.set",
+        audit_user(
+            "search",
+            "success",
+            Some(json!({"provider": provider.id()})),
+        ),
+    );
+    Ok(Json(
+        json!({"ok": true, "provider": provider.id(), "label": provider.label(), "count": r["count"],
+               "providers": search_config(&ctx)["providers"]}),
+    ))
+}
+
+/// `DELETE /sentinel/api/connections/search/credential/{provider}`: that provider's key only (a server default for
+/// it, if any, applies again).
+pub async fn delete_cred_search_one(
+    State(ctx): State<App>,
+    Path(provider): Path<String>,
+) -> JsonResult {
+    let Some(p) = Provider::parse(&provider) else {
+        return Err(ApiError::new(400, "unknown provider"));
+    };
+    let mut keys = search_user_keys(&ctx);
+    keys.remove(p.id());
+    let store = &ctx.store;
+    if keys.is_empty() {
+        store.delete_secret("cred_search_1").map_err(ierr)?;
+    } else {
+        store
+            .put_secret("search", &json!({"keys": keys}), None)
+            .map_err(ierr)?;
+    }
+    let cfg = search_config(&ctx);
+    let any = cfg["providers"].as_array().is_some_and(|a| !a.is_empty());
+    store
+        .save_connection("search", Some(&cfg), None, Some(any))
+        .map_err(ierr)?;
+    ctx.audit(
+        "user",
+        "credential.search.delete",
+        audit_user("search", "success", Some(json!({"provider": p.id()}))),
+    );
+    Ok(Json(json!({"ok": true, "providers": cfg["providers"]})))
+}
+
+/// `POST /sentinel/api/connections/search/test`: one small search with every provider that has a key, in the order
+/// they are tried; `results[]` = `{provider, label, source, ok, count | error}`.
+pub async fn search_test(State(ctx): State<App>) -> JsonResult {
+    let clients = crate::actions::search_clients(&ctx);
+    if clients.is_empty() {
+        return Err(ApiError::new(
+            400,
+            "网页搜索服务尚未连接 (web search not connected)",
+        ));
+    }
+    let sources: Map<String, Value> = crate::actions::search_keys(&ctx)
+        .into_iter()
+        .map(|(p, _, src)| (p.id().to_string(), json!(src)))
+        .collect();
+    let mut results = Vec::new();
+    for ws in clients {
+        let p = ws.provider();
+        let src = sources.get(p.id()).cloned().unwrap_or(json!(""));
+        let row = match ws.test().await {
+            Ok(r) => {
+                json!({"provider": p.id(), "label": p.label(), "source": src, "ok": true, "count": r["count"]})
+            }
+            Err(e) => {
+                json!({"provider": p.id(), "label": p.label(), "source": src, "ok": false, "error": take_chars(&e.to_string(), 200)})
+            }
+        };
+        results.push(row);
+    }
+    let ok = results.iter().filter(|r| truthy(&r["ok"])).count();
+    Ok(Json(
+        json!({"ok": ok > 0, "working": ok, "results": results}),
+    ))
+}
+
+/// The API base of a web-search provider (`[endpoints]`; tests point them at the fake).
+pub(crate) fn search_base(ctx: &Ctx, provider: Provider) -> &str {
+    match provider {
+        Provider::Brave => &ctx.cfg.endpoints.brave,
+        Provider::Tavily => &ctx.cfg.endpoints.tavily,
+        Provider::Exa => &ctx.cfg.endpoints.exa,
+        Provider::ExaMcp => &ctx.cfg.endpoints.exa_mcp,
+    }
+}
 
 /// `POST /sentinel/api/connections/notion/credential`.
 pub async fn notion_cred(State(ctx): State<App>, body: Bytes) -> JsonResult {

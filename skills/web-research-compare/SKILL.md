@@ -4,7 +4,7 @@ description: 网页调研并做对比（如酒店、产品）Research several op
 ---
 # Web research & comparison / 调研对比
 
-1. Decide the candidate list (from the user, or with one browser_search call).
+1. Decide the candidate list (from the user, or with one web_search call).
 2. Read the sources with browser_read — up to 4 URLs per call, in parallel (official pages, a review or comparison page).
    When each candidate needs several pages of digging, give the candidates one `parallel` label in the plan and
    delegate them all in the SAME turn — one delegate(role="researcher", task=…, step=<the candidate's step>) per

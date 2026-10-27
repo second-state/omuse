@@ -1941,7 +1941,7 @@ Your own notes and the short explanation around it stay in English.";
             .unwrap_or(20.0);
         let mut stuck = 0; // turns in a row where every call was refused by a loop guard
         let mut gave_up = false; // set when the agent keeps going round in circles: it must answer now, without tools
-        let mut searched: HashMap<String, String> = HashMap::new(); // normalised browser_search query -> first call id
+        let mut searched: HashMap<String, String> = HashMap::new(); // normalised web_search query -> first call id
         let (mut nudged, mut cut_nudged, mut numbers_checked, mut outcome_checked) =
             (false, false, false, false);
         let mut ctx_retries = 0;
@@ -2001,7 +2001,10 @@ and deliver what the user asked for with what you have (chart, file, answer); no
                 .iter()
                 .filter(|m| get_str(m, "role") == "assistant")
                 .flat_map(tool_calls)
-                .filter(|c| stored_call(c).0.starts_with("browser_"))
+                .filter(|c| {
+                    let n = stored_call(c).0;
+                    n.starts_with("browser_") || n == "web_search" // web_search counts: it is the search of the web
+                })
                 .count();
             if web_calls as i64 >= WEB_NUDGE && !user_said(&transcript).contains(WEB_MARK) {
                 // 2026-10-02 R4-04b: a "top 3 products" lookup made 47 web calls in 12 minutes chasing cleaner results
@@ -2187,7 +2190,7 @@ answer you can from what you have — what is done, the findings and what is mis
                         }
                         typed_this_turn = call.id.clone();
                     }
-                    if call.name == "browser_search" {
+                    if call.name == "web_search" {
                         let qk = search_key(call.args.get("query").unwrap_or(&Value::Null));
                         if let Some(first) = searched.get(&qk).filter(|_| !qk.is_empty()) {
                             // 2026-10-04 V1-07: the same weather / hotel searches ran 3 times in one task

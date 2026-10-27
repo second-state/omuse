@@ -324,7 +324,7 @@ name: flight-watch
 description: 盯航班价格 Watch a flight's price and tell the user when it drops.
 ---
 # Flight watch
-1. browser_search the route; 2. note the price; 3. watch_create with price_below.
+1. web_search the route; 2. note the price; 3. watch_create with price_below.
 """
 
 
@@ -445,9 +445,18 @@ async def slow_page(s: float = 6, name: str = "slow"):
     return HTMLResponse(f"<html><head><title>{name}</title></head><body><h1>{name}</h1><button>Go</button></body></html>")
 
 
+DDG_HITS = []
+
+
+@app.get("/ddg/_hits")
+def ddg_hits():
+    return {"n": len(DDG_HITS), "queries": DDG_HITS[-5:]}
+
+
 @app.get("/ddg")
 async def fake_ddg(q: str = ""):
-    """DuckDuckGo-html-like results page (browser_search)."""
+    """DuckDuckGo-html-like results page (web_search)."""
+    DDG_HITS.append(q)
     rows = "".join(f'<div class="result"><a class="result__a" href="/l/?uddg=http%3A%2F%2Fshop.test%3A8094%2Fslow%3Fs%3D0%26name%3DPage{i}">'
                    f'Result {i} for {q}</a><a class="result__snippet">Snippet {i} about {q}</a></div>' for i in range(1, 6))
     return HTMLResponse(f"<html><body>{rows}</body></html>")
@@ -849,3 +858,222 @@ async def drive_upload(req: Request):
                              "head": data[:8].hex()})
     DRIVE["calls"].append({"upload": meta.get("name"), "size": len(data)})
     return _public(DRIVE["files"][fid])
+
+
+# ---------------------------------------------------------------- SerpApi stand-in (Google Flights / Google Hotels)
+SERP_KEY = "serp-test-key-0123456789abcdef"
+SERP_LOG = []
+_FL_TOKEN = "WlRCdzM5X0JBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB" + "x" * 40
+_HT_TOKEN = "ChkI-ginza-grand-property-token-0123456789abcdef0123456789abcdef"
+
+
+@app.get("/serpapi/_log")
+def serp_log():
+    return SERP_LOG
+
+
+@app.post("/serpapi/_reset")
+def serp_reset():
+    SERP_LOG.clear()
+    return {"ok": True}
+
+
+@app.get("/serpapi/account.json")
+def serp_account(api_key: str = ""):
+    if api_key != SERP_KEY:
+        return JSONResponse({"error": "Invalid API key. Your API key should be here: https://serpapi.com/manage-api-key"}, status_code=401)
+    return {"account_id": "acc1", "plan_name": "Free Plan", "searches_per_month": 250, "this_month_usage": 12, "total_searches_left": 238}
+
+
+@app.get("/serpapi/search.json")
+def serp_search(request: Request):
+    q = dict(request.query_params)
+    SERP_LOG.append(q)
+    if q.get("api_key") != SERP_KEY:
+        return JSONResponse({"error": "Invalid API key."}, status_code=401)
+    eng = q.get("engine")
+    date = q.get("outbound_date", "2026-11-20")
+    if eng == "google_flights":
+        if q.get("booking_token"):
+            return {"search_metadata": {"google_flights_url": "https://www.google.com/travel/flights?booking"},
+                    "selected_flights": [{"flights": [{"departure_airport": {"id": "SIN", "time": f"{date} 09:25"}, "arrival_airport": {"id": "NRT", "time": f"{date} 17:15"},
+                                                       "airline": "Singapore Airlines", "flight_number": "SQ 638", "duration": 410}], "layovers": [], "total_duration": 410, "price": 620, "type": "One way"}],
+                    "booking_options": [{"together": {"book_with": "Singapore Airlines", "marketed_as": ["SQ 638"], "price": 620,
+                                                      "booking_request": {"url": "https://www.google.com/travel/clk/f", "post_data": "u=sq638"},
+                                                      "baggage_prices": ["1 free checked bag", "Carry-on included"], "option_title": "Economy Lite"}},
+                                        {"together": {"book_with": "Trip.com", "marketed_as": ["SQ 638"], "price": 612,
+                                                      "booking_request": {"url": "https://www.google.com/travel/clk/f", "post_data": "u=trip"}, "option_title": "Economy"}}]}
+        return {"search_metadata": {"google_flights_url": "https://www.google.com/travel/flights?q=SIN-NRT"},
+                "best_flights": [{"flights": [{"departure_airport": {"id": "SIN", "name": "Changi", "time": f"{date} 09:25"}, "arrival_airport": {"id": "NRT", "name": "Narita", "time": f"{date} 17:15"},
+                                               "airline": "Singapore Airlines", "flight_number": "SQ 638", "duration": 410, "airplane": "Boeing 787", "travel_class": "Economy"}],
+                                  "layovers": [], "total_duration": 410, "price": 620, "type": "One way", "booking_token": _FL_TOKEN, "extensions": ["Checked baggage for a fee"]}],
+                "other_flights": [{"flights": [{"departure_airport": {"id": "SIN", "time": f"{date} 23:55"}, "arrival_airport": {"id": "HKG", "time": f"{date} 03:40"}, "airline": "Cathay Pacific", "flight_number": "CX 710", "duration": 225},
+                                               {"departure_airport": {"id": "HKG", "time": f"{date} 08:00"}, "arrival_airport": {"id": "NRT", "time": f"{date} 13:30"}, "airline": "Cathay Pacific", "flight_number": "CX 500", "duration": 270}],
+                                   "layovers": [{"id": "HKG", "duration": 260, "name": "Hong Kong International Airport"}], "total_duration": 755, "price": 510, "type": "One way", "booking_token": _FL_TOKEN + "cx"},
+                                  {"flights": [{"departure_airport": {"id": "SIN", "time": f"{date} 06:40"}, "arrival_airport": {"id": "HND", "time": f"{date} 14:45"}, "airline": "ANA", "flight_number": "NH 842", "duration": 425}],
+                                   "layovers": [], "total_duration": 425, "price": 690, "type": "One way", "booking_token": _FL_TOKEN + "nh"}],
+                "price_insights": {"lowest_price": 510, "price_level": "typical", "typical_price_range": [480, 760]}}
+    if eng == "google_maps":   # restaurants and places (places_search / place_details)
+        if q.get("place_id"):
+            return {"place_results": {"title": "Kyushu Jangara Ginza", "place_id": q["place_id"], "type": ["Ramen restaurant", "Restaurant"], "rating": 4.4, "reviews": 2349,
+                                      "price": "¥1,000–2,000", "address": "6 Chome-12-17 Ginza, Chuo City, Tokyo 104-0061, Japan", "phone": "+81 3-3572-3025",
+                                      "website": "https://kyushujangara.example/shops/ginza/", "open_state": "Open · Closes 10:30 PM",
+                                      "hours": [{"wednesday": "11 AM–10:30 PM"}, {"thursday": "11 AM–10:30 PM"}], "rating_summary": [{"stars": 5, "amount": 1500}, {"stars": 4, "amount": 600}],
+                                      "user_reviews": {"most_relevant": [{"description": "Great tonkotsu, long queue at noon."}]}}}
+        return {"search_metadata": {"google_maps_url": "https://www.google.com/maps/search/" + q.get("q", "")},
+                "local_results": [{"position": 1, "title": "Kyushu Jangara Ginza", "place_id": "ChIJ7YW0VOaLGGARhGuFEiGbqS0", "rating": 4.4, "reviews": 2349, "price": "¥1,000–2,000",
+                                   "type": "Ramen restaurant", "types": ["Ramen restaurant", "Restaurant"], "address": "6 Chome-12-17 Ginza, Chuo City, Tokyo 104-0061, Japan",
+                                   "open_state": "Open · Closes 10:30 PM", "hours": "Open ⋅ Closes 10:30 PM", "phone": "+81 3-3572-3025", "website": "https://kyushujangara.example/shops/ginza/",
+                                   "service_options": {"dine_in": True, "takeout": True, "delivery": False}},
+                                  {"position": 2, "title": "Ginza Kagari", "place_id": "ChIJkagari", "rating": 4.3, "reviews": 3100, "price": "¥1,000–2,000", "type": "Ramen restaurant",
+                                   "types": ["Ramen restaurant"], "address": "4 Chome-4-1 Ginza, Chuo City, Tokyo", "open_state": "Closed · Opens 11 AM", "phone": "", "website": ""}]}
+    if eng == "google":   # web search (the Web search connection with the SerpApi provider)
+        return {"search_metadata": {"google_url": "https://www.google.com/search?q=" + q.get("q", "")},
+                "organic_results": [{"position": i, "title": f"Google result {i} for {q.get('q', '')}", "link": f"http://shop.test:8094/slow?s=0&name=G{i}",
+                                     "snippet": f"Google snippet {i} about {q.get('q', '')}", "date": "Oct 1, 2026"} for i in range(1, 6)]}
+    if eng == "google_hotels":
+        if q.get("property_token"):
+            return {"name": "Hotel Ginza Grand", "type": "hotel", "address": "1-1-1 Ginza, Chuo City, Tokyo", "phone": "+81 3 0000 0000", "website": "https://ginzagrand.example",
+                    "extracted_hotel_class": 4, "overall_rating": 4.4, "reviews": 2100, "check_in_time": "3:00 PM", "check_out_time": "11:00 AM",
+                    "featured_prices": [{"source": "Hotel website", "rate_per_night": {"extracted_lowest": 199}, "total_rate": {"extracted_lowest": 597}, "free_cancellation": True,
+                                         "free_cancellation_until_date": "Nov 17", "link": "https://ginzagrand.example/book",
+                                         "rooms": [{"name": "Deluxe Twin", "rate_per_night": {"extracted_lowest": 199}, "total_rate": {"extracted_lowest": 597}, "link": "https://ginzagrand.example/book?r=twin"}]}],
+                    "prices": [{"source": "Booking.com", "rate_per_night": {"extracted_lowest": 210}, "total_rate": {"extracted_lowest": 630}, "free_cancellation": True, "link": "https://booking.example/ginza"}],
+                    "amenities": ["Free Wi-Fi", "Breakfast", "Gym"]}
+        return {"search_metadata": {"google_hotels_url": "https://www.google.com/travel/search?q=tokyo"},
+                "properties": [{"type": "hotel", "name": "Hotel Ginza Grand", "property_token": _HT_TOKEN, "extracted_hotel_class": 4, "overall_rating": 4.4, "reviews": 2100,
+                                "rate_per_night": {"lowest": "S$210", "extracted_lowest": 210}, "total_rate": {"lowest": "S$630", "extracted_lowest": 630},
+                                "prices": [{"source": "Booking.com", "free_cancellation": True}], "nearby_places": [{"name": "Ginza Station", "transportations": [{"type": "Walking", "duration": "4 min"}]}],
+                                "amenities": ["Free Wi-Fi", "Breakfast", "Gym"], "check_in_time": "3:00 PM", "check_out_time": "11:00 AM"},
+                               {"type": "hotel", "name": "Tokyo Bay Capsule", "property_token": _HT_TOKEN + "cap", "extracted_hotel_class": 2, "overall_rating": 3.9, "reviews": 640,
+                                "rate_per_night": {"extracted_lowest": 60}, "total_rate": {"extracted_lowest": 180}, "prices": [], "amenities": ["Free Wi-Fi"]},
+                               {"type": "hotel", "name": "Shinjuku Granbell", "property_token": _HT_TOKEN + "gb", "extracted_hotel_class": 3, "overall_rating": 4.1, "reviews": 1500,
+                                "rate_per_night": {"extracted_lowest": 150}, "total_rate": {"extracted_lowest": 450}, "prices": [{"source": "Agoda", "free_cancellation": False}],
+                                "nearby_places": [{"name": "Shinjuku Station", "transportations": [{"type": "Walking", "duration": "9 min"}]}], "amenities": ["Free Wi-Fi", "Bar"]}]}
+    return JSONResponse({"error": f"unknown engine {eng}"}, status_code=400)
+
+
+# ---------------------------------------------------------------- Brave Search and Tavily stand-ins (the Web search connection)
+BRAVE_KEY = "brave-test-key-0123456789"
+TAVILY_KEY = "tvly-test-key-0123456789"
+SEARCH_LOG = []
+
+
+@app.get("/search/_log")
+def search_log():
+    return SEARCH_LOG
+
+
+@app.post("/search/_reset")
+def search_reset():
+    SEARCH_LOG.clear()
+    return {"ok": True}
+
+
+@app.get("/brave/web/search")
+def brave_search(request: Request, q: str = "", count: int = 20):
+    if request.headers.get("x-subscription-token") != BRAVE_KEY:
+        return JSONResponse({"type": "ErrorResponse", "error": {"code": "SUBSCRIPTION_TOKEN_INVALID", "detail": "Invalid subscription token"}}, status_code=401)
+    SEARCH_LOG.append({"provider": "brave", "q": q, "count": count})
+    return {"type": "search", "query": {"original": q}, "web": {"type": "search", "results": [
+        {"title": f"Brave result {i} for {q}", "url": f"http://shop.test:8094/slow?s=0&name=B{i}", "description": f"Brave snippet {i} about {q}", "age": "3 days ago"}
+        for i in range(1, min(count, 20) + 1)]}}
+
+
+TAVILY_DOWN = {"on": False}
+
+
+@app.post("/tavily/_down")
+async def tavily_down(request: Request):
+    TAVILY_DOWN["on"] = bool((await request.json()).get("on"))
+    return TAVILY_DOWN
+
+
+@app.post("/tavily/search")
+async def tavily_search(request: Request):
+    if TAVILY_DOWN["on"]:
+        return JSONResponse({"detail": "service unavailable"}, status_code=503)
+    if request.headers.get("authorization") != "Bearer " + TAVILY_KEY:
+        return JSONResponse({"detail": {"error": "Unauthorized: missing or invalid API key."}}, status_code=401)
+    b = await request.json()
+    SEARCH_LOG.append({"provider": "tavily", "q": b.get("query"), "count": b.get("max_results")})
+    return {"query": b.get("query"), "results": [
+        {"title": f"Tavily result {i} for {b.get('query')}", "url": f"http://shop.test:8094/slow?s=0&name=T{i}", "content": f"Tavily content {i} about {b.get('query')}",
+         "score": 0.9 - i / 100, "published_date": None} for i in range(1, int(b.get("max_results") or 5) + 1)], "response_time": 0.3}
+
+
+EXA_KEY = "exa-test-key-0123456789"
+
+
+@app.post("/exa/search")
+async def exa_search(request: Request):
+    if request.headers.get("x-api-key") != EXA_KEY:
+        return JSONResponse({"error": "x-api-key header is invalid"}, status_code=401)
+    b = await request.json()
+    SEARCH_LOG.append({"provider": "exa", "q": b.get("query"), "count": b.get("numResults")})
+    return {"requestId": "exa1", "results": [
+        {"title": f"Exa result {i} for {b.get('query')}", "url": f"http://shop.test:8094/slow?s=0&name=E{i}", "publishedDate": "2026-10-01",
+         "highlights": [f"Exa highlight {i} about {b.get('query')}"]} for i in range(1, int(b.get("numResults") or 5) + 1)]}
+
+
+EXA_MCP_DOWN = {"on": False}
+
+
+@app.post("/exa-mcp/_down")
+async def exa_mcp_down(request: Request):
+    EXA_MCP_DOWN["on"] = bool((await request.json()).get("on"))
+    return EXA_MCP_DOWN
+
+
+@app.post("/exa-mcp/mcp")
+async def exa_mcp(request: Request):
+    """Exa's hosted MCP server (streamable HTTP, keyless): initialize, then tools/call web_search_exa → text blocks."""
+    if EXA_MCP_DOWN["on"]:
+        return JSONResponse({"error": "rate limited"}, status_code=429)
+    b = await request.json()
+    rid = b.get("id")
+    if b.get("method") == "initialize":
+        return {"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}, "serverInfo": {"name": "exa", "version": "fake"}}}
+    if b.get("method") == "tools/call":
+        args = (b.get("params") or {}).get("arguments") or {}
+        q, n = args.get("query", ""), int(args.get("numResults") or 5)
+        SEARCH_LOG.append({"provider": "exa-mcp", "q": q, "count": n})
+        text = "\n\n".join(f"Title: Exa free result {i} for {q}\nURL: http://shop.test:8094/slow?s=0&name=X{i}\nPublished: N/A\nAuthor: N/A\nHighlights:\nExa free highlight {i} about {q}" for i in range(1, n + 1))
+        body = {"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": text}], "isError": False}}
+        return Response("event: message\ndata: " + json.dumps(body) + "\n\n", media_type="text/event-stream")
+    return {"jsonrpc": "2.0", "id": rid, "result": {}}
+
+
+KIWI_LOG = []
+
+
+@app.get("/kiwi-mcp/_log")
+def kiwi_log():
+    return KIWI_LOG
+
+
+@app.post("/kiwi-mcp/")
+async def kiwi_mcp(request: Request):
+    """Kiwi.com's public MCP server (streamable HTTP, keyless): initialize, then tools/call search-flight → a JSON text."""
+    b = await request.json()
+    rid = b.get("id")
+    if b.get("method") == "initialize":
+        return {"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}, "serverInfo": {"name": "kiwi", "version": "fake"}}}
+    if b.get("method") == "tools/call":
+        args = (b.get("params") or {}).get("arguments") or {}
+        KIWI_LOG.append(args)
+        d = args.get("departureDate", "2026-11-20")
+        cur = args.get("currency", "USD")
+        data = {"query": f"{args.get('flyFrom')} → {args.get('flyTo')} on {d}", "currency": cur, "passengers": {"adults": args.get("adults", 1)}, "resultsCount": 2, "itineraries": [
+            {"id": "kw1_0", "price": 620.0, "priceFormatted": f"620 {cur}", "totalDurationSeconds": 24600, "bookingUrl": "https://kiwi.com/u/abc123", "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 1},
+             "outbound": {"from": "SIN", "to": "NRT", "departureTime": f"{d}T09:25:00", "arrivalTime": f"{d}T17:15:00", "durationSeconds": 24600, "stops": 0, "route": ["SIN", "NRT"], "cabinClass": "Economy",
+                          "segments": [{"from": "SIN", "to": "NRT", "fromCity": "Singapore", "toCity": "Tokyo", "departureTime": f"{d}T09:25:00", "arrivalTime": f"{d}T17:15:00", "durationSeconds": 24600,
+                                        "carrier": "SQ", "carrierName": "Singapore Airlines", "flightNumber": "SQ638", "cabinClass": "Economy"}]}, "inbound": None},
+            {"id": "kw2_0|kw2_1", "price": 510.0, "priceFormatted": f"510 {cur}", "totalDurationSeconds": 45300, "bookingUrl": "https://kiwi.com/u/def456", "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 0},
+             "outbound": {"from": "SIN", "to": "NRT", "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d}T13:30:00", "durationSeconds": 45300, "stops": 1, "route": ["SIN", "HKG", "NRT"], "cabinClass": "Economy",
+                          "segments": [{"from": "SIN", "to": "HKG", "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d}T03:40:00", "durationSeconds": 13500, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX710", "cabinClass": "Economy"},
+                                       {"from": "HKG", "to": "NRT", "departureTime": f"{d}T08:00:00", "arrivalTime": f"{d}T13:30:00", "durationSeconds": 16200, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX500", "cabinClass": "Economy"}]}, "inbound": None}],
+            "searchTimeMs": 1200, "error": None}
+        body = {"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": json.dumps(data)}], "isError": False}}
+        return Response("event: message\ndata: " + json.dumps(body) + "\n\n", media_type="text/event-stream")
+    return {"jsonrpc": "2.0", "id": rid, "result": {}}

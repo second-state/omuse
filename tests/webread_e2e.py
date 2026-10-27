@@ -1,4 +1,4 @@
-"""0.2.26: browser_search returns results in one call (falls back to the next engine when one shows a challenge page),
+"""0.2.26: web_search returns results in one call (falls back to the next engine when one shows a challenge page),
 browser_read reads several pages in parallel in one call, and both results are marked untrusted."""
 import sys
 import time
@@ -8,6 +8,9 @@ import httpx
 B = "http://127.0.0.1:8080"
 H = {"X-Persona-UI": "1"}
 c = httpx.Client(timeout=60, trust_env=False)
+# this suite is about the browser's own search engines: the search services (the free Exa MCP, the server's default
+# Brave key) are switched off for its run
+c.put(B + "/sentinel/api/connections/search", json={"enabled": False}, headers=H)
 fails = []
 
 

@@ -1,6 +1,6 @@
 ---
 name: flight-booking
-description: 订机票：先用旅行数据连接器查航班比价，再只在最后一步用浏览器在预订页下单（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search, compare and book flights between Asian cities — data connector first, browser only for the final booking page.
+description: 订机票：用 flights_search（Google Flights 或 Kiwi.com 数据，仅供参考）和 web_search 同时查航班比价，只在最后一步用浏览器在航空公司官网或用户选定的代理商预订页下单（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search and compare flights with flights_search (Google Flights or Kiwi.com data, information only) and web_search in one turn, then book on the airline's own site or with the agency the user chooses — the browser only for that final booking page.
 ---
 # Flight booking / 订机票
 
@@ -8,11 +8,14 @@ The goal is a correct booking with as few browser steps as possible. Search and 
 is only for the provider's booking page at the very end.
 
 ## 0. Pick the source (no browser yet)
-- Look at your tool list for a travel data connector: MCP tools named `mcp_<server>__flights_search` and
-  `mcp_<server>__flight_offer` (e.g. `mcp_travel__flights_search`). If they exist, use them for ALL searching and
-  comparing — do not open airline sites, Google Flights or search engines.
-- Only when no such connector is connected: browser_search for the route and date, then browser_read (1–4 pages, no
-  snapshots) of an airline / Google Flights / Skyscanner result page. Do not click around search pages.
+- `flights_search` is always there: Google Flights data when the Flights & hotels key is set, else Kiwi.com data —
+  **information only**. Call it and `web_search` in the SAME turn: `flights_search` for the schedule, prices, stops and
+  baggage; `web_search` ("<airline> <route> <date> fare", "site:kayak.com …") for the airline's or an agency's fare
+  page and where to book. Never book through Kiwi, never quote or open a Kiwi link; `flight_offer` gives the details
+  of one offer (no link for Kiwi data).
+- A travel MCP connector in the tool list (`mcp_<server>__flights_search` …) can be used in the same turn too.
+- Do NOT open Google Flights, Kayak, Skyscanner or airline search pages in the browser — the browser is for the
+  final booking page only: the airline's own site, or the agency the user chooses (ask which when they have one).
 
 ## 1. Understand the request
 - Origin, destination, date, one way / return, adults (default 1), cabin (default economy), direct only?, budget,
@@ -25,7 +28,7 @@ is only for the provider's booking page at the very end.
 
 ## 2. Search and compare (data tools)
 - One `flights_search` call with origin, destination, date, adults, cabin (and nonstop_only=true when the user wants
-  direct flights). Search again only if the user changes something.
+  direct flights), and the `web_search` calls beside it in the same turn. Search again only if the user changes something.
 - Shortlist 2–4 offers that fit. "Cheapest direct" = the lowest fare among offers with stops 0. Compare total price
   (fare × adults), departure/arrival time, duration, stops, **baggage** (low-cost fares often include only a 7 kg cabin
   bag — say what a checked bag costs) and **change/refund rules**.
@@ -46,7 +49,7 @@ is only for the provider's booking page at the very end.
   card. Fill them with browser_fill_secret (field `number` for the passport; `number`, `expiry`, `cvc`, `holder` for a
   card). Optional fields (e.g. passport expiry) stay empty unless the page requires them. No vault item → browser_request_takeover so the user types it.
 
-## 5. Book (browser — only the booking page)
+## 5. Book (browser — only the booking page: the airline's site, or the agency the user chose; never Kiwi)
 1. purchase_confirm once: site = the booking page's domain, items = [{name: "<flight no> <from>-<to> <date>, <n> adult",
    price: fare}], total = the total from the data (it must match the page), currency, delivery = "E-ticket to <email>",
    card_item_id = the vault card id, note = baggage + refund rules.

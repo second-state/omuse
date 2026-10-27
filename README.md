@@ -21,6 +21,8 @@ other knowledge files — is in [KNOWLEDGE.md](KNOWLEDGE.md). Repository rules, 
   hidden from the model.
 - **Calendar, Notion & Slack** – look things up, write reports, update boards, read and post messages.
 - **Web browser** – its own Chromium with a live view; you take over for logins and CAPTCHAs.
+- **Flights, hotels & restaurants** – `flights_search` works out of the box with Kiwi.com's flight data (free, information only: the booking happens on the airline's own site or with an agency you choose, never through Kiwi) and runs beside `web_search` for fares; a SerpApi key switches flights to Google Flights data and adds Google Hotels (`hotels_search`, `hotel_rooms`) and Google Maps places (`places_search`, `place_details`) for restaurants. That key serves these tools only, never web search. The travel skills search and compare there and open the browser only to book, on the provider's own site or the platform you name.
+- **Web search** – one `web_search` tool on every model call: Exa's free MCP first, then Tavily, Brave or Exa keys, and the browser's own search engines as the last resort — one call returns titles, URLs and snippets, no search page and no CAPTCHA. Exa's public MCP server answers first with no key at all (rate-limited), so `web_search` works out of the box; keys are entered in Settings → Connections (several at once: tried in that order, the one that worked last first); a server can also ship default keys in `[search]`. 
 - **MCP connectors** – plug in any MCP (Model Context Protocol) server.
 - **Automations** – multi-day goals, event triggers (new email / Slack message / Notion change) and schedules.
 - **Telegram remote control** – give tasks and approve actions from your phone.
@@ -138,6 +140,7 @@ the entrypoint then writes the config from these variables. A mounted `config.to
 | Section | Keys (environment variable without a config file) |
 |---|---|
 | `[auth]` | `password` (`OMUSE_PASSWORD`, required), `user` (`OMUSE_USER`), `enabled = false` (`OMUSE_AUTH=off`) |
+| `[search]` | `tavily_key`, `brave_key`, `exa_key` (`OMUSE_TAVILY_KEY`, `OMUSE_BRAVE_KEY`, `OMUSE_EXA_KEY`): the server's default web-search keys, tried after Exa's free MCP (`free_exa`) in the order Tavily, Brave, Exa, the one that worked last first; `serpapi_key` (`OMUSE_SERPAPI_KEY`): the default key for flights, hotels and restaurants only. A key the user enters in Settings → Connections wins per provider, and the page says which keys come from the server |
 | `[google]` | `auth_url`, `token_url`, `gcal_api`, `gdrive_api`, `gdrive_upload_api`, `relay_url`, the managed client (`GOOGLE_*`) |
 | `[model]` | `url`, `name`, `api_key`, `planner`, `vision`, `stt`, `image`, `video` (`OMUSE_MODEL_URL`, `OMUSE_MODEL`, …), `fast` (`OMUSE_MODEL_FAST`), `reasoning_effort` (`OMUSE_MODEL_REASONING`); optional `image_url` / `image_api_key` and `video_url` / `video_api_key` when pictures or clips come from another provider (blank = the model endpoint and key) |
 | `[server]` | `port`, `timezone` (`TZ`) |

@@ -97,6 +97,16 @@ pub fn default_connections() -> Value {
             "permissions": {"read": true, "upload": true, "write": true},
             "enabled": 0,
         },
+        "travel": {
+            "config": {"plan": "", "searches_per_month": 0, "this_month_usage": 0, "searches_left": 0, "default_key": false},
+            "permissions": {"search": true},
+            "enabled": 0,
+        },
+        "search": {
+            "config": {"providers": [], "default_providers": [], "last_ok": ""},
+            "permissions": {"search": true},
+            "enabled": 0,
+        },
         "phone": {
             "config": {"from_number": "", "connection_id": "", "public_url": "", "owner_name": "",
                        "allowed_prefixes": ["+65", "+1"], "max_minutes": 10, "daily_limit": 10, "voice": "marin",

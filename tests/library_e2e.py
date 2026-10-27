@@ -38,7 +38,12 @@ sid, conv = r["subject"]["id"], r["subject"]["conv_id"]
 check("subject created, researching, with its own chat", r["subject"]["status"] == "researching" and r["subject"]["slug"] == "home-nas-2026" and conv, r)
 t = wait_task(r["task_id"])
 check("the research task completes", t["status"] == "COMPLETED", (t["status"], t.get("error")))
+# the subject's run counter is written right after the task is marked completed: give it a moment on a loaded box
+t0 = time.time()
 s = subject(sid)
+while s["subject"].get("runs", 0) < 1 and time.time() - t0 < 10:
+    time.sleep(0.2)
+    s = subject(sid)
 check("report written to library/<slug>/report.md and indexed", s["subject"]["status"] == "ready" and s["path"] == "library/home-nas-2026/report.md"
       and "UGREEN DXP4800" in s["report"] and s["subject"]["runs"] == 1 and s["subject"]["chars"] > 100, {k: s["subject"][k] for k in ("status", "runs", "chars")})
 check("the report file is in the workspace", os.path.exists(os.path.join(WS, "library/home-nas-2026/report.md")))
@@ -68,7 +73,12 @@ check("library_search tool returns the passage", "DXP4800" in (t3.get("result") 
 # refresh
 r4 = c.post(f"{B}/api/library/{sid}/refresh", headers=H).json()
 t4 = wait_task(r4["task_id"])
+# the run counter is written right after the task is marked completed: give it a moment on a loaded box
+t0 = time.time()
 s = subject(sid)
+while s["subject"].get("runs", 0) < 3 and time.time() - t0 < 10:
+    time.sleep(0.2)
+    s = subject(sid)
 check("refresh re-reads the report and appends a changelog line", t4["status"] == "COMPLETED" and "refresh — prices rechecked" in s["report"] and s["subject"]["runs"] == 3, s["subject"])
 check("refresh refused while a research is running", True)   # covered by the 409 path; cannot race it deterministically here
 aud = c.get(B + "/sentinel/api/audit", params={"limit": 50}).text

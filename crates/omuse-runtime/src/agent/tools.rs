@@ -15,7 +15,7 @@ pub const SUBAGENT_TOOLS: [&str; 29] = [
     "gmail_find_receipts",
     "browser_navigate",
     "browser_snapshot",
-    "browser_search",
+    "web_search",
     "browser_read",
     "browser_click",
     "browser_type",
@@ -45,7 +45,7 @@ pub const SUBAGENT_TOOLS: [&str; 29] = [
 /// A concurrent batch is sent to Sentinel with `no_ask`: a read that would need an approval (`browser_read` of a URL
 /// carrying data in a tainted task) comes back as an error telling the model to call it alone next turn, so no
 /// approval dialog is ever left behind for a call the task is not waiting on.
-pub const PARALLEL_TOOLS: [&str; 30] = [
+pub const PARALLEL_TOOLS: [&str; 34] = [
     "delegate",
     "calculate",
     "data_query",
@@ -68,13 +68,17 @@ pub const PARALLEL_TOOLS: [&str; 30] = [
     "drive_search",
     "drive_get",
     "drive_storage",
+    "flights_search",
+    "flight_offer",
+    "hotels_search",
+    "hotel_rooms",
     "notion_search",
     "notion_get_page",
     "notion_query_database",
     "slack_read_channel",
     "slack_read_thread",
     "slack_search",
-    "browser_search",
+    "web_search",
     "browser_read",
 ];
 

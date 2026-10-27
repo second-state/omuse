@@ -347,6 +347,10 @@ impl LlmTransport for ReqwestTransport {
             use futures_util::StreamExt;
             let mut b = self.client.post(&req.url);
             b = b.timeout(Duration::from_secs_f64(req.timeout.max(0.001)));
+            // no compression on a stream (a proxy that gzips an event stream holds it back in blocks)
+            b = b
+                .header("Accept-Encoding", "identity")
+                .header("Accept", "text/event-stream, application/json");
             for (k, v) in &req.headers {
                 b = b.header(k.as_str(), v.as_str());
             }
@@ -1639,12 +1643,12 @@ mod tests {
             resp(
                 200,
                 json!({"choices": [{"message": {"role": "assistant", "content": "<think>hm</think> ok",
-                        "tool_calls": [{"id": "c1", "function": {"name": "browser_search", "arguments": "{\"query\": \"x\"}"}}]},
+                        "tool_calls": [{"id": "c1", "function": {"name": "web_search", "arguments": "{\"query\": \"x\"}"}}]},
                         "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 5, "completion_tokens": 2}}),
                 None,
             ),
         ]);
-        let tools = vec![json!({"type": "function", "function": {"name": "browser_search"}})];
+        let tools = vec![json!({"type": "function", "function": {"name": "web_search"}})];
         let r = llm
             .chat(
                 &[json!({"role": "user", "content": "hi"})],
@@ -1659,7 +1663,7 @@ mod tests {
             r.tool_calls,
             vec![ToolCall {
                 id: "c1".into(),
-                name: "browser_search".into(),
+                name: "web_search".into(),
                 args: json!({"query": "x"})
             }]
         );

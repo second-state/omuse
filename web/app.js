@@ -18,7 +18,7 @@ const TW = window.OMUSE_TW || {};
 const CJK_RE = /[一-鿿]/;
 // Names that stay Latin inside a Chinese sentence (products, protocols, formats, currencies), plus identifiers
 // (placeholders, numbers, e-mail addresses, URLs, paths, scopes) recognised by ZH_IDENT.
-const ZH_TERMS = new Set(('OMuse Sentinel Gmail Drive Outlook Hotmail Yahoo iCloud QQ Zoho AOL IMAP SMTP POP3 OAuth Telegram Notion Slack GitHub ' +
+const ZH_TERMS = new Set(('OMuse Sentinel Gmail Drive SerpApi Kiwi.com Dashboard Brave Tavily Exa Outlook Hotmail Yahoo iCloud QQ Zoho AOL IMAP SMTP POP3 OAuth Telegram Notion Slack GitHub ' +
   'MCP Google Microsoft Graph OpenAI Olares Fly Docker Chromium CAPTCHA Stripe DialMCP Telnyx Markdown JSON CSV PDF Excel Word ' +
   'PowerPoint URL URLs API ID HTTP HTTPS SSL TLS STARTTLS SSE iCal ICS LLM STT TTS AI App Bot Token Key Realtime Cloud Bearer Cron ' +
   'Ink Paper Chat Exchange CardDAV JavaScript Streamable Web webhook Enter Shift iPhone Mac Visa Decathlon BotFather James Zhan ' +
@@ -378,6 +378,13 @@ async function refreshConv(force) {
 const convHasActiveTask = () => S.convData && Object.keys(S.convData.tasks || {})
   .some(id => S.tasks[id] && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(S.tasks[id].status));
 
+// A task's card, followed — while the task works — by its reply bubble: dancing dots until the answer starts, then
+// the answer as the model writes it (see onDelta).
+function appendCard(msgs, t) {
+  msgs.append(taskCard(t));
+  if (working(t)) msgs.append(liveBubble({ task_id: t.id, text: S.live && S.live.task_id === t.id ? S.live.text : '' }));
+}
+
 function renderThread(thread) {
   thread = thread || $('.thread'); if (!thread) return;
   const keepScroll = $('.msgs', thread);
@@ -412,9 +419,9 @@ function renderThread(thread) {
         const atts = (m.meta && m.meta.attachments) || [];
         if (atts.length) msgs.append(h('div', { class: 'msg user' }, attachStrip(atts)));
         msgs.append(h('div', { class: 'msg user' }, h('div', { class: 'bubble' }, m.content)));
-        if (m.task_id && S.tasks[m.task_id]) { msgs.append(taskCard(S.tasks[m.task_id])); shown.add(m.task_id); }
+        if (m.task_id && S.tasks[m.task_id]) { appendCard(msgs, S.tasks[m.task_id]); shown.add(m.task_id); }
       } else if (m.role === 'assistant') {
-        if (m.task_id && !shown.has(m.task_id) && S.tasks[m.task_id]) { msgs.append(taskCard(S.tasks[m.task_id])); shown.add(m.task_id); }
+        if (m.task_id && !shown.has(m.task_id) && S.tasks[m.task_id]) { appendCard(msgs, S.tasks[m.task_id]); shown.add(m.task_id); }
         msgs.append(h('div', { class: 'msg assistant' }, h('div', { class: 'bubble' }, mdEl(m.content))));
       } else if (m.role === 'system') {
         let j = {}; try { j = JSON.parse(m.content); } catch (e) {}
@@ -443,10 +450,6 @@ function renderThread(thread) {
         }
       }
     }
-  }
-  if (S.live && S.live.conv_id === S.conv && S.live.text) {   // the answer being written right now
-    const lt = S.tasks[S.live.task_id];
-    if (lt && !/COMPLETED|FAILED|CANCELLED/.test(lt.status)) msgs.append(liveBubble(S.live));
   }
   thread.insertBefore(msgs, oldComp || null);
   const compKey = `${S.conv || ''}|${d && d.messages.length ? 1 : 0}`;
@@ -628,8 +631,9 @@ function planList(plan) {
     s.parallel ? h('span', { class: 'par', title: Tf("并行组 {0}：这些步骤同时进行", s.parallel) }, '‖ ' + s.parallel) : null)));
 }
 
-// While a task card is planning or running it shows a random verb (a new one every few seconds, like a terminal
-// spinner) instead of a flat "running"; the status pill next to it keeps the real state.
+// While a task card is planning or running it shows a random verb instead of a flat "running"; the status pill next
+// to it keeps the real state. The verb changes only when the task does something: a model call (`thinking` event) or
+// a tool call (`tool_call` event) — or, when the event stream is down, when a polled task shows more model calls.
 const VERBS = {
   zh: ['琢磨中', '冥思苦想中', '掐指一算中', '翻箱倒柜中', '抓耳挠腮中', '运筹帷幄中', '埋头苦干中', '东奔西走中', '查漏补缺中', '打探消息中',  // i18n-ok
     '精打细算中', '酝酿中', '敲敲打打中', '整理思路中', '推敲中', '盘算中', '捣鼓中', '搜肠刮肚中', '穿针引线中', '排兵布阵中',  // i18n-ok
@@ -642,31 +646,58 @@ const VERBS = {
     'Untangling', 'Wrangling', 'Scouting', 'Foraging', 'Composing', 'Whirring', 'Humming', 'Orchestrating', 'Summoning', 'Divining',
     'Ruminating', 'Contemplating', 'Calibrating', 'Assembling', 'Juggling', 'Reckoning', 'Sifting', 'Combing', 'Spelunking', 'Moseying'],
 };
-let verbNow = '';
-function pickVerb() {
+const VERB_OF = {}, VERB_STEP = {};   // task id -> its current verb / the model-call count it was picked at
+function pickVerb(not) {
   const list = VERBS[LANG] || VERBS.en;
-  let v = verbNow;
-  while (v === verbNow && list.length > 1) v = list[Math.floor(Math.random() * list.length)];
-  verbNow = v;
+  let v = not;
+  while (v === not && list.length > 1) v = list[Math.floor(Math.random() * list.length)];
   return v;
 }
-// a new verb after five flashes of the dots (the `dots` animation in app.css cycles every 1.2 s)
+function verbFor(tid, fresh) {
+  if (fresh || !VERB_OF[tid]) VERB_OF[tid] = pickVerb(VERB_OF[tid]);
+  return VERB_OF[tid];
+}
+// the task made a model call or a tool call: a new verb in its reply bubble (next to the dancing dots)
+function bumpVerb(tid) {
+  const v = verbFor(tid, true);
+  document.querySelectorAll('#live-' + tid + ' .verb').forEach(sp => { sp.textContent = v; });
+}
+// the verb for a task's bubble; a polled task (event stream down) with more model calls than last time earns a new one
+function verbNow(t) {
+  const moved = typeof t.steps === 'number' && VERB_STEP[t.id] !== undefined && VERB_STEP[t.id] !== t.steps;
+  if (typeof t.steps === 'number') VERB_STEP[t.id] = t.steps;
+  return verbFor(t.id, moved);
+}
+const working = t => t && ['CREATED', 'PLANNING', 'RUNNING'].includes(t.status);
+// how long a turn has taken: ticking while the task is active, the total once it is finished
+function fmtSecs(s) {
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return s + ' s';
+  if (s < 3600) return Math.floor(s / 60) + ' min ' + (s % 60) + ' s';
+  return Math.floor(s / 3600) + ' h ' + Math.floor((s % 3600) / 60) + ' min';
+}
+function turnTimer(t) {
+  const active = !['COMPLETED', 'FAILED', 'CANCELLED'].includes(t.status);
+  const start = +t.created_at || 0;
+  const end = active ? 0 : (+t.finished_at || +t.updated_at || 0);
+  const secs = start ? ((end || Date.now() / 1000) - start) : 0;
+  return h('span', { class: 'small faint timer', 'data-start': start || '', 'data-end': end || '', title: T('这一轮用时 Time taken') }, start ? fmtSecs(secs) : '');
+}
 setInterval(() => {
-  const spans = document.querySelectorAll('.typing.verb');
-  if (!spans.length) return;
-  const v = pickVerb();
-  spans.forEach(sp => { sp.textContent = v; });
-}, 6000);
+  document.querySelectorAll('.timer[data-start]:not([data-end]), .timer[data-end=""]').forEach(sp => {
+    const start = +sp.dataset.start; if (start) sp.textContent = fmtSecs(Date.now() / 1000 - start);
+  });
+}, 1000);
 
 function taskCard(t) {
   const active = !['COMPLETED', 'FAILED', 'CANCELLED'].includes(t.status);
   const steps = t.plan && t.plan.steps ? t.plan.steps.length : 0;
+  // the head: the state, the goal, how long this turn has taken (ticking while it runs), the step count once done
   const head = h('div', { class: 'head' }, pill(t.status),
     h('span', { class: 'goal', title: t.goal }, t.plan && t.plan.objective ? t.plan.objective : t.goal),
-    active && t.status !== 'WAITING_APPROVAL' ? h('span', { class: 'typing dots verb', title: t.status === 'PLANNING' ? T('规划中') : T('执行中') }, verbNow || pickVerb()) : null,
+    turnTimer(t),
     active ? h('span', { class: 'small retry', style: 'color:var(--warn)', hidden: true }) : null,
-    !active && steps ? h('span', { class: 'small faint' }, Tf("{0} 步", steps)) : null,
-    h('a', { class: 'small', href: '#tasks/' + t.id, onclick: e => { e.preventDefault(); location.hash = '#tasks/' + t.id; } }, T('详情 Details')));   // inside a <summary>: must not toggle the fold
+    !active && steps ? h('span', { class: 'small faint' }, Tf("{0} 步", steps)) : null);
   const body = [planList(t.plan),
     t.status === 'WAITING_APPROVAL' && t.waiting ? h('div', { class: 'row', style: 'margin-top:8px' },
       h('button', { class: 'btn approve small', onclick: () => openApproval(t.waiting.approval_id) }, T('🛡 审批：') + ((t.waiting.summary || {}).title || '')))
@@ -1493,10 +1524,14 @@ async function viewConnections(root) {
   // --- Notion
   const nt = byName.notion, sl = byName.slack;
   const tokenCard = (conn, o) => {
-    const inp = h('input', { type: 'password', placeholder: conn.has_credential ? T('已保存 — 粘贴新令牌可替换') : o.ph, autocomplete: 'new-password' });
-    const connected = conn.has_credential && conn.enabled;
+    // a server default key (config [search]) connects the service until the user enters their own
+    const viaDefault = !conn.has_credential && !!(o.defaultOk && o.defaultOk(conn));
+    const inp = h('input', { type: 'password', placeholder: conn.has_credential ? T('已保存 — 粘贴新令牌可替换') : viaDefault ? T('服务器默认密钥 — 粘贴自己的可覆盖') : o.ph, autocomplete: 'new-password' });
+    const connected = (conn.has_credential || viaDefault) && conn.enabled;
+    const freeOn = !connected && !!o.freeChip;   // a service that works without any key, in its free form
+    const chip = freeOn ? o.freeChip : !connected ? T('未连接 Not connected') : viaDefault ? T('已连接 · 服务器默认密钥 server key') : Tf("已连接 {0}", (o.who(conn.config)));
     return h('div', { class: 'card stack' },
-      h('div', { class: 'row' }, h('h3', { style: 'flex:1' }, o.title), h('span', { class: 'chip ' + (connected ? 'ok' : '') }, connected ? Tf("已连接 {0}", (o.who(conn.config))) : T('未连接 Not connected'))),
+      h('div', { class: 'row' }, h('h3', { style: 'flex:1' }, o.title), h('span', { class: 'chip ' + (connected || freeOn ? 'ok' : '') }, chip)),
       h('p', { class: 'sub' }, o.desc),
       h('details', { open: !conn.has_credential }, h('summary', null, h('b', null, conn.has_credential ? T('更换令牌 Change token') : T('连接 Connect'))),
         h('div', { class: 'stack', style: 'margin-top:10px' }, h('ol', { class: 'steps-help' }, o.steps.map(x => h('li', null, x))),
@@ -1507,9 +1542,50 @@ async function viewConnections(root) {
             finally { e.target.disabled = false; }
           }) }, T('连接并测试 Connect & test'))))),
       h('div', null, h('b', null, T('权限 Permissions')), o.perms.map(([k, zh, en, risk]) => permRow(conn, k, zh, en, risk))),
-      conn.has_credential ? h('div', { class: 'row' },
+      conn.has_credential || viaDefault ? h('div', { class: 'row' },
         h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: conn.enabled, onchange: safe(async e => { await sapi('connections/' + conn.name, { method: 'PUT', body: { enabled: e.target.checked } }); }) }), T('启用')),
-        h('button', { class: 'btn danger small', onclick: safe(async () => { if (!confirmInline(Tf("断开 {0}？令牌会被删除。", (o.title)))) return; await sapi(`connections/${conn.name}/credential`, { method: 'DELETE' }); route(); }) }, T('断开 Disconnect'))) : null);
+        conn.has_credential ? h('button', { class: 'btn danger small', onclick: safe(async () => { if (!confirmInline(Tf("断开 {0}？令牌会被删除。", (o.title)))) return; await sapi(`connections/${conn.name}/credential`, { method: 'DELETE' }); route(); }) }, T('断开 Disconnect')) : null) : null);
+  };
+  // web search through an API: one key per provider, tried in a fixed order (the last one that worked first)
+  const searchCard = (conn) => {
+    const rows = conn.providers || [['exa-mcp', 'Exa (free MCP)', 'free'], ['tavily', 'Tavily', ''], ['brave', 'Brave Search', ''], ['exa', 'Exa', '']].map(([id, label, source]) => ({ id, label, source }));
+    const have = rows.filter(r => r.source && r.source !== 'off');
+    const connected = have.length > 0 && conn.enabled;
+    const last = (conn.config || {}).last_ok;
+    const chip = !connected ? T('未连接 Not connected') : Tf("已连接 {0}", have.map(r => r.label).join(', ')) + (last ? Tf("（上次用 {0}）", (rows.find(r => r.id === last) || {}).label || last) : '');
+    const links = { tavily: ['https://app.tavily.com/', T('免费档每月 1,000 次')], brave: ['https://brave.com/search/api/', T('免费档每月 2,000 次，每秒 1 次')],
+      exa: ['https://dashboard.exa.ai/', T('新账户有免费额度')] };
+    const providerRow = (r) => {
+      if (r.id === 'exa-mcp') {   // keyless: nothing to enter
+        return h('div', { class: 'row provider', 'data-provider': r.id, style: 'align-items:center;flex-wrap:wrap' }, h('b', { style: 'min-width:140px' }, r.label),
+          r.source === 'free' ? h('span', { class: 'chip ok' }, T('免费 free')) : h('span', { class: 'chip' }, T('已关闭 off')),
+          h('span', { class: 'small muted' }, T('Exa 的公开 MCP 服务器：无需密钥，有速率限制，默认第一个尝试（配置 [search] free_exa 可关闭）')));
+      }
+      const inp = h('input', { type: 'password', placeholder: r.source === 'user' ? T('已保存 — 粘贴新令牌可替换') : r.source === 'server' ? T('服务器默认密钥 — 粘贴自己的可覆盖') : 'API key', autocomplete: 'new-password', style: 'flex:1;min-width:180px' });
+      const src = r.source === 'user' ? h('span', { class: 'chip ok' }, T('你的密钥 your key')) : r.source === 'server' ? h('span', { class: 'chip ok' }, T('服务器密钥 server key')) : h('span', { class: 'chip' }, '—');
+      return h('div', { class: 'row provider', 'data-provider': r.id, style: 'align-items:center;flex-wrap:wrap' },
+        h('b', { style: 'min-width:140px' }, r.label), src,
+        h('a', { class: 'small', href: links[r.id][0], target: '_blank', rel: 'noopener' }, links[r.id][0].replace(/^https:\/\//, '').replace(/\/$/, '')), h('span', { class: 'small muted' }, links[r.id][1]),
+        inp,
+        h('button', { class: 'btn small primary', onclick: safe(async e => {
+          e.target.disabled = true;
+          try { const x = await sapi('connections/search/credential', { method: 'POST', body: { provider: r.id, token: inp.value } }); toast(Tf("网页搜索已连接 ✓ {0}", x.label)); route(); }
+          finally { e.target.disabled = false; }
+        }) }, T('保存并测试 Save & test')),
+        r.source === 'user' ? h('button', { class: 'btn small danger', title: T('删除这个密钥 Remove this key'), onclick: safe(async () => { await sapi('connections/search/credential/' + r.id, { method: 'DELETE' }); route(); }) }, '🗑') : null);
+    };
+    return h('div', { class: 'card stack', id: 'websearch' },
+      h('div', { class: 'row' }, h('h3', { style: 'flex:1' }, T('🔎 网页搜索 Web search')), h('span', { class: 'chip ' + (connected ? 'ok' : '') }, chip)),
+      h('p', { class: 'sub' }, T('web_search 工具的搜索服务：先试免费的 Exa MCP，再用你填的 Tavily、Brave 或 Exa 密钥；一次调用直接拿到标题、网址和摘要，机票、酒店、租车也先这样查，不打开浏览器里的搜索页，也不会被验证码拦住。都没有时才用浏览器里的搜索引擎。（SerpApi 密钥只用于机票、酒店和餐厅搜索。）')),
+      h('p', { class: 'small muted' }, T('不填密钥也能用：先试免费的 Exa MCP，再按 Tavily → Brave → Exa 的顺序试你填的密钥，哪个能用就用哪个，下次优先用上次成功的那个。')),
+      h('p', { class: 'small muted' }, T('标着「服务器密钥」的服务用的是服务器 config.toml 里的默认密钥；粘贴你自己的密钥即可覆盖，删除你的密钥后又回到默认密钥。')),
+      h('div', { class: 'stack', style: 'gap:8px' }, rows.map(providerRow)),
+      h('div', null, h('b', null, T('权限 Permissions')), permRow(conn, 'search', T('网页搜索（只读）'), 'search', 'low')),
+      have.length ? h('div', { class: 'row' },
+        h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: conn.enabled, onchange: safe(async e => { await sapi('connections/search', { method: 'PUT', body: { enabled: e.target.checked } }); }) }), T('启用')),
+        h('button', { class: 'btn small', onclick: safe(async () => { const r = await sapi('connections/search/test', { method: 'POST' });
+          toast(r.results.map(x => `${x.label}: ${x.ok ? '✓ ' + x.count : '✕ ' + (x.error || '')}`).join(' · ')); }) }, T('全部测试 Test all')),
+        have.some(r => r.source === 'user') ? h('button', { class: 'btn danger small', onclick: safe(async () => { if (!confirmInline(T('删除你填的所有搜索密钥？'))) return; await sapi('connections/search/credential', { method: 'DELETE' }); route(); }) }, T('删除全部密钥 Remove all keys')) : null) : null);
   };
   const notion = tokenCard(nt, {
     title: '📝 Notion', ph: 'ntn_…', label: T('集成令牌 Internal integration secret'), who: c => c.workspace || '',
@@ -1528,12 +1604,24 @@ async function viewConnections(root) {
       T('在要让 OMuse 读取的频道里输入 /invite @你的应用名')],
     ok: r => Tf("Slack 已连接 ✓ {0}，已加入 {1} 个频道", (r.team), (r.member_of.length)),
     perms: [['read', T('读取频道 / 讨论串 / 搜索'), 'read', 'low'], ['send', T('发送消息（每次需审批）'), 'send — approval', 'high']] });
+  const travel = tokenCard(byName.travel, {
+    title: T('✈️ 机票与酒店搜索 Flights & hotels'), ph: 'SerpApi key', label: T('SerpApi 密钥 API key'),
+    who: c => c.plan ? Tf("{0} · 本月剩余 {1} 次搜索", c.plan, c.searches_left) : '',
+    freeChip: T('机票：Kiwi.com 免费数据（仅供参考）· 酒店和餐厅：需要密钥'),
+    desc: T('机票搜索开箱即用：没有密钥时 flights_search 用 Kiwi.com 的航班数据（只取航班信息，不用它的链接；订票在航空公司官网或你选的代理商）。填入 SerpApi 密钥后，机票改用 Google Flights 数据，酒店用 Google Hotels 数据，餐厅和地点用 Google Maps 数据。这个密钥只用于机票、酒店和餐厅搜索，不用于网页搜索。免费密钥每月 250 次搜索。'),
+    steps: [h('span', null, T('打开 '), h('a', { href: 'https://serpapi.com/users/sign_up', target: '_blank', rel: 'noopener' }, 'serpapi.com'), T('，注册一个免费账户')),
+      T('在 Dashboard 复制 API 密钥，粘贴到下面'),
+      T('每次搜索算一次调用；机票的预订选项和酒店详情各算一次')],
+    ok: r => Tf("已连接 ✓ {0}，本月剩余 {1} 次搜索", r.plan, r.searches_left),
+    defaultOk: c => !!c.default_key,
+    perms: [['search', T('搜索航班和酒店（只读）'), 'search', 'low']] });
+  const websearch = searchCard(byName.search);
   const calendar = calendarCard(byName.calendar, permRow);
   const drive = driveCard(byName.drive, permRow);
   const phoneC = phoneCard(byName.phone);
   const mcp = await mcpCard();
   root.append(h('div', { class: 'grid2' }, gmail, h('div', { class: 'stack' }, browser, telegram)), h('div', { style: 'height:16px' }),
-    h('div', { class: 'grid2' }, notion, slack), h('div', { style: 'height:16px' }), calendar, h('div', { style: 'height:16px' }), drive, h('div', { style: 'height:16px' }), phoneC, h('div', { style: 'height:16px' }), mcp,
+    h('div', { class: 'grid2' }, notion, slack), h('div', { style: 'height:16px' }), calendar, h('div', { style: 'height:16px' }), drive, h('div', { style: 'height:16px' }), h('div', { class: 'grid2' }, travel, websearch), h('div', { style: 'height:16px' }), phoneC, h('div', { style: 'height:16px' }), mcp,
     h('div', { style: 'height:16px' }), grants);
 }
 
@@ -1959,7 +2047,8 @@ async function mcpCard() {
         h('label', { class: 'field', style: 'flex:2;min-width:220px' }, h('span', null, T('服务器地址 Server URL')), url)),
       h('div', { class: 'row' }, h('label', { class: 'field', style: 'flex:1;min-width:160px' }, h('span', null, T('认证 Auth')), auth),
         h('label', { class: 'field', style: 'flex:2;min-width:220px' }, h('span', null, T('数据敏感度 Data class')), dc)),
-      hnameField, tokenField, h('div', null, addBtn)));
+      hnameField, tokenField,
+      h('div', null, addBtn)));
 
   const serverBox = s => {
     const setMode = (t, mode, accept) => safe(async () => {
@@ -2110,14 +2199,17 @@ function memProfileCard(r) {
   });
   // further addresses (address:<label>): a flat in another city, the parents' house — forms such as arrival cards pick
   // the one in the destination country
-  for (const k of Object.keys(prof).filter(k => k.startsWith('address:'))) {
+  // a field the user added (address:<label> or custom:<label>) can be removed again: an empty value deletes the key
+  const removable = (k, labelEl) => {
     const i = h('input', { type: 'text', value: prof[k], autocomplete: 'off' }); inputs[k] = i;
-    rows.push(h('label', { class: 'field' }, h('span', null, Tf("地址 · {0}", k.slice(8))), i));
-  }
-  for (const k of Object.keys(prof).filter(k => k.startsWith('custom:'))) {
-    const i = h('input', { type: 'text', value: prof[k], autocomplete: 'off' }); inputs[k] = i;
-    rows.push(h('label', { class: 'field' }, h('span', null, k.slice(7)), i));
-  }
+    const del = h('button', { class: 'btn small danger', type: 'button', title: T('删除这个字段 Remove this field'), onclick: safe(async () => {
+      if (!confirmInline(Tf("删除字段 {0}？", labelEl.textContent))) return;
+      await api('profile', { method: 'PUT', body: { key: k, value: '' } }); route();
+    }) }, '🗑');
+    return h('label', { class: 'field removable', 'data-key': k }, h('span', { class: 'row', style: 'justify-content:space-between;align-items:center' }, labelEl, del), i);
+  };
+  for (const k of Object.keys(prof).filter(k => k.startsWith('address:'))) rows.push(removable(k, h('span', null, Tf("地址 · {0}", k.slice(8)))));
+  for (const k of Object.keys(prof).filter(k => k.startsWith('custom:'))) rows.push(removable(k, h('span', null, k.slice(7))));
   // an ID photo read by the vision model prefills the form; the number goes to the Vault, the picture is not kept
   const required = ['name_en', 'birthday', 'nationality'];
   const incomplete = required.some(k => !(prof[k] || '').trim());
@@ -2157,25 +2249,36 @@ function memProfileCard(r) {
       incomplete ? h('button', { class: 'btn small', onclick: safe(async () => { await api('settings', { method: 'PUT', body: { profile_reminder: false } }); S.profileNudge = false; toast(T('好的，不再提醒。你随时可以回到这里完善。')); }) }, T('以后再说 Later')) : null,
       picker),
     ocrOut);
-  const aLabel = h('input', { type: 'text', placeholder: T('再加一个地址：名称，如：新加坡的家'), style: 'flex:1' });
-  const aVal = h('input', { type: 'text', placeholder: T('完整地址（含邮编）'), style: 'flex:1' });
-  const cLabel = h('input', { type: 'text', placeholder: T('自定义字段名，如：常用航空公司'), style: 'flex:1' });
-  const cVal = h('input', { type: 'text', placeholder: T('内容'), style: 'flex:1' });
+  // new addresses and custom fields: as many rows as the user wants (a row is saved when both its parts are filled)
+  const newRows = { address: [], custom: [] };
+  const addRow = (kind) => {
+    const label = h('input', { type: 'text', placeholder: kind === 'address' ? T('再加一个地址：名称，如：新加坡的家') : T('自定义字段名，如：常用航空公司'), style: 'flex:1' });
+    const val = h('input', { type: 'text', placeholder: kind === 'address' ? T('完整地址（含邮编）') : T('内容'), style: 'flex:1' });
+    const row = h('div', { class: 'row newfield', 'data-kind': kind }, label, val,
+      h('button', { class: 'btn small', type: 'button', title: T('删除这个字段 Remove this field'), onclick: () => { row.remove(); newRows[kind] = newRows[kind].filter(x => x.row !== row); } }, '✕'));
+    newRows[kind].push({ row, label, val });
+    return row;
+  };
+  const addrBox = h('div', { class: 'stack', style: 'gap:6px' }, addRow('address'));
+  const customBox = h('div', { class: 'stack', style: 'gap:6px' }, addRow('custom'));
   const save = safe(async () => {
     let n = 0;
     for (const [k, el] of Object.entries(inputs)) {
       if ((el.value || '').trim() !== (prof[k] || '')) { await api('profile', { method: 'PUT', body: { key: k, value: el.value } }); n++; }
     }
-    if (aLabel.value.trim() && aVal.value.trim()) { await api('profile', { method: 'PUT', body: { key: 'address:' + aLabel.value.trim(), value: aVal.value } }); n++; }
-    if (cLabel.value.trim() && cVal.value.trim()) { await api('profile', { method: 'PUT', body: { key: 'custom:' + cLabel.value.trim(), value: cVal.value } }); n++; }
+    for (const [kind, prefix] of [['address', 'address:'], ['custom', 'custom:']]) {
+      for (const { label, val } of newRows[kind]) {
+        if (label.value.trim() && val.value.trim()) { await api('profile', { method: 'PUT', body: { key: prefix + label.value.trim(), value: val.value } }); n++; }
+      }
+    }
     toast(n ? Tf("已保存 {0} 项", n) : T('没有改动 No changes')); S.profileNudge = undefined; route();
   });
   return h('div', { class: 'card stack', id: 'profile' }, h('h3', null, T('🪪 档案 Profile')),
     h('p', { class: 'sub' }, T('填表、写邮件时才会用到的固定信息。Agent 只在需要时读取；它发现的新信息会先放到「待确认」，你同意后才会修改。证件号、会员号、卡号请放进下面的保险箱。')),
     ocrBox,
     h('div', { class: 'grid2', style: 'gap:4px 12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))' }, rows),
-    h('div', { class: 'row' }, aLabel, aVal),
-    h('div', { class: 'row' }, cLabel, cVal),
+    addrBox, h('div', null, h('button', { class: 'btn small', type: 'button', onclick: () => addrBox.append(addRow('address')) }, T('＋ 再加一个地址 Add address'))),
+    customBox, h('div', null, h('button', { class: 'btn small', type: 'button', onclick: () => customBox.append(addRow('custom')) }, T('＋ 添加自定义字段 Add field'))),
     h('div', null, h('button', { class: 'btn primary', onclick: save }, T('保存档案 Save profile'))));
 }
 
@@ -2649,26 +2752,47 @@ function langField(s, f) {
 }
 
 // ================================================================== live updates
-// The answer as the model writes it (answer_delta events: the visible text so far, never the reasoning): one live
-// bubble under the running task's card, replaced by the stored message when the task finishes. A turn that carries
-// tool calls is commentary, not an answer, so its text is not shown.
+// The reply bubble of a working task: dancing dots while the agent thinks or works (no text yet, or a turn that
+// carries tool calls — commentary, not an answer), the answer as the model writes it once it starts (answer_delta
+// events: the visible text so far, never the reasoning). The stored message replaces it when the task finishes.
 function liveBubble(live) {
-  return h('div', { class: 'msg assistant live', id: 'live-' + live.task_id }, h('div', { class: 'bubble' }, mdEl(live.text)));
+  const el = h('div', { class: 'msg assistant live' + (live.text ? '' : ' wait'), id: 'live-' + live.task_id }, h('div', { class: 'bubble' }));
+  fillLive(el, live.text);
+  return el;
+}
+// while there is no answer text: the dancing dots and the activity verb (it changes with every model and tool call)
+function fillLive(el, text) {
+  el.classList.toggle('wait', !text);
+  const tid = (el.id || '').replace(/^live-/, '');
+  const t = S.tasks[tid] || { id: tid };
+  el.firstChild.replaceChildren(...(text ? [mdEl(text)] : [h('span', { class: 'dance', title: T('思考中 Thinking') }, h('i'), h('i'), h('i')),
+    h('span', { class: 'typing verb', title: t.status === 'PLANNING' ? T('规划中') : T('执行中') }, verbNow(t))]));
+}
+// keep the bubble in step with the task: there while it works, gone when it waits for the user or is finished
+function syncLive(t) {
+  const el = document.getElementById('live-' + t.id);
+  if (!working(t)) {
+    if (S.live && S.live.task_id === t.id) S.live = null;
+    if (el) el.remove();
+    return;
+  }
+  if (el || S.view !== 'chat') return;
+  const card = document.getElementById('tc-' + t.id);
+  if (card && card.parentElement) card.parentElement.after(liveBubble({ task_id: t.id, text: S.live && S.live.task_id === t.id ? S.live.text : '' }));
 }
 function onDelta(ev) {
   const t = S.tasks[ev.task_id];
-  if (t && /COMPLETED|FAILED|CANCELLED/.test(t.status)) return;   // the stored answer is on its way
+  if (t && !working(t)) return;   // the stored answer is on its way
   S.live = { task_id: ev.task_id, conv_id: ev.conv_id, text: ev.calls ? '' : (ev.text || '') };
   if (S.view !== 'chat' || ev.conv_id !== S.conv) return;
   const msgs = $('.thread .msgs'); if (!msgs) return;
-  let el = document.getElementById('live-' + ev.task_id);
-  if (!S.live.text) { if (el) el.remove(); return; }
   const near = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 80;
+  let el = document.getElementById('live-' + ev.task_id);
   if (!el) {
     el = liveBubble(S.live);
     const card = document.getElementById('tc-' + ev.task_id);
     if (card && card.parentElement && card.parentElement.parentElement === msgs) card.parentElement.after(el); else msgs.append(el);
-  } else el.firstChild.replaceChildren(mdEl(S.live.text));
+  } else fillLive(el, S.live.text);
   if (near) msgs.scrollTop = msgs.scrollHeight;
 }
 function onEvent(ev) {
@@ -2676,14 +2800,15 @@ function onEvent(ev) {
   if (ev.kind === 'answer_delta') { onDelta(ev); return; }
   if (ev.kind === 'task_update') {
     const t = ev.task; mergeTasks({ [t.id]: t });
-    if (S.live && S.live.task_id === t.id && /COMPLETED|FAILED|CANCELLED/.test(t.status)) { S.live = null; const le = document.getElementById('live-' + t.id); if (le) le.remove(); }
     renderNav();
     const card = document.getElementById('tc-' + t.id);
     if (card && S.view === 'chat') { const fresh = taskCard(S.tasks[t.id]); const det = card.querySelector('details.trace'); const wasOpen = det && det.open;
       card.parentElement.replaceWith(fresh); if (wasOpen) { const d2 = fresh.querySelector('details.trace'); if (d2) d2.open = true; } }
+    syncLive(S.tasks[t.id]);
     if (S.view === 'tasks' && S.selTask === t.id) { const box = $('#taskDetail'); if (box) renderTaskDetail(box, t.id); }
     if (t.status === 'COMPLETED' && t.source === 'schedule') toast(Tf("⏰ 定时任务完成：{0}", (t.goal.slice(0, 40))));
   } else if (ev.kind === 'task_event') {
+    if (ev.type === 'thinking' || ev.type === 'tool_call') bumpVerb(ev.task_id);   // the verb moves only when the task does
     const tl = document.getElementById('tl-' + ev.task_id);
     if (tl && tl.closest('details').open && ev.type !== 'thinking') { if (tl.querySelector('.muted.small')) tl.innerHTML = ''; tl.append(evLine(ev)); }
     // the model call is being retried: say so on the card ("Retrying 1 of 3"); the next event clears it

@@ -4,6 +4,16 @@ description: 旅行：机票/酒店比价、行程规划、签证入境、天气
 ---
 # Travel planning / 旅行规划
 
+Flights, hotels and cars: `flights_search` (always there: Google Flights data with the Flights & hotels key, else
+Kiwi.com data for information only — never book through Kiwi or give a Kiwi link; the booking is on the airline's site
+or with an agency the user chooses) together with `web_search` in the same turn come first; `hotels_search` /
+`hotel_rooms` need the key. Without them, when the Web search connection is on (Brave / Tavily / Google — your instructions' Connections
+section says so), `web_search` answers from the API (so does `web_search`): use focused queries (route and dates, the area and dates, the
+car class and pick-up place) and compile options, prices and links from the snippets — do NOT open Google Flights,
+Kayak, Skyscanner, Booking, Agoda, Rentalcars or the companies' search pages in the browser; the browser is for the final
+booking page only. With none of these, say so in one line (the connection takes a minute) and then use the browser
+as below.
+
 ## 0. Ground rules
 - Research only: never book, pay or hold anything. Stop at the page that asks for passenger or card details and say so.
 - Every price, time and policy needs a source link and the time you checked it ("查询于 10/12 14:05 SGT"). Prices with currency.
@@ -71,7 +81,13 @@ description: 旅行：机票/酒店比价、行程规划、签证入境、天气
 - Check rule changes with a current official page before stating them (e.g. Nozomi non-reserved seats are suspended
   only in peak periods — check JR Central's notice for the dates in question).
 
-## 7. Car rental (Japan)
+## 7. Car rental
+- Any destination: with the Web search connection on, `web_search` the pick-up city or airport, dates, car class
+  and "rental" (plus `site:rentalcars.com` / `site:kayak.com/cars` / the local brands) and compile companies, classes,
+  prices and links from the snippets; otherwise the browser, reading result pages only. Book on the company's own site
+  at the end, after the user picks.
+
+### Japan
 - Compare on one aggregator plus one company site: ToCoo! (`https://www2.tocoo.jp/en/`), Tabirai (`https://www.tabirai.net/car/`),
   Rakuten Travel rent-a-car, or the companies directly — Toyota Rent a Car (`https://rent.toyota.co.jp/en/`), Times Car
   Rental, Nippon Rent-A-Car, Orix. Set pick-up/return place, dates and car class, then read the quote page (stop there).

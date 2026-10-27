@@ -1,6 +1,7 @@
 """Chat page keeps up even when the live event stream is broken (dead / dropped), e.g. after laptop sleep or an
 Olares session refresh: a new chat's task card must move past "Planning" and show the approval button by itself."""
-import asyncio, sys
+import asyncio
+import re, sys
 from playwright.async_api import async_playwright
 
 URL = "http://127.0.0.1:8080/"
@@ -30,36 +31,44 @@ async def scenario(p, name, route_stream):
     deny_pending()
     b = await p.chromium.launch()
     pg = await b.new_page(viewport={"width": 1280, "height": 800})
-    await pg.clock.install()   # to spin the verb (a 6 s interval) without waiting for it
     errs = []
     pg.on("pageerror", lambda e: errs.append(str(e)))
     if route_stream:
         await pg.route("**/api/stream", route_stream)
     await pg.goto(URL + "#chat")
     await pg.wait_for_selector("#chatInput")
+    # every verb the card ever shows, recorded as it changes (the task reaches its approval within a second, faster
+    # than polling can see)
+    await pg.evaluate("""() => { window._verbs = []; const note = e => { if (e && e.classList && e.classList.contains('verb')) window._verbs.push(e.textContent); };
+      new MutationObserver(ms => { for (const m of ms) { const t = m.target.nodeType === 3 ? m.target.parentElement : m.target; note(t);
+        if (t && t.querySelectorAll) t.querySelectorAll('.typing.verb').forEach(note); } }).observe(document.body, { subtree: true, childList: true, characterData: true }); }""")
     await pg.click("button.newchat")
     await pg.fill("#chatInput", "BROWSE the shop " + name)
     await pg.keyboard.press("Enter")
     got = None
-    verbs, titles, spun = set(), set(), None
-    get_verbs = "() => [...document.querySelectorAll('.taskcard .typing.verb')].map(e => [e.textContent, e.title])"
-    for _ in range(40):
-        await pg.wait_for_timeout(500)
+    verbs, titles, dots = set(), set(), False
+    get_verbs = "() => [...document.querySelectorAll('.msg.assistant.live .typing.verb')].map(e => [e.textContent, e.title])"
+    for _ in range(80):
+        await pg.wait_for_timeout(250)
         seen = await pg.evaluate(get_verbs)
         verbs.update(v for v, _t in seen); titles.update(t for _v, t in seen)
-        if seen and spun is None:   # 6 s later the card shows another verb
-            await pg.clock.run_for(6200)
-            after = await pg.evaluate(get_verbs)
-            spun = (seen[0][0], after[0][0] if after else None)
+        # the reply bubble under the card dances while the agent works (no answer text yet)
+        dots = dots or await pg.evaluate("() => !!document.querySelector('.msg.assistant.live.wait .dance')")
         st = await card_state(pg)
         if st and st[-1]["approve"]:
             got = st[-1]
             break
     check(f"{name}: card shows the approval without a reload", got is not None, await card_state(pg))
     flat = {"规划中", "执行中", "規劃中", "執行中", "Planning", "Running"}
-    check(f"{name}: while working the card shows a fun verb, not the flat state", verbs and all(v and v not in flat for v in verbs), verbs)
+    check(f"{name}: while working the reply bubble shows a fun verb next to the dots, not the flat state", verbs and all(v and v not in flat for v in verbs), verbs)
+    head = await pg.evaluate("() => { const c = document.querySelector('.taskcard'); return c ? { timer: (c.querySelector('.timer') || {}).textContent || '', details: c.querySelectorAll('a[href^=\"#tasks/\"]').length, verb: c.querySelectorAll('.verb').length } : null; }")
+    check(f"{name}: the card head shows the turn's timer in seconds and no Details link or verb", head and re.fullmatch(r"\d+ s|\d+ min \d+ s", head["timer"]) and head["details"] == 0 and head["verb"] == 0, head)
     check(f"{name}: ...and the real state in its tooltip", titles and titles <= flat, titles)
-    check(f"{name}: the verb changes", spun and spun[1] and spun[0] != spun[1], spun)
+    if route_stream is None:   # with the event stream up, every model call and tool call brings a new verb (BROWSE makes several)
+        verbs |= set(await pg.evaluate("() => window._verbs"))
+        check(f"{name}: the verb changes with the task's calls", len(verbs) >= 2, verbs)
+    check(f"{name}: the reply bubble shows the dancing dots while the agent works", dots)
+    check(f"{name}: the card has no dots of its own any more (the bubble has them)", not await pg.evaluate("() => !!document.querySelector('.taskcard .dots')"))
     check(f"{name}: no page errors", not errs, errs)
     await b.close()
 

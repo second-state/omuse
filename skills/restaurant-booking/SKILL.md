@@ -4,6 +4,11 @@ description: 订餐厅：查真实空位、比较、预订（Google 地图 / Res
 ---
 # Restaurant booking / 订餐厅
 
+Data first: `places_search` / `place_details` (Google Maps data — rating, price, hours, phone, website, menu or
+reservation links; needs the SerpApi key of Settings → Connections → Flights & hotels) together with `web_search` in
+the same turn come before any browsing. Book on the restaurant's own site or the platform the user names; the browser
+is for that booking page only.
+
 ## 0. What you need
 - Date, time (and how flexible, e.g. ±30 min), party size, area, cuisine / budget — or a specific restaurant.
 - For the booking itself: the name, phone and email to book under. Look in memory first (memory_search "phone", "email", "booking name").
@@ -17,7 +22,7 @@ description: 订餐厅：查真实空位、比较、预订（Google 地图 / Res
 - A specific restaurant: `https://www.google.com/maps/search/<restaurant name>+<city>?hl=en`, then open the place.
 - Pick 5–8 that fit: rating ≥ 4.3 with a decent number of reviews (unless the user says otherwise), open at that time, price fits.
   Skip "Sponsored" results unless they clearly fit.
-- If Google shows a SITE BLOCKED / "unusual traffic" page, use browser_search and the platforms in step 2.
+- If Google shows a SITE BLOCKED / "unusual traffic" page, use web_search and the platforms in step 2.
 
 ## 2. Check REAL availability
 For each candidate, in this order:

@@ -137,6 +137,19 @@ scenario (`tests/parallel_steps_e2e.py`).
   `<dir>/market/*.webp` and `overview.png` into `deploy/market/assets`. Rebuild the test image first.
 - Image smoke test: `tests/docker_image_smoke.sh <image>`; set `OMUSE_VERSION`
   to the tag to also check the reported version.
+- Flights, hotels & restaurants: `tests/travel_real.py` (not in the default list, billed: seven SerpApi searches against the
+  real service with `OMUSE_E2E_SERPAPI_KEY` from the e2e env file and `OMUSE_E2E_SERPAPI_EP=https://serpapi.com`).
+- Flights & hotels: `tests/travel_search_e2e.py` (the SerpApi key, the four Google Flights / Hotels tools through the
+  flight-booking skill, the hotel tools refused without a key), `tests/kiwi_flights_e2e.py` (no key: flights_search with
+  Kiwi.com data, no booking link, beside web_search in one turn), `tests/travel_card_ui.py` (the card).
+- Web search: `tests/web_search_e2e.py` (web_search through Brave / Tavily / Google (SerpApi), the browser's engines
+  without a key or when switched off), `tests/search_card_ui.py` (the card), `tests/brave_travel_e2e.py` (a Brave key and
+  no travel tools: flights, hotel and car searched through the API in one turn, no browser page).
+  `tests/web_search_real.py` (not in the default list, billed against the free tiers) connects the real Brave and Tavily
+  APIs with the keys `OMUSE_E2E_BRAVE_KEY` / `OMUSE_E2E_TAVILY_KEY` from the e2e env file — the endpoints come from
+  `OMUSE_E2E_BRAVE_EP` / `OMUSE_E2E_TAVILY_EP` on the command line, see its docstring. `tests/flights_real.py` (real
+  network, free) runs one `flights_search` through Kiwi.com's public MCP server without a key.
+- Profile fields: `tests/profile_fields_ui.py` (custom fields and addresses without limit, add and remove).
 - Sapphire trip claim: `tests/csr_claim_e2e.py` (the booking, charge and refund from mail in one turn, the airline
   letter drafted, the packet PDF, the portal form filled and handed over for Submit, reminders).
 - Streamed answers: `tests/stream_e2e.py` (answer_delta events, reasoning held back, tool-call turns flagged, the
