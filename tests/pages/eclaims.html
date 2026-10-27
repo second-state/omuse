@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Card Benefit Services — File a claim (test)</title></head>
+<body>
+<h1>File a claim</h1>
+<p class="note">Test stand-in for the benefit administrator's claim portal (chasecardbenefits.com). Nothing is sent anywhere.</p>
+<form id="claim" action="/eclaims_done.html" method="get">
+  <label>Benefit <select name="benefit" id="benefit"><option>Trip Cancellation</option><option>Trip Interruption</option><option>Trip Delay</option></select></label><br>
+  <label>Cardholder name <input name="name" id="name" placeholder="Name as on the card"></label><br>
+  <label>Card number <input name="card" id="card" placeholder="16 digits" autocomplete="cc-number"></label><br>
+  <label>Date of loss <input name="loss" id="loss" placeholder="YYYY-MM-DD"></label><br>
+  <label>Amount claimed (USD) <input name="amount" id="amount" placeholder="0.00"></label><br>
+  <label>Reason <input name="reason" id="reason" placeholder="e.g. sickness"></label><br>
+  <button type="submit" id="submit">Submit claim</button>
+</form>
+</body></html>

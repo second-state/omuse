@@ -1342,6 +1342,58 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
                      "| Thailand | TDAC digital arrival card | within 3 days before arrival | reminder set | tdac.immigration.go.th | 2026-10-25 |\n"
                      "| Singapore | SG Arrival Card + health declaration | within 3 days before arrival | I can fill it (sg-arrival-card) | eservices.ica.gov.sg | 2026-10-25 |\n"
                      "Passport: at least 6 months validity for Thailand (page read today).")
+    if "CSRCLAIM" in goal:   # csr-trip-claim: mail in one turn, the arithmetic, the airline letter, the packet, the portal, hand-over
+        import datetime as _dt
+        loss = (re.search(r"LOSS=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-10-20")).group(1)
+        d = _dt.date.fromisoformat(loss)
+        d20, d90 = (d + _dt.timedelta(days=20)).isoformat(), (d + _dt.timedelta(days=90)).isoformat()
+        pdf = f"reports/CSR-claim-UA837-{loss}.pdf"
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "csr-trip-claim"})])
+        if n == 1:
+            return reply("", [tc_("gmail_search", {"query": "(e-ticket OR eTicket OR itinerary OR confirmation) (United OR UA 837 OR SFO) newer_than:180d"}),
+                              tc_("gmail_search", {"query": "(Chase OR Sapphire) (transaction OR charged OR statement OR receipt) UNITED"}),
+                              tc_("gmail_search", {"query": "United (refund OR credit OR voucher OR cancellation OR cancelled)"}),
+                              tc_("profile_get", {"fields": ["name_en", "email_personal", "phone", "address_home"]})])
+        if n == 5:
+            return reply("", [tc_("calculate", {"expression": "1840.00 - 86.40"})])
+        if n == 6:
+            return reply("", [tc_("gmail_create_draft", {"to": "refunds@united.example",
+                                                          "subject": f"Refund request — confirmation ABC123, UA 837 of {loss} — unable to travel for medical reasons",
+                                                          "body": f"Dear United Refunds,\n\nI was medically unable to travel on UA 837 (SFO–NRT) on {loss}, confirmation ABC123, passenger LUCAS LU. "
+                                                                  "Thank you for refunding the taxes and fees. Please (1) confirm in writing the non-refundable fare amount and your refund policy for this fare, "
+                                                                  "which my card's trip cancellation insurance requires, and (2) advise whether a travel credit or a medical waiver of the fare is available.\n\nKind regards,\nLucas Lu"})])
+        if n == 7:
+            md = (f"# Trip Cancellation claim — Chase Sapphire Reserve\n\n**Traveller:** LUCAS LU  \n**Trip:** UA 837 SFO → NRT, {loss}, confirmation ABC123  \n"
+                  f"**Date of loss:** {loss}  \n**Notify the administrator by:** {d20}  \n**Documents by:** {d90}  \n"
+                  "**Administrator:** Card Benefit Services — chasecardbenefits.com — 1-800-350-1697\n\n"
+                  "## Amounts\n\n| Booking | Paid | Refunded | Claimed |\n|---|---|---|---|\n| UA 837 Basic Economy (Sapphire Reserve …4321) | USD 1,840.00 | USD 86.40 taxes and fees | **USD 1,753.60** |\n\n"
+                  "## Documents\n\n- [ ] Claim form (from the portal)\n- [ ] Physician statement — your doctor (asked)\n- [x] eTicket receipt ABC123 (mail)\n- [x] Card transaction USD 1,840.00 (Chase alert)\n"
+                  "- [x] United refund confirmation: USD 86.40 taxes and fees, fare non-refundable (mail)\n- [ ] United written refund policy / non-refundable statement (requested)\n- [x] No other travel insurance\n\n"
+                  "## Letters\n\nRefund request to United (draft in Gmail).\n\n## Timeline\n\n- Booking paid; fell ill; missed UA 837 on " + loss + "\n- Today: claim started on the portal, airline asked for the letter\n- Next: doctor's statement, upload documents before " + d90 + "\n")
+            return reply("", [tc_("make_pdf", {"markdown": md, "output": pdf})])
+        if n == 8:
+            return reply("", [tc_("send_file", {"path": pdf, "note": "Your claim packet"})])
+        if n == 9:
+            return reply("", [tc_("browser_navigate", {"url": PAGES + "/eclaims.html"})])
+        if n == 10:
+            page = last_tool
+            vals = [("Cardholder name", "LUCAS LU"), ("Date of loss", loss), ("Amount claimed", "1753.60"), ("Reason", "sickness")]
+            return reply("", [tc_("browser_type", {"ref": _snap_ref(page, lab) or "e1", "text": v}) for lab, v in vals])
+        if n == 14:
+            return reply("", [tc_("browser_request_takeover", {"reason": "Review the claim, sign in with your Chase login if the portal asks, and press Submit yourself; hand the browser back when the claim number shows"})])
+        if n == 15:
+            return reply("", [tc_("schedule_create", {"name": f"CSR claim UA 837 — documents due {d90}", "kind": "cron", "spec": "0 9 * * 1",
+                                                       "goal": f"Check Gmail for any message from Card Benefit Services, eclaimsline or Chase about the trip cancellation claim for UA 837 of {loss}; notify me of news; remind me that the documents are due by {d90}"})])
+        if n == 16:
+            return reply("", [tc_("memory_remember", {"fact": f"Chase Sapphire Reserve trip cancellation claim for UA 837 (ABC123) of {loss}: started with Card Benefit Services; notify by {d20}, documents by {d90}; USD 1,753.60 claimed.", "domain": "trip"})])
+        return reply(f"**Trip Cancellation** is the benefit that applies (you never left home). Notify the administrator by **{d20}**; documents by **{d90}**.\n\n"
+                     "**Amount to claim: USD 1,753.60** — you paid USD 1,840.00 on the Sapphire Reserve (…4321); United refunded USD 86.40 in taxes and fees; the fare is non-refundable.\n\n"
+                     "- **Airline:** a refund request and a request for the written non-refundable statement is drafted to United (confirmation ABC123) — approve it to send.\n"
+                     "- **Doctor:** the physician statement saying you were medically unable to travel on " + loss + " — I can prepare the form once the portal issues it.\n"
+                     "- **Claim:** the form on the administrator's portal (Card Benefit Services, chasecardbenefits.com) is filled with your name, the date of loss and the amount; I handed the browser to you to sign in and press Submit. By phone: 1-800-350-1697.\n"
+                     f"- **Packet:** {pdf} is in the chat — the checklist and the letters.\n- **Reminders:** a weekly check for the administrator's mail and the documents deadline.\n\n"
+                     "The administrator decides; pre-existing conditions (treated in the 60 days before booking) and trips over 60 days are excluded.")
     if "FLIGHTDELAY" in goal:   # flight-disruption: status page, alternatives from the connector, insurance, a watch
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "flight-disruption"})])
