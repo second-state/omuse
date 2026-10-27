@@ -135,6 +135,8 @@ label.field .req { color: var(--danger); font-weight: 700; }
 .msg { max-width: 860px; width: 100%; margin: 0 auto; }
 .msg.user .bubble { background: var(--accent); color: var(--accent-ink); margin-left: auto; border-radius: 14px 14px 4px 14px; padding: 9px 14px; width: fit-content; max-width: 80%; white-space: pre-wrap; }
 .msg.assistant .bubble { background: var(--surface); border: 1px solid var(--line); border-radius: 4px 14px 14px 14px; padding: 12px 16px; }
+.msg.assistant.live .bubble::after { content: '▍'; opacity: .6; animation: livecaret 1s steps(2) infinite; }
+@keyframes livecaret { 50% { opacity: 0; } }
 .md { overflow-wrap: anywhere; }
 .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
 .md table { border-collapse: collapse; margin: 8px 0; display: block; overflow-x: auto; }

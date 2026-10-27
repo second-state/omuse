@@ -55,8 +55,13 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
 
 ## How a request runs
 
-1. **Plan**: the planner model turns the request into steps (`update_plan`); steps that don't depend on each other
-   carry the same `"parallel": "p1"` group.
+1. **Look first**: the executor model sees every request first, with no planner call before it. Conversation, advice,
+   writing and lookups of a few tool calls are answered directly. When the request needs several dependent steps,
+   several sources or candidates, sub-agents, approvals in sequence or a skill, the executor calls `plan_task` (its
+   notes go to the planner), or loads the skill, which plans by itself with the skill's own steps as context
+   (`Runtime::plan_on_request`, once per task; the task shows `PLANNING` meanwhile and the plan is appended to the
+   tool result). The planner model turns the request into steps; steps that don't depend on each other carry the
+   same `"parallel": "p1"` group. After repeated failures the loop re-plans on its own.
 2. **Execute**: the executor model calls tools step by step. Read-only tools in one turn run concurrently; a parallel
    group runs as sub-agents (`delegate`, up to 8), each with its own browser tab ("lane", broker page
    `<task>~sub<n>`), and the executor continues when all have reported. `llm_concurrency` (Settings, default 4) caps
@@ -76,6 +81,25 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
    `WAITING_EXTERNAL` for a takeover (the user drives the live browser, then hands it back).
 5. **Answer**: an outcome check makes sure the answer doesn't claim actions that didn't happen; memory extraction
    proposes facts and profile fields for the user to confirm.
+
+## Streamed answers
+
+The executor's model calls are `stream: true` (`stream_options.include_usage` for the token counts) when Settings
+`stream_answers` is on (the default; API only). `llm::SseAssembler` puts the `chat.completion.chunk` lines back into
+the plain reply shape, so the parsing after the call is the same; `LlmTransport::send_chunked` hands every body piece
+to it as it arrives (test doubles feed the whole body at once). The visible text so far — never the reasoning: a
+`reasoning_content` part is dropped and a `<think>…</think>` block at the start of the content is held back whole until
+it closes — goes through `ChatOpts::stream_to`; `Runtime::executor_opts` forwards it as `answer_delta` events
+(`task_id`, `conv_id`, `text`, `calls`), published and not stored, at most ten a second, and the loop awaits the
+forwarder before acting on the reply so no delta trails the stored message. The page keeps one live bubble under the
+running task's card (`onDelta`, `liveBubble` in `web/app.js`), hides it for a turn that carries tool calls (commentary,
+not an answer), and drops it when the task finishes, when the stored message takes over — an answer the runtime then
+rewrites (cut off, wrong language, an outcome notice) simply replaces the draft. An endpoint that rejects
+`stream_options` gets the request without it; one that rejects `stream` gets the plain request. Planner, sub-agent,
+memory and title calls never stream. Whether the text really arrives as it is written depends on the provider: the
+e2e gateway streams its `openai-codex/…` and `xai/…` models chunk by chunk but hands an `openai/…` reply over in one
+piece at the end (checked with a raw request, compression off), which then shows as a single delta — correct, just
+not live. `tests/stream_e2e.py`, `tests/stream_ui.py`, `tests/stream_real.py`.
 
 ## Google Drive
 

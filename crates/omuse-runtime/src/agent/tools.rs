@@ -217,6 +217,12 @@ parallel: steps that share a label (\"p1\") are independent and run at the same 
                 "id": s, "description": s, "status": {"type": "string", "enum": ["pending", "running", "done", "failed", "skipped"]},
                 "parallel": s}}},
              "objective": s, "note": s}), &["steps"]),
+        fn_("plan_task", "交给规划模型制定分步计划：多个相互依赖的步骤、多个来源或候选、子智能体、按顺序审批的操作或技能才需要；\
+能直接回答或几次调用就能查到的不用 Hand the request to the planning model for a step-by-step plan. Only for work that takes \
+several dependent steps, several sources or candidates to compare, sub-agents, approvals in sequence or a skill — not for a \
+question you can answer now or a lookup of a few calls. Once per task (load_skill plans by itself); afterwards update_plan. \
+objective: the job in one sentence; notes: what you already know or found and any constraints.",
+            json!({"objective": s, "notes": s}), &["objective"]),
         fn_("files_list", &format!("列出工作区文件 List files in the workspace (Olares Files → Data/{}/workspace).", app_id), json!({"path": s}), &[]),
         fn_("files_read", "读取工作区文件的文字（文本/Markdown/CSV/JSON/PDF/Word/Excel/PowerPoint）Read the text of a workspace file \
 (text, Markdown, CSV, JSON, PDF, Word .docx, Excel .xlsx, PowerPoint .pptx).", json!({"path": s, "max_chars": {"type": "integer"}}), &["path"]),

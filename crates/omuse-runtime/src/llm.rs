@@ -289,8 +289,26 @@ impl HttpResponse {
 
 /// The HTTP layer. `Err(text)` is a transport failure (`"ConnectError: ..."`, `"TimeoutException: ..."`), which is
 /// retried like Python's `httpx.TransportError` / `httpx.TimeoutException`.
+/// Where [`LlmTransport::send_chunked`] hands each piece of a streamed body.
+pub type ChunkSink = Box<dyn FnMut(&[u8]) + Send>;
+
 pub trait LlmTransport: Send + Sync {
     fn send(&self, req: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, String>>;
+
+    /// `send` for a streaming request: `on_chunk` gets every piece of the body as it arrives (the text of the
+    /// response still holds the whole body at the end). The default feeds the finished body in one piece, which
+    /// keeps test doubles simple.
+    fn send_chunked(
+        &self,
+        req: HttpRequest,
+        mut on_chunk: ChunkSink,
+    ) -> BoxFuture<'_, Result<HttpResponse, String>> {
+        Box::pin(async move {
+            let r = self.send(req).await?;
+            on_chunk(r.text.as_bytes());
+            Ok(r)
+        })
+    }
 }
 
 /// The real transport (reqwest, rustls, no proxy). Like the Python client (a new `httpx.AsyncClient` per call), every
@@ -320,6 +338,43 @@ impl ReqwestTransport {
 }
 
 impl LlmTransport for ReqwestTransport {
+    fn send_chunked(
+        &self,
+        req: HttpRequest,
+        mut on_chunk: ChunkSink,
+    ) -> BoxFuture<'_, Result<HttpResponse, String>> {
+        Box::pin(async move {
+            use futures_util::StreamExt;
+            let mut b = self.client.post(&req.url);
+            b = b.timeout(Duration::from_secs_f64(req.timeout.max(0.001)));
+            for (k, v) in &req.headers {
+                b = b.header(k.as_str(), v.as_str());
+            }
+            if let Some(j) = &req.json {
+                b = b.json(j);
+            }
+            let r = b.send().await.map_err(describe_reqwest_error)?;
+            let status = r.status().as_u16();
+            let retry_after = r
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let mut body: Vec<u8> = Vec::new();
+            let mut stream = r.bytes_stream();
+            while let Some(piece) = stream.next().await {
+                let piece = piece.map_err(describe_reqwest_error)?;
+                on_chunk(&piece);
+                body.extend_from_slice(&piece);
+            }
+            Ok(HttpResponse {
+                status,
+                retry_after,
+                text: String::from_utf8_lossy(&body).into_owned(),
+            })
+        })
+    }
+
     fn send(&self, req: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, String>> {
         Box::pin(async move {
             let mut b = match req.method {
@@ -391,6 +446,9 @@ pub struct ChatOpts {
     pub task_id: String,
     pub model: Option<String>,
     pub no_think: bool,
+    /// Where the answer goes while the model writes it (`stream: true`): the visible text so far, each time it
+    /// grows. `None` = one request, one reply. See [`StreamDelta`].
+    pub stream_to: Option<tokio::sync::mpsc::UnboundedSender<StreamDelta>>,
 }
 
 impl Default for ChatOpts {
@@ -402,7 +460,176 @@ impl Default for ChatOpts {
             task_id: String::new(),
             model: None,
             no_think: false,
+            stream_to: None,
         }
+    }
+}
+
+/// A step of a streamed reply: the whole visible text so far (never the reasoning: a `reasoning_content` part, or a
+/// `<think>…</think>` block at the start of the content, is held back until the answer proper begins), and whether
+/// the reply carries tool calls (then the text is the model's commentary, not an answer).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StreamDelta {
+    pub text: String,
+    pub tool_calls: bool,
+}
+
+/// Puts a streamed `chat/completions` reply (`data: {…}` lines of `chat.completion.chunk` objects) back together
+/// into the shape of the plain reply, chunk by chunk, so the same parsing serves both.
+#[derive(Debug, Default)]
+pub struct SseAssembler {
+    buf: Vec<u8>,
+    content: String,
+    reasoning: String,
+    /// `(index, id, name, arguments)` in order of first appearance.
+    calls: Vec<(i64, String, String, String)>,
+    finish_reason: Value,
+    usage: Value,
+    done: bool,
+}
+
+impl SseAssembler {
+    /// Feed the next piece of the body (any split: lines, JSON objects and multi-byte characters may be cut).
+    pub fn feed(&mut self, chunk: &[u8]) {
+        self.buf.extend_from_slice(chunk);
+        while let Some(i) = self.buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.buf.drain(..=i).collect();
+            let line = String::from_utf8_lossy(&line);
+            self.line(line.trim_end_matches(['\n', '\r']));
+        }
+    }
+
+    /// The whole body in one go (a server that answered without streaming is parsed the same way).
+    pub fn parse_all(text: &str) -> Self {
+        let mut a = Self::default();
+        a.feed(text.as_bytes());
+        a.feed(b"\n");
+        a
+    }
+
+    fn line(&mut self, line: &str) {
+        let Some(data) = line.strip_prefix("data:") else {
+            return;
+        };
+        let data = data.trim();
+        if data == "[DONE]" {
+            self.done = true;
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(data) else {
+            return;
+        };
+        if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
+            self.usage = u.clone();
+        }
+        let Some(choice) = v
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|c| c.first())
+        else {
+            return;
+        };
+        if let Some(fr) = choice.get("finish_reason").filter(|f| !f.is_null()) {
+            self.finish_reason = fr.clone();
+        }
+        let delta = choice
+            .get("delta")
+            .or_else(|| choice.get("message"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        if let Some(c) = delta.get("content").and_then(Value::as_str) {
+            self.content.push_str(c);
+        }
+        for key in ["reasoning_content", "reasoning"] {
+            if let Some(r) = delta.get(key).and_then(Value::as_str) {
+                self.reasoning.push_str(r);
+            }
+        }
+        if let Some(tcs) = delta.get("tool_calls").and_then(Value::as_array) {
+            for (n, tc) in tcs.iter().enumerate() {
+                let idx = tc
+                    .get("index")
+                    .and_then(omuse_common::util::as_i64)
+                    .unwrap_or(n as i64);
+                let fun = tc.get("function").cloned().unwrap_or(Value::Null);
+                let pos = match self.calls.iter().position(|c| c.0 == idx) {
+                    Some(p) => p,
+                    None => {
+                        self.calls
+                            .push((idx, String::new(), String::new(), String::new()));
+                        self.calls.len() - 1
+                    }
+                };
+                let slot = &mut self.calls[pos];
+                if let Some(id) = tc
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|i| !i.is_empty())
+                {
+                    slot.1 = id.to_string();
+                }
+                if let Some(name) = fun
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|i| !i.is_empty())
+                {
+                    slot.2 = name.to_string();
+                }
+                if let Some(args) = fun.get("arguments").and_then(Value::as_str) {
+                    slot.3.push_str(args);
+                }
+            }
+        }
+    }
+
+    /// The text the user may see now: the content so far, minus a `<think>…</think>` block at its start (held back
+    /// whole until the block closes). `reasoning_content` is never part of it.
+    pub fn visible(&self) -> String {
+        let c = self.content.trim_start();
+        if let Some(rest) = c.strip_prefix("<think>") {
+            match rest.find("</think>") {
+                Some(i) => rest[i + "</think>".len()..].trim_start().to_string(),
+                None => String::new(),
+            }
+        } else {
+            self.content.clone()
+        }
+    }
+
+    /// The live step for [`ChatOpts::stream_to`].
+    pub fn delta(&self) -> StreamDelta {
+        StreamDelta {
+            text: self.visible(),
+            tool_calls: !self.calls.is_empty(),
+        }
+    }
+
+    /// Whether anything of a reply arrived (an empty stream means the server did not stream at all).
+    pub fn saw_data(&self) -> bool {
+        self.done
+            || !self.content.is_empty()
+            || !self.reasoning.is_empty()
+            || !self.calls.is_empty()
+            || !self.finish_reason.is_null()
+    }
+
+    /// The reply in the plain (non-streaming) response shape.
+    pub fn message(&self) -> Value {
+        let mut msg = json!({"role": "assistant", "content": self.content});
+        if !self.reasoning.is_empty() {
+            msg["reasoning_content"] = json!(self.reasoning);
+        }
+        if !self.calls.is_empty() {
+            msg["tool_calls"] = Value::Array(
+                self.calls
+                    .iter()
+                    .map(|(_, id, name, args)| {
+                        json!({"id": id, "type": "function", "function": {"name": name, "arguments": args}})
+                    })
+                    .collect(),
+            );
+        }
+        json!({"choices": [{"index": 0, "message": msg, "finish_reason": self.finish_reason}], "usage": self.usage})
     }
 }
 
@@ -788,7 +1015,12 @@ impl Llm {
         body.insert("messages".into(), Value::Array(messages.to_vec()));
         body.insert("temperature".into(), json!(temperature));
         body.insert("max_tokens".into(), json!(max_tokens));
-        body.insert("stream".into(), json!(false));
+        // the answer streams to `stream_to` while the model writes it; the reply is put together from the chunks
+        let mut streaming = o.stream_to.is_some();
+        body.insert("stream".into(), json!(streaming));
+        if streaming {
+            body.insert("stream_options".into(), json!({"include_usage": true}));
+        }
         let has_tools = tools.is_some_and(|t| !t.is_empty());
         if let Some(t) = tools.filter(|t| !t.is_empty()) {
             body.insert("tools".into(), Value::Array(t.to_vec()));
@@ -839,7 +1071,31 @@ impl Llm {
                 timeout,
                 connect_timeout: 15.0,
             };
-            let r = match self.transport.send(req).await {
+            let assembler = Arc::new(parking_lot::Mutex::new(SseAssembler::default()));
+            let sent = if streaming {
+                let asm = assembler.clone();
+                let tx = o.stream_to.clone();
+                let mut last = StreamDelta::default();
+                self.transport
+                    .send_chunked(
+                        req,
+                        Box::new(move |chunk: &[u8]| {
+                            let mut a = asm.lock();
+                            a.feed(chunk);
+                            let d = a.delta();
+                            if d != last {
+                                if let Some(tx) = &tx {
+                                    let _ = tx.send(d.clone());
+                                }
+                                last = d;
+                            }
+                        }),
+                    )
+                    .await
+            } else {
+                self.transport.send(req).await
+            };
+            let r = match sent {
                 Ok(r) => r,
                 Err(e) => {
                     self.retry(&mut retries, &e, None, &o.task_id, &o.purpose)
@@ -868,6 +1124,13 @@ impl Llm {
                 });
             }
             if r.status < 400 {
+                if streaming {
+                    // the chunks (or the whole body, when the server ignored `stream`) → the plain reply shape
+                    let asm = assembler.lock();
+                    if asm.saw_data() {
+                        break asm.message();
+                    }
+                }
                 match r.json() {
                     Some(d) => break d,
                     None => {
@@ -912,6 +1175,16 @@ impl Llm {
                 } else if body.contains_key("chat_template_kwargs") && !stripped_kwargs {
                     stripped_kwargs = true;
                     body.remove("chat_template_kwargs");
+                    continue;
+                } else if streaming && r.text.contains("stream_options") {
+                    // an endpoint that streams but does not know stream_options: without it (no usage figures)
+                    body.remove("stream_options");
+                    continue;
+                } else if streaming && r.text.contains("stream") {
+                    // an endpoint that cannot stream at all: the plain request
+                    streaming = false;
+                    body.insert("stream".into(), json!(false));
+                    body.remove("stream_options");
                     continue;
                 }
             }
@@ -1450,6 +1723,143 @@ mod tests {
             .unwrap();
         let req = tr.requests.lock()[0].json.clone().unwrap();
         assert!(req.get("service_tier").is_none() && req.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn sse_assembler_rebuilds_the_reply_and_holds_the_reasoning_back() {
+        let lines = [
+            r#"data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"<thi"},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"nk>hm hm</th"},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"ink> 你好"},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"，世界"},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"files_list","arguments":"{\"pa"}}]},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\": \"\"}"}}]},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            r#"data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}"#,
+            "data: [DONE]",
+        ];
+        let body = lines.join("\n\n") + "\n";
+        // fed in odd pieces: lines, JSON and the multi-byte characters get cut anywhere
+        let bytes = body.as_bytes();
+        let mut a = SseAssembler::default();
+        let mut seen: Vec<StreamDelta> = Vec::new();
+        for piece in bytes.chunks(7) {
+            a.feed(piece);
+            let d = a.delta();
+            if seen.last() != Some(&d) {
+                seen.push(d);
+            }
+        }
+        // nothing visible while the <think> block is open; then the answer only; then the tool-call flag
+        assert!(seen
+            .iter()
+            .all(|d| !d.text.contains("think") && !d.text.contains("hm hm")));
+        assert_eq!(seen.first(), Some(&StreamDelta::default()));
+        assert!(seen.iter().any(|d| d.text == "你好" && !d.tool_calls));
+        assert_eq!(
+            seen.last(),
+            Some(&StreamDelta {
+                text: "你好，世界".into(),
+                tool_calls: true
+            })
+        );
+        let m = a.message();
+        assert_eq!(
+            m["choices"][0]["message"]["content"],
+            "<think>hm hm</think> 你好，世界"
+        );
+        assert_eq!(m["choices"][0]["message"]["tool_calls"][0]["id"], "c1");
+        assert_eq!(
+            m["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+            "{\"path\": \"\"}"
+        );
+        assert_eq!(m["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(m["usage"]["prompt_tokens"], 7);
+        assert!(a.saw_data());
+        // reasoning_content is never visible; a plain body is not SSE
+        let mut b = SseAssembler::default();
+        b.feed(b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"why\"}}]}\n");
+        assert_eq!(b.visible(), "");
+        b.feed(b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n");
+        assert_eq!(b.visible(), "ok");
+        assert_eq!(
+            b.message()["choices"][0]["message"]["reasoning_content"],
+            "why"
+        );
+        assert!(!SseAssembler::parse_all("{\"choices\": []}").saw_data());
+    }
+
+    #[tokio::test]
+    async fn streaming_request_delivers_the_text_as_it_comes_and_falls_back_when_refused() {
+        let settings: SettingsFn =
+            Arc::new(|| json!({"model_base_url": "http://x/v1", "model_name": "m"}));
+        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"<think>x</think>Hel\"},\"finish_reason\":null}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}\n\n\
+data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n\ndata: [DONE]\n";
+        let tr = Arc::new(Scripted {
+            responses: Mutex::new(vec![Ok(HttpResponse {
+                status: 200,
+                retry_after: None,
+                text: sse.to_string(),
+            })]),
+            requests: Mutex::new(vec![]),
+        });
+        let llm = Llm::with_transport(settings.clone(), None, None, tr.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let o = ChatOpts {
+            stream_to: Some(tx),
+            ..ChatOpts::default()
+        };
+        let r = llm
+            .chat(&[json!({"role": "user", "content": "hi"})], None, &o)
+            .await
+            .unwrap();
+        assert_eq!((r.content.as_str(), r.reasoning.as_str()), ("Hello", "x"));
+        assert_eq!(r.finish_reason, "stop");
+        assert_eq!(r.usage["completion_tokens"], 2);
+        drop(o);
+        let mut got = Vec::new();
+        while let Some(d) = rx.recv().await {
+            got.push(d.text);
+        }
+        assert_eq!(got, vec!["Hello".to_string()]); // the test double hands the body over in one piece
+        let req = tr.requests.lock()[0].json.clone().unwrap();
+        assert_eq!(req["stream"], true);
+        assert_eq!(req["stream_options"], json!({"include_usage": true}));
+        // refused by name: stream_options dropped first, then streaming itself; the plain reply still parses
+        let tr = Arc::new(Scripted {
+            responses: Mutex::new(vec![
+                resp(
+                    400,
+                    json!({"error": {"message": "unknown field stream_options"}}),
+                    None,
+                ),
+                resp(
+                    400,
+                    json!({"error": {"message": "stream is not supported"}}),
+                    None,
+                ),
+                resp(200, ok_body(), None),
+            ]),
+            requests: Mutex::new(vec![]),
+        });
+        let llm = Llm::with_transport(settings, None, None, tr.clone());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let o = ChatOpts {
+            stream_to: Some(tx),
+            ..ChatOpts::default()
+        };
+        let r = llm
+            .chat(&[json!({"role": "user", "content": "hi"})], None, &o)
+            .await
+            .unwrap();
+        assert_eq!(r.content, "fine");
+        let reqs = tr.requests.lock();
+        let j = |i: usize| reqs[i].json.clone().unwrap();
+        assert!(j(0).get("stream_options").is_some());
+        assert!(j(1).get("stream_options").is_none() && j(1)["stream"] == true);
+        assert!(j(2)["stream"] == false && j(2).get("stream_options").is_none());
     }
 
     #[tokio::test]

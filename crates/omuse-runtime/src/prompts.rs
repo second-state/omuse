@@ -348,6 +348,16 @@ fn plan_steps(plan: Option<&Value>) -> Option<&Vec<Value>> {
         .filter(|s| !s.is_empty())
 }
 
+/// The plan as the executor reads it ("Plan — objective: …" and one line per step); "" when it has no steps.
+pub fn plan_text(plan: &Value) -> String {
+    let Some(steps) = plan_steps(Some(plan)) else {
+        return String::new();
+    };
+    let mut lines = vec![format!("Plan — objective: {}", get_str(plan, "objective"))];
+    lines.extend(steps.iter().map(step_line));
+    lines.join("\n")
+}
+
 /// The next stage of the plan when it is a parallel group: the ids of the open steps (pending / running) that share
 /// the label of the first open step, when there are at least two of them.
 pub fn next_parallel_stage(plan: Option<&Value>) -> Option<(String, Vec<String>)> {
@@ -718,7 +728,10 @@ pub fn executor_system(p: &ExecutorPrompt) -> String {
     let mut plan_txt = if p.plan.is_some() {
         "(no plan yet)".to_string()
     } else {
-        "(the current plan and its progress are in the latest Status note at the end of the conversation; update it with update_plan)".to_string()
+        "(none until one is needed: you see every request first — a greeting, a question you can answer from what you know or \
+a lookup of a few calls needs no plan, just do it; call plan_task for work that takes several dependent steps, several sources \
+or candidates, sub-agents, approvals in sequence or a skill — load_skill makes the plan by itself. The plan and its progress \
+are then in the latest Status note at the end of the conversation; update it with update_plan)".to_string()
     };
     if let Some(steps) = plan_steps(p.plan.as_ref()) {
         let plan = p.plan.as_ref().unwrap();
@@ -792,6 +805,7 @@ Current time: {now_line}
 {security_rules}
 
 ## Working style
+- You decide first whether a request needs a plan. Conversation, advice, explanations, writing, and lookups of a few tool calls: answer directly, no plan. Several dependent steps, several sources or candidates to compare, sub-agents, approvals in sequence, or a skill: call plan_task (or load_skill, which plans by itself) before the work, then follow the plan.
 - Be efficient. Stop as soon as you have enough information to answer the user's request well. Do not chase perfect details (e.g. an exact URL, a precise number) through extra pages or APIs unless the user explicitly needs it — report what you have and note anything uncertain.
 - Usually 3–8 tool calls are enough for a simple lookup. If you are past 10 calls on a simple lookup, wrap up with what you have — but if the user asked for a specific number of items (e.g. {ex_items}) and you have not found them all yet, do not stop short: hand the remaining ones to delegate (a sub-agent per item/sub-question — its calls do not count against yours), then compile the full result yourself.
 - The step / time / web-call limits are internal safeguards so you stay efficient; they are NOT a quota the user is given. Never tell the user they have a {ex_quota} or cite a number of allowed calls. If you must stop before fully finishing, say plainly what you delivered and what is left, and offer to continue — do not explain it as a budget.
@@ -882,7 +896,7 @@ followed up over days, e.g. "until John replies", "keep … under …"),
 library (library_search / library_get: reports the user had researched earlier; library_list shows the subjects),
 plus any MCP connectors the user added (tools named mcp_<server>__<tool>, e.g. Notion, Slack, GitHub — use tool_hint "mcp:<server>").
 
-Given the user's request, produce a short, concrete plan. Output ONLY a JSON object:
+The executor model has already looked at the request and decided it needs a plan (it answers simple requests itself); its notes, or the skill it loaded, come as "Context from the executor" — follow a loaded skill's own steps, applied to this request. Given the user's request, produce a short, concrete plan. Output ONLY a JSON object:
 {"objective": "<one sentence>", "steps": [{"id": "s1", "description": "<imperative, specific>", "tool_hint": "<tool family>", "risk": "read|write|send", "parallel": "<group label or omit>"}]}
 
 Rules: 2–7 steps for real tasks; for pure conversation or a single quick answer return {"objective": "...", "steps": []}.
@@ -931,7 +945,7 @@ pub fn planner_user(
     }
     if !state.is_empty() {
         s += &format!(
-            "\nCurrent progress / problems (re-plan from here):\n{}\n",
+            "\nContext from the executor — what it knows, the skill it loaded, or the progress and problems so far (plan from here):\n{}\n",
             state
         );
     }
@@ -1111,6 +1125,27 @@ mod tests {
             "RULE\n\nYou are a focused sub-agent of OMuse with the role: researcher."
         ));
         assert!(sa.contains("Current time: now") && sa.ends_with(SECURITY_RULES));
+    }
+
+    #[test]
+    fn plan_text_lists_the_steps_or_is_empty() {
+        let plan = json!({"objective": "o", "steps": [
+            {"id": "s1", "description": "mail", "status": "done"},
+            {"id": "s2", "description": "hotel", "status": "pending", "parallel": "p1"}]});
+        assert_eq!(
+            plan_text(&plan),
+            "Plan — objective: o\n[x] s1: mail\n[ ] s2: hotel ‖ parallel:p1"
+        );
+        assert_eq!(plan_text(&json!({"objective": "o", "steps": []})), "");
+        assert_eq!(plan_text(&json!({})), "");
+        // the executor without a plan is told to decide first (plan_task / load_skill)
+        let sysp = executor_system(&ExecutorPrompt {
+            language: "en".into(),
+            ..Default::default()
+        });
+        assert!(sysp.contains("call plan_task for work that takes several dependent steps"));
+        assert!(sysp.contains("You decide first whether a request needs a plan."));
+        assert!(PLANNER_SYSTEM.contains("The executor model has already looked at the request"));
     }
 
     #[test]

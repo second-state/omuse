@@ -420,6 +420,7 @@ async fn plan_llm(
             task_id: String::new(),
             model: None,
             no_think: true,
+            stream_to: None,
         };
         let data = match llm
             .chat(&[json!({"role": "user", "content": prompt})], None, &opts)

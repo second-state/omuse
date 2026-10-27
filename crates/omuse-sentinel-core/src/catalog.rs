@@ -574,7 +574,7 @@ mod tests {
     #[test]
     fn table_shape() {
         let t = builtin_tools();
-        assert_eq!(t.len(), 55);
+        assert_eq!(t.len(), 63); // 55 before the eight Drive tools
         let keys: Vec<&String> = t.keys().collect();
         assert_eq!(keys[0], "gmail_search");
         assert_eq!(keys[keys.len() - 1], "phone_hangup");

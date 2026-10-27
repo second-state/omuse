@@ -831,6 +831,7 @@ impl Golden {
                 task_id: tid.clone(),
                 model: None,
                 no_think: true,
+                stream_to: None,
             };
             let msgs = [
                 json!({"role": "system", "content": sysp}),
