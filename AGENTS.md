@@ -137,6 +137,8 @@ scenario (`tests/parallel_steps_e2e.py`).
   `<dir>/market/*.webp` and `overview.png` into `deploy/market/assets`. Rebuild the test image first.
 - Image smoke test: `tests/docker_image_smoke.sh <image>`; set `OMUSE_VERSION`
   to the tag to also check the reported version.
+- Sapphire trip claim: `tests/csr_claim_e2e.py` (the booking, charge and refund from mail in one turn, the airline
+  letter drafted, the packet PDF, the portal form filled and handed over for Submit, reminders).
 - Streamed answers: `tests/stream_e2e.py` (answer_delta events, reasoning held back, tool-call turns flagged, the
   setting off), `tests/stream_ui.py` (the live bubble while the task runs); `tests/stream_real.py` (not in the default
   list, billed) does one request against the gateway in the e2e env file and, when that provider streams as it
