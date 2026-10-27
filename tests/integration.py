@@ -2,6 +2,7 @@
 import sys, time, httpx
 
 B = "http://127.0.0.1:8080"
+LLM = "http://127.0.0.1:8090"
 H = {"X-Persona-UI": "1"}
 c = httpx.Client(timeout=60, trust_env=False)
 fails = []
@@ -24,7 +25,9 @@ def check(name, cond, info=""):
 # 1 plain
 t = wait(chat("你好"), {"COMPLETED", "FAILED"})
 check("plain chat completes", t["status"] == "COMPLETED" and "普通回答" in t["result"] and "<think>" not in t["result"], t)
-check("planner produced plan", len(t["plan"].get("steps", [])) == 2, t["plan"])
+check("a plain chat makes no plan (the executor answered it directly, no planner call)",
+      not (t.get("plan") or {}).get("steps") and not any(e["type"] == "plan" for e in t["events"]) and
+      c.get(LLM + "/calls_for", params={"marker": "你好"}).json(), (t.get("plan"), [e["type"] for e in t["events"]]))
 
 # 2 browse + risky click -> approval
 tid = chat("BROWSE the shop")

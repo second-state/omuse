@@ -1,7 +1,8 @@
 """Scripted OpenAI-compatible server for integration tests.
 
 Behaviour is chosen from the latest user goal text:
- - planner calls (system prompt contains 'planning module') -> fixed JSON plan
+ - planner calls (system prompt contains 'planning module') -> fixed JSON plan; the planner only runs when the executor
+   asks (plan_task) or loads a skill — a plain answer makes no plan
  - 'SEND' goal  -> calls gmail_send, then final answer
  - 'BROWSE' goal -> browser_navigate to TEST_PAGE, click the Submit button, final
  - 'INJECT' goal -> browser_navigate to injection page, then try gmail_send to attacker
@@ -147,7 +148,41 @@ def last_auth():
 
 @app.post("/v1/chat/completions")
 async def chat(req: Request):
+    """The scripted reply; as `data:` chunks (content in small pieces, tool calls in two fragments, usage last) when the
+    request says `stream: true` — slowly (50 ms a piece) for STREAMSLOW goals so a page can be watched filling up."""
     b = await req.json()
+    out = await _chat(req, b)
+    if isinstance(out, dict) and b.get("stream"):
+        from fastapi.responses import StreamingResponse
+        goal = "\n".join(str(m["content"]) for m in b.get("messages") or [] if m.get("role") == "user")
+        return StreamingResponse(sse(out, 0.05 if "STREAMSLOW" in goal else 0.001), media_type="text/event-stream")
+    return out
+
+
+async def sse(out, delay):
+    import asyncio
+    msg = out["choices"][0]["message"]
+    fr = out["choices"][0].get("finish_reason")
+
+    def chunk(delta, finish=None):
+        return "data: " + json.dumps({"id": "chatcmpl-fake", "object": "chat.completion.chunk", "choices": [
+            {"index": 0, "delta": delta, "finish_reason": finish}]}, ensure_ascii=False) + "\n\n"
+    yield chunk({"role": "assistant"})
+    content = msg.get("content") or ""
+    for i in range(0, len(content), 16):
+        yield chunk({"content": content[i:i + 16]})
+        await asyncio.sleep(delay)
+    for i, t in enumerate(msg.get("tool_calls") or []):
+        args = t["function"]["arguments"]
+        half = len(args) // 2
+        yield chunk({"tool_calls": [{"index": i, "id": t["id"], "type": "function", "function": {"name": t["function"]["name"], "arguments": args[:half]}}]})
+        yield chunk({"tool_calls": [{"index": i, "function": {"arguments": args[half:]}}]})
+    yield chunk({}, fr)
+    yield "data: " + json.dumps({"id": "chatcmpl-fake", "object": "chat.completion.chunk", "choices": [], "usage": out.get("usage") or {}}) + "\n\n"
+    yield "data: [DONE]\n\n"
+
+
+async def _chat(req: Request, b: dict):
     CALLS.append(b)
     AUTH.append(req.headers.get("authorization") or "")
     if b.get("model") == "missing-model":
@@ -159,9 +194,9 @@ async def chat(req: Request):
         return JSONResponse({"error": {"message": "image input is not supported by this model"}}, status_code=400)
     sys = msgs[0]["content"] if msgs and msgs[0]["role"] == "system" else ""
     # retry policy (retry_e2e.py): the first calls of a task fail, then it works
-    goal_txt = next((str(m["content"]) for m in reversed(msgs) if m["role"] == "user"), "")
+    goal_txt = "\n".join(str(m["content"]) for m in msgs if m["role"] == "user")   # the goal (the last user message is the status note)
     m = re.search(r"RETRY(429|503)x(\d)", goal_txt)
-    if m and not sys.startswith("You name conversations"):
+    if m and b.get("tools"):   # the executor's own calls (they carry the tool list; titles and memory extraction do not)
         from fastapi.responses import JSONResponse
         key = m.group(0); n = RETRY.get(key, 0)
         if n < int(m.group(2)):
@@ -266,7 +301,9 @@ async def chat(req: Request):
         hosts = ["shop.test", "opentable.test", "shop.test"]   # the two public test hosts (loopback addresses are refused)
         jobs = [{"role": "researcher", "step": f"s{i + 1}",
                  "task": f"SUBTASK open http://{h}:8094/slow?s=2&name=Hotel{'ABC'[i]} and report the page title"} for i, h in enumerate(hosts)]
-        if n == 0:
+        if n == 0:   # a comparison of three candidates is multi-step work: the executor asks for a plan first
+            return reply("", [tc("plan_task", {"objective": "Compare three hotels", "notes": "one sub-agent per hotel"})])
+        if n == 1:
             if "PARALLELBATCH" in goal:
                 return reply("", [tc("delegate", {"tasks": jobs})])
             return reply("", [tc("delegate", j) for j in jobs])
@@ -309,7 +346,15 @@ async def chat(req: Request):
         if n == 0:
             return reply("", [tc("load_skill", {"name": goal.split("LOADSKILL")[1].split()[0]})])
         return reply("LOADED=" + last_tool[:120])
-    if "LANGCHECK" in goal:   # report what language the agent's instructions are in
+    if "STREAMTEST" in goal or "STREAMSLOW" in goal:   # stream_e2e.py / stream_ui.py: a long answer after hidden reasoning
+        if "STREAMCALL" in goal and n == 0:   # a turn with commentary AND a tool call first
+            return reply("Let me look at the workspace first.", [tc("files_list", {"path": ""})])
+        return reply("<think>the user wants a story; I will keep it short and warm</think>" + STREAM_STORY)
+    if "fold test" in goal and n == 0:   # chat_fold_ui.py: a task with a plan, so the finished card has something to fold
+        return reply("", [tc("plan_task", {"objective": "fold test"})])
+    if "LANGCHECK" in goal:   # report what language the agent's instructions are in (and the planner's, via plan_task)
+        if n == 0:
+            return reply("", [tc("plan_task", {"objective": "LANGCHECK"})])
         import re as _re
         cjk = _re.compile(r"[\u3400-\u9fff]")
         sysm = msgs[0]["content"] if msgs and msgs[0]["role"] == "system" else ""
@@ -777,8 +822,10 @@ async def chat(req: Request):
                      "参考链接：https://example.com/a/very/long/path/that/keeps/going/and/going/without/any/spaces/at/all/for/testing")
     if "inbox this week" in goal:
         if n == 0:
-            return reply("", [tc("notion_search", {"query": "plan"})])
+            return reply("", [tc("plan_task", {"objective": "Triage this week's inbox and prepare replies"})])
         if n == 1:
+            return reply("", [tc("notion_search", {"query": "plan"})])
+        if n == 2:
             return reply("", [tc("notion_get_page", {"page_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"})])
         return reply("I went through **42 emails** from the last 7 days. Three need you:\n\n"
                      "| # | From | Subject | Suggested action |\n|---|---|---|---|\n"
@@ -791,8 +838,10 @@ async def chat(req: Request):
                      "Want me to send both replies now? I'll ask Sentinel for approval first.")
     if "Q4 plan summary" in goal:
         if n == 0:
-            return reply("", [tc("notion_get_page", {"page_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"})])
+            return reply("", [tc("plan_task", {"objective": "Share the Q4 plan with the team on Slack"})])
         if n == 1:
+            return reply("", [tc("notion_get_page", {"page_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"})])
+        if n == 2:
             return reply("", [tc("slack_send_message", {"channel": "#general", "text": "📌 *Q4 plan* — we ship OMuse 0.2 in October. Goals: 1) launch on Olares Market 2) 100 beta users 3) Notion & Slack integrations. Full plan in Notion."})])
         return reply("Posted to #general ✓")
     if "Get John to confirm" in goal and "GOAL" not in goal and "goal_update" in json.dumps(b.get("tools") or []):
@@ -849,7 +898,8 @@ async def calls_for(marker: str):
         if any(marker in str(m.get("content")) for m in ms if m.get("role") == "user") and ms and ms[0].get("role") == "system" \
                 and "planning module" not in str(ms[0].get("content")):
             out.append({"system": ms[0]["content"], "last": str(ms[-1].get("content")), "n": len(ms),
-                        "tools": "\n".join(str(m.get("content")) for m in ms if m.get("role") == "tool")})
+                        "tools": "\n".join(str(m.get("content")) for m in ms if m.get("role") == "tool"),
+                        "stream": b.get("stream"), "stream_options": b.get("stream_options"), "has_tools": bool(b.get("tools"))})
     return out
 
 
@@ -1159,6 +1209,10 @@ def _upload_path(sys, goal, ext):
 
 
 # marketing_shots.py: natural prompts (no test markers in the pictures) with presentable answers
+STREAM_STORY = ("Once upon a time, in a small town by the sea, there lived a lighthouse keeper named Mara. " * 6 +
+                "Every evening she climbed the one hundred and twelve steps, lit the lamp, and watched the fishing boats come home. "
+                "One stormy night a boat did not return, and Mara kept the lamp burning until dawn, when the boat finally appeared on the horizon. "
+                "The fishermen said the light had guided them home. THE END.")
 SHOW_TRIP = "What's on my Tokyo trip this week? Check my mail and calendar."
 SHOW_CITY = "We're moving to Shanghai for work with two kids. Where do expat families live, and what does rent cost?"
 SHOW_SGAC = "Fill in my Singapore arrival card for Sunday's flight."

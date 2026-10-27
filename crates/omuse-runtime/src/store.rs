@@ -110,6 +110,7 @@ pub fn default_settings(cfg: &Config) -> Value {
         "fast_mode": false,      // the user's own model: send service_tier "fast" (system models: [model] fast)
         "reasoning_effort": "",  // the user's own model: reasoning_effort ("" = not sent; system: [model] reasoning_effort)
         "llm_timeout": 600,
+        "stream_answers": true,  // the answer shows in the chat while the model writes it (answer_delta events)
     })
 }
 

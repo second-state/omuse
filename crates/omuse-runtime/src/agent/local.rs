@@ -72,6 +72,41 @@ impl Runtime {
         Box::pin(self.local_inner(t, name, a))
     }
 
+    /// Whether the task already has a plan with steps.
+    fn has_plan(&self, task_id: &str) -> bool {
+        self.store
+            .task(task_id)
+            .ok()
+            .flatten()
+            .is_some_and(|t| t.get("plan").is_some_and(|p| !arr(p, "steps").is_empty()))
+    }
+
+    /// The plan for a task that just loaded a skill, appended to the skill text: the planner gets the skill's own
+    /// steps and plans them for this request. "" when the task already has a plan, planning was cancelled, or the
+    /// planner saw nothing to plan.
+    async fn skill_plan(&self, task_id: &str, skill: &str, text: &str) -> String {
+        if self.has_plan(task_id) {
+            return String::new();
+        }
+        let state = format!(
+            "The executor loaded the skill 「{}」 for this request. Plan the steps the skill prescribes, applied to this \
+request — keep it short and leave out what the request does not need. The skill sheet:\n{}",
+            skill,
+            take_chars(text, 6000)
+        );
+        match self.plan_on_request(task_id, &state).await {
+            Some(plan) => {
+                let txt = prompts::plan_text(&plan);
+                if txt.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n\n(System) {txt}\n(Follow it and mark progress with update_plan; the Status note at the end of each turn carries it.)")
+                }
+            }
+            None => String::new(),
+        }
+    }
+
     async fn local_inner(&self, t: &Value, name: &str, a: &Value) -> R {
         let tid = get_str(t, "id");
         match name {
@@ -150,6 +185,31 @@ impl Runtime {
                     .map_err(stores_err)?;
                 self.event(&tid, "plan", plan).await;
                 Ok("计划已更新 plan updated".into())
+            }
+            "plan_task" => {
+                // the executor looked at the request first and decided it needs a plan (a plain answer or a few calls
+                // would not); once per task — afterwards update_plan changes the plan
+                if self.has_plan(&tid) {
+                    return Ok("ERROR: 这个任务已有计划，请用 update_plan 修改 (this task already has a plan: change it with update_plan; the current one is in the Status note)".into());
+                }
+                let objective = take_chars(sget(a, "objective").trim(), 300).to_string();
+                let notes = take_chars(sget(a, "notes").trim(), 1500).to_string();
+                let mut state = format!(
+                    "The executor looked at the request first and asks for a plan. The job as it sees it: {}",
+                    if objective.is_empty() { "(not stated)" } else { &objective }
+                );
+                if !notes.is_empty() {
+                    state += &format!("\nWhat it already knows or found, and constraints: {notes}");
+                }
+                let Some(plan) = self.plan_on_request(&tid, &state).await else {
+                    return Ok("ERROR: 规划已取消 (planning cancelled)".into());
+                };
+                let txt = prompts::plan_text(&plan);
+                Ok(if txt.is_empty() {
+                    "规划模型认为不需要分步计划，直接完成并回答 (The planner found nothing to plan: do it and answer directly.)".into()
+                } else {
+                    format!("{txt}\n(Follow it and mark progress with update_plan; the Status note at the end of each turn carries it.)")
+                })
             }
             "files_list" => {
                 let p = self.path(&sget(a, "path"))?;
@@ -1122,15 +1182,22 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                         let off = crate::skills::front_matter(&text)
                             .get("browser")
                             .is_some_and(|v| v.eq_ignore_ascii_case("off"));
-                        let mut inner = self.inner.lock();
+                        {
+                            let mut inner = self.inner.lock();
+                            if off {
+                                inner.no_browser.insert(tid.clone(), want.clone());
+                            } else {
+                                inner.no_browser.remove(&tid);
+                            }
+                        }
+                        // a skill is a multi-step job: the planner makes the plan from the skill's own steps (once per task)
+                        let plan = self.skill_plan(&tid, &want, &text).await;
                         if off {
-                            inner.no_browser.insert(tid.clone(), want.clone());
                             return Ok(format!(
-                                "{text}\n\n(System) This skill answers without the browser: the browser tools and sub-agents (delegate) are off for the rest of this task. Use this sheet and data tools (market_data, connectors); a task that needs a website goes to a skill made for it."
+                                "{text}\n\n(System) This skill answers without the browser: the browser tools and sub-agents (delegate) are off for the rest of this task. Use this sheet and data tools (market_data, connectors); a task that needs a website goes to a skill made for it.{plan}"
                             ));
                         }
-                        inner.no_browser.remove(&tid);
-                        return Ok(text);
+                        return Ok(format!("{text}{plan}"));
                     }
                     // a reference file the skill ships beside its SKILL.md (knowledge tables, templates): the
                     // skill's own folder only, text only, capped

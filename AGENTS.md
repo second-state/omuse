@@ -111,7 +111,9 @@ adds an `approval_auto` event and the same chat card a manual approval gets. `te
 
 ### Parallel steps and sub-agents
 
-The planner (`prompts::PLANNER_SYSTEM`) gives steps that do not depend on each other the same `parallel` label; the
+The planner runs only when the executor asks for a plan (`plan_task`) or loads a skill (`Runtime::plan_on_request`),
+not before every turn; simple requests are answered by the executor directly (`tests/integration.py` checks that a plain
+chat makes no plan). The planner (`prompts::PLANNER_SYSTEM`) gives steps that do not depend on each other the same `parallel` label; the
 status note (`prompts::parallel_hint`) tells the executor to do the next such group in one turn. The executor loop
 (`agent/runtime.rs`) runs a turn's calls that are all in `tools::PARALLEL_TOOLS` (sub-agents and reads that never touch
 the task's browser page) at the same time, with `no_ask`, and appends the results in call order; everything else runs
@@ -135,6 +137,10 @@ scenario (`tests/parallel_steps_e2e.py`).
   `<dir>/market/*.webp` and `overview.png` into `deploy/market/assets`. Rebuild the test image first.
 - Image smoke test: `tests/docker_image_smoke.sh <image>`; set `OMUSE_VERSION`
   to the tag to also check the reported version.
+- Streamed answers: `tests/stream_e2e.py` (answer_delta events, reasoning held back, tool-call turns flagged, the
+  setting off), `tests/stream_ui.py` (the live bubble while the task runs); `tests/stream_real.py` (not in the default
+  list, billed) does one request against the gateway in the e2e env file and, when that provider streams as it
+  writes (`OMUSE_E2E_MODELS=alt` picks one that does), checks the deltas arrive well before the answer.
 - Google Drive: `tests/drive_connect_e2e.py` (one Google sign-in for Calendar + Drive), `drive_cleanup_e2e.py`,
   `drive_video_e2e.py` (ffmpeg in the test image), `drive_storybook_e2e.py`; the Drive fake is in `tests/fake_apps.py`.
 - Image and video generation: `tests/imagegen_e2e.py` and `tests/videogen_e2e.py` (scripted, in the default list);

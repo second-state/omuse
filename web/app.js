@@ -444,6 +444,10 @@ function renderThread(thread) {
       }
     }
   }
+  if (S.live && S.live.conv_id === S.conv && S.live.text) {   // the answer being written right now
+    const lt = S.tasks[S.live.task_id];
+    if (lt && !/COMPLETED|FAILED|CANCELLED/.test(lt.status)) msgs.append(liveBubble(S.live));
+  }
   thread.insertBefore(msgs, oldComp || null);
   const compKey = `${S.conv || ''}|${d && d.messages.length ? 1 : 0}`;
   if (oldComp && oldComp.dataset.key === compKey) {
@@ -2645,10 +2649,34 @@ function langField(s, f) {
 }
 
 // ================================================================== live updates
+// The answer as the model writes it (answer_delta events: the visible text so far, never the reasoning): one live
+// bubble under the running task's card, replaced by the stored message when the task finishes. A turn that carries
+// tool calls is commentary, not an answer, so its text is not shown.
+function liveBubble(live) {
+  return h('div', { class: 'msg assistant live', id: 'live-' + live.task_id }, h('div', { class: 'bubble' }, mdEl(live.text)));
+}
+function onDelta(ev) {
+  const t = S.tasks[ev.task_id];
+  if (t && /COMPLETED|FAILED|CANCELLED/.test(t.status)) return;   // the stored answer is on its way
+  S.live = { task_id: ev.task_id, conv_id: ev.conv_id, text: ev.calls ? '' : (ev.text || '') };
+  if (S.view !== 'chat' || ev.conv_id !== S.conv) return;
+  const msgs = $('.thread .msgs'); if (!msgs) return;
+  let el = document.getElementById('live-' + ev.task_id);
+  if (!S.live.text) { if (el) el.remove(); return; }
+  const near = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 80;
+  if (!el) {
+    el = liveBubble(S.live);
+    const card = document.getElementById('tc-' + ev.task_id);
+    if (card && card.parentElement && card.parentElement.parentElement === msgs) card.parentElement.after(el); else msgs.append(el);
+  } else el.firstChild.replaceChildren(mdEl(S.live.text));
+  if (near) msgs.scrollTop = msgs.scrollHeight;
+}
 function onEvent(ev) {
   if (ev.kind === 'ping') return;
+  if (ev.kind === 'answer_delta') { onDelta(ev); return; }
   if (ev.kind === 'task_update') {
     const t = ev.task; mergeTasks({ [t.id]: t });
+    if (S.live && S.live.task_id === t.id && /COMPLETED|FAILED|CANCELLED/.test(t.status)) { S.live = null; const le = document.getElementById('live-' + t.id); if (le) le.remove(); }
     renderNav();
     const card = document.getElementById('tc-' + t.id);
     if (card && S.view === 'chat') { const fresh = taskCard(S.tasks[t.id]); const det = card.querySelector('details.trace'); const wasOpen = det && det.open;

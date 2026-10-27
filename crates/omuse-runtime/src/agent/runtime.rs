@@ -1547,6 +1547,84 @@ work around it; write the final answer saying what you would do and how far you 
         json!({"objective": take_chars(if obj.is_empty() { &goal } else { &obj }, 300), "steps": steps, "version": 1})
     }
 
+    /// The executor's call options. With Settings `stream_answers` on (the default) the answer streams to the page
+    /// while the model writes it: `answer_delta` events (`task_id`, `conv_id`, `text` = the visible text so far,
+    /// `calls` = the turn carries tool calls, so the text is commentary), published and not stored, at most ten a
+    /// second with the newest text. Reasoning is never streamed (`llm::SseAssembler::visible`), so the text starts
+    /// when the answer proper does. The returned task ends once the call is over and the last text is out: the loop
+    /// awaits it before acting on the reply, so no delta trails the stored message.
+    fn executor_opts(
+        &self,
+        task_id: &str,
+        conv_id: &str,
+        s: &Value,
+    ) -> (ChatOpts, Option<JoinHandle<()>>) {
+        let mut o = opts("executor", task_id);
+        if !s.get("stream_answers").map(truthy).unwrap_or(true) {
+            return (o, None);
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::llm::StreamDelta>();
+        o.stream_to = Some(tx);
+        let rt = self.arc();
+        let (tid, cid) = (task_id.to_string(), conv_id.to_string());
+        let fwd = tokio::spawn(async move {
+            let mut last: Option<crate::llm::StreamDelta> = None;
+            while let Some(mut d) = rx.recv().await {
+                while let Ok(newer) = rx.try_recv() {
+                    d = newer; // only the newest text matters
+                }
+                if last.as_ref() != Some(&d) {
+                    rt.publish(
+                        json!({"kind": "answer_delta", "task_id": tid, "conv_id": cid,
+                                      "text": d.text, "calls": d.tool_calls}),
+                    )
+                    .await;
+                    last = Some(d);
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        (o, Some(fwd))
+    }
+
+    /// The plan when the executor asks for one (`plan_task`) or loads a skill, instead of before every turn: the task
+    /// shows PLANNING while the planner model works, the plan is stored and announced, and comes back — `None` when the
+    /// task vanished or was cancelled meanwhile (the status is then left alone). `state` is the executor's context
+    /// (its notes, or the skill text) for the planner.
+    pub async fn plan_on_request(&self, task_id: &str, state: &str) -> Option<Value> {
+        let t = self.store.task(task_id).ok().flatten()?;
+        let goal_text = get_str(&t, "goal");
+        let (_, history_txt) = self.history(&get_str(&t, "conv_id"), task_id);
+        let facts = self.facts_for(&goal_text, &history_txt, task_id);
+        let mut pt = t.clone();
+        let atts = arr(&t, "attachments");
+        if !atts.is_empty() {
+            pt["goal"] = json!(format!(
+                "{}\n(Attached files: {})",
+                goal_text,
+                atts.iter()
+                    .map(|x| format!(
+                        "{} [{}]",
+                        super::util::pystr_opt(x.get("name")),
+                        super::util::pystr_opt(x.get("kind"))
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        self.set_status(task_id, "PLANNING", json!({})).await;
+        let plan = self.plan(&pt, &facts, &history_txt, state).await;
+        if self.cancel_flags.lock().contains(task_id) {
+            return None;
+        }
+        self.store
+            .update_task(task_id, &json!({"plan": plan}))
+            .ok()?;
+        self.event(task_id, "plan", plan.clone()).await;
+        self.set_status(task_id, "RUNNING", json!({})).await;
+        Some(plan)
+    }
+
     /// Drop the browser tools when a loaded skill turned the browser off for this task (see `Inner::no_browser`); and
     /// `delegate`, since a sub-agent without the browser only wanders through the workspace.
     pub fn without_browser_if_off(&self, task_id: &str, tools: Vec<Value>) -> Vec<Value> {
@@ -1684,36 +1762,10 @@ short, use one delegate call for the rest (it doesn't use these steps). Internal
                 .await;
         }
 
-        let status = get_str(&t, "status");
-        let plan_has_steps = t.get("plan").is_some_and(|p| !arr(p, "steps").is_empty());
-        if (status == "CREATED" || status == "PLANNING") && !plan_has_steps && t_transcript_empty {
-            self.set_status(task_id, "PLANNING", json!({})).await;
-            let mut pt = t.clone();
-            let atts = arr(&t, "attachments");
-            if !atts.is_empty() {
-                pt["goal"] = json!(format!(
-                    "{}\n(Attached files: {})",
-                    goal_text,
-                    atts.iter()
-                        .map(|x| format!(
-                            "{} [{}]",
-                            super::util::pystr_opt(x.get("name")),
-                            super::util::pystr_opt(x.get("kind"))
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
-            let plan = self.plan(&pt, &facts, &history_txt, "").await;
-            self.store.update_task(task_id, &json!({"plan": plan}))?;
-            self.event(task_id, "plan", plan).await;
-            t = self
-                .store
-                .task(task_id)?
-                .ok_or_else(|| anyhow!("task vanished"))?;
-        }
+        // No planner call before the first turn: the executor sees every request first and answers the simple ones
+        // itself; it asks for a plan (plan_task) or gets one with the skill it loads — see `plan_on_request`.
         if self.cancel_flags.lock().contains(task_id) {
-            return Ok(()); // cancelled while planning: don't flip CANCELLED back to RUNNING
+            return Ok(()); // cancelled before the first turn: don't flip CANCELLED back to RUNNING
         }
         if get_str(&t, "status") != "RUNNING" {
             self.set_status(task_id, "RUNNING", json!({})).await;
@@ -2022,10 +2074,15 @@ answer you can from what you have — what is done, the findings and what is mis
                     &dead,
                 )));
             }
-            let resp: ChatReply = match self
-                .chat_or_cancel(task_id, &msgs, tools.as_deref(), &opts("executor", task_id))
-                .await
-            {
+            let (exec_opts, live) = self.executor_opts(task_id, &conv_id, &s);
+            let called = self
+                .chat_or_cancel(task_id, &msgs, tools.as_deref(), &exec_opts)
+                .await;
+            drop(exec_opts); // closes the live-text channel …
+            if let Some(live) = live {
+                let _ = live.await; // … and the last text is out before the reply is acted on
+            }
+            let resp: ChatReply = match called {
                 None => return Ok(()), // cancelled while waiting for the model (e.g. sleeping on a Retry-After)
                 Some(Ok(r)) => r,
                 Some(Err(LlmError::Context { msg, chars })) => {
