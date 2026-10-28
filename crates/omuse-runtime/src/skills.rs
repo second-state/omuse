@@ -97,7 +97,7 @@ pub fn front_matter(text: &str) -> HashMap<String, String> {
     for line in m[1].lines() {
         if let Some((k, v)) = line.split_once(':') {
             let k = k.trim();
-            if k == "name" || k == "description" || k == "browser" {
+            if matches!(k, "name" | "description" | "browser" | "plan") {
                 out.insert(
                     k.to_string(),
                     v.trim().trim_matches(|c| c == '"' || c == '\'').to_string(),
@@ -437,6 +437,10 @@ mod tests {
         );
         assert_eq!(fm.get("name").unwrap(), "Flight-Watch");
         assert_eq!(fm.get("description").unwrap(), "Watch a flight");
+        assert!(!fm.contains_key("other"));
+        let fm = front_matter("---\nname: y\nbrowser: off\nplan: on\n---\n");
+        assert_eq!(fm.get("browser").unwrap(), "off");
+        assert_eq!(fm.get("plan").unwrap(), "on");
         assert!(front_matter("# No front matter\n").is_empty());
         assert!(front_matter("---\nname: x\n").is_empty());
         let fm = front_matter("---\nname: x\n---");

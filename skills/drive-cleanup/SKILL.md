@@ -2,6 +2,8 @@
 name: drive-cleanup
 description: 清理 Google Drive、为下一次旅行的照片视频腾出空间：找出占空间的大文件和很久没打开的文件（备份、旧素材、重复导出、下载的安装包），列成清单让用户勾选，确认后一次移到回收站并报告释放的空间 Free up Google Drive before the next trip's photos and videos — find the large and long-unused files (backups, old raw footage, duplicate exports, installers), show a list the user confirms, move the batch to the bin in one approved step and report the space freed.
 browser: off
+
+plan: on
 ---
 # Drive clean-up / 清理 Google Drive
 

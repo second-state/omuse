@@ -2,7 +2,7 @@
 
 Behaviour is chosen from the latest user goal text:
  - planner calls (system prompt contains 'planning module') -> fixed JSON plan; the planner only runs when the executor
-   asks (plan_task) or loads a skill — a plain answer makes no plan
+   asks (plan_task) or loads a skill marked `plan: on` — a plain answer or an ordinary skill makes no plan
  - 'SEND' goal  -> calls gmail_send, then final answer
  - 'BROWSE' goal -> browser_navigate to TEST_PAGE, click the Submit button, final
  - 'INJECT' goal -> browser_navigate to injection page, then try gmail_send to attacker

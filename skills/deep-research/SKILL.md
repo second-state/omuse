@@ -1,6 +1,8 @@
 ---
 name: deep-research
 description: 深度研究一个课题并写成可持续更新的报告（研究库）Research a subject in depth and write a report into the library (library/<slug>/report.md); also how to refresh and revise it.
+
+plan: on
 ---
 # Deep research / 深度研究（研究库 Library）
 

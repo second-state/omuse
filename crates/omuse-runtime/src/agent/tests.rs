@@ -1001,6 +1001,63 @@ async fn delegate_runs_sub_agents_side_by_side_and_marks_their_steps() {
         .starts_with("ERROR"));
 }
 
+// ---------------------------------------------------------------- load_skill: a plan only for `plan: on` skills
+#[tokio::test]
+async fn an_ordinary_skill_is_followed_from_its_sheet_without_a_planner_call() {
+    let (rt, _d) = rt();
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("g", &conv, "chat", "", "", None)
+        .unwrap();
+    let tid = omuse_common::util::get_str(&t, "id");
+    // flight-booking carries no `plan:` line: the sheet comes back as is, the task gets no plan and never shows PLANNING
+    let md = rt
+        .local(&t, "load_skill", &json!({"name": "flight-booking"}))
+        .await
+        .unwrap();
+    assert!(md.starts_with("---\nname: flight-booking"), "{}", &md[..80]);
+    assert!(!md.contains("(System) Plan") && !md.contains("mark progress with update_plan"));
+    let task = rt.store.task(&tid).unwrap().unwrap();
+    assert!(task
+        .get("plan")
+        .is_none_or(|p| p["steps"].as_array().is_none_or(Vec::is_empty)));
+    assert_eq!(omuse_common::util::get_str(&task, "status"), "CREATED");
+    assert!(!rt
+        .store
+        .events(&tid, 0)
+        .unwrap()
+        .iter()
+        .any(|e| omuse_common::util::get_str(e, "type") == "plan"));
+}
+
+#[test]
+fn built_in_skills_spell_the_plan_flag_as_on_and_only_the_long_ones_carry_it() {
+    let (rt, _d) = rt();
+    let mut with_plan = Vec::new();
+    for sk in rt.skills() {
+        let name = omuse_common::util::get_str(&sk, "name");
+        let text = std::fs::read_to_string(omuse_common::util::get_str(&sk, "path")).unwrap();
+        if let Some(v) = crate::skills::front_matter(&text).get("plan") {
+            assert_eq!(v, "on", "skill {name}: plan: must be `on` or absent");
+            with_plan.push(name);
+        }
+    }
+    with_plan.sort();
+    assert_eq!(
+        with_plan,
+        [
+            "csr-trip-claim",
+            "deep-research",
+            "drive-cleanup",
+            "drive-photo-storybook",
+            "travel-expense-report",
+            "travel-planning",
+            "web-research-compare"
+        ]
+    );
+}
+
 // ---------------------------------------------------------------- load_skill: reference files beside SKILL.md
 #[tokio::test]
 async fn load_skill_reads_a_reference_file_inside_the_skill_folder_only() {

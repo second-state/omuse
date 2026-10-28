@@ -1,6 +1,8 @@
 ---
 name: travel-planning
 description: 旅行：机票/酒店比价、行程规划、签证入境、天气与行李、当地交通（Google Flights、Booking.com、Google 地图、官方来源）Flights, hotels, itineraries, visas, weather and packing, local transport.
+
+plan: on
 ---
 # Travel planning / 旅行规划
 

@@ -57,11 +57,13 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
 
 1. **Look first**: the executor model sees every request first, with no planner call before it. Conversation, advice,
    writing and lookups of a few tool calls are answered directly. When the request needs several dependent steps,
-   several sources or candidates, sub-agents, approvals in sequence or a skill, the executor calls `plan_task` (its
-   notes go to the planner), or loads the skill, which plans by itself with the skill's own steps as context
-   (`Runtime::plan_on_request`, once per task; the task shows `PLANNING` meanwhile and the plan is appended to the
-   tool result). The planner model turns the request into steps; steps that don't depend on each other carry the
-   same `"parallel": "p1"` group. After repeated failures the loop re-plans on its own.
+   several sources or candidates, sub-agents or approvals in sequence, the executor calls `plan_task` (its notes go
+   to the planner; `Runtime::plan_on_request`, once per task; the task shows `PLANNING` meanwhile). A skill is a
+   procedure, not a reason to plan: `load_skill` returns the sheet and the executor follows it step by step with no
+   planner call. Only a skill whose front matter says `plan: on` (the long, branching or parallel ones, see
+   [Skill front matter](#skill-front-matter)) is planned on loading, with the sheet as the planner's context, and
+   the plan is appended to the tool result. The planner model turns the request into steps; steps that don't depend
+   on each other carry the same `"parallel": "p1"` group. After repeated failures the loop re-plans on its own.
 2. **Execute**: the executor model calls tools step by step. Read-only tools in one turn run concurrently; a parallel
    group runs as sub-agents (`delegate`, up to 8), each with its own browser tab ("lane", broker page
    `<task>~sub<n>`), and the executor continues when all have reported. `llm_concurrency` (Settings, default 4) caps
@@ -412,6 +414,32 @@ It reads the user's cards from the profile (`custom:credit cards`, names only â€
 table, matches by issuer + product (aliases, tiers kept apart), computes the value per card with `calculate`, and
 answers with the maths, the caveats and the verification date. A card missing from the catalog is looked up on the
 issuer's page and reported as "can be added to the catalog".
+
+## Skill front matter
+
+Every `skills/<name>/SKILL.md` starts with a YAML block. `front_matter` (`skills.rs`) reads four keys and ignores the
+rest:
+
+| Key | Values | Effect |
+|---|---|---|
+| `name` | the folder name | the skill's id for `load_skill` |
+| `description` | bilingual one-liner | shown to the executor to decide when to load the skill |
+| `browser` | `off` | no browser and no sub-agents for the rest of the task (the city guides; below) |
+| `plan` | `on` | the planner runs once when the skill is loaded, with the sheet as its context, and the plan is appended to the tool result |
+
+**Default: no plan.** Most skills are a procedure of a few tool calls (search flights, fill one form, draft one
+letter): the sheet already says what to call and in what order, so the executor follows it directly and the task
+never shows `PLANNING`; a planner call would only add a model round trip and a second document to follow. The
+executor can still call `plan_task` itself when a request turns out to need one.
+
+`plan: on` is for the skills where the plan buys something â€” parallel groups run as sub-agents, visible progress over
+a long run with approvals in between, or a report compiled from many sources. After the review of October 2026 these
+seven carry it: `csr-trip-claim`, `travel-expense-report`, `travel-planning`, `deep-research`,
+`web-research-compare`, `drive-cleanup`, `drive-photo-storybook`. The other 51 (the bookings, the arrival cards, the
+disruption / baggage / emergency helpers, the city guides, mail, shopping, phone and PDF skills) run from their
+sheets. A unit test (`built_in_skills_spell_the_plan_flag_as_on_and_only_the_long_ones_carry_it`) keeps the list in
+step with the files; `tests/kiwi_flights_e2e.py` checks that a flight search makes no plan and
+`tests/csr_claim_e2e.py` that the claim does. Imported skills use the same keys.
 
 ## City guides (`skills/<city>/SKILL.md`)
 

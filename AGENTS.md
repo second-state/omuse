@@ -111,8 +111,8 @@ adds an `approval_auto` event and the same chat card a manual approval gets. `te
 
 ### Parallel steps and sub-agents
 
-The planner runs only when the executor asks for a plan (`plan_task`) or loads a skill (`Runtime::plan_on_request`),
-not before every turn; simple requests are answered by the executor directly (`tests/integration.py` checks that a plain
+The planner runs only when the executor asks for a plan (`plan_task`) or loads a skill whose front matter says
+`plan: on` (`Runtime::plan_on_request`; ordinary skills are followed from their sheet), not before every turn; simple requests are answered by the executor directly (`tests/integration.py` checks that a plain
 chat makes no plan). The planner (`prompts::PLANNER_SYSTEM`) gives steps that do not depend on each other the same `parallel` label; the
 status note (`prompts::parallel_hint`) tells the executor to do the next such group in one turn. The executor loop
 (`agent/runtime.rs`) runs a turn's calls that are all in `tools::PARALLEL_TOOLS` (sub-agents and reads that never touch

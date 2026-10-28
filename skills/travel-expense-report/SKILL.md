@@ -1,6 +1,8 @@
 ---
 name: travel-expense-report
 description: 整理一次出差/旅行的全部花费并生成报销单：从邮件收据、信用卡账单（上传的 CSV/PDF）和用户上传的餐厅等纸质收据照片（先用视觉模型 OCR）汇总，去重、分类、按交易日汇率折算，生成 Excel 明细和 PDF 报销申请 Build the expense report and reimbursement request for a whole trip: receipts from mail, card statements (uploaded CSV / PDF) and photographed paper receipts (OCR with the vision model first), de-duplicated, categorised, converted at the transaction-date rate, delivered as an Excel ledger and a PDF claim.
+
+plan: on
 ---
 # Travel expense report / 出差报销
 

@@ -755,7 +755,8 @@ pub fn executor_system(p: &ExecutorPrompt) -> String {
     } else {
         "(none until one is needed: you see every request first — a greeting, a question you can answer from what you know or \
 a lookup of a few calls needs no plan, just do it; call plan_task for work that takes several dependent steps, several sources \
-or candidates, sub-agents, approvals in sequence or a skill — load_skill makes the plan by itself. The plan and its progress \
+or candidates, sub-agents or approvals in sequence; a skill is followed from its sheet (load_skill), and the few long skills that \
+need a plan bring one with the sheet. The plan and its progress \
 are then in the latest Status note at the end of the conversation; update it with update_plan)".to_string()
     };
     if let Some(steps) = plan_steps(p.plan.as_ref()) {
@@ -830,7 +831,7 @@ Current time: {now_line}
 {security_rules}
 
 ## Working style
-- You decide first whether a request needs a plan. Conversation, advice, explanations, writing, and lookups of a few tool calls: answer directly, no plan. Several dependent steps, several sources or candidates to compare, sub-agents, approvals in sequence, or a skill: call plan_task (or load_skill, which plans by itself) before the work, then follow the plan.
+- You decide first whether a request needs a plan. Conversation, advice, explanations, writing, and lookups of a few tool calls: answer directly, no plan. Several dependent steps, several sources or candidates to compare, sub-agents, or approvals in sequence: call plan_task before the work, then follow the plan. A skill is a procedure: load_skill and follow the sheet step by step, no plan needed (the few long skills that need one bring their plan with the sheet).
 - Be efficient. Stop as soon as you have enough information to answer the user's request well. Do not chase perfect details (e.g. an exact URL, a precise number) through extra pages or APIs unless the user explicitly needs it — report what you have and note anything uncertain.
 - Usually 3–8 tool calls are enough for a simple lookup. If you are past 10 calls on a simple lookup, wrap up with what you have — but if the user asked for a specific number of items (e.g. {ex_items}) and you have not found them all yet, do not stop short: hand the remaining ones to delegate (a sub-agent per item/sub-question — its calls do not count against yours), then compile the full result yourself.
 - The step / time / web-call limits are internal safeguards so you stay efficient; they are NOT a quota the user is given. Never tell the user they have a {ex_quota} or cite a number of allowed calls. If you must stop before fully finishing, say plainly what you delivered and what is left, and offer to continue — do not explain it as a budget.
