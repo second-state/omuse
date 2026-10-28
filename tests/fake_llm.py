@@ -1372,6 +1372,53 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         return reply(f"FLIGHTS {date} SIN → NRT (flight data{' from Kiwi.com, information only' if kiwi else ''}): cheapest direct Singapore Airlines SQ638 09:25 → 17:15, SGD 620, 1 checked bag; "
                      "cheapest overall Cathay Pacific via HKG SGD 510 (one stop). The fare page: singaporeair.com (from web_search). "
                      "Book it on singaporeair.com, or tell me the agency you prefer — say the word and I open the booking page.")
+    if "BIZFLIGHTS" in goal:   # flight-booking: the request's cabin (business), stop limit (direct) and city code (TYO) go into ONE flights_search
+        date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
+        if n == 1:
+            # the instructions carry the profile's standing preferences: the preferred airline (or alliance) goes into the search
+            pm = re.search(r"- Preferred airline: ([^\n]+)", sys)
+            args = {"origin": "TYO", "destination": "SIN", "date": date, "adults": 1, "cabin": "business", "max_stops": 0, "sort": "price", "currency": "SGD"}
+            if pm:
+                args["airlines"] = [x.strip() for x in pm.group(1).split(",")]
+            return reply("", [tc_("flights_search", args),
+                              tc_("web_search", {"query": f"Singapore Airlines Tokyo Singapore {date} business class fare", "max_results": 5})])
+        allt = "\n".join(str(m["content"]) for m in tools_done)
+        m = re.search(r'\\?"cabin\\?": \\?"([a-z ]+)\\?"', allt)
+        pref = ' — your preferred airline (flagged preferred in the data)' if '"preferred": true' in allt or '\\"preferred\\": true' in allt else ''
+        return reply(f"BUSINESS CLASS, nonstop, {date} Tokyo (all airports) → Singapore, searched as {m.group(1) if m else '?'} / nonstop only: "
+                     f"Singapore Airlines SQ638 09:25 → 17:15, SGD 2108 (business, 1 checked bag){pref}. Book on singaporeair.com or with your agency — say the word.")
+    if "BOOKIT" in goal:   # "book it" after the flight was found earlier in this conversation: straight to the booking page, no plan, no search
+        url = (re.search(r"URL=(\S+)", goal) or re.search(r"(http\S+)", "x http://shop.test:8097/book/flight/none")).group(1)
+        names_so_far = [n for n, _, _ in _travel_calls(msgs)]
+        calls = _travel_calls(msgs)
+        res_of = lambda name: next((r for n, _, r in calls if n == name), "")   # noqa: E731
+        if "vault_list" not in names_so_far:
+            return reply("", [tc_("vault_list", {})])
+        vl = res_of("vault_list")
+        card_id, passport_id = _vault_id(vl, "card"), _vault_id(vl, "id_document")
+        if "browser_navigate" not in names_so_far:
+            return reply("", [tc_("browser_navigate", {"url": url})])
+        page = res_of("browser_navigate")
+        if "browser_type" not in names_so_far:
+            fields = [("Full name", TRAVELLER["name"]), ("Email", TRAVELLER["email"]), ("Phone", TRAVELLER["phone"])]
+            typed = [tc_("browser_type", {"ref": _snap_ref(page, lbl), "text": v}) for lbl, v in fields if _snap_ref(page, lbl)]
+            return reply("", typed or [tc_("browser_request_takeover", {"reason": "no form fields found; please book by hand"})])
+        fills = [a for n, a, _ in calls if n == "browser_fill_secret"]
+        if passport_id and not any(a.get("item_id") == passport_id for a in fills):
+            return reply("", [tc_("browser_fill_secret", {"ref": _snap_ref(page, "Passport number") or "e1", "item_id": passport_id, "field": "number"})])
+        amount = float((re.search(r"AMOUNT=([\d.]+)", goal) or re.search(r"([\d.]+)", "0")).group(1))
+        if card_id and "purchase_confirm" not in names_so_far:
+            # Sentinel fills a card only after the user approved the purchase summary
+            return reply("", [tc_("purchase_confirm", {"site": url.split("/")[2].split(":")[0], "items": [{"name": "SQ638 SIN-NRT, 1 adult", "qty": 1, "price": amount}],
+                                                       "shipping": 0, "total": amount, "currency": "SGD", "delivery": "E-ticket to lucas@example.com", "card_item_id": card_id})])
+        if card_id and not any(a.get("item_id") == card_id for a in fills):
+            boxes = [("Card number", "number"), ("Expiry", "expiry"), ("CVC", "cvc"), ("Name on card", "holder")]
+            return reply("", [tc_("browser_fill_secret", {"ref": _snap_ref(page, lbl), "item_id": card_id, "field": f}) for lbl, f in boxes if _snap_ref(page, lbl)])
+        if "browser_request_takeover" not in names_so_far:
+            return reply("", [tc_("browser_request_takeover", {"reason": "The booking page is filled in (traveller, passport, card). Check it and press Pay now."})])
+        return reply("The booking page for SQ638 is open with your details, passport and card filled in — press Pay now to complete it, or tell me to.")
     if "TRAVELSEARCH" in goal:   # flight-booking with the built-in Flights & hotels tools (Google data through SerpApi)
         date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
         import datetime as _dt

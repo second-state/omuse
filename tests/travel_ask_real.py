@@ -20,6 +20,7 @@ if not T.REAL:
 QUESTIONS = {
     "flight": "What is today's last flight from Hong Kong to Singapore that arrives before mid-night?",
     "michelin": "I need to book a Michelin 3 star restaurant in Tokyo next Friday. What are my options?",
+    "business": "What is the cheapest business class direct flight from Tokyo to Singapore on {date}?",
 }
 
 
@@ -50,7 +51,8 @@ def common(label: str, info: dict, skill: str, data_tools: tuple) -> tuple:
             (final.get("status"), final.get("error"), str(final.get("result"))[:300]))
     loads = [x for x in calls if x["name"] == "load_skill"]
     loaded = any(skill in json.dumps(x["args"]) for x in loads)
-    used = {n.split("__", 1)[1] for n in names if n.startswith("mcp_travel__")}
+    # the connector's mcp_travel__* tools, or the built-in ones with the same names (flights_search is always there)
+    used = {n.split("__", 1)[1] for n in names if n.startswith("mcp_travel__")} | {n for n in names if n in data_tools}
     # a plain lookup may skip the booking skill as long as it still goes straight to the data connector
     T.check(f"{label}: the {skill} skill was loaded, or the connector used without it" + ("" if loaded else " (skill not loaded)"),
             loaded or set(data_tools) <= used, [x["args"] for x in loads])
@@ -77,11 +79,16 @@ try:
     all_tasks += info["tasks"]
     final, names = common("flight", info, "flight-booking", ("flights_search",))
     res = str(final.get("result") or "")
-    first_no = last["flight_no"].split(" + ")[0]
-    T.check(f"flight: the answer names the last same-day arrival ({last['title']}, {last['schedule']})",
-            first_no in res or last["title"] in res, res[:800])
-    T.check("flight: the answer does not pick a flight that lands after midnight",
-            not any(o["flight_no"].split(" + ")[0] in res for o in offers if "(+" in o["schedule"]), res[:800])
+    if "mcp_travel__flights_search" in names:
+        first_no = last["flight_no"].split(" + ")[0]
+        T.check(f"flight: the answer names the last same-day arrival ({last['title']}, {last['schedule']})",
+                first_no.replace(" ", "") in res.replace(" ", "") or last["title"] in res, res[:800])
+        T.check("flight: the answer does not pick a flight that lands after midnight",
+                not any(o["flight_no"].split(" + ")[0].replace(" ", "") in res.replace(" ", "") for o in offers if "(+" in o["schedule"]), res[:800])
+    else:
+        # the built-in tool's stand-in (tests/fake_apps.py): the CX pair lands the next day and must not be the answer (the model may add
+        # web_search facts, so the exact flight is not pinned here)
+        T.check("flight: the answer does not pick the pair that lands the next day (CX710 / CX500)", "CX710" not in res.replace(" ", "") and "CX500" not in res.replace(" ", ""), res[:800])
 
     # 2. the restaurants: options only, nothing booked
     rs = fake_travel.michelin_search({"city": "Tokyo", "distinction": "3 Stars"})["restaurants"]
@@ -96,6 +103,36 @@ try:
     T.check("michelin: the options are for next Friday " + str(next_friday()),
             str(next_friday()) in res or next_friday().strftime("%-d %B") in res or next_friday().strftime("%B %-d") in res, res[:800])
     T.check("michelin: nothing was booked", not T.booked(), T.booked())
+
+    # 3. business class, direct, from a city with two airports: the request's cabin and stop limit go into ONE search
+    #    (built-in flights_search or the connector's), the city as a whole (TYO / Tokyo / HND,NRT), no plan, and the answer is business class
+    bday = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+    T.c.put(T.B + "/api/profile", json={"key": "preferred_airline", "value": "ANA"}, headers=T.H)
+    info = T.run(QUESTIONS["business"].format(date=bday), timeout=600)
+    all_tasks += info["tasks"]
+    final = T.task(info["tasks"][-1])
+    calls = T.calls_of(info["tasks"])
+    trace(info["tasks"])
+    fs = [x for x in calls if x["name"].endswith("flights_search")]
+    args = fs[0]["args"] if fs else {}
+    stops_ok = args.get("max_stops") == 0 or args.get("nonstop_only") is True
+    T.check("business: the task completed", final.get("status") == "COMPLETED", (final.get("status"), final.get("error"), str(final.get("result"))[:300]))
+    # one search per source (the built-in tool, and a travel connector when one is configured — the skill allows both), never one per
+    # airport or a second cabin: every search is business, nonstop, Tokyo as one city
+    T.check("business: one flights search per source (no search per airport, no second cabin)", fs and len({x["name"] for x in fs}) == len(fs)
+            and all(str(x["args"].get("cabin", "")).lower() == "business" and (x["args"].get("max_stops") == 0 or x["args"].get("nonstop_only") is True)
+                    and str(x["args"].get("origin", "")).lower().replace(" ", "") in ("tyo", "tokyo", "hnd,nrt", "nrt,hnd") for x in fs), [(x["name"], x["args"]) for x in fs])
+    T.check("business: the search asked for business class", str(args.get("cabin", "")).lower() == "business", args)
+    T.check("business: the search asked for nonstop (max_stops 0 / nonstop_only)", stops_ok, args)
+    T.check("business: Tokyo searched as one city (TYO, Tokyo or HND,NRT), on the date asked", str(args.get("origin", "")).lower().replace(" ", "") in ("tyo", "tokyo", "hnd,nrt", "nrt,hnd")
+            and args.get("date") == bday, args)
+    T.check("business: no plan was made for a one-search question", not any(e["type"] == "plan" for e in final.get("events", [])), [e["type"] for e in final.get("events", [])])
+    res = str(final.get("result") or "")
+    T.check("business: the answer is about business class and never offers economy instead", "business" in res.lower() and "economy" not in res.lower(), res[:600])
+    T.check("business: the browser was never used", not [x for x in calls if x["name"].startswith("browser_")], [x["name"] for x in calls])
+    pref = str(args.get("airlines", "")).lower()
+    T.check("business: the profile's preferred airline (ANA) went into the search, or the answer says ANA has no such offer",
+            "ana" in pref or "nh" in pref.split() or "ana" in res.lower(), (args.get("airlines"), res[:400]))
     os.makedirs(os.path.dirname(T.LAST), exist_ok=True)
     json.dump({"suite": "travel_ask_real", "tasks": all_tasks, "conv_id": conv}, open(T.LAST, "w"))
 finally:

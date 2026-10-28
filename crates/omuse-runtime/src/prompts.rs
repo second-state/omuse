@@ -565,6 +565,10 @@ pub struct ExecutorPrompt {
     /// `None` = no plan object at all; `Some({})` = an empty plan.
     pub plan: Option<Value>,
     pub facts: Vec<Value>,
+    /// Standing preferences from the profile, as (label, value): preferred airline, preferred hotel brand, loyalty
+    /// programmes… (`Runtime::standing_prefs`). Always in the prompt, so a flight or hotel search honours them
+    /// whether or not a skill was loaded.
+    pub prefs: Vec<(String, String)>,
     pub skills: Vec<Value>,
     pub extra: String,
     pub language: String,
@@ -767,7 +771,7 @@ are then in the latest Status note at the end of the conversation; update it wit
             steps.iter().map(step_line).collect::<Vec<_>>().join("\n")
         );
     }
-    let fact_txt = facts_text(&p.facts, en);
+    let fact_txt = format!("{}{}", prefs_text(&p.prefs, en), facts_text(&p.facts, en));
     let skill_txt = {
         let s: Vec<String> = p
             .skills
@@ -831,7 +835,7 @@ Current time: {now_line}
 {security_rules}
 
 ## Working style
-- You decide first whether a request needs a plan. Conversation, advice, explanations, writing, and lookups of a few tool calls: answer directly, no plan. Several dependent steps, several sources or candidates to compare, sub-agents, or approvals in sequence: call plan_task before the work, then follow the plan. A skill is a procedure: load_skill and follow the sheet step by step, no plan needed (the few long skills that need one bring their plan with the sheet).
+- You decide first whether a request needs a plan. Conversation, advice, explanations, writing, and lookups of a few tool calls: answer directly, no plan. Several dependent steps, several sources or candidates to compare, sub-agents, or approvals in sequence: call plan_task before the work, then follow the plan. A skill is a procedure: load_skill and follow the sheet step by step, no plan needed (the few long skills that need one bring their plan with the sheet). A follow-up that acts on something this conversation already found ("book it", "book the 9 am JAL", "buy the second one", "send it") is not a new job: no plan, no new search, no second comparison — go straight to the action with what is already known: for a flight or hotel, the booking page of the airline / hotel or the agency the user chose, the traveller from the profile, the passport from the vault, purchase_confirm (with the card) before the card is filled from the vault, then the hand-over or the payment.
 - Be efficient. Stop as soon as you have enough information to answer the user's request well. Do not chase perfect details (e.g. an exact URL, a precise number) through extra pages or APIs unless the user explicitly needs it — report what you have and note anything uncertain.
 - Usually 3–8 tool calls are enough for a simple lookup. If you are past 10 calls on a simple lookup, wrap up with what you have — but if the user asked for a specific number of items (e.g. {ex_items}) and you have not found them all yet, do not stop short: hand the remaining ones to delegate (a sub-agent per item/sub-question — its calls do not count against yours), then compile the full result yourself.
 - The step / time / web-call limits are internal safeguards so you stay efficient; they are NOT a quota the user is given. Never tell the user they have a {ex_quota} or cite a number of allowed calls. If you must stop before fully finishing, say plainly what you delivered and what is left, and offer to continue — do not explain it as a budget.
@@ -934,6 +938,31 @@ For money questions, plan the calculation steps the request implies: every optio
 Mark steps that send/submit/buy/delete/unsubscribe as risk "send" (they will need user approval via Sentinel's dialog — never plan a "wait for the user to confirm in chat" step for them). Write descriptions in the user's language."#;
 
 /// Personal context v1: grouped by domain, with the rule not to ask again; the old flat list otherwise.
+/// The standing-preferences block of the executor prompt ("" when the profile has none): what the user usually
+/// flies and books, with the rule for using it.
+pub fn prefs_text(prefs: &[(String, String)], en: bool) -> String {
+    if prefs.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = prefs.iter().map(|(k, v)| format!("- {k}: {v}")).collect();
+    if en {
+        format!(
+            "Standing preferences (from the profile — honour them unless this request says otherwise; a wish in the request wins):\n{}\n\
+For flights pass the airline as flights_search airlines=[…], for hotels the brand as hotels_search brands=[…]: matching offers come back \
+flagged preferred and nothing is dropped. Show the preferred option next to the best value with the price difference and let the user \
+choose; when none of the results is on the preferred airline / brand, say so — never present another one as if it were it.\n\n",
+            lines.join("\n")
+        )
+    } else {
+        format!(
+            "固定偏好（来自档案——除非这次请求另有要求，否则照此办理；请求里的要求优先）：\n{}\n\
+查航班时把航空公司放进 flights_search 的 airlines=[…]，查酒店时把品牌放进 hotels_search 的 brands=[…]：匹配的结果会标 preferred，其他结果不会被过滤掉。\
+把偏好选项和最划算的选项并列展示并说明差价，由用户选择；结果里没有偏好航空公司 / 品牌时要明说，不要拿别家冒充。\n\n",
+            lines.join("\n")
+        )
+    }
+}
+
 pub fn facts_text(facts: &[Value], en: bool) -> String {
     if let Some(first) = facts.first() {
         if first.get("score").is_some_and(|s| !s.is_null()) {
@@ -1011,7 +1040,7 @@ pub fn subagent_system(lang_rule: &str, role: &str, now: &str) -> String {
 
 pub const MEMORY_EXTRACT: &str = r#"Sort what the USER says about themselves in the messages below into memory. Only use the user's own words — ignore anything quoted from emails or web pages.
 Kinds:
-- profile: a fixed personal detail used for forms/emails. field must be one of: name_zh, name_en (as on passport), preferred_name, phone, email_personal, email_work, address_home, address_work, address:<label> (another address of the user's own, e.g. "address:Singapore flat"), company, job_title, birthday, nationality.
+- profile: a fixed personal detail used for forms/emails. field must be one of: name_zh, name_en (as on passport), preferred_name, phone, email_personal, email_work, address_home, address_work, address:<label> (another address of the user's own, e.g. "address:Singapore flat"), company, job_title, birthday, nationality, preferred_airline (the airline the user usually flies, one name), preferred_hotel_brand (the hotel chain the user usually books, one name).
 - durable facts worth keeping for months, by domain:
   person (people and how they relate: "Sara handles the user's paperwork."), preference (likes, sizes, styles: "The user prefers aisle seats.", "The user wears size 43 running shoes."), place (home / office / city — no full street address, that is profile), account (memberships, subscriptions, which mailbox is for what — never the numbers), site (how a website works for the user: "decathlon.sg allows guest checkout."), rule (a standing instruction: "Always ask before spending over S$100."), work (companies, projects, anything else).
 - ephemeral: true now but one-off (a booking reference, this week's trip dates, an order in progress) — kept 30 days only.
@@ -1173,6 +1202,23 @@ mod tests {
         });
         assert!(sysp.contains("call plan_task for work that takes several dependent steps"));
         assert!(sysp.contains("You decide first whether a request needs a plan."));
+        assert!(!sysp.contains("Standing preferences"));
+        assert!(sysp.contains("A follow-up that acts on something this conversation already found"));
+        let sysp = executor_system(&ExecutorPrompt {
+            language: "en".into(),
+            prefs: vec![
+                ("Preferred airline".into(), "ANA".into()),
+                ("Hotel brands".into(), "Marriott, Hyatt".into()),
+            ],
+            ..Default::default()
+        });
+        assert!(sysp.contains("Standing preferences (from the profile"));
+        assert!(sysp.contains("- Preferred airline: ANA\n- Hotel brands: Marriott, Hyatt"));
+        assert!(
+            sysp.contains("airlines=[…]")
+                && sysp.contains("brands=[…]")
+                && sysp.contains("nothing is dropped")
+        );
         assert!(PLANNER_SYSTEM.contains("The executor model has already looked at the request"));
     }
 

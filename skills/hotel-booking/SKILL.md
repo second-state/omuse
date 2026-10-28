@@ -1,6 +1,7 @@
 ---
 name: hotel-booking
 description: 订酒店：先用旅行数据连接器查酒店、房型、价格和取消政策，只在最后一步用浏览器在预订页下单（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search, compare and book hotels in Asian cities — data connector first, browser only for the final booking page.
+
 ---
 # Hotel booking / 订酒店
 
@@ -25,9 +26,19 @@ Search and compare with data tools; open the browser only for the provider's boo
   nights = check-out − check-in), guests, rooms, budget per night or total, minimum stars / rating, breakfast,
   free cancellation needed?
 - Check-in / check-out times and cancellation deadlines are in the hotel's local time zone — say so when you quote them.
+- **Brand / chain**: in this order — the request ("a Marriott", "somewhere I can use Hilton points"), then the
+  **Standing preferences** block of your instructions (the profile's Preferred hotel brand — a brand such as Holiday
+  Inn or a group such as IHG — and any custom hotel / loyalty field), then memory (`memory_search("hotel")` in the
+  same turn as the search when neither says anything). Pass them as `brands=["Holiday Inn"]` or `brands=["IHG"]` (a
+  group stands for all its brands): one or two go into the search itself and matching hotels come back flagged
+  `preferred`; nothing is dropped. Show the best preferred-brand hotel **next to** the best value, with the price
+  difference; if no hotel of that brand is in the data, say so — never present another chain as if it were the one asked for.
+  Membership numbers stay in the vault (never in chat); mention when a rate earns status benefits.
 
 ## 2. Search and compare (data tools)
-- One `hotels_search(city, check_in, check_out, guests, …)` call (min_stars / max_price_per_night / area when given).
+- One `hotels_search(city, check_in, check_out, guests, …)` call (min_stars / max_price_per_night / area / brands when
+  given). The result's `searched` block repeats the city, dates, guests and brands used, and `preferred_found` says how
+  many hotels matched the brands.
 - Shortlist 2–4 hotels; call `hotel_rooms(hotel_id, check_in, check_out, guests)` for the one(s) you would book
   (at most 3 calls). Compare: total for the stay vs. per night, taxes included or not, area + nearest station,
   rating, room type and beds, breakfast, **cancellation policy** (free until when, what is charged after) and
@@ -41,6 +52,10 @@ Search and compare with data tools; open the browser only for the provider's boo
   `booking_url`. Recommendation in note.
 - If the user already told you what to book ("book the cheapest 4-star with free cancellation"), go on to step 4 after
   the cards; otherwise finish with a short answer and wait.
+- "Book it" after an earlier turn already found the hotel: **no plan_task, no new search, no cards again** — take the
+  room from the conversation and run steps 4–5 as one flow (vault_list, the booking page, guest details, and for a
+  prepaid rate purchase_confirm with card_item_id before the card is filled from the vault), then hand the filled page over with browser_request_takeover for the user to check
+  and confirm, unless they said to complete the booking now.
 
 ## 4. Guest details
 - Name, email, phone; arrival time and requests are optional. Use the request, then memory / profile_get; ask once for

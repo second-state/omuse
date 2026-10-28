@@ -31,4 +31,15 @@ print(f"INFO {time.time() - t0:.1f} s, {len(offers)} offers: " + " | ".join(f"{o
 K.check("a real Kiwi.com search returns compact offers with airlines, flight numbers, times and prices", r.get("status") == "ok" and len(offers) >= 3
         and all(o["airlines"] and o["legs"] and o["price"] and o["legs"][0]["depart"] for o in offers), txt[:400])
 K.check("no Kiwi link anywhere; the booking guidance names the airline or an agency", "kiwi.com/u" not in txt.lower() and "bookingUrl" not in txt and "never through Kiwi" in txt, txt[:300])
+# a city code, business class and nonstop: Kiwi gets the city's name and the cabin, the offers are business fares from either Tokyo airport
+t0 = time.time()
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "fr-t2", "call_id": "c2", "tool": "flights_search",
+                                                  "args": {"origin": "TYO", "destination": "SIN", "date": DATE, "adults": 1, "cabin": "business", "max_stops": 0, "sort": "price", "currency": "SGD"}}, timeout=120).json()
+res = (r.get("result") or {}).get("content") or {}
+offers = res.get("offers") or []
+print(f"INFO {time.time() - t0:.1f} s, {len(offers)} business offers: " + " | ".join(f"{o['airlines']} {o['legs'][0]['flight_number']} {o['legs'][0].get('from', '')} {o['price']} {o['currency']} stops {o['stops']} cabin {o['legs'][0].get('cabin', '')}" for o in offers[:4]))
+K.check("TYO + business + nonstop against the real Kiwi: offers come back, all nonstop, from HND or NRT, in business class", r.get("status") == "ok" and len(offers) >= 1
+        and all(o["stops"] == 0 for o in offers) and all(o["legs"][0].get("from") in ("HND", "NRT") for o in offers)
+        and all("business" in str(o["legs"][0].get("cabin", "")).lower() for o in offers), json.dumps(r)[:500])
+K.check("the result repeats the search: Tokyo, business, nonstop only", res.get("searched", {}).get("origin") == "Tokyo" and res["searched"]["cabin"] == "business" and res["searched"]["stops"] == "nonstop only", res.get("searched"))
 K.finish()

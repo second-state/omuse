@@ -63,7 +63,11 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
    planner call. Only a skill whose front matter says `plan: on` (the long, branching or parallel ones, see
    [Skill front matter](#skill-front-matter)) is planned on loading, with the sheet as the planner's context, and
    the plan is appended to the tool result. The planner model turns the request into steps; steps that don't depend
-   on each other carry the same `"parallel": "p1"` group. After repeated failures the loop re-plans on its own.
+   on each other carry the same `"parallel": "p1"` group. After repeated failures the loop re-plans on its own. A
+   follow-up that acts on a result already in the conversation ("book it", "buy the second one", "send it") is never
+   planned or searched again: the prompt and the booking skills send the executor straight to the action (the airline's
+   booking page with the traveller, passport and card filled, then the approval or the hand-over;
+   `tests/kiwi_flights_e2e.py`, and `travel_common.verify` for a real model).
 2. **Execute**: the executor model calls tools step by step. Read-only tools in one turn run concurrently; a parallel
    group runs as sub-agents (`delegate`, up to 8), each with its own browser tab ("lane", broker page
    `<task>~sub<n>`), and the executor continues when all have reported. `llm_concurrency` (Settings, default 4) caps
@@ -101,8 +105,37 @@ checked against `/account.json`, which costs no search; `/test` reads it again) 
 connector `travel`, permission `search`). The places tools are Google Maps (`engine=google_maps`, `type=search` with
 the query "<what> near <area>, <city>", `min_rating`, `open_state=now`, price levels; `place_id` for the details) —
 rating, reviews, price, address, hours, phone, website, menu or reservation links when Google lists them.
-`omuse_apps::serpapi` builds the Google Flights / Google Hotels requests (city names → the airports Google takes, e.g.
-Tokyo → HND,NRT; a return date makes a round trip; cabin, stops, price cap, sort, currency) and compacts the replies:
+`omuse_apps::serpapi` builds the Google Flights / Google Hotels requests and compacts the replies. Places come from
+one table, `omuse_apps::airports::CITIES` (metro code, city name, airports, other names): `flights_search` takes an
+airport code (`NRT`), a city code (`TYO`, `OSA`, `SEL`, `LON`, `NYC` …), a city name, or a comma list of them, and one
+search covers the whole city — Google gets every airport (`TYO` → `departure_id=HND,NRT`, `airport_codes`), Kiwi gets
+the city's name (`kiwi_place`: `TYO` → `Tokyo`). The flight skills carry the same list of multi-airport cities (a unit
+test in `airports.rs` keeps `skills/flight-booking` and `skills/travel-planning` in step with the table). The request's
+`cabin` (economy / premium_economy / business / first), `max_stops` (0, 1, 2; `nonstop_only` = 0), adults, return date,
+price cap, sort and currency go through as given (Google `travel_class` / `stops`, Kiwi `cabinClass` /
+`max_sector_stopovers`), and every flights result carries a `searched` block (origin and destination as used, date,
+trip, adults, cabin, stops, and a rule line) so the executor answers in the cabin and stop limit the user asked for and
+searches again rather than presenting economy fares for a business-class request (`tests/kiwi_flights_e2e.py`,
+`tests/travel_search_e2e.py`; the skills tell the executor to read date, cabin, stops and passengers from the request
+first, and that a cheapest-fare question is one search with no plan). Preferences: `flights_search` takes `airlines`
+(names or 2-letter codes) and `hotels_search` takes `brands`; the clients never drop anything for them — matching
+offers or hotels come back with `preferred: true` (`mark_preferred`), `searched.preferred_found` counts them, 2-letter
+airline codes also narrow Google's search (`include_airlines`) and one or two brands go into the Google Hotels query
+("Hilton hotels near Ginza Tokyo"). An alliance (Star Alliance, oneworld, SkyTeam) or a hotel group / programme
+(IHG One Rewards, Marriott Bonvoy, Hilton Honors, World of Hyatt, Accor…) stands for all its members
+(`omuse_apps::loyalty`: `ALLIANCES`, `HOTEL_GROUPS`, `expand`): an alliance also becomes Google's
+`include_airlines=STAR_ALLIANCE`, a group goes into the hotel query by its first word ("IHG hotels near …"). The
+preferences come from the request, else from the profile: two standard fields, `preferred_airline` (an airline or an
+alliance) and `preferred_hotel_brand` (a brand or a group), dropdowns on Memory → Profile in two groups each
+(`ALLIANCES` / `AIRLINES`, `HOTEL_GROUPS` / `HOTEL_BRANDS` in `web/app.js`; a unit test keeps the alliance and group
+names equal to the Rust table; the card says anything not on the list goes in a custom field), plus any custom field
+whose label carries a travel / loyalty word (`store::PREFERENCE_WORDS`: airline, hotel, brand, loyalty, status, seat,
+航空, 酒店 …). `Runtime::standing_prefs` collects them and the executor prompt always carries them as a "Standing
+preferences" block (`prompts::prefs_text`) with the rule — pass them to the search tools, show the preferred option
+next to the best value with the price difference, say so when none matched, a wish in the request wins — so they
+count whether or not a skill was loaded and whichever flight tool (built-in or an MCP connector's) the executor picks;
+no other profile field is ever in the prompt. Memory extraction can propose the two fields from chat ("I always fly
+ANA"). The compaction gives
 itineraries with airlines, legs, local times, duration, stops, price and an `offer_id`; hotels with stars, rating, price
 per night and total, nearby places and a `hotel_id`. The long booking and property tokens stay in a per-process table
 behind those short ids (`short_id` / `token_of`; a flight token is kept together with the route and dates of its search, which SerpApi wants
@@ -414,6 +447,21 @@ It reads the user's cards from the profile (`custom:credit cards`, names only �
 table, matches by issuer + product (aliases, tiers kept apart), computes the value per card with `calculate`, and
 answers with the maths, the caveats and the verification date. A card missing from the catalog is looked up on the
 issuer's page and reported as "can be added to the catalog".
+
+## Web UI navigation
+
+`web/app.js` `VIEWS` lists every view the router knows; `NAV` is what the sidebar shows, in three groups: Chat, Browser,
+Connections, Memory · Trust, Audit · Skills, Settings. Two views are routable but unlisted since 2026-10-28:
+
+- **Tasks** (`#tasks`, `#tasks/<id>`): the task list and detail. Audit's task links, the chat's task cards and the
+  Trust page still open it; the waiting-approval badge that used to sit on the tab now sits on Chat, where approvals
+  and takeovers are answered.
+- **Automations** (`#schedules`): schedules, goals and event triggers. The page is out of the navigation while timer
+  tasks are rethought (they may come back in another form); the backend is unchanged — `schedule_create`,
+  `goal_create` and the event triggers still work from the chat and the skills (order tracking, the morning brief, the
+  arrival-card reminders), and a finished schedule still shows its toast.
+
+`tests/nav_ui.py` checks the order, the separators and that `#tasks/<id>` still renders.
 
 ## Skill front matter
 

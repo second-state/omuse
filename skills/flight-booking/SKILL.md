@@ -1,37 +1,87 @@
 ---
 name: flight-booking
 description: 订机票：用 flights_search（Google Flights 或 Kiwi.com 数据，仅供参考）和 web_search 同时查航班比价，只在最后一步用浏览器在航空公司官网或用户选定的代理商预订页下单（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search and compare flights with flights_search (Google Flights or Kiwi.com data, information only) and web_search in one turn, then book on the airline's own site or with the agency the user chooses — the browser only for that final booking page.
+
 ---
 # Flight booking / 订机票
 
 The goal is a correct booking with as few browser steps as possible. Search and compare with data tools; the browser
 is only for the provider's booking page at the very end.
 
-## 0. Pick the source (no browser yet)
+## 0. Read the request first — these decide the search, and they are not negotiable
+Before any call, take from the user's words (ask once only when one is genuinely missing and matters):
+- **Date**: the exact local departure date (YYYY-MM-DD); "next Friday", "in 3 weeks" → compute from today's date in the
+  user's timezone and say the date in the answer. A return date makes it a round trip.
+- **Cabin**: `cabin` = what the user asked for — `business` for "business class / C class / lie-flat", `first`,
+  `premium_economy`, else `economy`. **Never answer a business-class request with economy fares.** If the search in
+  that cabin returns nothing, say so and offer the nearest thing (another date, a stop, premium economy) — do not
+  quietly show a cheaper cabin.
+- **Stops**: "direct / nonstop" → `max_stops=0`; "one stop at most" → `max_stops=1`; nothing said → leave it open and
+  sort by price, then say how many stops each offer has.
+- **Passengers** (default 1 adult), **currency** (the user's, else the profile's), **time of day** wishes (filter the
+  results yourself).
+- **Airline**: in this order — the request ("on Singapore Airlines", "Star Alliance so I earn miles"), then the
+  **Standing preferences** block of your instructions (the profile's Preferred airline — an airline such as United or
+  an alliance such as Star Alliance — and any custom airline / loyalty field), then memory (`memory_search("airline")`
+  in the same turn as the search when neither says anything). Pass them as `airlines=["Singapore Airlines", "NH"]` or
+  `airlines=["Star Alliance"]` (names, 2-letter codes or an alliance, which stands for all its members): matching
+  offers come back flagged `preferred`, nothing is dropped. In the answer show the best preferred-airline option **next to** the cheapest, with the price
+  difference, and let the user choose; if the user asked for an airline that has no offer in the data, say so plainly
+  instead of silently switching. Mention when a fare is on the user's status airline (lounge, baggage, miles).
+- Every result carries `searched` (cabin, stops, date, trip, adults): check it matches the request before you answer,
+  and name the cabin and the stop limit in the answer.
+
+## 1. One search per question (no plan)
+- "Cheapest flight / cheapest business-class flight from A to B on <date>" is **one `flights_search` call** (plus
+  `web_search` in the same turn for the airline's or an agency's fare page), then the answer. Do not call plan_task,
+  do not search airport by airport, do not search several dates unless the user asked for flexibility.
+- A city with several airports is still one search: give its **city code** (or the city's name) and the tool covers all
+  of them — `TYO` = HND + NRT, never two searches. Codes the tool knows (airport codes for single-airport cities such as
+  SIN, HKG, SGN, HAN, SYD, DEL work as they are):
+  TYO = Tokyo (HND, NRT)
+  OSA = Osaka (KIX, ITM)
+  SEL = Seoul (ICN, GMP)
+  BJS = Beijing (PEK, PKX)
+  SHA = Shanghai (PVG, SHA)
+  CTU = Chengdu (TFU, CTU)
+  TPE = Taipei (TPE, TSA)
+  BKK = Bangkok (BKK, DMK)
+  KUL = Kuala Lumpur (KUL, SZB)
+  JKT = Jakarta (CGK, HLP)
+  DXB = Dubai (DXB, DWC)
+  IST = Istanbul (IST, SAW)
+  MEL = Melbourne (MEL, AVV)
+  LON = London (LHR, LGW, STN, LTN, LCY)
+  PAR = Paris (CDG, ORY)
+  ROM = Rome (FCO, CIA)
+  MIL = Milan (MXP, LIN, BGY)
+  NYC = New York (JFK, EWR, LGA)
+  WAS = Washington (IAD, DCA, BWI)
+  CHI = Chicago (ORD, MDW)
+  QSF = San Francisco (SFO, OAK, SJC)
+  QLA = Los Angeles (LAX, BUR, LGB, SNA, ONT)
+  MIA = Miami (MIA, FLL)
+  HOU = Houston (IAH, HOU)
+  DFW = Dallas (DFW, DAL)
+  YTO = Toronto (YYZ, YTZ)
+  MEX = Mexico City (MEX, NLU)
+  SAO = São Paulo (GRU, CGH, VCP)
+  RIO = Rio de Janeiro (GIG, SDU)
+  BUE = Buenos Aires (EZE, AEP)
+  Two cities on one side: a comma list (`TYO,OSA`). The result's `searched.origin` shows the airports actually used.
 - `flights_search` is always there: Google Flights data when the Flights & hotels key is set, else Kiwi.com data —
-  **information only**. Call it and `web_search` in the SAME turn: `flights_search` for the schedule, prices, stops and
-  baggage; `web_search` ("<airline> <route> <date> fare", "site:kayak.com …") for the airline's or an agency's fare
-  page and where to book. Never book through Kiwi, never quote or open a Kiwi link; `flight_offer` gives the details
+  **information only**. Never book through Kiwi, never quote or open a Kiwi link; `flight_offer` gives the details
   of one offer (no link for Kiwi data).
 - A travel MCP connector in the tool list (`mcp_<server>__flights_search` …) can be used in the same turn too.
 - Do NOT open Google Flights, Kayak, Skyscanner or airline search pages in the browser — the browser is for the
   final booking page only: the airline's own site, or the agency the user chooses (ask which when they have one).
-
-## 1. Understand the request
-- Origin, destination, date, one way / return, adults (default 1), cabin (default economy), direct only?, budget,
-  time-of-day wishes. City names are fine (`Tokyo` covers HND + NRT, `Seoul` ICN + GMP, `Osaka` KIX, `Bangkok` BKK + DMK,
-  `Taipei` TPE + TSA, `Shanghai` PVG + SHA).
-- Dates: "next Friday", "in 3 weeks" → compute the exact YYYY-MM-DD from today's date in the user's timezone and say it.
-  The date is the **local departure date at the origin**.
 - Times in the data are local to each airport (Singapore/Hong Kong/Taipei/Shanghai UTC+8, Tokyo/Osaka/Seoul UTC+9,
   Bangkok UTC+7). An arrival marked (+1) lands the next calendar day; mention it. Never convert times yourself unless asked.
 
-## 2. Search and compare (data tools)
-- One `flights_search` call with origin, destination, date, adults, cabin (and nonstop_only=true when the user wants
-  direct flights), and the `web_search` calls beside it in the same turn. Search again only if the user changes something.
-- Shortlist 2–4 offers that fit. "Cheapest direct" = the lowest fare among offers with stops 0. Compare total price
-  (fare × adults), departure/arrival time, duration, stops, **baggage** (low-cost fares often include only a 7 kg cabin
-  bag — say what a checked bag costs) and **change/refund rules**.
+## 2. Compare (data tools)
+- Shortlist 2–4 offers that fit **the cabin and stop limit searched**. "Cheapest direct" = the lowest fare among offers
+  with stops 0. Compare total price (fare × adults), departure/arrival time, duration, stops, **baggage** (low-cost
+  fares often include only a 7 kg cabin bag — say what a checked bag costs) and **change/refund rules**.
 - Call `flight_offer(offer_id)` once for the offer you will book: it has the fare breakdown, rules and the booking_url.
 - Never invent or round prices, times or rules: report only what the tools returned, with currency.
 
@@ -41,6 +91,19 @@ is only for the provider's booking page at the very end.
   Put your recommendation and caveats in note.
 - If the user already said which one to book ("book the cheapest direct", "book the 9 am JAL"), continue straight to
   step 4 after showing the cards. Otherwise finish with a short answer and wait for their pick.
+
+## 3a. "Book it" — the flight was already found in this conversation
+- When an earlier turn already searched and the user now says "book it", "book the SQ 638", "go ahead with the 9 am
+  JAL": **no plan_task, no new search, no present_choices again.** Take the offer from the conversation (its
+  booking_url; for Kiwi data the airline and flight) and run steps 4–5 as ONE flow: vault_list; the booking page; the
+  traveller typed in from the profile (profile_get for name / email / phone when not in the conversation); the passport
+  filled from the vault; **purchase_confirm with card_item_id** (the total shown on the page — Sentinel fills a card
+  only after the user approves this summary); the card filled from the vault; then — unless the user said to pay or
+  complete the booking now — hand the filled page over with browser_request_takeover ("the booking page is filled in,
+  check it and press Pay") so they review it and pay themselves. No card in the vault → say so in one line and hand the page over for
+  them to type it; never ask for the number in chat.
+- Kiwi data has no link: open the airline's own booking page (the fare page web_search found earlier, or the airline's
+  site with the route and date), or the agency the user named earlier.
 
 ## 4. Traveller details (before booking)
 - Needed: full name exactly as in the passport, email, phone, passport number, card. Use what the request says, then

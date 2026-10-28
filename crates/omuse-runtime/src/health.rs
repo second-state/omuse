@@ -43,25 +43,34 @@ pub const LABELS: &[(&str, (&str, &str))] = &[
     ("sentinel", ("安全网关 Sentinel", "Sentinel")),
     ("tasks", ("任务执行", "task runs")),
 ];
-/// Failure cause → label.
-pub const CAUSES: &[(&str, &str)] = &[
-    ("model", "模型"),
-    ("browser", "浏览器"),
-    ("mail", "邮箱"),
-    ("sentinel", "Sentinel"),
-    ("timeout", "超时"),
-    ("step_limit", "步数用完"),
-    ("gave_up", "来源反复失败"),
-    ("other", "其他"),
+/// Failure cause → (Chinese label, English label).
+pub const CAUSES: &[(&str, (&str, &str))] = &[
+    ("model", ("模型", "model")),
+    ("browser", ("浏览器", "browser")),
+    ("mail", ("邮箱", "mailbox")),
+    ("sentinel", ("Sentinel", "Sentinel")),
+    ("timeout", ("超时", "timeout")),
+    ("step_limit", ("步数用完", "step limit")),
+    ("gave_up", ("来源反复失败", "sources kept failing")),
+    ("other", ("其他", "other")),
 ];
 
-/// `CAUSES.get(cause, cause)`.
-pub fn cause_label(cause: &str) -> String {
+/// The label of a failure cause in the UI language (the cause itself when unknown).
+pub fn cause_label(cause: &str, en: bool) -> String {
     CAUSES
         .iter()
         .find(|(k, _)| *k == cause)
-        .map(|(_, v)| (*v).to_string())
+        .map(|(_, (zh, e))| if en { e.to_string() } else { zh.to_string() })
         .unwrap_or_else(|| cause.to_string())
+}
+
+/// `zh` or `e` for the UI language.
+fn pick(en: bool, zh: &str, e: &str) -> String {
+    if en {
+        e.to_string()
+    } else {
+        zh.to_string()
+    }
 }
 
 /// Which part of OMuse a task failure points at.
@@ -111,24 +120,27 @@ pub fn failure_cause(error: &str) -> &'static str {
 }
 
 /// The configured chat model is listed, can chat and is loaded.
-pub fn model_check(models: &[Value], want: &str) -> (bool, String) {
+pub fn model_check(models: &[Value], want: &str, en: bool) -> (bool, String) {
     let ids: Vec<String> = models.iter().map(|m| get_str(m, "id")).collect();
     let Some(m) = models
         .iter()
         .find(|x| x.get("id").and_then(|i| i.as_str()) == Some(want))
     else {
         let shown = ids.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+        let avail = if shown.is_empty() {
+            pick(en, "无", "none")
+        } else {
+            shown.clone()
+        };
         return (
             false,
-            format!(
-                "模型 {} 不在模型服务的列表里（可能已卸载或正在加载）；当前可用：{}",
-                want,
-                if shown.is_empty() {
-                    "无"
-                } else {
-                    shown.as_str()
-                }
-            ),
+            if en {
+                format!("model {want} is not in the model service's list (unloaded or still loading); available now: {avail}")
+            } else {
+                format!(
+                    "模型 {want} 不在模型服务的列表里（可能已卸载或正在加载）；当前可用：{avail}"
+                )
+            },
         );
     };
     let mode = {
@@ -142,7 +154,11 @@ pub fn model_check(models: &[Value], want: &str) -> (bool, String) {
     if mode != "chat" {
         return (
             false,
-            format!("模型 {} 不是聊天模型（mode={}）", want, mode),
+            if en {
+                format!("model {want} is not a chat model (mode={mode})")
+            } else {
+                format!("模型 {want} 不是聊天模型（mode={mode}）")
+            },
         );
     }
     let ready = {
@@ -154,9 +170,19 @@ pub fn model_check(models: &[Value], want: &str) -> (bool, String) {
         }
     };
     if !matches!(ready.as_str(), "ready" | "running" | "loaded") {
-        return (false, format!("模型 {} 还没就绪（{}）", want, ready));
+        return (
+            false,
+            if en {
+                format!("model {want} is not ready yet ({ready})")
+            } else {
+                format!("模型 {want} 还没就绪（{ready}）")
+            },
+        );
     }
-    (true, format!("{} 正常", want))
+    (
+        true,
+        pick(en, &format!("{want} 正常"), &format!("{want} OK")),
+    )
 }
 
 /// The periodic health watch. Shared behind `Arc`; `start` spawns the loop.
@@ -194,15 +220,28 @@ impl Health {
         self.rt.store().settings().unwrap_or_else(|_| json!({}))
     }
 
+    /// The UI language is English: every detail, alert and note is written in English then.
+    fn en(&self) -> bool {
+        get_str(&self.settings(), "language") == "en"
+    }
+
     // ------------------------------------------------------------ checks
     /// The model endpoint lists the configured chat model (or at least answers).
     pub async fn check_model(&self) -> (bool, String) {
         let s = self.settings();
+        let en = get_str(&s, "language") == "en";
         let base = get_str(&s, "model_base_url")
             .trim_end_matches('/')
             .to_string();
         if base.is_empty() {
-            return (false, "没有配置模型服务地址".into());
+            return (
+                false,
+                pick(
+                    en,
+                    "没有配置模型服务地址",
+                    "no model service URL is configured",
+                ),
+            );
         }
         let mut req = self.http.get(format!("{}/models", base));
         for (k, v) in auth_headers(Some(&s), self.rt.config()) {
@@ -213,7 +252,8 @@ impl Health {
                 return (
                     false,
                     format!(
-                        "连不上模型服务：{}",
+                        "{}{}",
+                        pick(en, "连不上模型服务：", "cannot reach the model service: "),
                         exc_name(&anyhow::anyhow!(describe_reqwest_error(&e)))
                     ),
                 )
@@ -221,7 +261,14 @@ impl Health {
             Ok(r) => {
                 let status = r.status().as_u16();
                 if status >= 400 {
-                    return (false, format!("模型服务返回 HTTP {}", status));
+                    return (
+                        false,
+                        pick(
+                            en,
+                            &format!("模型服务返回 HTTP {status}"),
+                            &format!("the model service answered HTTP {status}"),
+                        ),
+                    );
                 }
                 match r.json::<Value>().await {
                     Ok(j) => j
@@ -229,42 +276,70 @@ impl Health {
                         .and_then(|d| d.as_array())
                         .map(|a| a.iter().filter(|m| m.is_object()).cloned().collect())
                         .unwrap_or_default(),
-                    Err(_) => return (false, "连不上模型服务：JSONDecodeError".into()),
+                    Err(_) => {
+                        return (
+                            false,
+                            pick(
+                                en,
+                                "连不上模型服务：JSONDecodeError",
+                                "the model service sent no JSON (JSONDecodeError)",
+                            ),
+                        )
+                    }
                 }
             }
         };
         if models.is_empty() {
             // a plain OpenAI-compatible server may not list models: don't call that an outage
-            return (true, "模型服务在线（未列出模型）".into());
+            return (
+                true,
+                pick(
+                    en,
+                    "模型服务在线（未列出模型）",
+                    "model service online (lists no models)",
+                ),
+            );
         }
-        model_check(&models, &get_str(&s, "model_name"))
+        model_check(&models, &get_str(&s, "model_name"), en)
     }
 
     /// The browser broker (through Sentinel) is usable.
     pub async fn check_browser(&self) -> (bool, String) {
+        let en = self.en();
         let st = match self
             .rt
             .sentinel("GET", "/internal/browser_state", None, 15.0)
             .await
         {
             Ok(v) => v,
-            Err(e) => return (false, format!("连不上安全网关 Sentinel：{}", exc_name(&e))),
+            Err(e) => {
+                return (
+                    false,
+                    format!(
+                        "{}{}",
+                        pick(en, "连不上安全网关 Sentinel：", "cannot reach Sentinel: "),
+                        exc_name(&e)
+                    ),
+                )
+            }
         };
         let mode = get_str(&st, "mode");
         if mode == "unknown" || mode == "offline" || get_truthy(&st, "error") {
             return (
                 false,
                 format!(
-                    "浏览器服务不可用：{}",
+                    "{}{}",
+                    pick(en, "浏览器服务不可用：", "browser service unavailable: "),
                     take_chars(&get_str(&st, "error"), 120)
                 ),
             );
         }
-        (true, "浏览器正常".into())
+        (true, pick(en, "浏览器正常", "browser OK"))
     }
 
     /// `None` = no mailbox connected (nothing to watch).
     pub async fn check_mail(&self) -> Option<(bool, String)> {
+        let en = self.en();
         let r = match self
             .rt
             .sentinel("GET", "/internal/mail_check", None, 90.0)
@@ -275,7 +350,14 @@ impl Health {
                 if exc_name(&e).contains("Connect") {
                     return None; // Sentinel itself is down: the sentinel check reports that
                 }
-                return Some((false, format!("邮箱检查没有完成：{}", exc_name(&e))));
+                return Some((
+                    false,
+                    format!(
+                        "{}{}",
+                        pick(en, "邮箱检查没有完成：", "mailbox check did not finish: "),
+                        exc_name(&e)
+                    ),
+                ));
             }
         };
         let accs: Vec<Value> = r
@@ -292,17 +374,27 @@ impl Health {
                 .iter()
                 .take(3)
                 .map(|a| {
-                    format!(
-                        "{} 连不上（{}）",
-                        a.get("email").map(py_str).unwrap_or_else(|| "None".into()),
-                        take_chars(&get_str(a, "error"), 100)
-                    )
+                    let who = a.get("email").map(py_str).unwrap_or_else(|| "None".into());
+                    let why = take_chars(&get_str(a, "error"), 100).to_string();
+                    if en {
+                        format!("{who} unreachable ({why})")
+                    } else {
+                        format!("{who} 连不上（{why}）")
+                    }
                 })
                 .collect::<Vec<_>>()
-                .join("；");
+                .join(if en { "; " } else { "；" });
             return Some((false, msg));
         }
-        Some((true, format!("{} 个邮箱正常", accs.len())))
+        let n = accs.len();
+        Some((
+            true,
+            if en {
+                format!("{n} mailbox{} OK", if n == 1 { "" } else { "es" })
+            } else {
+                format!("{n} 个邮箱正常")
+            },
+        ))
     }
 
     /// One round of checks: component → (ok, detail), in the Python order.
@@ -324,7 +416,10 @@ impl Health {
         if !b_ok && b_detail.contains("Sentinel") {
             out.insert("sentinel".to_string(), (false, b_detail));
         } else {
-            out.insert("sentinel".to_string(), (true, "Sentinel 正常".to_string()));
+            out.insert(
+                "sentinel".to_string(),
+                (true, pick(self.en(), "Sentinel 正常", "Sentinel OK")),
+            );
             out.insert("browser".to_string(), (b_ok, b_detail));
         }
         out
@@ -335,6 +430,7 @@ impl Health {
     /// `immediate`), remind at most every `REMIND_AFTER`, and say when it is back.
     pub async fn observe(&self, comp: &str, ok: bool, detail: &str, immediate: bool) {
         let now = now_ts();
+        let self_en = self.en();
         let alert: Option<(String, bool)> = {
             let mut state = self.state.lock();
             let st = state.entry(comp.to_string()).or_insert_with(|| {
@@ -351,7 +447,13 @@ impl Health {
                     o.insert("down".into(), json!(false));
                     o.insert("since".into(), json!(now));
                     if as_f64(&st["alerted_at"]).unwrap_or(0.0) != 0.0 {
-                        out = Some((format!("已恢复正常：{}", detail), true));
+                        out = Some((
+                            format!(
+                                "{}{detail}",
+                                pick(self_en, "已恢复正常：", "back to normal: ")
+                            ),
+                            true,
+                        ));
                     }
                     st.as_object_mut()
                         .unwrap()
@@ -456,8 +558,13 @@ impl Health {
                 .get("tasks")
                 .is_some_and(|s| get_truthy(s, "down"));
             if down {
-                self.observe("tasks", true, "任务又能正常完成了", false)
-                    .await;
+                self.observe(
+                    "tasks",
+                    true,
+                    &pick(self.en(), "任务又能正常完成了", "tasks complete again"),
+                    false,
+                )
+                .await;
             }
             return Ok(());
         }
@@ -486,15 +593,16 @@ impl Health {
             .count();
         if same >= STREAK {
             let err = take_chars(&get_str(t, "error"), 200).to_string();
+            let en = self.en();
+            let label = cause_label(cause, en);
             self.observe(
                 "tasks",
                 false,
-                &format!(
-                    "最近 1 小时有 {} 个任务因{}问题失败：{}",
-                    same,
-                    cause_label(cause),
-                    err
-                ),
+                &if en {
+                    format!("{same} tasks failed in the last hour with a {label} problem: {err}")
+                } else {
+                    format!("最近 1 小时有 {same} 个任务因{label}问题失败：{err}")
+                },
                 true,
             )
             .await;
@@ -555,12 +663,13 @@ impl Health {
             .rt
             .sentinel("POST", "/internal/ledger/reconcile", Some(json!({})), 300.0)
             .await?;
+        let en = self.en();
         let labels = [
-            ("shipped", "已发货 shipped"),
-            ("delivered", "已送达 delivered"),
-            ("cancelled", "已取消 cancelled"),
-            ("refunded", "已退款 refunded"),
-            ("placed", "已下单 placed"),
+            ("shipped", ("已发货", "shipped")),
+            ("delivered", ("已送达", "delivered")),
+            ("cancelled", ("已取消", "cancelled")),
+            ("refunded", ("已退款", "refunded")),
+            ("placed", ("已下单", "placed")),
         ];
         for c in res
             .get("changed")
@@ -572,18 +681,20 @@ impl Health {
             let label = labels
                 .iter()
                 .find(|(k, _)| *k == to)
-                .map(|(_, v)| (*v).to_string())
+                .map(|(_, (zh, e))| pick(en, zh, e))
                 .unwrap_or_else(|| to.clone());
-            let text = format!(
-                "订单 {}：{}（来自商家邮件）",
-                c.get("order_number")
-                    .map(py_str)
-                    .unwrap_or_else(|| "None".into()),
-                label
-            );
+            let num = c
+                .get("order_number")
+                .map(py_str)
+                .unwrap_or_else(|| "None".into());
+            let text = if en {
+                format!("order {num}: {label} (from the merchant's email)")
+            } else {
+                format!("订单 {num}：{label}（来自商家邮件）")
+            };
             if let Ok(n) = self.rt.store().notify(
-                &format!("🧾 {}", text),
-                "交易账本已更新 Ledger updated",
+                &format!("🧾 {text}"),
+                &pick(en, "交易账本已更新", "Ledger updated"),
                 "",
                 "info",
             ) {
@@ -621,12 +732,47 @@ mod tests {
         assert_eq!(failure_cause("任务用时上限"), "timeout");
         assert_eq!(failure_cause("来源反复失败 kept failing"), "gave_up");
         assert_eq!(failure_cause("something else"), "other");
-        let (ok, _) = model_check(
+        let (ok, d) = model_check(
             &[json!({"id": "Q", "mode": "chat", "readiness": "ready"})],
             "Q",
+            false,
         );
-        assert!(ok);
-        let (ok, why) = model_check(&[json!({"id": "speaches/Kokoro", "mode": "tts"})], "Q");
+        assert!(ok && d == "Q 正常");
+        let (ok, d) = model_check(
+            &[json!({"id": "Q", "mode": "chat", "readiness": "ready"})],
+            "Q",
+            true,
+        );
+        assert!(ok && d == "Q OK", "{d}");
+        // English UI: no Chinese in any detail
+        let cjk = |s: &str| s.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+        let (_, d) = model_check(
+            &[json!({"id": "speaches/Kokoro", "mode": "tts"})],
+            "Q",
+            true,
+        );
+        assert!(
+            d.starts_with("model Q is not in the model service's list")
+                && d.ends_with("available now: speaches/Kokoro")
+                && !cjk(&d),
+            "{d}"
+        );
+        let (_, d) = model_check(&[json!({"id": "Q", "mode": "tts"})], "Q", true);
+        assert_eq!(d, "model Q is not a chat model (mode=tts)");
+        let (_, d) = model_check(
+            &[json!({"id": "Q", "mode": "chat", "readiness": "loading"})],
+            "Q",
+            true,
+        );
+        assert_eq!(d, "model Q is not ready yet (loading)");
+        assert_eq!(cause_label("gave_up", true), "sources kept failing");
+        assert_eq!(cause_label("gave_up", false), "来源反复失败");
+        assert_eq!(cause_label("x", true), "x");
+        let (ok, why) = model_check(
+            &[json!({"id": "speaches/Kokoro", "mode": "tts"})],
+            "Q",
+            false,
+        );
         assert!(!ok && why.contains("不在"));
         assert_eq!(
             why,
@@ -635,9 +781,10 @@ mod tests {
         let (ok, why) = model_check(
             &[json!({"id": "Q", "mode": "chat", "readiness": "loading"})],
             "Q",
+            false,
         );
         assert!(!ok && why.contains("loading"));
-        let (ok, why) = model_check(&[json!({"id": "Q", "mode": "tts"})], "Q");
+        let (ok, why) = model_check(&[json!({"id": "Q", "mode": "tts"})], "Q", false);
         assert!(!ok && why == "模型 Q 不是聊天模型（mode=tts）");
     }
 

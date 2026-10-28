@@ -15,7 +15,7 @@ use anyhow::Result;
 use omuse_common::util::{as_f64, get_str, get_truthy, now_ts, py_str, take_chars, truthy};
 use serde_json::{json, Value};
 
-use crate::health::{failure_cause, CAUSES};
+use crate::health::failure_cause;
 
 pub const FINISHED: [&str; 3] = ["COMPLETED", "FAILED", "CANCELLED"];
 
@@ -61,12 +61,8 @@ impl Groups {
     }
 }
 
-fn cause_label(k: &str) -> String {
-    CAUSES
-        .iter()
-        .find(|(c, _)| *c == k)
-        .map(|(_, l)| l.to_string())
-        .unwrap_or_else(|| k.to_string())
+fn cause_label(k: &str, en: bool) -> String {
+    crate::health::cause_label(k, en)
 }
 
 /// What a task's events say: approvals asked / approved / denied, takeovers, a question back to the user, its
@@ -130,6 +126,10 @@ pub fn compute(
     now: Option<f64>,
     tz_offset_h: f64,
 ) -> Result<Value> {
+    let en = store
+        .settings()
+        .map(|s| get_str(&s, "language") == "en")
+        .unwrap_or(false);
     let now = now.filter(|n| *n != 0.0).unwrap_or_else(now_ts);
     let since = now - days as f64 * 86400.0;
     let rows: Vec<Value> = store
@@ -238,7 +238,7 @@ pub fn compute(
         "acted": agg.get("acted"), "approval_burden": rate(agg.get("acted_approvals"), agg.get("acted")),
         "verified": agg.get("verified"), "unverified": agg.get("unverified"),
         "failure_causes": causes.most_common(None).iter()
-            .map(|(k, v)| json!({"cause": k, "label": cause_label(k), "count": v})).collect::<Vec<_>>(),
+            .map(|(k, v)| json!({"cause": k, "label": cause_label(k, en), "count": v})).collect::<Vec<_>>(),
         "top_errors": errors.most_common(Some(5)).iter()
             .map(|(k, v)| json!({"error": k, "count": v})).collect::<Vec<_>>(),
         "per_day": per_day_rows.iter().map(|(d, c)| json!({"day": d, "total": c.get("total"), "completed": c.get("COMPLETED"),
