@@ -1,4 +1,5 @@
 """Fake Notion (/v1/...) and Slack (/api/...) APIs for tests (port 8094)."""
+import datetime as dt
 import json
 import time
 import uuid
@@ -1045,6 +1046,16 @@ async def exa_mcp(request: Request):
 
 
 KIWI_LOG = []
+_KIWI_CITIES = {"singapore": "SIN", "tokyo": "NRT", "hong kong": "HKG", "seoul": "ICN", "osaka": "KIX", "bangkok": "BKK", "taipei": "TPE",
+                "shanghai": "PVG", "london": "LHR", "paris": "CDG", "new york": "JFK", "san francisco": "SFO", "sydney": "SYD"}
+
+
+def _kiwi_airport(place) -> str:
+    """The airport the stand-in flies from / to for a Kiwi place: a 3-letter code as given, a known city name's main airport, else SIN."""
+    s = str(place or "").strip()
+    if len(s) == 3 and s.isalpha():
+        return s.upper()
+    return _KIWI_CITIES.get(s.lower(), "SIN")
 
 
 @app.get("/kiwi-mcp/_log")
@@ -1064,16 +1075,26 @@ async def kiwi_mcp(request: Request):
         KIWI_LOG.append(args)
         d = args.get("departureDate", "2026-11-20")
         cur = args.get("currency", "USD")
-        data = {"query": f"{args.get('flyFrom')} → {args.get('flyTo')} on {d}", "currency": cur, "passengers": {"adults": args.get("adults", 1)}, "resultsCount": 2, "itineraries": [
-            {"id": "kw1_0", "price": 620.0, "priceFormatted": f"620 {cur}", "totalDurationSeconds": 24600, "bookingUrl": "https://kiwi.com/u/abc123", "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 1},
-             "outbound": {"from": "SIN", "to": "NRT", "departureTime": f"{d}T09:25:00", "arrivalTime": f"{d}T17:15:00", "durationSeconds": 24600, "stops": 0, "route": ["SIN", "NRT"], "cabinClass": "Economy",
-                          "segments": [{"from": "SIN", "to": "NRT", "fromCity": "Singapore", "toCity": "Tokyo", "departureTime": f"{d}T09:25:00", "arrivalTime": f"{d}T17:15:00", "durationSeconds": 24600,
-                                        "carrier": "SQ", "carrierName": "Singapore Airlines", "flightNumber": "SQ638", "cabinClass": "Economy"}]}, "inbound": None},
-            {"id": "kw2_0|kw2_1", "price": 510.0, "priceFormatted": f"510 {cur}", "totalDurationSeconds": 45300, "bookingUrl": "https://kiwi.com/u/def456", "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 0},
-             "outbound": {"from": "SIN", "to": "NRT", "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d}T13:30:00", "durationSeconds": 45300, "stops": 1, "route": ["SIN", "HKG", "NRT"], "cabinClass": "Economy",
-                          "segments": [{"from": "SIN", "to": "HKG", "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d}T03:40:00", "durationSeconds": 13500, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX710", "cabinClass": "Economy"},
-                                       {"from": "HKG", "to": "NRT", "departureTime": f"{d}T08:00:00", "arrivalTime": f"{d}T13:30:00", "durationSeconds": 16200, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX500", "cabinClass": "Economy"}]}, "inbound": None}],
-            "searchTimeMs": 1200, "error": None}
+        # the reply follows the request, like the real server: the route (a city name or an airport code on each side),
+        # the cabin (business fares cost 3.4×) and the stop limit (max_sector_stopovers 0 drops the one-stop itinerary)
+        fr, to = _kiwi_airport(args.get("flyFrom")), _kiwi_airport(args.get("flyTo"))
+        via = "HKG" if "HKG" not in (fr, to) else "BKK"
+        cabin = {"BUSINESS": "Business", "FIRST_CLASS": "First", "PREMIUM_ECONOMY": "Premium economy"}.get(str(args.get("cabinClass", "")).upper(), "Economy")
+        mult = {"Business": 3.4, "First": 5.0, "Premium economy": 1.7}.get(cabin, 1.0)
+        d1 = (dt.date.fromisoformat(d) + dt.timedelta(days=1)).isoformat()
+        its = [
+            {"id": "kw1_0", "price": round(620.0 * mult), "priceFormatted": f"{round(620 * mult)} {cur}", "totalDurationSeconds": 24600, "bookingUrl": "https://kiwi.com/u/abc123", "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 1},
+             "outbound": {"from": fr, "to": to, "departureTime": f"{d}T09:25:00", "arrivalTime": f"{d}T17:15:00", "durationSeconds": 24600, "stops": 0, "route": [fr, to], "cabinClass": cabin,
+                          "segments": [{"from": fr, "to": to, "fromCity": str(args.get("flyFrom")), "toCity": str(args.get("flyTo")), "departureTime": f"{d}T09:25:00", "arrivalTime": f"{d}T17:15:00", "durationSeconds": 24600,
+                                        "carrier": "SQ", "carrierName": "Singapore Airlines", "flightNumber": "SQ638", "cabinClass": cabin}]}, "inbound": None},
+            {"id": "kw2_0|kw2_1", "price": round(510.0 * mult), "priceFormatted": f"{round(510 * mult)} {cur}", "totalDurationSeconds": 45300, "bookingUrl": "https://kiwi.com/u/def456", "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 0},
+             "outbound": {"from": fr, "to": to, "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d1}T13:30:00", "durationSeconds": 45300, "stops": 1, "route": [fr, via, to], "cabinClass": cabin,
+                          "segments": [{"from": fr, "to": via, "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d1}T03:40:00", "durationSeconds": 13500, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX710", "cabinClass": cabin},
+                                       {"from": via, "to": to, "departureTime": f"{d1}T08:00:00", "arrivalTime": f"{d1}T13:30:00", "durationSeconds": 16200, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX500", "cabinClass": cabin}]}, "inbound": None}]
+        if args.get("max_sector_stopovers") == 0:
+            its = its[:1]
+        data = {"query": f"{args.get('flyFrom')} → {args.get('flyTo')} on {d}", "currency": cur, "passengers": {"adults": args.get("adults", 1)}, "resultsCount": len(its), "itineraries": its,
+                "searchTimeMs": 1200, "error": None}
         body = {"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": json.dumps(data)}], "isError": False}}
         return Response("event: message\ndata: " + json.dumps(body) + "\n\n", media_type="text/event-stream")
     return {"jsonrpc": "2.0", "id": rid, "result": {}}

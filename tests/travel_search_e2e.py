@@ -81,6 +81,37 @@ prev = (K.results(t, "hotels_search") or [{}])[0].get("preview", "")
 K.check("the hotels result is compact: name, stars, rating, price per night, a hotel id",
         "Hotel Ginza Grand" in prev and '"stars": 4' in prev and '"price_per_night": 210' in prev and "ht_" in prev, prev[:400])
 K.check("no approval was needed (reads only)", not t["_approvals"], t["_approvals"])
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-biz", "call_id": "c-biz", "tool": "flights_search",
+                                                   "args": {"origin": "TYO", "destination": "London", "date": DATE, "cabin": "business", "max_stops": 1, "adults": 2, "currency": "GBP"}}).json()
+q = [x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_flights" and not x.get("booking_token")][-1]
+K.check("city codes and names become every airport of the city in ONE Google search; business class, at most one stop and 2 adults go through as asked",
+        q["departure_id"] == "HND,NRT" and q["arrival_id"] == "LHR,LGW,STN,LTN,LCY" and q["travel_class"] == "3" and q["stops"] == "2" and q["adults"] == "2" and q["currency"] == "GBP", q)
+sr = ((r.get("result") or {}).get("content") or {}).get("searched") or {}
+K.check("the Google result repeats the search: business, at most one stop, the airports used", sr.get("cabin") == "business" and sr.get("stops") == "at most one stop"
+        and sr.get("origin") == "HND,NRT" and sr.get("adults") == 2, sr)
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-pref", "call_id": "c-pref", "tool": "flights_search",
+                                                   "args": {"origin": "SIN", "destination": "NRT", "date": DATE, "airlines": ["SQ", "NH"], "currency": "SGD"}}).json()
+q = [x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_flights" and not x.get("booking_token")][-1]
+fo = ((r.get("result") or {}).get("content") or {})
+K.check("preferred airlines as codes narrow the Google search (include_airlines) and flag the SQ and ANA offers; the CX offer stays", q.get("include_airlines") == "SQ,NH"
+        and fo["offers"][0].get("preferred") is True and "preferred" not in fo["offers"][1] and fo["offers"][2].get("preferred") is True and fo["searched"]["preferred_found"] == 2,
+        (q.get("include_airlines"), [(o.get("airlines"), o.get("preferred")) for o in fo.get("offers", [])], {k: v for k, v in fo.get("searched", {}).items() if k != "rule"}))
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-brand", "call_id": "c-brand", "tool": "hotels_search",
+                                                   "args": {"city": "Tokyo", "area": "Ginza", "check_in": DATE, "check_out": DATE, "guests": 2, "brands": ["Hilton"], "currency": "SGD"}}).json()
+q = [x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_hotels" and not x.get("property_token")][-1]
+ho = ((r.get("result") or {}).get("content") or {})
+K.check("a preferred hotel brand goes into the Google Hotels query; the result says the brand was searched and how many matched", q["q"] == "Hilton hotels near Ginza Tokyo"
+        and ho.get("searched", {}).get("brands") == ["Hilton"] and ho["searched"]["preferred_found"] == 0 and "preferred brands" in ho["searched"]["rule"], (q.get("q"), ho.get("searched")))
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-alli", "call_id": "c-alli", "tool": "flights_search",
+                                                   "args": {"origin": "SIN", "destination": "NRT", "date": DATE, "airlines": ["Star Alliance"], "currency": "SGD"}}).json()
+q = [x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_flights" and not x.get("booking_token")][-1]
+fo = ((r.get("result") or {}).get("content") or {})
+K.check("an alliance narrows the Google search (include_airlines=STAR_ALLIANCE) and flags its members (SQ, ANA), not Cathay (oneworld)", q.get("include_airlines") == "STAR_ALLIANCE"
+        and fo["offers"][0].get("preferred") is True and "preferred" not in fo["offers"][1] and fo["offers"][2].get("preferred") is True, (q.get("include_airlines"), [(o.get("airlines"), o.get("preferred")) for o in fo.get("offers", [])]))
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-group", "call_id": "c-group", "tool": "hotels_search",
+                                                   "args": {"city": "Tokyo", "area": "Ginza", "check_in": DATE, "check_out": DATE, "guests": 2, "brands": ["IHG One Rewards"], "currency": "SGD"}}).json()
+q = [x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_hotels" and not x.get("property_token")][-1]
+K.check("a hotel group goes into the query by its first word", q["q"] == "IHG hotels near Ginza Tokyo", q.get("q"))
 r = c.delete(B + "/sentinel/api/connections/travel/credential", headers=H)
 K.check("disconnect removes the key; the flight tools stay (Kiwi.com data), the hotel tools stay too but say they need the key", r.status_code == 200 and not conn()["has_credential"] and "flights_search" in cat_names(), r.text[:100])
 a = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-t1", "call_id": "c1", "tool": "hotels_search", "args": {"city": "Tokyo", "check_in": DATE, "check_out": DATE}}).json()

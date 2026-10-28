@@ -1032,6 +1032,60 @@ async fn an_ordinary_skill_is_followed_from_its_sheet_without_a_planner_call() {
 }
 
 #[test]
+fn standing_preferences_come_from_the_two_fixed_fields_and_matching_custom_ones_only() {
+    let (rt, _d) = rt();
+    assert!(rt.standing_prefs().is_empty());
+    rt.store
+        .set_profile("preferred_airline", "ANA", "test")
+        .unwrap();
+    rt.store
+        .set_profile("preferred_hotel_brand", " IHG One Rewards ", "test")
+        .unwrap();
+    rt.store
+        .set_profile("custom:Other airlines", "Singapore Airlines, JAL", "test")
+        .unwrap();
+    rt.store
+        .set_profile("custom:Hilton Honors status", "Diamond", "test")
+        .unwrap();
+    rt.store
+        .set_profile("custom:Shoe size", "43", "test")
+        .unwrap();
+    rt.store
+        .set_profile("phone", "+65 8000 0000", "test")
+        .unwrap();
+    rt.store
+        .set_profile("nationality", "Australia", "test")
+        .unwrap();
+    let prefs = rt.standing_prefs();
+    assert_eq!(
+        prefs[0],
+        ("Preferred airline".to_string(), "ANA".to_string())
+    );
+    assert_eq!(
+        prefs[1],
+        (
+            "Preferred hotel brand".to_string(),
+            "IHG One Rewards".to_string()
+        )
+    );
+    let labels: Vec<&str> = prefs.iter().map(|(k, _)| k.as_str()).collect();
+    assert!(labels.contains(&"Other airlines") && labels.contains(&"Hilton Honors status"));
+    assert!(!labels
+        .iter()
+        .any(|l| l.contains("Shoe") || l.contains("phone") || l.contains("Nationality")));
+    assert!(!prefs
+        .iter()
+        .any(|(_, v)| v.contains("8000") || v == "Australia"));
+    rt.store
+        .set_profile("preferred_airline", "", "test")
+        .unwrap();
+    assert!(!rt
+        .standing_prefs()
+        .iter()
+        .any(|(k, _)| k == "Preferred airline"));
+}
+
+#[test]
 fn built_in_skills_spell_the_plan_flag_as_on_and_only_the_long_ones_carry_it() {
     let (rt, _d) = rt();
     let mut with_plan = Vec::new();

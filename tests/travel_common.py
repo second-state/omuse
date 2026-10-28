@@ -237,6 +237,12 @@ def verify(suite: str, kind: str, skill: str, data_tools: tuple[str, ...], run_i
             elif e["type"] in ("waiting", "error", "retry", "choices", "choices_rejected"):
                 print(f"INFO {e['type']} {json.dumps(d, ensure_ascii=False)[:300]}")
     check("the task completed", final.get("status") == "COMPLETED", (final.get("status"), final.get("error"), final.get("result")))
+    if len(tasks) > 1:
+        # the follow-up ("yes, book it") acts on what the first task found: no plan, no second data search
+        fev = final.get("events", [])
+        fnames = [e["data"].get("name") for e in fev if e["type"] == "tool_call"]
+        check("the booking follow-up made no plan and searched nothing again", not any(e["type"] == "plan" for e in fev)
+              and not any(n and n.endswith(data_tools[0]) for n in fnames), ([e["type"] for e in fev][:12], fnames))
     loads = [x for x in calls if x["name"] == "load_skill"]
     check(f"the {skill} skill was loaded", any(skill in json.dumps(x["args"]) for x in loads), [x["args"] for x in loads])
     mcp = [i for i, n in enumerate(names) if n.startswith("mcp_travel__")]

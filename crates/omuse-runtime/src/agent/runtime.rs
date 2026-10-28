@@ -1253,6 +1253,44 @@ work around it; write the final answer saying what you would do and how far you 
 
     /// Long-term facts for this task (personal context v1): the ones that matter for what is asked, grouped by
     /// domain. A golden A/B run can ask for the old selection with `ctx_mode[task_id] = "legacy"`.
+    /// The profile's standing preferences for the executor prompt, as (label, value): the fixed
+    /// `preferred_airline` / `preferred_hotel_brand` fields, then any custom field whose label carries one of
+    /// `store::PREFERENCE_WORDS` (a second airline, a loyalty programme, a seat wish…). Empty values are skipped;
+    /// nothing else of the profile is ever put in the prompt.
+    pub fn standing_prefs(&self) -> Vec<(String, String)> {
+        let prof = self.store.profile().unwrap_or_else(|_| json!({}));
+        let Some(map) = prof.as_object() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for key in crate::store::PREFERENCE_KEYS {
+            let v = map.get(key).and_then(Value::as_str).unwrap_or("");
+            if !v.trim().is_empty() {
+                let label = crate::store::PROFILE_FIELDS
+                    .iter()
+                    .find(|(k, _, _)| *k == key)
+                    .map(|(_, _, en)| en.to_string())
+                    .unwrap_or_else(|| key.to_string());
+                out.push((label, v.trim().to_string()));
+            }
+        }
+        for (k, v) in map {
+            let Some(label) = k.strip_prefix("custom:") else {
+                continue;
+            };
+            let v = v.as_str().unwrap_or("");
+            let low = label.to_lowercase();
+            if !v.trim().is_empty()
+                && crate::store::PREFERENCE_WORDS
+                    .iter()
+                    .any(|w| low.contains(w))
+            {
+                out.push((label.to_string(), v.trim().to_string()));
+            }
+        }
+        out
+    }
+
     pub fn facts_for(&self, goal: &str, history_txt: &str, task_id: &str) -> Vec<Value> {
         if self.inner.lock().ctx_mode.get(task_id).map(String::as_str) == Some("legacy") {
             return self.facts_legacy(goal);
@@ -1968,6 +2006,7 @@ Your own notes and the short explanation around it stay in English.";
                 connections: catalog.get("connections").cloned().unwrap_or_else(|| json!({})),
                 plan: None,
                 facts: facts.clone(),
+                prefs: self.standing_prefs(),
                 skills: self.skills(),
                 extra: extra.clone(),
                 language: lg.to_string(),

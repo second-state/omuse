@@ -228,8 +228,12 @@ impl KiwiMcp {
                 c
             }
         };
+        let (from, to) = (
+            crate::airports::kiwi_place(&origin),
+            crate::airports::kiwi_place(&dest),
+        );
         let mut args = json!({
-            "flyFrom": origin.trim(), "flyTo": dest.trim(), "departureDate": date,
+            "flyFrom": from.clone(), "flyTo": to.clone(), "departureDate": date,
             "adults": a.get("adults").and_then(Value::as_i64).filter(|n| *n >= 1).unwrap_or(1),
             "cabinClass": cabin, "currency": currency, "sort": sort,
         });
@@ -237,8 +241,8 @@ impl KiwiMcp {
         if ret.len() == 10 {
             args["returnDate"] = json!(ret);
         }
-        if truthy(&a["nonstop_only"]) {
-            args["max_sector_stopovers"] = json!(0);
+        if let Some(n) = crate::serpapi::max_stops(a) {
+            args["max_sector_stopovers"] = json!(n);
         }
         if let Some(m) = a.get("max_price").and_then(Value::as_f64) {
             args["price_to"] = json!(m as i64);
@@ -298,7 +302,15 @@ impl KiwiMcp {
                 content.chars().take(120).collect::<String>()
             ))
         })?;
-        Ok(compact_flights(&data))
+        let mut out = compact_flights(&data);
+        let airlines = crate::serpapi::pref_list(a, "airlines");
+        let found = crate::serpapi::mark_preferred(&mut out["offers"], &airlines, "airlines");
+        out["searched"] = crate::serpapi::searched(a, &from, &to);
+        if !airlines.is_empty() {
+            out["searched"]["airlines"] = json!(airlines);
+            out["searched"]["preferred_found"] = json!(found);
+        }
+        Ok(out)
     }
 }
 

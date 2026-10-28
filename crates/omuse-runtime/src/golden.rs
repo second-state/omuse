@@ -806,6 +806,7 @@ impl Golden {
                 .unwrap_or_default();
             let plan_txt = format!("{}\n{}", get_str(&plan, "objective"), steps.join("\n"));
             let sysp = executor_system(&ExecutorPrompt {
+                prefs: Vec::new(),
                 user_name: get_str(&s, "user_name"),
                 tz: get_str(&s, "timezone"),
                 connections: catalog

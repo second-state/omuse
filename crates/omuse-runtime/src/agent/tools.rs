@@ -224,7 +224,7 @@ parallel: steps that share a label (\"p1\") are independent and run at the same 
         fn_("plan_task", "交给规划模型制定分步计划：多个相互依赖的步骤、多个来源或候选、子智能体、按顺序审批的操作或技能才需要；\
 能直接回答或几次调用就能查到的不用 Hand the request to the planning model for a step-by-step plan. Only for work that takes \
 several dependent steps, several sources or candidates to compare, sub-agents, approvals in sequence or a skill — not for a \
-question you can answer now or a lookup of a few calls. Once per task; a skill is followed from its sheet (a long skill brings its own plan with load_skill); afterwards update_plan. \
+question you can answer now or a lookup of a few calls, and not for a follow-up that acts on a result already in this conversation (book it / buy it / send it: go straight to the action). Once per task; a skill is followed from its sheet (a long skill brings its own plan with load_skill); afterwards update_plan. \
 objective: the job in one sentence; notes: what you already know or found and any constraints.",
             json!({"objective": s, "notes": s}), &["objective"]),
         fn_("files_list", &format!("列出工作区文件 List files in the workspace (Olares Files → Data/{}/workspace).", app_id), json!({"path": s}), &[]),

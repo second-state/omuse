@@ -1,11 +1,13 @@
 //! App connectors (app/sentinel/{notion,slack,gcal,ical,market,billing}.py): Notion, Slack, Google Calendar,
 //! iCal feeds, market data, Stripe billing.
 
+pub mod airports;
 pub mod billing;
 pub mod gcal;
 pub mod gdrive;
 pub mod ical;
 pub mod kiwi;
+pub mod loyalty;
 pub mod market;
 pub mod notion;
 pub mod py;

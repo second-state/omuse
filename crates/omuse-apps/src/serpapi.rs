@@ -24,6 +24,104 @@ impl fmt::Display for SerpError {
 
 impl std::error::Error for SerpError {}
 
+/// Google's `stops` filter for the request's `max_stops` (0 / 1 / 2) or `nonstop_only`: 1 = nonstop, 2 = at most
+/// one stop, 3 = at most two; `None` = any number of stops.
+pub fn stops_param(a: &Value) -> Option<u8> {
+    max_stops(a).map(|n| n + 1)
+}
+
+/// The request's stop limit: `max_stops` 0..=2, or 0 for `nonstop_only`; `None` when any number of stops is fine.
+pub fn max_stops(a: &Value) -> Option<u8> {
+    if let Some(n) = a.get("max_stops").and_then(Value::as_i64) {
+        return Some(n.clamp(0, 2) as u8);
+    }
+    if truthy(&a["nonstop_only"]) {
+        return Some(0);
+    }
+    None
+}
+
+/// What was searched, in the words the answer should use — appended to every flights result so the cabin, the
+/// stop limit and the date the user asked for are never mixed up with another search.
+pub fn searched(a: &Value, from: &str, to: &str) -> Value {
+    let cabin = match get_str(a, "cabin").to_lowercase().as_str() {
+        "premium_economy" | "premium economy" => "premium economy",
+        "business" => "business",
+        "first" => "first",
+        _ => "economy",
+    };
+    let stops = match max_stops(a) {
+        Some(0) => "nonstop only",
+        Some(1) => "at most one stop",
+        Some(_) => "at most two stops",
+        None => "any number of stops",
+    };
+    let ret = get_str(a, "return_date");
+    json!({
+        "origin": from, "destination": to, "date": get_str(a, "date"),
+        "trip": if ret.is_empty() { "one way".to_string() } else { format!("round trip, return {ret}") },
+        "adults": a.get("adults").and_then(Value::as_i64).filter(|n| *n >= 1).unwrap_or(1),
+        "cabin": cabin, "stops": stops,
+        "rule": format!("every offer below is a {cabin} fare with {stops}; answer in these terms, and if the user asked for a different cabin, date or stop limit, search again instead of presenting these{}", if pref_list(a, "airlines").is_empty() { "" } else { "; offers marked preferred are on the user's preferred airlines — show the best of them next to the cheapest, with the price difference" }),
+    })
+}
+
+/// A list argument (`airlines`, `brands`): a JSON array of strings, or one comma-separated string; trimmed, empty
+/// entries dropped.
+pub fn pref_list(a: &Value, key: &str) -> Vec<String> {
+    let v = match a.get(key) {
+        Some(Value::Array(xs)) => xs
+            .iter()
+            .map(|x| {
+                x.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| x.to_string())
+            })
+            .collect::<Vec<_>>(),
+        Some(Value::String(s)) => s.split(',').map(str::to_string).collect(),
+        _ => Vec::new(),
+    };
+    v.into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Flag the items the user prefers: `preferred: true` on every item whose `field` (an airline list such as
+/// "Singapore Airlines + ANA", or a hotel name) contains one of `prefs` (case-insensitive), or — for flights — whose
+/// first leg's flight number starts with a 2-letter airline code in `prefs`. The other items stay as they are, so
+/// the answer can show the price difference. Returns how many were flagged.
+pub fn mark_preferred(items: &mut Value, prefs: &[String], field: &str) -> usize {
+    if prefs.is_empty() {
+        return 0;
+    }
+    // an alliance or a hotel group stands for all its members
+    let names = crate::loyalty::expand(prefs, if field == "name" { "hotel" } else { "airline" });
+    let codes: Vec<String> = prefs
+        .iter()
+        .filter(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_alphanumeric()))
+        .map(|p| p.to_ascii_uppercase())
+        .collect();
+    let mut n = 0;
+    for it in items.as_array_mut().into_iter().flatten() {
+        let hay = get_str(it, field).to_lowercase();
+        let first_no = arr(it, "legs")
+            .first()
+            .map(|l| get_str(l, "flight_number"))
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        let by_name = names
+            .iter()
+            .any(|p| p.len() > 2 && hay.contains(p.as_str()));
+        let by_code = codes.iter().any(|c| first_no.starts_with(c.as_str()));
+        if by_name || by_code {
+            it["preferred"] = json!(true);
+            n += 1;
+        }
+    }
+    n
+}
+
 /// The SerpApi client for one key.
 pub struct SerpApi {
     client: reqwest::Client,
@@ -65,88 +163,7 @@ pub fn token_of(id: &str) -> Option<String> {
         .cloned()
 }
 
-/// The airports Google Flights should take for a place: an IATA code (or a comma list) as given; a city name that
-/// has several airports becomes all of them; `None` for a name this table does not know.
-pub fn airport_codes(place: &str) -> Option<String> {
-    let p = place.trim();
-    if p.is_empty() {
-        return None;
-    }
-    let codes: Vec<&str> = p.split(',').map(str::trim).collect();
-    if codes
-        .iter()
-        .all(|c| c.len() == 3 && c.chars().all(|ch| ch.is_ascii_alphabetic()))
-    {
-        return Some(
-            codes
-                .iter()
-                .map(|c| c.to_ascii_uppercase())
-                .collect::<Vec<_>>()
-                .join(","),
-        );
-    }
-    let key = p
-        .to_lowercase()
-        .replace(['-', '_'], " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let table: &[(&str, &str)] = &[
-        ("tokyo", "HND,NRT"),
-        ("osaka", "KIX,ITM"),
-        ("seoul", "ICN,GMP"),
-        ("singapore", "SIN"),
-        ("hong kong", "HKG"),
-        ("bangkok", "BKK,DMK"),
-        ("taipei", "TPE,TSA"),
-        ("shanghai", "PVG,SHA"),
-        ("beijing", "PEK,PKX"),
-        ("shenzhen", "SZX"),
-        ("guangzhou", "CAN"),
-        ("chengdu", "TFU,CTU"),
-        ("kuala lumpur", "KUL"),
-        ("ho chi minh city", "SGN"),
-        ("saigon", "SGN"),
-        ("hanoi", "HAN"),
-        ("manila", "MNL"),
-        ("jakarta", "CGK"),
-        ("bali", "DPS"),
-        ("denpasar", "DPS"),
-        ("phuket", "HKT"),
-        ("sydney", "SYD"),
-        ("melbourne", "MEL"),
-        ("auckland", "AKL"),
-        ("delhi", "DEL"),
-        ("new delhi", "DEL"),
-        ("mumbai", "BOM"),
-        ("dubai", "DXB"),
-        ("doha", "DOH"),
-        ("london", "LHR,LGW,STN,LCY"),
-        ("paris", "CDG,ORY"),
-        ("amsterdam", "AMS"),
-        ("frankfurt", "FRA"),
-        ("munich", "MUC"),
-        ("zurich", "ZRH"),
-        ("rome", "FCO"),
-        ("milan", "MXP,LIN"),
-        ("madrid", "MAD"),
-        ("barcelona", "BCN"),
-        ("new york", "JFK,EWR,LGA"),
-        ("nyc", "JFK,EWR,LGA"),
-        ("san francisco", "SFO"),
-        ("los angeles", "LAX"),
-        ("seattle", "SEA"),
-        ("chicago", "ORD,MDW"),
-        ("boston", "BOS"),
-        ("washington", "IAD,DCA"),
-        ("toronto", "YYZ"),
-        ("vancouver", "YVR"),
-    ];
-    table
-        .iter()
-        .find(|(name, _)| *name == key)
-        .map(|(_, codes)| (*codes).to_string())
-}
+pub use crate::airports::airport_codes;
 
 fn num(v: Option<&Value>) -> Value {
     match v {
@@ -692,14 +709,35 @@ impl SerpApi {
             ("hl", "en".to_string()),
             ("sort_by", sort.to_string()),
         ];
-        if truthy(&a["nonstop_only"]) {
-            params.push(("stops", "1".to_string()));
+        if let Some(st) = stops_param(a) {
+            params.push(("stops", st.to_string()));
         }
         if let Some(m) = a.get("max_price").and_then(Value::as_f64) {
             params.push(("max_price", format!("{}", m as i64)));
         }
+        // preferred airlines given as 2-letter codes or alliances narrow Google's search; names only flag the offers
+        let airlines = pref_list(a, "airlines");
+        let google: Vec<String> = airlines
+            .iter()
+            .filter_map(|x| {
+                if x.len() == 2 && x.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    Some(x.to_ascii_uppercase())
+                } else {
+                    crate::loyalty::alliance(x).map(|al| al.1.to_string())
+                }
+            })
+            .collect();
+        if !airlines.is_empty() && google.len() == airlines.len() {
+            params.push(("include_airlines", google.join(",")));
+        }
         let data = self.get("search.json", &params).await?;
-        let out = compact_flights(&data, &currency);
+        let mut out = compact_flights(&data, &currency);
+        let found = mark_preferred(&mut out["offers"], &airlines, "airlines");
+        out["searched"] = searched(a, &params[1].1, &params[2].1);
+        if !airlines.is_empty() {
+            out["searched"]["airlines"] = json!(airlines);
+            out["searched"]["preferred_found"] = json!(found);
+        }
         // a booking-options request must repeat the route and dates: keep them with each offer's token
         let route = json!({"departure_id": params[1].1, "arrival_id": params[2].1, "outbound_date": params[3].1,
                            "type": params[4].1, "return_date": params[5].1});
@@ -775,10 +813,22 @@ impl SerpApi {
             ));
         }
         let area = get_str(a, "area");
+        let brands = pref_list(a, "brands");
+        // one or two preferred brands or groups go into Google's query ("Hilton hotels near Ginza Tokyo", "IHG hotels
+        // near …" — a programme's name is cut to its first word); more only flag the results
+        let word = |b: &String| match crate::loyalty::hotel_group(b) {
+            Some(g) => crate::loyalty::group_word(g.0).to_string(),
+            None => b.clone(),
+        };
+        let lead = match brands.len() {
+            1 => format!("{} ", word(&brands[0])),
+            2 => format!("{} or {} ", word(&brands[0]), word(&brands[1])),
+            _ => String::new(),
+        };
         let q = if area.trim().is_empty() {
-            format!("{} hotels", city.trim())
+            format!("{lead}{} hotels", city.trim())
         } else {
-            format!("hotels near {} {}", area.trim(), city.trim())
+            format!("{lead}hotels near {} {}", area.trim(), city.trim())
         };
         let currency = {
             let c = get_str(a, "currency").to_uppercase();
@@ -837,7 +887,14 @@ impl SerpApi {
             _ => {}
         }
         let data = self.get("search.json", &params).await?;
-        Ok(compact_hotels(&data, &currency))
+        let mut out = compact_hotels(&data, &currency);
+        let found = mark_preferred(&mut out["hotels"], &brands, "name");
+        out["searched"] = json!({
+            "city": city.trim(), "area": area.trim(), "check_in": params[2].1, "check_out": params[3].1, "guests": guests,
+            "brands": brands, "preferred_found": found,
+            "rule": if brands.is_empty() { "answer for the city, area, dates and guests searched" } else { "hotels marked preferred are the user's preferred brands — show the best of them next to the best value, with the price difference; say so when none was found" },
+        });
+        Ok(out)
     }
 
     /// `places_search`: restaurants, cafes, shops and other places on Google Maps for a query in a city or area.
@@ -960,13 +1017,72 @@ mod tests {
     use super::*;
 
     #[test]
-    fn airports_from_codes_and_city_names() {
-        assert_eq!(airport_codes("sin").as_deref(), Some("SIN"));
-        assert_eq!(airport_codes("HND, NRT").as_deref(), Some("HND,NRT"));
-        assert_eq!(airport_codes("Tokyo").as_deref(), Some("HND,NRT"));
-        assert_eq!(airport_codes("Ho-Chi-Minh City").as_deref(), Some("SGN"));
-        assert_eq!(airport_codes("Atlantis"), None);
-        assert_eq!(airport_codes(""), None);
+    fn preferred_airlines_and_brands_are_flagged_not_filtered() {
+        assert_eq!(
+            pref_list(&json!({"airlines": ["SQ", " ANA ", ""]}), "airlines"),
+            ["SQ", "ANA"]
+        );
+        assert_eq!(
+            pref_list(&json!({"airlines": "Singapore Airlines, NH"}), "airlines"),
+            ["Singapore Airlines", "NH"]
+        );
+        assert!(pref_list(&json!({}), "airlines").is_empty());
+        let mut offers = json!([
+            {"airlines": "Singapore Airlines", "legs": [{"flight_number": "SQ 638"}], "price": 620},
+            {"airlines": "Cathay Pacific", "legs": [{"flight_number": "CX 710"}], "price": 510},
+            {"airlines": "ANA", "legs": [{"flight_number": "NH 842"}], "price": 700}]);
+        assert_eq!(
+            mark_preferred(
+                &mut offers,
+                &["Singapore Airlines".into(), "NH".into()],
+                "airlines"
+            ),
+            2
+        );
+        assert_eq!(offers[0]["preferred"], true);
+        assert!(offers[1].get("preferred").is_none());
+        assert_eq!(offers[2]["preferred"], true);
+        assert_eq!(offers.as_array().unwrap().len(), 3, "nothing is dropped");
+        let mut hotels = json!([{"name": "Hilton Tokyo"}, {"name": "Hotel Ginza Grand"}]);
+        assert_eq!(mark_preferred(&mut hotels, &["hilton".into()], "name"), 1);
+        assert_eq!(hotels[0]["preferred"], true);
+        assert_eq!(mark_preferred(&mut hotels, &[], "name"), 0);
+        // an alliance / a group stands for its members
+        let mut offers = json!([{"airlines": "United", "legs": [{"flight_number": "UA 838"}]}, {"airlines": "Delta", "legs": [{"flight_number": "DL 1"}]}]);
+        assert_eq!(
+            mark_preferred(&mut offers, &["Star Alliance".into()], "airlines"),
+            1
+        );
+        assert_eq!(offers[0]["preferred"], true);
+        let mut hotels = json!([{"name": "Holiday Inn Express Tokyo"}, {"name": "Hilton Tokyo"}]);
+        assert_eq!(mark_preferred(&mut hotels, &["IHG".into()], "name"), 1);
+        assert_eq!(hotels[0]["preferred"], true);
+    }
+
+    #[test]
+    fn stop_limit_and_the_searched_echo() {
+        assert_eq!(stops_param(&json!({})), None);
+        assert_eq!(stops_param(&json!({"nonstop_only": true})), Some(1));
+        assert_eq!(stops_param(&json!({"max_stops": 0})), Some(1));
+        assert_eq!(stops_param(&json!({"max_stops": 1})), Some(2));
+        assert_eq!(stops_param(&json!({"max_stops": 7})), Some(3));
+        let s = searched(
+            &json!({"cabin": "business", "max_stops": 0, "date": "2026-12-01", "adults": 2}),
+            "HND,NRT",
+            "SIN",
+        );
+        assert_eq!(s["cabin"], "business");
+        assert_eq!(s["stops"], "nonstop only");
+        assert_eq!(s["trip"], "one way");
+        assert_eq!(s["adults"], 2);
+        assert!(s["rule"]
+            .as_str()
+            .unwrap()
+            .contains("business fare with nonstop only"));
+        let s = searched(&json!({"return_date": "2026-12-09"}), "SIN", "TYO");
+        assert_eq!(s["cabin"], "economy");
+        assert_eq!(s["stops"], "any number of stops");
+        assert_eq!(s["trip"], "round trip, return 2026-12-09");
     }
 
     #[test]

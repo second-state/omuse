@@ -438,9 +438,10 @@ mod tests {
         assert_eq!(fm.get("name").unwrap(), "Flight-Watch");
         assert_eq!(fm.get("description").unwrap(), "Watch a flight");
         assert!(!fm.contains_key("other"));
-        let fm = front_matter("---\nname: y\nbrowser: off\nplan: on\n---\n");
+        let fm = front_matter("---\nname: y\nbrowser: off\nplan: on\nprofile: x\n---\n");
         assert_eq!(fm.get("browser").unwrap(), "off");
         assert_eq!(fm.get("plan").unwrap(), "on");
+        assert!(!fm.contains_key("profile"), "unknown keys are ignored");
         assert!(front_matter("# No front matter\n").is_empty());
         assert!(front_matter("---\nname: x\n").is_empty());
         let fm = front_matter("---\nname: x\n---");

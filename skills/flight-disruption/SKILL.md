@@ -1,6 +1,7 @@
 ---
 name: flight-disruption
 description: 航班延误/取消/错过转机：查实时状态、改签和备选航班（优先旅行数据连接器）、航空公司和当地的赔偿与照顾规则、保险理赔要留的证明（延误证明、收据）、监控直到起飞并通知 Flight delays, cancellations and missed connections — live status, rebooking options (data connector first), what the airline and local rules give you, the proof an insurance claim needs, and a watch until departure.
+
 ---
 # Flight disruption / 航班延误与取消
 
@@ -21,7 +22,10 @@ connecting flights, whether the ticket is one booking or separate tickets (matte
 ## 3. Options
 - **Rebooking**: the airline rebooks for free on its own cancellations and long delays; show the alternatives it
   offers (its app / site, or the airport desk and the phone line — phone_call if configured, with the user's approval).
-  To compare, use `flights_search` (built in, or the connector's) — same route, same day and next morning — and present_choices;
+  To compare, use `flights_search` (built in, or the connector's) — same route, same day and next morning, **the same
+  cabin as the user's ticket** (`cabin=business` for a business-class ticket), the city code for a city with several
+  airports (`TYO`, `SEL`, `LON` — one search), `airlines=[…]` from the Standing preferences block of your instructions when the
+  user must buy a new ticket (the airline that owes the rebooking comes first regardless) — and present_choices;
   book a new ticket only if the user asks (then the `flight-booking` skill, approvals as usual).
 - **Separate tickets / self-transfer**: the next carrier owes nothing; say so plainly and look for the cheapest fix.
 - **Care while waiting**: meals, hotel and transport rules differ by airline and country. There is no EU261-style

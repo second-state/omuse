@@ -3,6 +3,7 @@ name: travel-planning
 description: 旅行：机票/酒店比价、行程规划、签证入境、天气与行李、当地交通（Google Flights、Booking.com、Google 地图、官方来源）Flights, hotels, itineraries, visas, weather and packing, local transport.
 
 plan: on
+
 ---
 # Travel planning / 旅行规划
 
@@ -36,7 +37,45 @@ as below.
   If the form is not prefilled, fill it: click the "Where from?" box, then type into the **inner text input** of the
   dialog that opens (not the dialog itself), wait for the suggestion list and click the airport; same for "Where to?";
   pick the date in the calendar and press "Done", then "Search". Turn on "Nonstop only" under Stops.
-- Use IATA codes (SIN, NRT, HND, KIX, ICN, HKG, YVR). "Tokyo" = NRT + HND → search `TYO` or check both.
+- `flights_search` first, ONE call per route and date: take the **date, cabin and stop limit from the user's words**
+  (business class asked → `cabin=business`, never economy instead; "direct" → `max_stops=0`), and give a city with
+  several airports its **city code** or name — one search covers all its airports, never one per airport:
+  TYO = Tokyo (HND, NRT)
+  OSA = Osaka (KIX, ITM)
+  SEL = Seoul (ICN, GMP)
+  BJS = Beijing (PEK, PKX)
+  SHA = Shanghai (PVG, SHA)
+  CTU = Chengdu (TFU, CTU)
+  TPE = Taipei (TPE, TSA)
+  BKK = Bangkok (BKK, DMK)
+  KUL = Kuala Lumpur (KUL, SZB)
+  JKT = Jakarta (CGK, HLP)
+  DXB = Dubai (DXB, DWC)
+  IST = Istanbul (IST, SAW)
+  MEL = Melbourne (MEL, AVV)
+  LON = London (LHR, LGW, STN, LTN, LCY)
+  PAR = Paris (CDG, ORY)
+  ROM = Rome (FCO, CIA)
+  MIL = Milan (MXP, LIN, BGY)
+  NYC = New York (JFK, EWR, LGA)
+  WAS = Washington (IAD, DCA, BWI)
+  CHI = Chicago (ORD, MDW)
+  QSF = San Francisco (SFO, OAK, SJC)
+  QLA = Los Angeles (LAX, BUR, LGB, SNA, ONT)
+  MIA = Miami (MIA, FLL)
+  HOU = Houston (IAH, HOU)
+  DFW = Dallas (DFW, DAL)
+  YTO = Toronto (YYZ, YTZ)
+  MEX = Mexico City (MEX, NLU)
+  SAO = São Paulo (GRU, CGH, VCP)
+  RIO = Rio de Janeiro (GIG, SDU)
+  BUE = Buenos Aires (EZE, AEP)
+  The result's `searched` block repeats the cabin, stops and date used: present only those.
+- Standing preferences are in your instructions (the "Standing preferences" block: the profile's preferred airline or
+  alliance, hotel brand or group, loyalty status) — pass them as `airlines=[…]` / `brands=[…]` (an alliance or group
+  stands for its members); a wish in the request wins; show the preferred option next to the best value with the
+  price difference.
+- In the browser (fallback only) use IATA codes (SIN, NRT, HND, KIX, ICN, HKG, YVR); "Tokyo" = `TYO` there too.
 - Fallback when Google Flights fails twice: the airline sites (singaporeair.com, jal.co.jp, ana.co.jp, flyscoot.com)
   or Skyscanner `https://www.skyscanner.com.sg/transport/flights/sin/tyoa/261120/?adultsv2=1&cabinclass=economy&preferdirects=true`.
 - Do not spend more than ~6 steps on one site; switch source instead.
