@@ -75,6 +75,17 @@ async def main():
               and await pg.locator("#profile select[data-key=preferred_hotel_brand]").input_value() == "Holiday Inn")
         keys = await pg.evaluate("() => [...document.querySelectorAll('#profile .removable')].map(e => e.dataset.key)")
         check("after a reload the fields are still there", sorted(keys) == sorted(["custom:Airline", "custom:Hotel chain", "address:Beach house"]), keys)
+        lay = await pg.evaluate("""() => { const card = document.querySelector('#profile'); const grid = card.querySelector('.grid2');
+            const r = k => card.querySelector(`.removable[data-key='${k}']`); const nf = card.querySelector('.newfield[data-kind=address]');
+            const a = r('address:Beach house'), c = r('custom:Airline');
+            return { inGrid: !!grid.querySelector('.removable'), addrW: a.getBoundingClientRect().width, newW: nf.getBoundingClientRect().width,
+                     addrBeforeNew: !!(a.compareDocumentPosition(nf) & Node.DOCUMENT_POSITION_FOLLOWING), addrName: a.querySelector('.fieldname').textContent,
+                     customAfterAddr: !!(a.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) }; }""")
+        check("saved addresses and custom fields are full-width rows above the entry rows, not cells of the fixed-field grid",
+              not lay["inGrid"] and abs(lay["addrW"] - lay["newW"]) < 2 and lay["addrBeforeNew"] and lay["addrName"] == "Beach house" and lay["customAfterAddr"], lay)
+        if os.path.isdir("/repo-out"):   # OMUSE_E2E_OUT: a picture of the card for a visual check
+            await pg.emulate_media(color_scheme="dark")
+            await card.screenshot(path="/repo-out/profile_card.png")
         check("no page errors", not errs, errs)
         await br.close()
 

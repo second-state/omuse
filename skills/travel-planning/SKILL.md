@@ -7,7 +7,7 @@ plan: on
 ---
 # Travel planning / 旅行规划
 
-Flights, hotels and cars: `flights_search` (always there: Google Flights data with the Flights & hotels key, else
+Flights, hotels and cars: `flights_search` (always there: Kiwi.com data, then Google Flights with the Flights & hotels key, then the web search chain —
 Kiwi.com data for information only — never book through Kiwi or give a Kiwi link; the booking is on the airline's site
 or with an agency the user chooses) together with `web_search` in the same turn come first; `hotels_search` /
 `hotel_rooms` need the key. Without them, when the Web search connection is on (Brave / Tavily / Google — your instructions' Connections
@@ -37,8 +37,9 @@ as below.
   If the form is not prefilled, fill it: click the "Where from?" box, then type into the **inner text input** of the
   dialog that opens (not the dialog itself), wait for the suggestion list and click the airport; same for "Where to?";
   pick the date in the calendar and press "Done", then "Search". Turn on "Nonstop only" under Stops.
-- `flights_search` first, ONE call per route and date: take the **date, cabin and stop limit from the user's words**
-  (business class asked → `cabin=business`, never economy instead; "direct" → `max_stops=0`), and give a city with
+- `flights_search` first, ONE call per route — a range of dates is `date` + `date_to` in that same call, never a call or
+  a plan step per day: take the **date, cabin and stop limit from the user's words**
+  (business class asked → `cabin=business`, never economy instead; "direct" → `stops="nonstop"`, nothing said → `stops="any"`), and give a city with
   several airports its **city code** or name — one search covers all its airports, never one per airport:
   TYO = Tokyo (HND, NRT)
   OSA = Osaka (KIX, ITM)
@@ -70,7 +71,8 @@ as below.
   SAO = São Paulo (GRU, CGH, VCP)
   RIO = Rio de Janeiro (GIG, SDU)
   BUE = Buenos Aires (EZE, AEP)
-  The result's `searched` block repeats the cabin, stops and date used: present only those.
+  The result's `searched` block repeats the cabin, stops and date used: present only those. A business itinerary with a
+  short economy connection (`cabin_mix`) still counts as business — keep it and name the economy leg.
 - Standing preferences are in your instructions (the "Standing preferences" block: the profile's preferred airline or
   alliance, hotel brand or group, loyalty status) — pass them as `airlines=[…]` / `brands=[…]` (an alliance or group
   stands for its members); a wish in the request wins; show the preferred option next to the best value with the

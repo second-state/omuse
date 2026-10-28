@@ -8,6 +8,9 @@ description: 订机票：用 flights_search（Google Flights 或 Kiwi.com 数据
 The goal is a correct booking with as few browser steps as possible. Search and compare with data tools; the browser
 is only for the provider's booking page at the very end.
 
+
+**No plan for the search.** Searching is just searching: never call plan_task to search, compare or check a date range — one turn of search calls, then the answer. Plan only once one result has been picked and booking it takes several steps (and a "book it" follow-up goes straight to the booking page).
+
 ## 0. Read the request first — these decide the search, and they are not negotiable
 Before any call, take from the user's words (ask once only when one is genuinely missing and matters):
 - **Date**: the exact local departure date (YYYY-MM-DD); "next Friday", "in 3 weeks" → compute from today's date in the
@@ -16,7 +19,11 @@ Before any call, take from the user's words (ask once only when one is genuinely
   `premium_economy`, else `economy`. **Never answer a business-class request with economy fares.** If the search in
   that cabin returns nothing, say so and offer the nearest thing (another date, a stop, premium economy) — do not
   quietly show a cheaper cabin.
-- **Stops**: "direct / nonstop" → `max_stops=0`; "one stop at most" → `max_stops=1`; nothing said → leave it open and
+- **Mixed cabins count.** An itinerary whose main legs are in business but with a short economy leg (a regional
+  connection, `cabin_mix: "business + economy"`, the legs listed in `economy_legs`) **is a business-class result** —
+  keep it in the comparison and say which leg is economy ("business HND–SIN; the KIX–HND connection is economy"). Only
+  an offer marked `cabin: "economy (not the cabin searched)"` — every leg in economy — is left out.
+- **Stops**: "direct / nonstop" → `stops="nonstop"`; "one stop at most" → `stops="one_stop_max"`; nothing said → `stops="any"` and
   sort by price, then say how many stops each offer has.
 - **Passengers** (default 1 adult), **currency** (the user's, else the profile's), **time of day** wishes (filter the
   results yourself).
@@ -35,6 +42,10 @@ Before any call, take from the user's words (ask once only when one is genuinely
 - "Cheapest flight / cheapest business-class flight from A to B on <date>" is **one `flights_search` call** (plus
   `web_search` in the same turn for the airline's or an agency's fare page), then the answer. Do not call plan_task,
   do not search airport by airport, do not search several dates unless the user asked for flexibility.
+- **A range of dates is still one search**: "cheapest between 1 and 10 December", "any day next week", "flexible ±3
+  days" → `date` = the first day, `date_to` = the last (Kiwi.com data covers up to 14 days, Google Flights 7; the result
+  says when it cut the range). Every offer carries its `date`, and `by_date` lists the cheapest per day — use it to
+  name the cheapest day. Never one call per day, never a plan for it.
 - A city with several airports is still one search: give its **city code** (or the city's name) and the tool covers all
   of them — `TYO` = HND + NRT, never two searches. Codes the tool knows (airport codes for single-airport cities such as
   SIN, HKG, SGN, HAN, SYD, DEL work as they are):
@@ -69,7 +80,8 @@ Before any call, take from the user's words (ask once only when one is genuinely
   RIO = Rio de Janeiro (GIG, SDU)
   BUE = Buenos Aires (EZE, AEP)
   Two cities on one side: a comma list (`TYO,OSA`). The result's `searched.origin` shows the airports actually used.
-- `flights_search` is always there: Google Flights data when the Flights & hotels key is set, else Kiwi.com data —
+- `flights_search` is always there and has its own fallback chain: Kiwi.com data, then Google Flights when the Flights & hotels key
+  is set, then the web search chain (its result then has web pages, not offers — read the fare pages with browser_read) —
   **information only**. Never book through Kiwi, never quote or open a Kiwi link; `flight_offer` gives the details
   of one offer (no link for Kiwi data).
 - A travel MCP connector in the tool list (`mcp_<server>__flights_search` …) can be used in the same turn too.

@@ -7,6 +7,7 @@ Not in run_in_docker.sh's default list (it needs a real model):
 import datetime as dt
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,6 +22,7 @@ QUESTIONS = {
     "flight": "What is today's last flight from Hong Kong to Singapore that arrives before mid-night?",
     "michelin": "I need to book a Michelin 3 star restaurant in Tokyo next Friday. What are my options?",
     "business": "What is the cheapest business class direct flight from Tokyo to Singapore on {date}?",
+    "range": "What is the cheapest flight from Singapore to Tokyo on any day between {d1} and {d2}?",
 }
 
 
@@ -113,14 +115,14 @@ try:
     final = T.task(info["tasks"][-1])
     calls = T.calls_of(info["tasks"])
     trace(info["tasks"])
-    fs = [x for x in calls if x["name"].endswith("flights_search")]
+    fs = [x for x in calls if x["name"].endswith("flights_search") and x.get("args")]
     args = fs[0]["args"] if fs else {}
-    stops_ok = args.get("max_stops") == 0 or args.get("nonstop_only") is True
+    stops_ok = args.get("stops") == "nonstop" or args.get("max_stops") == 0 or args.get("nonstop_only") is True
     T.check("business: the task completed", final.get("status") == "COMPLETED", (final.get("status"), final.get("error"), str(final.get("result"))[:300]))
     # one search per source (the built-in tool, and a travel connector when one is configured — the skill allows both), never one per
     # airport or a second cabin: every search is business, nonstop, Tokyo as one city
     T.check("business: one flights search per source (no search per airport, no second cabin)", fs and len({x["name"] for x in fs}) == len(fs)
-            and all(str(x["args"].get("cabin", "")).lower() == "business" and (x["args"].get("max_stops") == 0 or x["args"].get("nonstop_only") is True)
+            and all(str(x["args"].get("cabin", "")).lower() == "business" and (x["args"].get("stops") == "nonstop" or x["args"].get("max_stops") == 0 or x["args"].get("nonstop_only") is True)
                     and str(x["args"].get("origin", "")).lower().replace(" ", "") in ("tyo", "tokyo", "hnd,nrt", "nrt,hnd") for x in fs), [(x["name"], x["args"]) for x in fs])
     T.check("business: the search asked for business class", str(args.get("cabin", "")).lower() == "business", args)
     T.check("business: the search asked for nonstop (max_stops 0 / nonstop_only)", stops_ok, args)
@@ -128,7 +130,27 @@ try:
             and args.get("date") == bday, args)
     T.check("business: no plan was made for a one-search question", not any(e["type"] == "plan" for e in final.get("events", [])), [e["type"] for e in final.get("events", [])])
     res = str(final.get("result") or "")
-    T.check("business: the answer is about business class and never offers economy instead", "business" in res.lower() and "economy" not in res.lower(), res[:600])
+    # a business itinerary may carry a short economy connection (cabin_mix) and the answer then names that leg; what must not
+    # happen is an economy fare offered as the answer
+    T.check("business: the answer is about business class and never offers an economy fare instead", "business" in res.lower()
+            and not re.search(r"economy[- ](class )?(fare|ticket|option|seat)s?\b|cheapest economy|in economy for", res, re.I), res[:600])
+    # 4. a range of dates: one flights search with date + date_to, no plan, the answer names the cheapest day
+    r1 = (dt.date.today() + dt.timedelta(days=40)).isoformat(); r2 = (dt.date.today() + dt.timedelta(days=44)).isoformat()
+    rinfo = T.run(QUESTIONS["range"].format(d1=r1, d2=r2), timeout=600)
+    all_tasks += rinfo["tasks"]
+    rfinal = T.task(rinfo["tasks"][-1])
+    rcalls = T.calls_of(rinfo["tasks"])
+    trace(rinfo["tasks"])
+    rfs = [x for x in rcalls if x["name"] == "flights_search"]
+    T.check("range: the task completed", rfinal.get("status") == "COMPLETED", (rfinal.get("status"), rfinal.get("error")))
+    # never one search per day: every flights_search covers the whole range (a model may repeat the same call to double-check)
+    T.check("range: the built-in flights_search covers the whole range (date + date_to) in each call, never one call per day", bool(rfs)
+            and all(x["args"].get("date") == r1 and x["args"].get("date_to") == r2 for x in rfs), [x["args"] for x in rfs])
+    T.check("range: no stop limit invented (the question said nothing about stops)", bool(rfs) and str(rfs[0]["args"].get("stops", "any")) in ("any", "")
+            and rfs[0]["args"].get("max_stops") is None and not rfs[0]["args"].get("nonstop_only"), [x["args"] for x in rfs])
+    T.check("range: no plan", not any(e["type"] == "plan" for e in rfinal.get("events", [])), [e["type"] for e in rfinal.get("events", [])][:12])
+    T.check("range: the answer names a date in the range", any(str(dt.date.fromisoformat(r1) + dt.timedelta(days=i)) in str(rfinal.get("result"))
+            or (dt.date.fromisoformat(r1) + dt.timedelta(days=i)).strftime("%-d %b") in str(rfinal.get("result")) for i in range(5)), str(rfinal.get("result"))[:400])
     T.check("business: the browser was never used", not [x for x in calls if x["name"].startswith("browser_")], [x["name"] for x in calls])
     pref = str(args.get("airlines", "")).lower()
     T.check("business: the profile's preferred airline (ANA) went into the search, or the answer says ANA has no such offer",

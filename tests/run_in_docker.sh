@@ -17,7 +17,7 @@ if [ "${1:-}" != "--inside" ]; then
   # OMUSE_E2E_OUT: a writable host directory, mounted at /repo-out (suite logs, TIMING lines, screenshots_real.py pictures).
   EXTRA=()
   # OMUSE_E2E_{BRAVE,TAVILY,SERPAPI}_EP: the real search endpoints instead of the fakes (web_search_real.py).
-  [ -n "${OMUSE_E2E_ENV_FILE:-}" ] && EXTRA+=(--env-file "$OMUSE_E2E_ENV_FILE" -e OMUSE_E2E_REAL=1 -e OMUSE_E2E_MODELS -e OMUSE_E2E_BRAVE_EP -e OMUSE_E2E_TAVILY_EP -e OMUSE_E2E_EXA_EP -e OMUSE_E2E_EXA_MCP_EP -e OMUSE_E2E_KIWI_MCP_EP -e OMUSE_E2E_SERPAPI_EP)
+  [ -n "${OMUSE_E2E_ENV_FILE:-}" ] && EXTRA+=(--env-file "$OMUSE_E2E_ENV_FILE" -e OMUSE_E2E_REAL=1 -e OMUSE_E2E_MODELS -e OMUSE_E2E_BRAVE_EP -e OMUSE_E2E_TAVILY_EP -e OMUSE_E2E_EXA_EP -e OMUSE_E2E_EXA_MCP_EP -e OMUSE_E2E_KIWI_MCP_EP -e OMUSE_E2E_SERPAPI_EP ${OMUSE_E2E_SEARCH_ENGINES+-e OMUSE_E2E_SEARCH_ENGINES} ${SEARCH_TIMING_BURST:+-e SEARCH_TIMING_BURST})
   [ -n "${OMUSE_E2E_OUT:-}" ] && { mkdir -p "$OMUSE_E2E_OUT"; EXTRA+=(-v "$(cd "$OMUSE_E2E_OUT" && pwd)":/repo-out); }
   exec docker run --rm --user 0 ${EXTRA[@]+"${EXTRA[@]}"} ${OMUSE_TEST_NAME:+--name "$OMUSE_TEST_NAME"} \
     --add-host shop.test:127.0.0.1 --add-host opentable.test:127.0.0.1 \

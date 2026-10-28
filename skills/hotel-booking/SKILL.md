@@ -7,6 +7,9 @@ description: 订酒店：先用旅行数据连接器查酒店、房型、价格�
 
 Search and compare with data tools; open the browser only for the provider's booking page at the end.
 
+
+**No plan for the search.** Searching is just searching: never call plan_task to search, compare or check a date range — one turn of search calls, then the answer. Plan only once one result has been picked and booking it takes several steps (and a "book it" follow-up goes straight to the booking page).
+
 ## 0. Pick the source (no browser yet)
 - Built in: `hotels_search` and `hotel_rooms` (Google Hotels data; Settings → Connections → Flights & hotels). If
   they are in your tool list, use them for all searching and comparing — no Booking.com / Agoda / Google pages, no

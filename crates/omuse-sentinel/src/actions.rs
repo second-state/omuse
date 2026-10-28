@@ -812,7 +812,11 @@ pub async fn execute(
         return Ok(res);
     }
     if connector == "search" {
-        let res = web_search_sync(st, args, task_id).await?;
+        let res = if tool == "news_search" {
+            news_search_sync(st, args, task_id).await?
+        } else {
+            web_search_sync(st, args, task_id).await?
+        };
         store.update_task_ctx(task_id, Some(&data_class), None, None)?;
         return Ok(res);
     }
@@ -1654,7 +1658,7 @@ pub fn search_keys(st: &AppState) -> Vec<(omuse_apps::websearch::Provider, Strin
         .and_then(|s| s.get("keys").cloned())
         .unwrap_or_else(|| json!({}));
     let defaults = st.cfg.search.default_keys();
-    Provider::ORDER
+    Provider::LISTED
         .into_iter()
         .filter_map(|p| {
             if !p.needs_key() {
@@ -1734,58 +1738,133 @@ fn search_envelope(
     Ok(out)
 }
 
-/// `web_search`: the search API chain — Exa's free MCP, then the keys in order — and, when none answers (or none is
-/// configured), the browser's own search engines; the result's `note` says what was skipped.
+/// `web_search`: the browser's own engines first (free, and as fast as the APIs in the measurements of 2026-10-28 —
+/// `tests/search_timing_real.py`), then the search APIs in order (Brave, Exa's free MCP, an Exa key; the one that
+/// answered last goes first among them) when the browser fails, meets a challenge page or finds nothing. The
+/// result's `note` says what was skipped and why.
 pub async fn web_search_sync(st: &AppState, args: &Value, task_id: &str) -> ActResult {
     let query = fstr(args, "query");
     if query.trim().is_empty() {
         return Err(act("query is required"));
     }
     let n = args.get("max_results").and_then(Value::as_u64).unwrap_or(8) as usize;
-    let (api, failed) = search_via_api(st, &query, n).await;
-    let (res, note) = match api {
-        Some(r) => {
-            let note = if failed.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "search API failed ({}); the next one answered",
-                    failed.join("; ")
-                )
-            };
-            (r, note)
-        }
-        None => {
-            let mut payload = match args {
-                Value::Object(_) => args.clone(),
-                _ => json!({}),
-            };
-            set(&mut payload, "task_id", json!(task_id));
-            let r = broker(st, "POST", "/agent/search", Some(&payload), 90.0)
-                .await
-                .map_err(|e| {
-                    act(if failed.is_empty() {
-                        e.to_string()
-                    } else {
-                        format!(
-                            "search API failed ({}) and the browser's engines too: {}",
-                            failed.join("; "),
-                            take_chars(&e.to_string(), 200)
-                        )
-                    })
-                })?;
-            let note = if failed.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "search API failed ({}); the browser's engines were used",
-                    failed.join("; ")
-                )
-            };
-            (r, note)
-        }
+    let mut payload = match args {
+        Value::Object(_) => args.clone(),
+        _ => json!({}),
     };
-    search_envelope(&st.store, task_id, &query, &res, &note)
+    set(&mut payload, "task_id", json!(task_id));
+    let browser_why = match broker(st, "POST", "/agent/search", Some(&payload), 90.0).await {
+        Ok(r)
+            if opt_val(&r, "results")
+                .and_then(Value::as_array)
+                .is_some_and(|a| !a.is_empty()) =>
+        {
+            return search_envelope(&st.store, task_id, &query, &r, "");
+        }
+        Ok(r) => format!(
+            "the browser's engines found nothing{}",
+            opt_val(&r, "error")
+                .map(|e| format!(" ({})", take_chars(&py_str(e), 120)))
+                .unwrap_or_default()
+        ),
+        Err(e) => format!(
+            "the browser's engines failed: {}",
+            take_chars(&e.to_string(), 160)
+        ),
+    };
+    let (api, failed) = search_via_api(st, &query, n).await;
+    match api {
+        Some(r) => {
+            let mut note = format!("{browser_why}; a search API answered");
+            if !failed.is_empty() {
+                note = format!(
+                    "{browser_why}; search API failed ({}); the next one answered",
+                    failed.join("; ")
+                );
+            }
+            search_envelope(&st.store, task_id, &query, &r, &note)
+        }
+        None if failed.is_empty() => {
+            // no search API configured (or the search connection is off): the browser's answer stands, empty
+            search_envelope(
+                &st.store,
+                task_id,
+                &query,
+                &json!({"results": [], "error": browser_why}),
+                &browser_why,
+            )
+        }
+        None => Err(act(format!(
+            "{browser_why}, and every search API failed too ({})",
+            failed.join("; ")
+        ))),
+    }
+}
+
+/// `news_search`: Tavily's news topic (dated articles with snippets, the last `days` days) when a Tavily key is on hand
+/// and the search connection is on; else — or when Tavily fails or finds nothing — `web_search` with the request
+/// spelled out ("<query> news", the period), the note saying why.
+pub async fn news_search_sync(st: &AppState, args: &Value, task_id: &str) -> ActResult {
+    use omuse_apps::websearch::{Provider, WebSearch};
+    let query = fstr(args, "query");
+    if query.trim().is_empty() {
+        return Err(act("query is required"));
+    }
+    let n = args.get("max_results").and_then(Value::as_u64).unwrap_or(8) as usize;
+    let days = args
+        .get("days")
+        .and_then(Value::as_u64)
+        .filter(|d| *d > 0)
+        .unwrap_or(7) as u32;
+    let on = st
+        .store
+        .connection("search")
+        .map(|c| truthy(&c["enabled"]))
+        .unwrap_or(false);
+    let tavily = search_keys(st)
+        .into_iter()
+        .find(|(p, _, _)| *p == Provider::Tavily);
+    let why = match (on, tavily) {
+        (true, Some((_, key, _))) => {
+            match WebSearch::new(
+                st.http.clone(),
+                Provider::Tavily,
+                &st.cfg.endpoints.tavily,
+                &key,
+            )
+            .news(&query, n, days)
+            .await
+            {
+                Ok(r)
+                    if opt_val(&r, "results")
+                        .and_then(Value::as_array)
+                        .is_some_and(|a| !a.is_empty()) =>
+                {
+                    return search_envelope(&st.store, task_id, &query, &r, "");
+                }
+                Ok(_) => "Tavily found no news".to_string(),
+                Err(e) => format!("Tavily failed: {}", take_chars(&e.to_string(), 160)),
+            }
+        }
+        _ => "no Tavily key for news search".to_string(),
+    };
+    let period = if days <= 1 {
+        "today".to_string()
+    } else {
+        format!("last {days} days")
+    };
+    let mut web = web_search_sync(
+        st,
+        &json!({"query": format!("{query} news {period}"), "max_results": n}),
+        task_id,
+    )
+    .await?;
+    set(
+        &mut web,
+        "news_fallback",
+        json!(format!("{why} — these are web search results: check each article's date and keep to the {period}")),
+    );
+    Ok(web)
 }
 
 /// Remember the provider that answered, so it is tried first next time.
@@ -1841,13 +1920,28 @@ pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str)
     let keyed = !serpapi_key(st).is_empty();
     let offer = fstr(args, "offer_id");
     let (src, data) = match tool {
-        "flights_search" if keyed => ("Google Flights", travel_client(st)?.flights(args).await?),
-        "flights_search" => (
-            "Kiwi.com flights (information only)",
-            omuse_apps::kiwi::KiwiMcp::new(st.http.clone(), &st.cfg.endpoints.kiwi_mcp)
+        // the chain, like web_search: Kiwi.com (free, ranges of up to 14 days) → Google Flights through SerpApi (only with a
+        // key: each search costs a credit) → the web search chain (search APIs, then the browser's own engines), which has
+        // no structured offers but names the airlines' and agencies' fare pages
+        "flights_search" => {
+            let kiwi = omuse_apps::kiwi::KiwiMcp::new(st.http.clone(), &st.cfg.endpoints.kiwi_mcp)
                 .flights(args)
-                .await?,
-        ),
+                .await;
+            let mut failed: Vec<String> = Vec::new();
+            match kiwi {
+                Ok(d) if d["count"].as_u64().unwrap_or(0) > 0 => {
+                    ("Kiwi.com flights (information only)", d)
+                }
+                Ok(_) => {
+                    failed.push("Kiwi.com found no flights".into());
+                    flights_after_kiwi(st, args, task_id, keyed, failed).await?
+                }
+                Err(e) => {
+                    failed.push(format!("Kiwi.com failed: {e}"));
+                    flights_after_kiwi(st, args, task_id, keyed, failed).await?
+                }
+            }
+        }
         "flight_offer" if offer.starts_with("kw_") => (
             "Kiwi.com flight (information only)",
             omuse_apps::kiwi::offer_details(&offer).ok_or_else(|| {
@@ -1858,8 +1952,53 @@ pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str)
             "Google Flights booking options",
             travel_client(st)?.flight_offer(args).await?,
         ),
-        "hotels_search" => ("Google Hotels", travel_client(st)?.hotels(args).await?),
-        "places_search" => ("Google Maps places", travel_client(st)?.places(args).await?),
+        // like flights: Google Hotels / Google Maps with the SerpApi key, else (or when Google finds nothing) the web search chain
+        "hotels_search" => {
+            let mut failed = Vec::new();
+            if keyed {
+                match travel_client(st)?.hotels(args).await {
+                    Ok(d) if d["count"].as_u64().unwrap_or(0) > 0 => return untrusted_travel(store, task_id, "Google Hotels", d),
+                    Ok(_) => failed.push("Google Hotels found no hotels".to_string()),
+                    Err(e) => failed.push(format!("Google Hotels failed: {e}")),
+                }
+            } else {
+                failed.push("no SerpApi key for Google Hotels".into());
+            }
+            let stars = args.get("min_stars").and_then(Value::as_i64).map(|s| format!("{s} star ")).unwrap_or_default();
+            let brands = omuse_apps::serpapi::pref_list(args, "brands").join(" or ");
+            let area = fstr(args, "area");
+            let query = format!(
+                "{}{}hotels {}{} {} to {} price",
+                if brands.is_empty() { String::new() } else { format!("{brands} ") },
+                stars,
+                if area.trim().is_empty() { String::new() } else { format!("near {area} ") },
+                fstr(args, "city"),
+                fstr(args, "check_in"),
+                fstr(args, "check_out"),
+            );
+            return web_fallback(st, task_id, &query, &failed, "hotels").await;
+        }
+        "places_search" => {
+            let mut failed = Vec::new();
+            if keyed {
+                match travel_client(st)?.places(args).await {
+                    Ok(d) if d["count"].as_u64().unwrap_or(0) > 0 => return untrusted_travel(store, task_id, "Google Maps places", d),
+                    Ok(_) => failed.push("Google Maps found no places".to_string()),
+                    Err(e) => failed.push(format!("Google Maps failed: {e}")),
+                }
+            } else {
+                failed.push("no SerpApi key for Google Maps".into());
+            }
+            let area = fstr(args, "area");
+            let query = format!(
+                "best {} {}{}{}",
+                fstr(args, "query"),
+                if area.trim().is_empty() { String::new() } else { format!("near {area} ") },
+                fstr(args, "city"),
+                if truthy(&args["open_now"]) { " open now" } else { "" },
+            );
+            return web_fallback(st, task_id, &query, &failed, "places").await;
+        }
         "place_details" => ("Google Maps place", travel_client(st)?.place(args).await?),
         "hotel_rooms" => (
             "Google Hotels property",
@@ -1867,8 +2006,93 @@ pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str)
         ),
         other => return Err(act(format!("unknown travel tool {other}"))),
     };
+    if src == WEB_FLIGHTS {
+        // already the web search's own untrusted envelope
+        return Ok(data);
+    }
     let text = take_chars(&serde_json::to_string(&data).unwrap_or_default(), 30000).to_string();
     Ok(untrusted(store, task_id, src, data, &text)?)
+}
+
+/// A travel result wrapped as untrusted content (what `travel_sync` does at its end).
+fn untrusted_travel(store: &Store, task_id: &str, src: &str, data: Value) -> ActResult {
+    let text = take_chars(&serde_json::to_string(&data).unwrap_or_default(), 30000).to_string();
+    Ok(untrusted(store, task_id, src, data, &text)?)
+}
+
+/// The last step of a travel search chain: the web search chain (search APIs, then the browser's engines) with the
+/// request spelled out as `query`; the result says why the data sources gave nothing and that these are web pages.
+async fn web_fallback(
+    st: &AppState,
+    task_id: &str,
+    query: &str,
+    failed: &[String],
+    what: &str,
+) -> ActResult {
+    let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut web = web_search_sync(st, &json!({"query": query, "max_results": 8}), task_id).await?;
+    set(
+        &mut web,
+        &format!("{what}_fallback"),
+        json!(format!(
+            "{} — these are web search results, not {what} data: no ids for the detail tools. Read the most relevant pages \
+(browser_read: the official site or a booking site) for prices and details, and say they come from those pages.",
+            failed.join("; ")
+        )),
+    );
+    Ok(web)
+}
+
+/// The source label of the last step of the flight chain: its data is already a web search envelope.
+const WEB_FLIGHTS: &str = "web search (flights fallback)";
+
+/// The rest of the flight chain after Kiwi.com: Google Flights with a SerpApi key, then the web search chain.
+/// Returns `(source, data)`; for the web step the data is the web search's own envelope ([`WEB_FLIGHTS`]).
+async fn flights_after_kiwi(
+    st: &AppState,
+    args: &Value,
+    task_id: &str,
+    keyed: bool,
+    mut failed: Vec<String>,
+) -> ActResult<(&'static str, Value)> {
+    if keyed {
+        match travel_client(st)?.flights(args).await {
+            Ok(mut d) if d["count"].as_u64().unwrap_or(0) > 0 => {
+                d["fallback"] = json!(format!(
+                    "{}; these are Google Flights results",
+                    failed.join("; ")
+                ));
+                return Ok(("Google Flights (fallback)", d));
+            }
+            Ok(_) => failed.push("Google Flights found no flights".into()),
+            Err(e) => failed.push(format!("Google Flights failed: {e}")),
+        }
+    }
+    // last: the web search chain, with the request spelled out (route, dates, cabin, stops)
+    let cabin = match fstr(args, "cabin").to_lowercase().as_str() {
+        "business" => "business class",
+        "first" => "first class",
+        "premium_economy" | "premium economy" => "premium economy",
+        _ => "",
+    };
+    let stops = if omuse_apps::serpapi::max_stops(args) == Some(0) {
+        "nonstop"
+    } else {
+        ""
+    };
+    let to = fstr(args, "date_to");
+    let dates = if to.trim().is_empty() {
+        fstr(args, "date")
+    } else {
+        format!("{} to {}", fstr(args, "date"), to)
+    };
+    let query = format!(
+        "{cabin} {stops} flights {} to {} {dates} fares",
+        fstr(args, "origin"),
+        fstr(args, "destination")
+    );
+    let web = web_fallback(st, task_id, &query, &failed, "flights").await?;
+    Ok((WEB_FLIGHTS, web))
 }
 
 /// The Slack client for the stored token.

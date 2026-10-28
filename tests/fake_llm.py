@@ -1064,6 +1064,19 @@ def travel_book(kind, goal, msgs, tnames):
         return next((r for n, _, r in reversed(calls) if n == suffix or n.endswith("__" + suffix)), "")
 
     dates = re.findall(r"\d{4}-\d{2}-\d{2}", goal) or [str(_dt.date.today() + _dt.timedelta(days=21))]
+    # once the booking button was pressed, answer from the confirmation and the approved purchase summary — the first
+    # search result may have been trimmed by context compression by then (a long skill sheet plus page snapshots)
+    if has("browser_click"):
+        after = "\n".join(r for n, _, r in calls if n in ("browser_click", "browser_snapshot"))
+        m = re.search(r"TRV-[A-Z0-9]{7}", after)
+        pc = next((a for n, a, _ in calls if n == "purchase_confirm"), None)
+        if m:
+            what = (pc or {}).get("items", [{}])[0].get("name", kind)
+            total = f" total {(pc or {}).get('currency', '')} {(pc or {}).get('total', '')}" if pc else ""
+            return reply(f"Booked. Booking reference: {m.group(0)}. {what}{total}. Confirmation goes to {TRAVELLER['email']}.")
+        if not has("browser_snapshot"):
+            return reply("", [tc("browser_snapshot", {})])
+        return reply("TRAVEL FAIL: no booking reference after the click: " + after[-800:])
     skill = {"flight": "flight-booking", "hotel": "hotel-booking", "michelin": "michelin-dining"}[kind]
     if not has("load_skill"):
         return reply("", [tc("load_skill", {"name": skill})])
@@ -1379,7 +1392,7 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         if n == 1:
             # the instructions carry the profile's standing preferences: the preferred airline (or alliance) goes into the search
             pm = re.search(r"- Preferred airline: ([^\n]+)", sys)
-            args = {"origin": "TYO", "destination": "SIN", "date": date, "adults": 1, "cabin": "business", "max_stops": 0, "sort": "price", "currency": "SGD"}
+            args = {"origin": "TYO", "destination": "SIN", "date": date, "adults": 1, "cabin": "business", "stops": "nonstop", "sort": "price", "currency": "SGD"}
             if pm:
                 args["airlines"] = [x.strip() for x in pm.group(1).split(",")]
             return reply("", [tc_("flights_search", args),
@@ -1389,6 +1402,15 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         pref = ' — your preferred airline (flagged preferred in the data)' if '"preferred": true' in allt or '\\"preferred\\": true' in allt else ''
         return reply(f"BUSINESS CLASS, nonstop, {date} Tokyo (all airports) → Singapore, searched as {m.group(1) if m else '?'} / nonstop only: "
                      f"Singapore Airlines SQ638 09:25 → 17:15, SGD 2108 (business, 1 checked bag){pref}. Book on singaporeair.com or with your agency — say the word.")
+    if "FLEXFLIGHTS" in goal:   # a range of dates: ONE flights_search with date + date_to, no plan
+        d1 = re.search(r"FROM=(20\d\d-\d\d-\d\d)", goal).group(1); d2 = re.search(r"TO=(20\d\d-\d\d-\d\d)", goal).group(1)
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
+        if n == 1:
+            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "TYO", "date": d1, "date_to": d2, "cabin": "economy", "sort": "price", "currency": "SGD"})])
+        allt = "\n".join(str(m["content"]) for m in tools_done)
+        days = len(set(re.findall(r'\\?"date\\?": \\?"(20\d\d-\d\d-\d\d)', allt)))
+        return reply(f"Cheapest across {d1} to {d2}: Cathay Pacific via HKG SGD 510 ({days} days searched in one call).")
     if "BOOKIT" in goal:   # "book it" after the flight was found earlier in this conversation: straight to the booking page, no plan, no search
         url = (re.search(r"URL=(\S+)", goal) or re.search(r"(http\S+)", "x http://shop.test:8097/book/flight/none")).group(1)
         names_so_far = [n for n, _, _ in _travel_calls(msgs)]

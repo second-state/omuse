@@ -43,7 +43,7 @@ fast = true                # every request to the system model carries service_t
 reasoning_effort = "low"
 
 [browser]
-search_engines = "empty=http://shop.test:8094/emptysearch?q=,duckduckgo=http://shop.test:8094/ddg?q="
+search_engines = "${OMUSE_E2E_SEARCH_ENGINES-empty=http://shop.test:8094/emptysearch?q=,duckduckgo=http://shop.test:8094/ddg?q=}"   # OMUSE_E2E_SEARCH_ENGINES= (empty): the real engines
 auto_approve = false       # the suites check the approval flow; browser_auto_approve_e2e.py turns it on itself
 
 [telegram]

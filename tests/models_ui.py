@@ -104,7 +104,7 @@ async def main():
         check("after a reload the toggle is on and the section open with the values", await toggle.is_checked() and await box.is_visible()
               and await inputs.nth(0).input_value() == sys_url and await inputs.nth(2).input_value() == "fake" and await inputs.nth(3).input_value() == "fake")
         check("the key is never shown", await inputs.nth(1).input_value() == "" and await inputs.nth(1).get_attribute("type") == "password")
-        check("the model chip says own model", "自己的模型" in (await pg.locator("#modelChip").get_attribute("title") or ""))
+        check("the header carries no model chip (several models answer a task; Settings names them)", await pg.locator("#modelChip").count() == 0)
         await toggle.click()
         check("toggle off closes the section", await box.is_hidden())
         await pg.locator("button", has_text="保存设置").click()

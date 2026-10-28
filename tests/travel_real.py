@@ -12,6 +12,8 @@ import os
 import sys
 import time
 
+import httpx
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests import skills_common as K  # noqa: E402
 
@@ -35,6 +37,8 @@ r = c.post(B + "/sentinel/api/connections/travel/credential", headers=H, json={"
 K.check("the real SerpApi key connects with the account's plan", r.status_code == 200 and r.json().get("plan"), r.text[:200])
 print(f"INFO plan {r.json().get('plan')}, searches left {r.json().get('searches_left')}" if r.status_code == 200 else "INFO connect failed")
 t0 = time.time()
+# flights ask Kiwi.com first; switch the local Kiwi stand-in off so this real-SerpApi suite exercises the Google fallback
+httpx.post("http://127.0.0.1:8094/kiwi-mcp/_down", json={"on": True}, timeout=10)
 r, res = act("flights_search", {"origin": "SIN", "destination": "Tokyo", "date": D1, "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"})
 offers = res.get("offers") or []
 print(f"INFO flights {time.time() - t0:.1f} s, {len(offers)} offers: " + " | ".join(f"{o['airlines']} {o['route'][:40]} {o['price']} {o['currency']} stops {o['stops']}" for o in offers[:3]))

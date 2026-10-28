@@ -99,7 +99,6 @@ function i18nStatic() {
   if (LANG === 'tw') {   // the static strings of index.html, Traditional (i18n-ok: not T() keys)
     set('#menuBtn', '選單', 'aria-label');   // i18n-ok
     set('#viewTitle', '對話');   // i18n-ok
-    set('#modelChip', '模型', 'title');   // i18n-ok
     set('#approvalBell', '審批', 'aria-label'); set('#approvalBell span', '審批');   // i18n-ok
     set('.drawer-head h2', '待審批'); set('#drawerClose', '關閉', 'aria-label');   // i18n-ok
     set('#drawer > p', '由 Sentinel 獨立發起，與對話分離。智能體在你決定前會暫停。');   // i18n-ok
@@ -107,7 +106,6 @@ function i18nStatic() {
   }
   if (LANG === 'zh') {   // the static strings of index.html carry an English half: Simplified only (i18n-ok)
     set('#menuBtn', '菜单', 'aria-label');   // i18n-ok
-    set('#modelChip', '模型', 'title');   // i18n-ok
     set('#approvalBell', '审批', 'aria-label');   // i18n-ok
     set('.drawer-head h2', '待审批');   // i18n-ok
     set('#drawer > p', '由 Sentinel 独立发起，与对话分离。智能体在你决定前会暂停。');   // i18n-ok
@@ -115,7 +113,6 @@ function i18nStatic() {
   }
   set('#menuBtn', 'Menu', 'aria-label');
   set('#viewTitle', 'Chat');
-  set('#modelChip', 'Model', 'title'); set('#modelChip', 'Model …');
   set('#sentinelChip', 'Sentinel (guardian)', 'title');
   set('#approvalBell', 'Approvals', 'aria-label'); set('#approvalBell span', 'Approvals');
   set('.drawer-head h2', 'Pending approvals'); set('#drawerClose', 'Close', 'aria-label');
@@ -1557,8 +1554,8 @@ async function viewConnections(root) {
   };
   // web search through an API: one key per provider, tried in a fixed order (the last one that worked first)
   const searchCard = (conn) => {
-    const rows = conn.providers || [['exa-mcp', 'Exa (free MCP)', 'free'], ['tavily', 'Tavily', ''], ['brave', 'Brave Search', ''], ['exa', 'Exa', '']].map(([id, label, source]) => ({ id, label, source }));
-    const have = rows.filter(r => r.source && r.source !== 'off');
+    const rows = conn.providers || [['brave', 'Brave Search', '', 'web'], ['exa-mcp', 'Exa (free MCP)', 'free', 'web'], ['exa', 'Exa', '', 'web'], ['tavily', 'Tavily', '', 'news']].map(([id, label, source, role]) => ({ id, label, source, role }));
+    const have = rows.filter(r => r.source && r.source !== 'off' && r.role !== 'news');
     const connected = have.length > 0 && conn.enabled;
     const last = (conn.config || {}).last_ok;
     const chip = !connected ? T('未连接 Not connected') : Tf("已连接 {0}", have.map(r => r.label).join(', ')) + (last ? Tf("（上次用 {0}）", (rows.find(r => r.id === last) || {}).label || last) : '');
@@ -1568,12 +1565,12 @@ async function viewConnections(root) {
       if (r.id === 'exa-mcp') {   // keyless: nothing to enter
         return h('div', { class: 'row provider', 'data-provider': r.id, style: 'align-items:center;flex-wrap:wrap' }, h('b', { style: 'min-width:140px' }, r.label),
           r.source === 'free' ? h('span', { class: 'chip ok' }, T('免费 free')) : h('span', { class: 'chip' }, T('已关闭 off')),
-          h('span', { class: 'small muted' }, T('Exa 的公开 MCP 服务器：无需密钥，有速率限制，默认第一个尝试（配置 [search] free_exa 可关闭）')));
+          h('span', { class: 'small muted' }, T('Exa 的公开 MCP 服务器：无需密钥，有速率限制，在 Brave 之后尝试（配置 [search] free_exa 可关闭）')));
       }
       const inp = h('input', { type: 'password', placeholder: r.source === 'user' ? T('已保存 — 粘贴新令牌可替换') : r.source === 'server' ? T('服务器默认密钥 — 粘贴自己的可覆盖') : 'API key', autocomplete: 'new-password', style: 'flex:1;min-width:180px' });
       const src = r.source === 'user' ? h('span', { class: 'chip ok' }, T('你的密钥 your key')) : r.source === 'server' ? h('span', { class: 'chip ok' }, T('服务器密钥 server key')) : h('span', { class: 'chip' }, '—');
       return h('div', { class: 'row provider', 'data-provider': r.id, style: 'align-items:center;flex-wrap:wrap' },
-        h('b', { style: 'min-width:140px' }, r.label), src,
+        h('b', { style: 'min-width:140px' }, r.role === 'news' ? Tf("{0}（新闻）", r.label) : r.label), src,
         h('a', { class: 'small', href: links[r.id][0], target: '_blank', rel: 'noopener' }, links[r.id][0].replace(/^https:\/\//, '').replace(/\/$/, '')), h('span', { class: 'small muted' }, links[r.id][1]),
         inp,
         h('button', { class: 'btn small primary', onclick: safe(async e => {
@@ -1585,8 +1582,8 @@ async function viewConnections(root) {
     };
     return h('div', { class: 'card stack', id: 'websearch' },
       h('div', { class: 'row' }, h('h3', { style: 'flex:1' }, T('🔎 网页搜索 Web search')), h('span', { class: 'chip ' + (connected ? 'ok' : '') }, chip)),
-      h('p', { class: 'sub' }, T('web_search 工具的搜索服务：先试免费的 Exa MCP，再用你填的 Tavily、Brave 或 Exa 密钥；一次调用直接拿到标题、网址和摘要，机票、酒店、租车也先这样查，不打开浏览器里的搜索页，也不会被验证码拦住。都没有时才用浏览器里的搜索引擎。（SerpApi 密钥只用于机票、酒店和餐厅搜索。）')),
-      h('p', { class: 'small muted' }, T('不填密钥也能用：先试免费的 Exa MCP，再按 Tavily → Brave → Exa 的顺序试你填的密钥，哪个能用就用哪个，下次优先用上次成功的那个。')),
+      h('p', { class: 'sub' }, T('web_search 先用浏览器里的搜索引擎（免费，和搜索服务一样快）；那里出错、遇到验证码或没有结果时，再按 Brave → Exa（免费 MCP）→ Exa 密钥的顺序用搜索服务。Tavily 只用于新闻搜索（news_search：带日期的报道和摘要）。（SerpApi 密钥只用于机票、酒店和餐厅搜索。）')),
+      h('p', { class: 'small muted' }, T('不填密钥也能用：浏览器的搜索引擎和免费的 Exa MCP 都不要密钥。搜索服务之间，下次优先用上次成功的那个。')),
       h('p', { class: 'small muted' }, T('标着「服务器密钥」的服务用的是服务器 config.toml 里的默认密钥；粘贴你自己的密钥即可覆盖，删除你的密钥后又回到默认密钥。')),
       h('div', { class: 'stack', style: 'gap:8px' }, rows.map(providerRow)),
       h('div', null, h('b', null, T('权限 Permissions')), permRow(conn, 'search', T('网页搜索（只读）'), 'search', 'low')),
@@ -1616,8 +1613,8 @@ async function viewConnections(root) {
   const travel = tokenCard(byName.travel, {
     title: T('✈️ 机票与酒店搜索 Flights & hotels'), ph: 'SerpApi key', label: T('SerpApi 密钥 API key'),
     who: c => c.plan ? Tf("{0} · 本月剩余 {1} 次搜索", c.plan, c.searches_left) : '',
-    freeChip: T('机票：Kiwi.com 免费数据（仅供参考）· 酒店和餐厅：需要密钥'),
-    desc: T('机票搜索开箱即用：没有密钥时 flights_search 用 Kiwi.com 的航班数据（只取航班信息，不用它的链接；订票在航空公司官网或你选的代理商）。填入 SerpApi 密钥后，机票改用 Google Flights 数据，酒店用 Google Hotels 数据，餐厅和地点用 Google Maps 数据。这个密钥只用于机票、酒店和餐厅搜索，不用于网页搜索。免费密钥每月 250 次搜索。'),
+    freeChip: T('机票：Kiwi.com 免费数据（仅供参考）· 酒店和餐厅：有密钥用 Google 数据，没有就用网页搜索'),
+    desc: T('机票搜索开箱即用：flights_search 先用 Kiwi.com 的免费航班数据（只取航班信息，不用它的链接；订票在航空公司官网或你选的代理商）。填入 SerpApi 密钥后，Kiwi.com 查不到或出错时改用 Google Flights 作为后备；酒店用 Google Hotels 数据，餐厅和地点用 Google Maps 数据。这个密钥不用于网页搜索。免费密钥每月 250 次搜索。'),
     steps: [h('span', null, T('打开 '), h('a', { href: 'https://serpapi.com/users/sign_up', target: '_blank', rel: 'noopener' }, 'serpapi.com'), T('，注册一个免费账户')),
       T('在 Dashboard 复制 API 密钥，粘贴到下面'),
       T('每次搜索算一次调用；机票的预订选项和酒店详情各算一次')],
@@ -2130,7 +2127,7 @@ const CAT_LABEL = { preference: T('偏好'), person: T('人物'), company: T('�
 async function viewMemory(root) {
   const [r, v] = await Promise.all([api('memory'), sapi('vault').catch(() => ({ items: [], kinds: {}, field_labels: {} }))]);
   root.append(
-    h('div', { class: 'grid2' }, memProfileCard(r), h('div', { class: 'stack' }, memLearnedCard(r), memPendingCard(r), memTidyCard(r))),
+    h('div', { class: 'grid2' }, memProfileCard(r, v), h('div', { class: 'stack' }, memLearnedCard(r), memPendingCard(r), memTidyCard(r))),
     h('div', { style: 'margin-top:16px' }, memLibraryCard(r)),
     h('div', { style: 'margin-top:16px' }, memFactsCard(r)),
     h('div', { class: 'grid2', style: 'margin-top:16px' }, memTryCard(r), memEntitiesCard(r)),
@@ -2221,7 +2218,7 @@ const PROFILE_CHOICES = {
   preferred_hotel_brand: () => [[T('酒店集团 / 会员计划 Hotel groups'), HOTEL_GROUPS], [T('酒店品牌 Brands'), HOTEL_BRANDS]],
 };
 
-function memProfileCard(r) {
+function memProfileCard(r, v) {
   const prof = r.profile || {};
   const inputs = {};
   const rows = (r.profile_fields || []).map(f => {
@@ -2243,20 +2240,29 @@ function memProfileCard(r) {
   });
   // further addresses (address:<label>): a flat in another city, the parents' house — forms such as arrival cards pick
   // the one in the destination country
-  // a field the user added (address:<label> or custom:<label>) can be removed again: an empty value deletes the key
-  const removable = (k, labelEl) => {
-    const i = h('input', { type: 'text', value: prof[k], autocomplete: 'off' }); inputs[k] = i;
+  // a field the user added (address:<label> or custom:<label>) is a full-width row like the entry rows below it — its
+  // name, its value, a remove button — under the fixed fields, not a cell of their grid; an empty value deletes the key
+  const removable = (k, name) => {
+    const i = h('input', { type: 'text', value: prof[k], autocomplete: 'off', style: 'flex:2', 'aria-label': name }); inputs[k] = i;
     const del = h('button', { class: 'btn small danger', type: 'button', title: T('删除这个字段 Remove this field'), onclick: safe(async () => {
-      if (!confirmInline(Tf("删除字段 {0}？", labelEl.textContent))) return;
+      if (!confirmInline(Tf("删除字段 {0}？", name))) return;
       await api('profile', { method: 'PUT', body: { key: k, value: '' } }); route();
     }) }, '🗑');
-    return h('label', { class: 'field removable', 'data-key': k }, h('span', { class: 'row', style: 'justify-content:space-between;align-items:center' }, labelEl, del), i);
+    return h('div', { class: 'row removable', 'data-key': k, style: 'align-items:center' },
+      h('span', { class: 'fieldname', title: name, style: 'flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name), i, del);
   };
-  for (const k of Object.keys(prof).filter(k => k.startsWith('address:'))) rows.push(removable(k, h('span', null, Tf("地址 · {0}", k.slice(8)))));
-  for (const k of Object.keys(prof).filter(k => k.startsWith('custom:'))) rows.push(removable(k, h('span', null, k.slice(7))));
-  // an ID photo read by the vision model prefills the form; the number goes to the Vault, the picture is not kept
+  const savedAddr = Object.keys(prof).filter(k => k.startsWith('address:')).map(k => removable(k, k.slice(8)));
+  const savedCustom = Object.keys(prof).filter(k => k.startsWith('custom:')).map(k => removable(k, k.slice(7)));
+  // ID documents: the ones in the Vault are listed (label and masked number) with a button to add another; a photo read
+  // by the vision model fills the empty profile fields at once (a field that already holds something else is only
+  // prefilled for review), and the document goes into the Vault — the picture itself is not kept
   const required = ['name_en', 'birthday', 'nationality'];
   const incomplete = required.some(k => !(prof[k] || '').trim());
+  let ids = ((v && v.items) || []).filter(x => x.kind === 'id_document');
+  const idList = h('div', { class: 'stack', id: 'idDocs', style: 'gap:4px' });
+  const drawIds = () => idList.replaceChildren(...ids.map(x => h('div', { class: 'row iddoc', 'data-id': x.id, style: 'align-items:center;gap:8px' },
+    h('span', null, '🛂'), h('b', null, x.label), h('span', { class: 'small muted mono' }, x.masked || ''))));
+  drawIds();
   const ocrOut = h('div', { class: 'stack', style: 'gap:6px' });
   const picker = h('input', { type: 'file', accept: 'image/*', style: 'display:none', 'aria-hidden': 'true' });
   picker.onchange = safe(async () => {
@@ -2270,27 +2276,38 @@ function memProfileCard(r) {
       if (!x.ok) throw new Error(r.detail || x.statusText);
     } catch (e) { ocrOut.replaceChildren(h('span', { class: 'small', style: 'color:var(--bad)' }, T('识别失败：') + (e.message || e))); picker.value = ''; return; }
     const got = Object.entries(r.profile || {});
-    for (const [k, v] of got) { if (inputs[k]) { inputs[k].value = v; inputs[k].classList.add('prefilled'); } }
-    const lines = [h('div', { class: 'small' }, got.length ? Tf("已从证件读出 {0} 项，请核对后点「保存档案」。", got.length) : T('证件上没有读到可用的信息，请手动填写。'))];
+    let saved = 0, review = 0;
+    for (const [k, val] of got) {
+      const cur = (prof[k] || '').trim();
+      if (!cur) { await api('profile', { method: 'PUT', body: { key: k, value: val } }); prof[k] = val; if (inputs[k]) inputs[k].value = val; saved++; }
+      else if (cur !== val && inputs[k]) { inputs[k].value = val; inputs[k].classList.add('prefilled'); review++; }
+    }
+    const lines = [];
+    if (saved) lines.push(h('div', { class: 'small', style: 'color:var(--ok)' }, Tf("已从证件读出并保存 {0} 项。", saved)));
+    if (review) lines.push(h('div', { class: 'small' }, Tf("{0} 项和档案里原来的不一样，已填进表单（黄色），核对后点「保存档案」。", review)));
+    if (!got.length) lines.push(h('div', { class: 'small' }, T('证件上没有读到可用的信息，请手动填写。')));
     if (r.document && r.document.values && r.document.values.number) {
       const num = String(r.document.values.number);
-      const saveBtn = h('button', { class: 'btn small primary' }, T('存入保险箱 Save to Vault'));
-      saveBtn.onclick = safe(async () => {
+      const dup = ids.some(x => (x.masked || '').replace(/\W/g, '').endsWith(num.replace(/\W/g, '').slice(-4)) && x.label === r.document.label);
+      if (dup) lines.push(h('div', { class: 'small muted' }, Tf("证件 ••••{0} 已在保险箱里。", num.slice(-4))));
+      else {
         await sapi('vault', { method: 'POST', body: { label: r.document.label, kind: 'id_document', values: r.document.values, domains: '' } });
-        saveBtn.replaceWith(h('span', { class: 'small', style: 'color:var(--ok)' }, T('已存入保险箱 ✓')));
-      });
-      lines.push(h('div', { class: 'row', style: 'align-items:center;gap:8px' },
-        h('span', { class: 'small' }, Tf("证件号 ••••{0}（不会写进档案或记忆）：", num.slice(-4))), saveBtn));
+        ids = ((await sapi('vault')).items || []).filter(x => x.kind === 'id_document'); drawIds(); idsBox.hidden = false; heading.replaceChildren(T('你的证件'));
+        lines.push(h('div', { class: 'small', style: 'color:var(--ok)' }, Tf("证件 ••••{0} 已存入保险箱（加密；每次使用都要你批准；可在下面的保险箱里删除）。", num.slice(-4))));
+      }
     }
     lines.push(h('div', { class: 'small muted' }, T('照片只用于这一次识别，不会保存。')));
     ocrOut.replaceChildren(...lines);
     picker.value = '';
   });
-  const ocrBox = h('div', { class: 'banner user', style: 'flex-direction:column;align-items:stretch;gap:6px' },
-    h('div', null, h('b', null, incomplete ? T('先完善档案') : T('用证件照片更新档案')), ' ',
-      h('span', { class: 'small' }, T('上传护照资料页或身份证的照片：姓名、生日、国籍会自动填入下面的表单，证件号可一键存入保险箱。'))),
-    h('div', { class: 'row' }, h('button', { class: 'btn small primary', onclick: () => picker.click() }, T('📷 上传证件照片 Upload ID photo')),
-      incomplete ? h('button', { class: 'btn small', onclick: safe(async () => { await api('settings', { method: 'PUT', body: { profile_reminder: false } }); S.profileNudge = false; toast(T('好的，不再提醒。你随时可以回到这里完善。')); }) }, T('以后再说 Later')) : null,
+  const idsBox = h('div', { class: 'stack', style: 'gap:4px' }, idList);
+  idsBox.hidden = !ids.length;
+  const heading = h('b', null, ids.length ? T('你的证件') : incomplete ? T('先完善档案') : T('用证件照片更新档案'));
+  const ocrBox = h('div', { class: 'banner user', id: 'idBox', style: 'flex-direction:column;align-items:stretch;gap:6px' },
+    h('div', null, heading, ' ', ids.length ? null : h('span', { class: 'small' }, T('上传护照资料页或身份证的照片：姓名、生日、国籍会自动填入档案，证件号存入保险箱。'))),
+    idsBox,
+    h('div', { class: 'row' }, h('button', { class: 'btn small primary', id: 'addIdBtn', onclick: () => picker.click() }, ids.length ? T('＋ 添加证件 Add another ID') : T('📷 上传证件照片 Upload ID photo')),
+      incomplete && !ids.length ? h('button', { class: 'btn small', onclick: safe(async () => { await api('settings', { method: 'PUT', body: { profile_reminder: false } }); S.profileNudge = false; toast(T('好的，不再提醒。你随时可以回到这里完善。')); }) }, T('以后再说 Later')) : null,
       picker),
     ocrOut);
   // new addresses and custom fields: as many rows as the user wants (a row is saved when both its parts are filled)
@@ -2303,8 +2320,8 @@ function memProfileCard(r) {
     newRows[kind].push({ row, label, val });
     return row;
   };
-  const addrBox = h('div', { class: 'stack', style: 'gap:6px' }, addRow('address'));
-  const customBox = h('div', { class: 'stack', style: 'gap:6px' }, addRow('custom'));
+  const addrBox = h('div', { class: 'stack', style: 'gap:6px' }, savedAddr.length ? h('b', { class: 'small' }, T('其他地址 Other addresses')) : null, ...savedAddr, addRow('address'));
+  const customBox = h('div', { class: 'stack', style: 'gap:6px' }, savedCustom.length ? h('b', { class: 'small' }, T('自定义字段 Custom fields')) : null, ...savedCustom, addRow('custom'));
   const save = safe(async () => {
     let n = 0;
     for (const [k, el] of Object.entries(inputs)) {
@@ -2670,7 +2687,7 @@ async function viewSettings(root) {
     for (const k of ['model_api_key', ...MEDIA_KEYS]) if (!body[k]) delete body[k];   // empty: keep the saved key
     const miss = modelMissing();
     if (miss) { toast(miss, true); (!/^https?:/.test(f.model_base_url.value.trim()) ? f.model_base_url : !(keyIn.value.trim() || mu.api_key_set) ? keyIn : f.model_name).focus(); return; }
-    await api('settings', { method: 'PUT', body }); toast(T('已保存 Saved')); refreshModelChip();
+    await api('settings', { method: 'PUT', body }); toast(T('已保存 Saved'));
     if (body.model_override && body.model_api_key) { mu.api_key_set = true; keyIn.value = ''; keyIn.placeholder = T('已保存；留空=不改'); }
     for (const k of MEDIA_KEYS) if (body.model_override && body[k]) { mu[k + '_set'] = true; f[k].value = ''; f[k].placeholder = T('已保存；留空=不改'); f[k].closest('label').querySelector('button').hidden = false; }
     applyTheme(body.theme);
@@ -2929,14 +2946,6 @@ document.addEventListener('visibilitychange', () => {
 
 function modelLabel(name) { return String(name || '').split('/').pop().replace(/-GGUF.*$/i, ''); }
 
-async function refreshModelChip() {
-  try {
-    const r = await api('settings');
-    $('#modelChip').textContent = '🧠 ' + modelLabel(r.settings.model_name);
-    $('#modelChip').title = r.settings.model_override ? T('自己的模型 Own model') + ' · ' + r.settings.model_base_url : r.settings.model_base_url;
-  } catch (e) { $('#modelChip').textContent = T('模型 ?'); }
-}
-
 // ------------------------------------------------------------------ boot
 $('#approvalBell').onclick = () => { $('#drawer').hidden = !$('#drawer').hidden; renderDrawer(); };
 $('#drawerClose').onclick = () => { $('#drawer').hidden = true; };
@@ -2969,7 +2978,6 @@ try { applyName(localStorage.getItem('omuse_name')); } catch (e) { S.name = 'OMu
   // seed "seen" so old pending approvals don't all pop at once; open the newest one
   try { const r = await sapi('approvals?status=pending'); S.approvals = r.approvals; } catch (e) {}
   route();
-  refreshModelChip();
   connectStream();
   loadApprovals();
 })();

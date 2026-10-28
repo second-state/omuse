@@ -452,12 +452,19 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
     add("notify_telegram", tool("telegram", "notify", "send", "low", "PERSONAL",
         "通过 Telegram 给用户本人发送通知。Send a notification to the user's own Telegram chat (configured in Connections).",
         obj(json!({"text": {"type": S}}), &["text"])));
-    // ------------------------------------------------------------------ Web search (a search API: Tavily / Brave / Exa / Google through SerpApi)
+    // ------------------------------------------------------------------ Web search (the browser's engines, then Brave / Exa) and news (Tavily)
     add("web_search", tool("search", "search", "search", "low", "PUBLIC",
-        "网页搜索：一次调用返回标题、网址和摘要（由已配置的搜索服务回答，没有时用浏览器的搜索引擎）Web search: one call returns titles, \
-         URLs and snippets — from the configured search services, else the browser's own search engines (OMuse picks). Use it for any \
-         lookup — facts, prices, fares, hotels, news — then browser_read the best URLs when you need the page text.",
+        "网页搜索：一次调用返回标题、网址和摘要（先用浏览器的搜索引擎，不行再用搜索服务）Web search: one call returns titles, \
+         URLs and snippets — from the browser's own search engines, else the search services (OMuse picks). Use it for any \
+         lookup — facts, prices, fares, hotels — then browser_read the best URLs when you need the page text. For news use news_search.",
         obj(json!({"query": {"type": S, "description": "搜索词 search words"},
+                   "max_results": {"type": "integer", "description": "1-20, default 8"}}), &["query"])));
+    add("news_search", tool("search", "search", "search", "low", "PUBLIC",
+        "新闻搜索：最近几天的新闻报道，带日期和摘要（Tavily 新闻，没有时用网页搜索）News search: recent articles with their dates and \
+         snippets — Tavily's news search when its key is set, else web_search. Use it for news, current events, \"what happened\", \
+         announcements, results and anything that changed in the last days; days = how far back (default 7).",
+        obj(json!({"query": {"type": S, "description": "搜索词 search words"},
+                   "days": {"type": "integer", "minimum": 1, "maximum": 365, "description": "how many days back, default 7"},
                    "max_results": {"type": "integer", "description": "1-20, default 8"}}), &["query"])));
     // ------------------------------------------------------------------ Flights & hotels (Google Flights / Google Hotels through SerpApi)
     add("flights_search", tool("travel", "search", "search", "low", "PUBLIC",
@@ -465,18 +472,21 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
          舱位、最多中转次数、人数、回程日期、最高价、排序、币种都按用户的要求填 Search flights (Google Flights data with the key, else Kiwi.com data, \
          information only). origin / destination: an airport code (NRT), a city code covering all of a city's airports (TYO, OSA, SEL, LON, NYC …) \
          or a city name — ONE search covers the whole city, never one per airport; date: the local departure date YYYY-MM-DD; return_date makes \
-         it a round trip. Fill cabin, max_stops, adults and the date from the user's words: a business-class request is cabin=business, \
-         \"direct\" is max_stops=0. airlines: the user's preferred airlines (from the request, else the profile's travel preferences) — \
+         it a round trip. A range of departure dates is ONE call too: date = the first day, date_to = the last (up to 14 days with Kiwi.com \
+         data, 7 with Google Flights) — every offer carries its date and by_date gives the cheapest per day; the return date moves with \
+         each departure so the stay keeps its length. Never one call (or a plan) per day. Fill cabin, stops, adults and the date from the user's words: a business-class request is cabin=business, \
+         \"direct\" is stops=nonstop; nothing said about stops is stops=any. A premium-cabin itinerary with a short economy leg comes back with cabin_mix (e.g. \"business + economy\") \
+         and counts as that cabin — keep it and name the economy leg. airlines: the user's preferred airlines (from the request, else the profile's travel preferences) — \
          matching offers come back flagged preferred, the others stay, so show the best preferred option next to the cheapest. The result \
          repeats what was searched (`searched`); present only that cabin and stop limit. Returns itineraries (airlines, flight numbers, \
          local times, duration, stops, price) with an offer_id for flight_offer.",
         obj(json!({"origin": {"type": S}, "destination": {"type": S}, "date": {"type": S}, "return_date": {"type": S},
                    "adults": {"type": "integer", "minimum": 1, "maximum": 9},
                    "cabin": {"type": S, "enum": ["economy", "premium_economy", "business", "first"]},
-                   "max_stops": {"type": "integer", "minimum": 0, "maximum": 2, "description": "0 = nonstop only, 1 = at most one stop, 2 = at most two; omit for any"},
+                   "date_to": {"type": S, "description": "last departure date of a range, YYYY-MM-DD (inclusive); omit for one day"},
+                   "stops": {"type": S, "enum": ["any", "nonstop", "one_stop_max", "two_stops_max"], "description": "any unless the user limited stops (direct = nonstop)"},
                    "airlines": {"type": "array", "items": {"type": S}, "description": "preferred airlines: names (Singapore Airlines) or 2-letter codes (SQ); matches are flagged preferred, nothing is dropped"},
-                   "nonstop_only": {"type": "boolean", "description": "same as max_stops=0"},
-                   "max_price": {"type": "number", "description": "per adult, in currency"},
+                   "max_price": {"type": "number", "description": "per adult, in currency; omit for no cap"},
                    "sort": {"type": S, "enum": ["best", "price", "departure", "arrival", "duration"]},
                    "currency": {"type": S, "description": "ISO code, default USD"}}), &["origin", "destination", "date"])));
     add("flight_offer", tool("travel", "search", "read", "low", "PUBLIC",
@@ -631,7 +641,7 @@ mod tests {
     #[test]
     fn table_shape() {
         let t = builtin_tools();
-        assert_eq!(t.len(), 69); // 55 before the eight Drive tools, 63 before the travel tools (now six); browser_search became web_search
+        assert_eq!(t.len(), 70); // 55 before the eight Drive tools, 63 before the travel tools (now six); browser_search became web_search; 70 with news_search
         let keys: Vec<&String> = t.keys().collect();
         assert_eq!(keys[0], "gmail_search");
         assert_eq!(keys[keys.len() - 1], "phone_hangup");

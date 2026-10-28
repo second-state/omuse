@@ -579,8 +579,11 @@ impl SseAssembler {
                 {
                     slot.2 = name.to_string();
                 }
-                if let Some(args) = fun.get("arguments").and_then(Value::as_str) {
-                    slot.3.push_str(args);
+                match fun.get("arguments") {
+                    Some(Value::String(args)) => slot.3.push_str(args),
+                    // some gateways send the arguments as an object, whole, instead of JSON text in pieces
+                    Some(obj @ Value::Object(_)) => slot.3 = obj.to_string(),
+                    _ => {}
                 }
             }
         }
@@ -1739,6 +1742,7 @@ mod tests {
             r#"data: {"choices":[{"index":0,"delta":{"content":"，世界"},"finish_reason":null}]}"#,
             r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"files_list","arguments":"{\"pa"}}]},"finish_reason":null}]}"#,
             r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\": \"\"}"}}]},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"c2","type":"function","function":{"name":"web_search","arguments":{"query":"x"}}}]},"finish_reason":null}]}"#,
             r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
             r#"data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}"#,
             "data: [DONE]",
@@ -1779,6 +1783,11 @@ mod tests {
             "{\"path\": \"\"}"
         );
         assert_eq!(m["choices"][0]["finish_reason"], "tool_calls");
+        // arguments sent as an object are kept, not dropped
+        assert_eq!(
+            m["choices"][0]["message"]["tool_calls"][1]["function"]["arguments"],
+            r#"{"query":"x"}"#
+        );
         assert_eq!(m["usage"]["prompt_tokens"], 7);
         assert!(a.saw_data());
         // reasoning_content is never visible; a plain body is not SSE

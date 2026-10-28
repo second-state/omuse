@@ -41,15 +41,16 @@ async def main():
         await pg.wait_for_selector("#websearch")
         card = pg.locator("#websearch")
         txt = await card.text_content()
-        check("fresh: connected through the free Exa MCP and the server's Brave key; the card names the providers, their free tiers and the try order, and says the SerpApi key is not for web search",
-              "Connected Exa (free MCP), Brave Search" in txt and "2,000" in txt and "1,000" in txt and "Tavily → Brave → Exa" in txt and "server key" in txt
-              and "SerpApi key serves flights, hotels and restaurants only" in txt and "Google (SerpApi)" not in txt, txt[:600])
+        check("fresh: connected through the server's Brave key and the free Exa MCP; the card says the browser's engines go first, then Brave → Exa, Tavily for news, and the SerpApi key is not for web search",
+              "Connected Brave Search, Exa (free MCP)" in txt and "2,000" in txt and "1,000" in txt and "browser's own search engines first" in txt and "Brave → Exa (free MCP) → Exa key" in txt
+              and "Tavily is only for news search" in txt and "server key" in txt and "SerpApi key is only for flight, hotel and restaurant search" in txt and "Google (SerpApi)" not in txt, txt[:700])
         brow = card.locator(".provider[data-provider=brave]")
         check("the Brave row is marked as using the server key and its field invites an override", await brow.locator(".chip").first.inner_text() == "server key"
               and "paste your own to override" in (await brow.locator("input").get_attribute("placeholder")), await brow.text_content())
         check("the note explains server keys and overriding them", "config.toml" in txt and "override" in txt)
         rows = await card.locator(".provider").evaluate_all("els => els.map(e => e.dataset.provider)")
-        check("one row per provider, in try order, the free Exa MCP first and no Google (SerpApi) row", rows == ["exa-mcp", "tavily", "brave", "exa"], rows)
+        check("one row per provider: the web chain in try order, then Tavily (news); no Google (SerpApi) row", rows == ["brave", "exa-mcp", "exa", "tavily"]
+              and "Tavily (news)" in txt, rows)
         check("English UI: no Chinese on the card", not han(txt), han(txt)[:3])
         trow = card.locator(".provider[data-provider=tavily]")
         await trow.locator("input[type=password]").fill(TAVILY)
@@ -57,19 +58,19 @@ async def main():
         await pg.wait_for_selector(".toast")
         toast = await pg.locator(".toast").inner_text()
         check("saving names the provider", "Tavily" in toast and "connected" in toast.lower(), toast)
-        await pg.wait_for_function("() => { const c = document.querySelector('#websearch'); return c && c.textContent.includes('Connected Exa (free MCP), Tavily'); }", timeout=15000)
+        await pg.wait_for_function("() => { const c = document.querySelector('#websearch'); const r = c && c.querySelector('.provider[data-provider=tavily] .chip'); return r && r.textContent.trim() === 'your key'; }", timeout=15000)
         card = pg.locator("#websearch")
         txt = await card.text_content()
         trow_chip = await card.locator(".provider[data-provider=tavily] .chip").first.inner_text()
-        check("connected: the chip lists the providers in order; the Tavily row says 'your key' and has a remove button; Test all is offered",
-              "Connected Exa (free MCP), Tavily" in txt and trow_chip == "your key" and await card.locator(".provider[data-provider=tavily] button", has_text="🗑").count() == 1 and "Test all" in txt, (txt[:300], trow_chip))
+        check("connected: the chip lists the web providers (Tavily is for news); the Tavily row says 'your key' and has a remove button; Test all is offered",
+              "Connected Brave Search, Exa (free MCP)" in txt and trow_chip == "your key" and await card.locator(".provider[data-provider=tavily] button", has_text="🗑").count() == 1 and "Test all" in txt, (txt[:300], trow_chip))
         before = await pg.locator(".toast").all_inner_texts()
         await card.get_by_role("button", name="Test all", exact=True).click()
         await pg.wait_for_function("(n) => document.querySelectorAll('.toast').length > n || [...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Tavily: '))", arg=len(before), timeout=15000)
         toasts = await pg.locator(".toast").all_inner_texts()
         check("Test all reports every provider: the free Exa MCP, Tavily and the server-keyed Brave all working", any("Tavily: ✓" in t and "Exa (free MCP): ✓" in t and "Brave Search: ✓" in t for t in toasts), toasts)
         await card.locator(".provider[data-provider=tavily] button", has_text="🗑").click()
-        await pg.wait_for_function("() => { const c = document.querySelector('#websearch'); const r = c && c.querySelector('.provider[data-provider=tavily] .chip'); return r && r.textContent.trim() === '—' && c.textContent.includes('Connected Exa (free MCP), Brave Search'); }", timeout=15000)
+        await pg.wait_for_function("() => { const c = document.querySelector('#websearch'); const r = c && c.querySelector('.provider[data-provider=tavily] .chip'); return r && r.textContent.trim() === '—' && c.textContent.includes('Connected Brave Search, Exa (free MCP)'); }", timeout=15000)
         check("removing the key leaves the free Exa MCP and the server's Brave key", True)
         check("no page errors", not errs, errs)
         await br.close()

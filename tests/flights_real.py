@@ -41,5 +41,15 @@ print(f"INFO {time.time() - t0:.1f} s, {len(offers)} business offers: " + " | ".
 K.check("TYO + business + nonstop against the real Kiwi: offers come back, all nonstop, from HND or NRT, in business class", r.get("status") == "ok" and len(offers) >= 1
         and all(o["stops"] == 0 for o in offers) and all(o["legs"][0].get("from") in ("HND", "NRT") for o in offers)
         and all("business" in str(o["legs"][0].get("cabin", "")).lower() for o in offers), json.dumps(r)[:500])
+t0 = time.time()
+d2 = (dt.date.fromisoformat(DATE) + dt.timedelta(days=2)).isoformat()
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "fr-t3", "call_id": "c3", "tool": "flights_search",
+                                                  "args": {"origin": "SIN", "destination": "TYO", "date": DATE, "date_to": d2, "currency": "SGD"}}, timeout=180).json()
+rg = (r.get("result") or {}).get("content") or {}
+print(f"INFO range {time.time() - t0:.1f} s: " + ", ".join(f"{b['date']} {b.get('cheapest')} {b.get('airlines', '')}" for b in rg.get("by_date", [])))
+K.check("a 3-day range against the real Kiwi: one call, three days with a cheapest each, offers dated and sorted by price",
+        r.get("status") == "ok" and [b["date"] for b in rg.get("by_date", [])] == [DATE, (dt.date.fromisoformat(DATE) + dt.timedelta(days=1)).isoformat(), d2]
+        and all(b.get("count", 0) > 0 for b in rg["by_date"]) and all(o.get("date") for o in rg["offers"])
+        and [o["price"] for o in rg["offers"]] == sorted(o["price"] for o in rg["offers"]), json.dumps(r)[:500])
 K.check("the result repeats the search: Tokyo, business, nonstop only", res.get("searched", {}).get("origin") == "Tokyo" and res["searched"]["cabin"] == "business" and res["searched"]["stops"] == "nonstop only", res.get("searched"))
 K.finish()

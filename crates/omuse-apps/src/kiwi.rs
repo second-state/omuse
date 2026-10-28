@@ -198,6 +198,33 @@ impl KiwiMcp {
     /// `flights_search` through Kiwi: the same arguments as the Google path (origin, destination, date, return_date,
     /// adults, cabin, nonstop_only, max_price, sort, currency).
     pub async fn flights(&self, a: &Value) -> Result<Value, KiwiError> {
+        let (days, cut) = crate::serpapi::date_range(a, 14).map_err(KiwiError)?;
+        if days.len() == 1 && !cut {
+            return self.flights_day(a).await;
+        }
+        // four at a time: one call per day, merged into one result
+        use futures_util::StreamExt;
+        let runs = days.iter().cloned().map(|(d, r)| {
+            let mut x = a.clone();
+            x["date"] = json!(d);
+            x["return_date"] = json!(r);
+            async move {
+                let res = self.flights_day(&x).await;
+                (d, res)
+            }
+        });
+        let mut got: Vec<(String, Result<Value, KiwiError>)> =
+            futures_util::stream::iter(runs).buffered(4).collect().await;
+        got.sort_by(|x, y| x.0.cmp(&y.0));
+        let out = got
+            .into_iter()
+            .map(|(d, r)| (d, r.unwrap_or_else(|e| json!({"offers": [], "note": e.0}))))
+            .collect();
+        Ok(crate::serpapi::merge_days(out, cut, &get_str(a, "date_to")))
+    }
+
+    /// One departure date (the range is handled by [`KiwiMcp::flights`]).
+    async fn flights_day(&self, a: &Value) -> Result<Value, KiwiError> {
         let (origin, dest, date) = (
             get_str(a, "origin"),
             get_str(a, "destination"),
@@ -244,8 +271,8 @@ impl KiwiMcp {
         if let Some(n) = crate::serpapi::max_stops(a) {
             args["max_sector_stopovers"] = json!(n);
         }
-        if let Some(m) = a.get("max_price").and_then(Value::as_f64) {
-            args["price_to"] = json!(m as i64);
+        if let Some(m) = crate::serpapi::price_cap(a, "max_price") {
+            args["price_to"] = json!(m);
         }
         let post = |body: Value| {
             self.client
@@ -305,6 +332,7 @@ impl KiwiMcp {
         let mut out = compact_flights(&data);
         let airlines = crate::serpapi::pref_list(a, "airlines");
         let found = crate::serpapi::mark_preferred(&mut out["offers"], &airlines, "airlines");
+        crate::serpapi::tag_cabins(&mut out["offers"], a);
         out["searched"] = crate::serpapi::searched(a, &from, &to);
         if !airlines.is_empty() {
             out["searched"]["airlines"] = json!(airlines);

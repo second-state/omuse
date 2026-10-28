@@ -9,6 +9,9 @@ reservation links; needs the SerpApi key of Settings → Connections → Flights
 the same turn come before any browsing. Book on the restaurant's own site or the platform the user names; the browser
 is for that booking page only.
 
+
+**No plan for the search.** Searching is just searching: never call plan_task to search, compare or check a date range — one turn of search calls, then the answer. Plan only once one result has been picked and booking it takes several steps (and a "book it" follow-up goes straight to the booking page).
+
 ## 0. Pick the source (no browser yet)
 - Look for a travel data connector: `mcp_<server>__michelin_search` and `mcp_<server>__restaurant_availability`
   (e.g. `mcp_travel__michelin_search`). If present, use them for finding restaurants and checking times — no guide

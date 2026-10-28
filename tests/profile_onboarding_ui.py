@@ -1,7 +1,7 @@
 """First login: the profile is empty, so the first chat view of a session goes straight to Memory → Profile, where an
-ID photo read by the vision model prefills name, birthday and nationality and offers the document number to the Vault
-(the photo is not kept, the number never reaches the profile). Afterwards the chat shows a banner until the profile is
-complete or the user says "later"; a complete profile ends both."""
+ID photo read by the vision model saves name, birthday and nationality to the profile and the document to the Vault (the
+photo is not kept, the number never reaches the profile); the card then lists the stored ID with "Add another ID" instead
+of asking again. Until then the chat shows a banner unless the user says "later"; a complete profile ends both."""
 import asyncio
 import os
 import sys
@@ -44,24 +44,7 @@ async def main():
         K.check("first login: the chat view sends the user to Memory → Profile", location.startswith("#memory/profile"), location)
         K.check("...the profile card is highlighted and explains the ID photo", True
                 and await pg.locator("#profile.flash").count() == 1 and "Upload ID photo" in await pg.locator("#profile").inner_text())
-        # the ID photo prefills the form
-        await pg.locator("#profile input[type=file]").set_input_files(PNG_PATH)
-        await pg.wait_for_selector("text=Save to Vault", timeout=15000)
-        name = await pg.locator("#profile label.field", has_text="Name as on passport").locator("input").input_value()
-        bday = await pg.locator("#profile label.field", has_text="Date of birth").locator("input").input_value()
-        nat = await pg.locator("#profile label.field", has_text="Nationality").locator("input").input_value()
-        K.check("the photo prefills name, birthday and nationality (marked)", (name, bday, nat) == ("LU LUCAS", "1985-04-12", "Australia")
-                and await pg.locator("#profile input.prefilled").count() == 3, (name, bday, nat))
-        txt = await pg.locator("#profile").inner_text()
-        K.check("the number is shown masked, offered to the Vault, and the photo is said not to be kept",
-                "••••567X" in txt and "E1234567X" not in txt and "not kept" in txt, txt[-400:])
-        await pg.locator("button", has_text="Save to Vault").click()
-        await pg.wait_for_selector("text=Saved to the Vault")
-        items = K.c.get(K.S + "/vault", headers=K.H).json().get("items", [])
-        K.check("the vault item exists (number stored there only)", any(i["label"] == "Passport LU" and i["kind"] == "id_document" for i in items), [i["label"] for i in items])
-        prof = K.c.get(B + "api/memory", headers=K.H).json()["profile"]
-        K.check("nothing is saved to the profile until Save profile", not prof.get("name_en"), prof)
-        # not saved yet → the chat still shows the banner; "Later" dismisses it
+        # not filled in yet → the chat shows the banner; "Later" dismisses it
         await pg.goto(B + "#chat")
         await pg.wait_for_selector("#profileReminder", timeout=10000)
         K.check("the chat banner reminds while the profile is incomplete", await pg.locator("#profileReminder").count() == 1)
@@ -73,16 +56,35 @@ async def main():
         await pg.wait_for_selector(".thread")
         await pg.wait_for_timeout(800)
         K.check("...and stays gone after a reload", await pg.locator("#profileReminder").count() == 0 and (await pg.evaluate("location.hash")) == "#chat")
-        # save the profile: complete → no nudge even with the reminder back on
+        # the ID photo: the empty fields are saved at once, the document goes to the Vault and is listed on the card
         K.c.put(B + "api/settings", json={"profile_reminder": True}, headers=K.H)
         await pg.goto(B + "#memory/profile")
         await pg.wait_for_selector("#profile")
         await pg.locator("#profile input[type=file]").set_input_files(PNG_PATH)
-        await pg.wait_for_selector("text=Save to Vault", timeout=15000)
-        await pg.locator("button", has_text="Save profile").click()
-        await pg.wait_for_selector(".toast")
+        await pg.wait_for_selector("text=saved to the Vault", timeout=15000)
+        txt = await pg.locator("#profile").inner_text()
+        K.check("the card says the fields were saved and the ID went to the Vault, masked, and the photo is not kept",
+                "Read and saved 3 field(s)" in txt and "••••567X" in txt and "E1234567X" not in txt and "not kept" in txt, txt[-500:])
+        prof = K.c.get(B + "api/memory", headers=K.H).json()["profile"]
+        K.check("name, birthday and nationality are saved to the profile (no Save press needed)",
+                (prof.get("name_en"), prof.get("birthday"), prof.get("nationality")) == ("LU LUCAS", "1985-04-12", "Australia"), prof)
+        items = K.c.get(K.S + "/vault", headers=K.H).json().get("items", [])
+        K.check("the vault item exists (number stored there only)", any(i["label"] == "Passport LU" and i["kind"] == "id_document" for i in items)
+                and "E1234567X" not in str(prof), [i["label"] for i in items])
+        K.check("the card lists the stored ID right away", await pg.locator("#idDocs .iddoc", has_text="Passport LU").count() == 1)
         stt = K.c.get(B + "api/profile/status", headers=K.H).json()
-        K.check("Save profile completes it", stt["complete"] is True and K.c.get(B + "api/memory", headers=K.H).json()["profile"]["birthday"] == "1985-04-12", stt)
+        K.check("the profile is complete", stt["complete"] is True, stt)
+        # after a reload: the card shows the ID and offers to add another — it does not ask for an ID again
+        await pg.reload()
+        await pg.wait_for_selector("#idDocs .iddoc")
+        box = await pg.locator("#idBox").inner_text()
+        K.check("after a reload the card shows Your IDs with the passport and an Add another ID button, not the upload prompt",
+                "Your IDs" in box and "Passport LU" in box and "Add another ID" in box and "Upload ID photo" not in box and "Complete your profile" not in box, box)
+        # the same passport again: not stored twice
+        await pg.locator("#profile input[type=file]").set_input_files(PNG_PATH)
+        await pg.wait_for_selector("text=already in the Vault", timeout=15000)
+        items = K.c.get(K.S + "/vault", headers=K.H).json().get("items", [])
+        K.check("uploading the same ID again does not add a second vault item", sum(i["label"] == "Passport LU" for i in items) == 1, [i["label"] for i in items])
         ctx2 = await br.new_context(viewport={"width": 1400, "height": 1000})
         await ctx2.add_init_script("try { localStorage.setItem('omuse_ui', 'en') } catch (e) {}")
         pg2 = await ctx2.new_page()
