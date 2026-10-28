@@ -7,7 +7,7 @@ userspace:
   appCache: /tmp/persona-appcache
 olaresEnv: {}
 image:
-  omuse: ghcr.io/second-state/omuse:omuse-v0.4.11   # chart/build.sh pins the release image of the chart's version
+  omuse: ghcr.io/second-state/omuse:omuse-v0.4.12   # chart/build.sh pins the release image of the chart's version
   busybox: docker.io/beclab/busybox:1.37
 timezone: Asia/Singapore
 bfl:
