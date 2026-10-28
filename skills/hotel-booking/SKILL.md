@@ -10,19 +10,14 @@ Search and compare with data tools; open the browser only for the provider's boo
 
 **No plan for the search.** Searching is just searching: never call plan_task to search, compare or check a date range — one turn of search calls, then the answer. Plan only once one result has been picked and booking it takes several steps (and a "book it" follow-up goes straight to the booking page).
 
-## 0. Pick the source (no browser yet)
-- Built in: `hotels_search` and `hotel_rooms` (Google Hotels data; Settings → Connections → Flights & hotels). If
-  they are in your tool list, use them for all searching and comparing — no Booking.com / Agoda / Google pages, no
-  search engine.
-- Else a travel MCP connector: `mcp_<server>__hotels_search` and `mcp_<server>__hotel_rooms`.
-- Neither, but the Web search connection is on (Brave / Tavily / Google): `web_search` answers from the API (so does web_search). 2–3
-  focused queries in ONE turn ("Ginza Tokyo hotel 20–23 Nov 2026 4 star price", "site:booking.com Ginza 2026-11-20",
-  "best hotels near Ginza station free cancellation"), compile names, stars, prices and links from the snippets, say the
-  prices come from search snippets, and do NOT open Booking, Agoda, Google Hotels or hotel search pages in the browser —
-  the browser is for the final booking page only.
-- None of the above: say in ONE line that real hotel search needs the Flights & hotels connection (a SerpApi key, free
-  tier) or the Web search connection (Brave / Tavily key), then web_search + browser_read (1–4 result pages, no
-  snapshots) as in the travel-planning skill; still open the browser interactively only to book.
+## 0. One tool: hotels_search (no browser yet)
+- `hotels_search` is the only search call a hotel question needs: Google Hotels data with the Flights & hotels key,
+  else — or when Google finds nothing — it falls back to web search by itself (its result then says so in
+  `hotels_fallback`: web pages, not hotels — read the 1–3 best with browser_read for prices). **No `web_search`
+  beside it.** `hotel_rooms` (rates per room and seller) needs the key.
+- A travel MCP connector in the tool list (`mcp_<server>__hotels_search` / `__hotel_rooms`) may be used instead.
+- Never open Booking, Agoda, Google Hotels or hotel search pages in the browser to search — the browser is for the
+  final booking page only.
 
 ## 1. Understand the request
 - City (and area / near what), check-in and check-out dates (compute exact YYYY-MM-DD from relative dates and say them;

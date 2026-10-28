@@ -81,6 +81,7 @@ try:
     all_tasks += info["tasks"]
     final, names = common("flight", info, "flight-booking", ("flights_search",))
     res = str(final.get("result") or "")
+    T.check("flight: a flight question uses the flight search only — no web_search beside it", "web_search" not in names, names)
     if "mcp_travel__flights_search" in names:
         first_no = last["flight_no"].split(" + ")[0]
         T.check(f"flight: the answer names the last same-day arrival ({last['title']}, {last['schedule']})",
@@ -151,6 +152,7 @@ try:
     T.check("range: no plan", not any(e["type"] == "plan" for e in rfinal.get("events", [])), [e["type"] for e in rfinal.get("events", [])][:12])
     T.check("range: the answer names a date in the range", any(str(dt.date.fromisoformat(r1) + dt.timedelta(days=i)) in str(rfinal.get("result"))
             or (dt.date.fromisoformat(r1) + dt.timedelta(days=i)).strftime("%-d %b") in str(rfinal.get("result")) for i in range(5)), str(rfinal.get("result"))[:400])
+    T.check("business: no web_search beside the flight search", not [x for x in calls if x["name"] == "web_search"], [x["name"] for x in calls])
     T.check("business: the browser was never used", not [x for x in calls if x["name"].startswith("browser_")], [x["name"] for x in calls])
     pref = str(args.get("airlines", "")).lower()
     T.check("business: the profile's preferred airline (ANA) went into the search, or the answer says ANA has no such offer",

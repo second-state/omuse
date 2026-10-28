@@ -106,14 +106,15 @@ K.check("hotel_rooms (Google ids) still needs the key, and the refusal says the 
 t = K.run(f"KIWIFLIGHTS cheapest flight Singapore to Tokyo on {DATE} DATE={DATE}")
 K.trace(t)
 names = K.names(t)
-K.check("the task completed and sends the user to the airline's site or an agency, with no Kiwi link", t["status"] == "COMPLETED" and "singaporeair.com" in (t.get("result") or "")
+K.check("the task completed and sends the user to the airline's own site from the offer's book_at, with no Kiwi link", t["status"] == "COMPLETED" and "Book it on singaporeair.com" in (t.get("result") or "")
         and "kiwi.com/u" not in (t.get("result") or "").lower() and "information only" in (t.get("result") or ""), (t["status"], (t.get("result") or "")[:300]))
-K.check("skill, then flights_search and web_search in ONE turn, no browser", names == ["load_skill", "flights_search", "web_search"] and any(sorted(b) == ["flights_search", "web_search"] for b in K.batches(t)), (names, K.batches(t)))
+K.check("skill, then flights_search ONLY — no web_search beside it, no browser", names == ["load_skill", "flights_search"], names)
 K.check("an ordinary skill is followed from its sheet: no plan, no planner call, never PLANNING", not any(e["type"] == "plan" for e in t["events"])
         and not (t.get("plan") or {}).get("steps") and "PLANNING" not in t["_seen"], ([e["type"] for e in t["events"]], t["_seen"]))
 sysp = [x["system"] for x in c.get(LLM + "/calls_for", params={"marker": "KIWIFLIGHTS"}).json()]
-K.check("the agent's instructions carry the rule: Kiwi.com data for information only, book on the airline's site or an agency, together with web_search",
-        sysp and "Kiwi.com data" in sysp[0] and "INFORMATION ONLY" in sysp[0] and "never book through Kiwi" in sysp[0] and "together with web_search" in sysp[0], sysp[0][:200] if sysp else None)
+K.check("the agent's instructions carry the rule: Kiwi.com data for information only, never through Kiwi, flights_search is the only call a flight question needs",
+        sysp and "Kiwi.com data" in sysp[0] and "INFORMATION ONLY" in sysp[0] and "never book through Kiwi" in sysp[0] and "the only call a flight question needs" in sysp[0]
+        and "never add a web_search call beside it" in sysp[0], sysp[0][:200] if sysp else None)
 
 # a business-class, direct request from a city with two airports: one search, the cabin and the stop limit as asked;
 # the profile's preferred airline rides with the skill sheet and goes into the search
@@ -123,8 +124,8 @@ K.trace(t)
 names = K.names(t)
 fs = [x for x in K.calls(t) if x.get("name") == "flights_search"]
 kl = c.get(FAKE + "/kiwi-mcp/_log").json()
-K.check("business class + direct + Tokyo: ONE flights_search (city code TYO, cabin business, stops nonstop) beside web_search, no plan",
-        names == ["load_skill", "flights_search", "web_search"] and len(fs) == 1 and fs[0]["args"]["cabin"] == "business" and fs[0]["args"]["stops"] == "nonstop"
+K.check("business class + direct + Tokyo: ONE flights_search (city code TYO, cabin business, stops nonstop) and nothing else, no plan",
+        names == ["load_skill", "flights_search"] and len(fs) == 1 and fs[0]["args"]["cabin"] == "business" and fs[0]["args"]["stops"] == "nonstop"
         and fs[0]["args"]["origin"] == "TYO" and kl[-1]["flyFrom"] == "Tokyo" and kl[-1]["cabinClass"] == "BUSINESS" and not any(e["type"] == "plan" for e in t["events"]),
         (names, [f["args"] for f in fs], kl[-1:]))
 K.check("the answer is in the cabin searched", t["status"] == "COMPLETED" and "BUSINESS CLASS" in (t.get("result") or "") and "searched as business" in (t.get("result") or ""), (t.get("result") or "")[:300])

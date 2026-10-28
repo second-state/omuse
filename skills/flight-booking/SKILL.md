@@ -1,6 +1,6 @@
 ---
 name: flight-booking
-description: 订机票：用 flights_search（Google Flights 或 Kiwi.com 数据，仅供参考）和 web_search 同时查航班比价，只在最后一步用浏览器在航空公司官网或用户选定的代理商预订页下单（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search and compare flights with flights_search (Google Flights or Kiwi.com data, information only) and web_search in one turn, then book on the airline's own site or with the agency the user chooses — the browser only for that final booking page.
+description: 订机票：只用 flights_search 查航班比价（Kiwi.com、Google Flights，最后自动退到网页搜索；仅供参考），只在最后一步用浏览器在航空公司官网或用户选定的代理商预订页下单（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search and compare flights with flights_search ONLY (Kiwi.com, then Google Flights, then web search by itself; information only), then book on the airline's own site or with the agency the user chooses — the browser only for that final booking page.
 
 ---
 # Flight booking / 订机票
@@ -39,9 +39,10 @@ Before any call, take from the user's words (ask once only when one is genuinely
   and name the cabin and the stop limit in the answer.
 
 ## 1. One search per question (no plan)
-- "Cheapest flight / cheapest business-class flight from A to B on <date>" is **one `flights_search` call** (plus
-  `web_search` in the same turn for the airline's or an agency's fare page), then the answer. Do not call plan_task,
-  do not search airport by airport, do not search several dates unless the user asked for flexibility.
+- Any question about flights — "cheapest flight from A to B", "the last flight tonight that lands before midnight",
+  "business class on Friday" — is **one `flights_search` call and nothing else**, then the answer. **No `web_search`
+  beside it**: flights_search falls back to Google Flights and then to web search by itself. No plan_task, no search
+  per airport, no extra dates unless the user asked for flexibility.
 - **A range of dates is still one search**: "cheapest between 1 and 10 December", "any day next week", "flexible ±3
   days" → `date` = the first day, `date_to` = the last (Kiwi.com data covers up to 14 days, Google Flights 7; the result
   says when it cut the range). Every offer carries its `date`, and `by_date` lists the cheapest per day — use it to
@@ -81,7 +82,7 @@ Before any call, take from the user's words (ask once only when one is genuinely
   BUE = Buenos Aires (EZE, AEP)
   Two cities on one side: a comma list (`TYO,OSA`). The result's `searched.origin` shows the airports actually used.
 - `flights_search` is always there and has its own fallback chain: Kiwi.com data, then Google Flights when the Flights & hotels key
-  is set, then the web search chain (its result then has web pages, not offers — read the fare pages with browser_read) —
+  is set, then the web search chain (its result then has web pages, not offers — read the fare pages with browser_read) — it is the only call a flight question needs;
   **information only**. Never book through Kiwi, never quote or open a Kiwi link; `flight_offer` gives the details
   of one offer (no link for Kiwi data).
 - A travel MCP connector in the tool list (`mcp_<server>__flights_search` …) can be used in the same turn too.
@@ -114,8 +115,8 @@ Before any call, take from the user's words (ask once only when one is genuinely
   complete the booking now — hand the filled page over with browser_request_takeover ("the booking page is filled in,
   check it and press Pay") so they review it and pay themselves. No card in the vault → say so in one line and hand the page over for
   them to type it; never ask for the number in chat.
-- Kiwi data has no link: open the airline's own booking page (the fare page web_search found earlier, or the airline's
-  site with the route and date), or the agency the user named earlier.
+- Kiwi data has no link: each offer's `book_at` is the airline's own website — open it (with the route and date), or the
+  agency the user named earlier. No web_search for it.
 
 ## 4. Traveller details (before booking)
 - Needed: full name exactly as in the passport, email, phone, passport number, card. Use what the request says, then

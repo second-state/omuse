@@ -27,6 +27,8 @@ async def main():
         card = pg.locator("#profile")
         check("one empty custom row and one empty address row to start", await card.locator(".newfield[data-kind=custom]").count() == 1
               and await card.locator(".newfield[data-kind=address]").count() == 1)
+        labels = await card.locator("label.field > span").all_inner_texts()
+        check("the passport name comes first and the other name right after it", labels[:2] == ["Name as on passport", "Other name"] and "Chinese name" not in labels, labels[:4])
         # the two standard preference fields are dropdowns: alliances + airlines, groups + brands, blank first; a hint points at custom fields
         air = card.locator("select[data-key=preferred_airline]")
         hot = card.locator("select[data-key=preferred_hotel_brand]")

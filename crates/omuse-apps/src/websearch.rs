@@ -44,7 +44,12 @@ impl Provider {
     /// answers `news_search` (its news topic gives dated articles with snippets).
     pub const ORDER: [Provider; 3] = [Provider::Brave, Provider::ExaMcp, Provider::Exa];
     /// Every provider as listed (keys looked up, the Settings card): the web chain in order, then Tavily for news.
-    pub const LISTED: [Provider; 4] = [Provider::Brave, Provider::ExaMcp, Provider::Exa, Provider::Tavily];
+    pub const LISTED: [Provider; 4] = [
+        Provider::Brave,
+        Provider::ExaMcp,
+        Provider::Exa,
+        Provider::Tavily,
+    ];
 
     /// What a provider answers: "news" (Tavily) or "web".
     pub fn role(self) -> &'static str {

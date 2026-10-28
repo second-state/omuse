@@ -5,8 +5,9 @@ description: 米其林餐厅：用旅行数据连接器查米其林星级/必比
 # MICHELIN dining / 米其林订位
 
 Data first: `places_search` / `place_details` (Google Maps data — rating, price, hours, phone, website, menu or
-reservation links; needs the SerpApi key of Settings → Connections → Flights & hotels) together with `web_search` in
-the same turn come before any browsing. Book on the restaurant's own site or the platform the user names; the browser
+reservation links with the SerpApi key of Settings → Connections → Flights & hotels; without it, or when Google finds
+nothing, places_search falls back to web search by itself) is the only search call — **no `web_search` beside it** —
+and comes before any browsing. Book on the restaurant's own site or the platform the user names; the browser
 is for that booking page only.
 
 

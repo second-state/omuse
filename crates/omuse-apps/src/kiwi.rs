@@ -115,6 +115,15 @@ pub fn compact_itinerary(it: &Value, currency: &str) -> Value {
             airlines.push(a);
         }
     }
+    // where to book: each operating airline's own website (Kiwi gives no link), from the flight numbers
+    let mut book_at: Vec<&str> = Vec::new();
+    for l in &legs {
+        if let Some(site) = crate::loyalty::airline_site(&get_str(l, "flight_number")) {
+            if !book_at.contains(&site) {
+                book_at.push(site);
+            }
+        }
+    }
     let mut out = Map::new();
     let id = get_str(it, "id");
     let mut offer = json!({
@@ -132,6 +141,7 @@ pub fn compact_itinerary(it: &Value, currency: &str) -> Value {
         "baggage": it.get("baggage").cloned().unwrap_or(json!({})),
         "data": "Kiwi.com",
         "book": format!("on the airline's own site ({}) or with an agency the user chooses — never through Kiwi", airlines.join(", ")),
+        "book_at": book_at,
     });
     if truthy(&it["inbound"]) {
         let (ilegs, iroute, ilay) = direction(&it["inbound"]);

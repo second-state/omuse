@@ -638,7 +638,10 @@ async fn memory_profile_and_library_basics() {
     let (st, v) = call(&e.app, "GET", "/api/memory", None, &[]).await;
     assert_eq!(st, 200);
     assert_eq!(v["recent"][0]["fact"], "Likes window seats");
-    assert_eq!(v["profile_fields"][0]["key"], "name_zh");
+    // the passport name first, the other name (key name_zh, "Other name") right after it
+    assert_eq!(v["profile_fields"][0]["key"], "name_en");
+    assert_eq!(v["profile_fields"][1]["key"], "name_zh");
+    assert_eq!(v["profile_fields"][1]["en"], "Other name");
     assert_eq!(v["job"]["running"], false);
     let (st, v) = call(
         &e.app,

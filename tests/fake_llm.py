@@ -1049,6 +1049,15 @@ def _vault_id(text, kind):
     return None
 
 
+def _book_at(text):
+    """The first airline website in a flights result's book_at (Kiwi.com data has no link)."""
+    m = re.search(r'book_at\\?"?: ?\[\\?"([a-z0-9.-]+)', text)
+    return m.group(1) if m else "?"
+
+
+_TRAVEL_SEEN = {}   # (kind, goal) -> the first search's parsed result, for turns after compression trimmed it
+
+
 def travel_book(kind, goal, msgs, tnames):
     import datetime as _dt
     calls = _travel_calls(msgs)
@@ -1091,6 +1100,10 @@ def travel_book(kind, goal, msgs, tnames):
             return reply("", [tc(tool("flights_search"), {"origin": "Singapore", "destination": "Tokyo", "date": dates[0],
                                                           "adults": 1, "nonstop_only": True})])
         data = _json_find(result("flights_search"), "offers") or {}
+        # remember the offers: later in the task context compression may have trimmed the first search result
+        if data.get("offers"):
+            _TRAVEL_SEEN[(kind, goal)] = data
+        data = data if data.get("offers") else _TRAVEL_SEEN.get((kind, goal), {})
         options = sorted([o for o in data.get("offers") or [] if o.get("stops") == 0], key=lambda o: o["fare_amount"])
         if not options:
             return reply("TRAVEL FAIL: no direct offers in " + result("flights_search")[:600])
@@ -1189,8 +1202,15 @@ def travel_book(kind, goal, msgs, tnames):
         return reply("", [tc("browser_fill_secret", {"ref": _snap_ref(page, lbl), "item_id": card_id, "field": f})
                           for lbl, f in boxes if _snap_ref(page, lbl)])
     if not has("browser_click"):
-        ref = _snap_ref(page, button, "button")
-        return reply("", [tc("browser_click", {"ref": ref or "e1"})])
+        # the button from the newest page text (every browser call returns one; compression may have trimmed the
+        # navigate result's tail, where the button is); none found → a fresh snapshot first
+        pages = [r for nm, _, r in reversed(calls) if nm.startswith("browser_")]
+        ref = next((x for x in (_snap_ref(pg, button, "button") for pg in pages) if x), None)
+        if not ref:
+            if not has("browser_snapshot"):
+                return reply("", [tc("browser_snapshot", {})])
+            return reply("TRAVEL FAIL: no " + button + " button on the booking page")
+        return reply("", [tc("browser_click", {"ref": ref})])
     after = "\n".join(r for n, _, r in calls if n in ("browser_click", "browser_snapshot"))
     m = re.search(r"TRV-[A-Z0-9]{7}", after)
     if not m and not has("browser_snapshot"):
@@ -1362,29 +1382,28 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         if n == 1:
             if not api:
                 return reply("NO_SEARCH_API")
-            # flights_search (Kiwi.com data without a key) and the web searches for flights, hotel and car in ONE turn
+            # one data tool each, in ONE turn: flights_search (Kiwi.com), hotels_search (web search without the key), and
+            # web_search only for the car (no data tool for cars)
             return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": "2026-11-20", "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"}),
-                              tc_("web_search", {"query": "SIN to NRT flights 20 Nov 2026 cheapest", "max_results": 5}),
-                              tc_("web_search", {"query": "Ginza Tokyo hotel 20-23 Nov 2026 4 star price", "max_results": 5}),
+                              tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": "2026-11-20", "check_out": "2026-11-23", "min_stars": 4}),
                               tc_("web_search", {"query": "Tokyo Narita airport car rental 20 Nov 2026 compact", "max_results": 5})])
         allt = "\n".join(str(m["content"]) for m in tools_done)
         srcs = re.findall(r"web search \(([^)]+)\)", allt)
         kiwi = "Kiwi.com" in allt and "kiwi.com/u/" not in allt.lower()
         return reply(f"SEARCHED VIA {sorted(set(srcs))}: flights SIN–NRT 20 Nov — {'Kiwi.com data (information only): SQ638 09:25 → 17:15 SGD 620 direct, CX via HKG SGD 510' if kiwi else 'from search snippets'}, "
-                     "fare page singaporeair.com (web_search); hotels near Ginza (Brave result 1); compact car at Narita (Brave result 1). "
-                     "Book the flight on singaporeair.com or with the agency you choose — never through Kiwi.")
-    if "KIWIFLIGHTS" in goal:   # flight-booking with no key: flights_search (Kiwi.com data) and web_search in ONE turn; book on the airline's site
+                     f"hotels near Ginza ({'web search' if 'hotels_fallback' in allt else 'Google Hotels'}); compact car at Narita (Brave result 1). "
+                     f"Book the flight on {_book_at(allt)} (the airline's own site) or with the agency you choose — never through Kiwi.")
+    if "KIWIFLIGHTS" in goal:   # flight-booking with no key: flights_search (Kiwi.com data) ONLY; book on the airline's site from book_at
         date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "flight-booking"})])
         if n == 1:
-            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": date, "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"}),
-                              tc_("web_search", {"query": f"Singapore Airlines SIN NRT {date} fare", "max_results": 5})])
+            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": date, "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"})])
         allt = "\n".join(str(m["content"]) for m in tools_done)
         kiwi = "Kiwi.com" in allt and "kiwi.com/u/" not in allt.lower()
         return reply(f"FLIGHTS {date} SIN → NRT (flight data{' from Kiwi.com, information only' if kiwi else ''}): cheapest direct Singapore Airlines SQ638 09:25 → 17:15, SGD 620, 1 checked bag; "
-                     "cheapest overall Cathay Pacific via HKG SGD 510 (one stop). The fare page: singaporeair.com (from web_search). "
-                     "Book it on singaporeair.com, or tell me the agency you prefer — say the word and I open the booking page.")
+                     f"cheapest overall Cathay Pacific via HKG SGD 510 (one stop). Book it on {_book_at(allt)} (the airline's own site, from the offer), "
+                     "or tell me the agency you prefer — say the word and I open the booking page.")
     if "BIZFLIGHTS" in goal:   # flight-booking: the request's cabin (business), stop limit (direct) and city code (TYO) go into ONE flights_search
         date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
         if n == 0:
@@ -1395,8 +1414,7 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
             args = {"origin": "TYO", "destination": "SIN", "date": date, "adults": 1, "cabin": "business", "stops": "nonstop", "sort": "price", "currency": "SGD"}
             if pm:
                 args["airlines"] = [x.strip() for x in pm.group(1).split(",")]
-            return reply("", [tc_("flights_search", args),
-                              tc_("web_search", {"query": f"Singapore Airlines Tokyo Singapore {date} business class fare", "max_results": 5})])
+            return reply("", [tc_("flights_search", args)])
         allt = "\n".join(str(m["content"]) for m in tools_done)
         m = re.search(r'\\?"cabin\\?": \\?"([a-z ]+)\\?"', allt)
         pref = ' — your preferred airline (flagged preferred in the data)' if '"preferred": true' in allt or '\\"preferred\\": true' in allt else ''

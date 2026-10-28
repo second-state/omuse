@@ -1263,8 +1263,16 @@ pub async fn search_test(State(ctx): State<App>) -> JsonResult {
     let mut results = Vec::new();
     let mut clients = clients;
     // Tavily is not in the web chain but its (news) key is tested too
-    if let Some((_, key, _)) = crate::actions::search_keys(&ctx).into_iter().find(|(p, _, _)| *p == Provider::Tavily) {
-        clients.push(omuse_apps::websearch::WebSearch::new(ctx.http.clone(), Provider::Tavily, search_base(&ctx, Provider::Tavily), &key));
+    if let Some((_, key, _)) = crate::actions::search_keys(&ctx)
+        .into_iter()
+        .find(|(p, _, _)| *p == Provider::Tavily)
+    {
+        clients.push(omuse_apps::websearch::WebSearch::new(
+            ctx.http.clone(),
+            Provider::Tavily,
+            search_base(&ctx, Provider::Tavily),
+            &key,
+        ));
     }
     for ws in clients {
         let p = ws.provider();
