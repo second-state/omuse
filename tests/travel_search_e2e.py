@@ -28,6 +28,8 @@ def conn():
 
 K.setup(language="en")
 c.post(FAKE + "/serpapi/_reset")
+# flights ask Kiwi.com first; this suite is about the Google path, so Kiwi is down until the Kiwi-first check at the end
+c.post(FAKE + "/kiwi-mcp/_down", json={"on": True})
 r = c.post(B + "/sentinel/api/connections/travel/credential", headers=H, json={"token": "wrong-key-0123456789abcdef"})
 K.check("a refused key is reported", r.status_code == 400 and "refused" in r.text, r.text[:200])
 r = c.post(B + "/sentinel/api/connections/travel/credential", headers=H, json={"token": "short"})
@@ -50,7 +52,7 @@ r = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-p1", "call_
 pd = (r.get("result") or {}).get("content") or {}
 K.check("place_details: hours per day, phone, website, the rating breakdown and review snippets", r.get("status") == "ok" and pd.get("hours") == ["wednesday: 11 AM–10:30 PM", "thursday: 11 AM–10:30 PM"]
         and pd["phone"] == "+81 3-3572-3025" and pd["rating_summary"][0] == "5★ 1500" and pd["review_snippets"][0].startswith("Great tonkotsu"), str(r)[:400])
-K.check("with the key the connection view says flights come from Google", conn().get("flights_source") == "google", conn())
+K.check("with the key the connection view says flights come from Kiwi.com with Google as the fallback", conn().get("flights_source") == "kiwi" and conn().get("flights_fallback") == "google", conn())
 r = c.post(B + "/sentinel/api/connections/travel/test", headers=H)
 K.check("Test reads the account again", r.status_code == 200 and r.json()["plan"] == "Free Plan", r.text[:200])
 
@@ -112,13 +114,40 @@ r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-group", "call_i
                                                    "args": {"city": "Tokyo", "area": "Ginza", "check_in": DATE, "check_out": DATE, "guests": 2, "brands": ["IHG One Rewards"], "currency": "SGD"}}).json()
 q = [x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_hotels" and not x.get("property_token")][-1]
 K.check("a hotel group goes into the query by its first word", q["q"] == "IHG hotels near Ginza Tokyo", q.get("q"))
+# Kiwi.com up again: flights come from Kiwi even with a key, and no SerpApi search is spent; the fallback says why when it is used
+c.post(FAKE + "/kiwi-mcp/_down", json={"on": False})
+n_serp = len([x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_flights"])
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-kiwi", "call_id": "c-kiwi", "tool": "flights_search",
+                                                   "args": {"origin": "SIN", "destination": "NRT", "date": DATE, "currency": "SGD"}}).json()
+src = (r.get("result") or {}).get("source", "")
+K.check("with a key and Kiwi.com up, flights come from Kiwi.com and no Google Flights search is made", "Kiwi.com" in src
+        and len([x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_flights"]) == n_serp, (src, n_serp))
+c.post(FAKE + "/kiwi-mcp/_down", json={"on": True})
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-fb", "call_id": "c-fb", "tool": "flights_search",
+                                                   "args": {"origin": "SIN", "destination": "NRT", "date": DATE, "currency": "SGD"}}).json()
+res = (r.get("result") or {}).get("content") or {}
+K.check("Kiwi.com down: Google Flights answers as the fallback and says why", (r.get("result") or {}).get("source") == "Google Flights (fallback)"
+        and "Kiwi.com failed" in res.get("fallback", "") and res.get("count", 0) > 0, (r.get("result") or {}).get("source"))
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-web", "call_id": "c-web", "tool": "flights_search",
+                                                   "args": {"origin": "ZZZ", "destination": "NRT", "date": DATE, "currency": "SGD"}}).json()
+w = r.get("result") or {}
+K.check("Kiwi.com down and Google Flights with no flights: the web search chain answers last and says both failed", r.get("status") == "ok"
+        and "web search" in str(w.get("source", "")) and "Kiwi.com failed" in w.get("flights_fallback", "") and "Google Flights found no flights" in w.get("flights_fallback", ""), str(r)[:400])
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-hweb", "call_id": "c-hweb", "tool": "hotels_search",
+                                                   "args": {"city": "Atlantis", "check_in": DATE, "check_out": DATE}}).json()
+w = r.get("result") or {}
+K.check("with a key, Google Hotels finding nothing falls back to web search and says so", r.get("status") == "ok" and "web search" in str(w.get("source", ""))
+        and "Google Hotels found no hotels" in w.get("hotels_fallback", ""), str(r)[:300])
+c.post(FAKE + "/kiwi-mcp/_down", json={"on": False})
 r = c.delete(B + "/sentinel/api/connections/travel/credential", headers=H)
-K.check("disconnect removes the key; the flight tools stay (Kiwi.com data), the hotel tools stay too but say they need the key", r.status_code == 200 and not conn()["has_credential"] and "flights_search" in cat_names(), r.text[:100])
-a = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-t1", "call_id": "c1", "tool": "hotels_search", "args": {"city": "Tokyo", "check_in": DATE, "check_out": DATE}}).json()
-K.check("without the key the hotel tools are refused with the way to connect, flights still work (Kiwi.com data)",
+K.check("disconnect removes the key; the flight tools stay (Kiwi.com data), the hotel and place tools too", r.status_code == 200 and not conn()["has_credential"] and "flights_search" in cat_names(), r.text[:100])
+a = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-t1", "call_id": "c1", "tool": "hotel_rooms", "args": {"hotel_id": "ht_x", "check_in": DATE, "check_out": DATE}}).json()
+K.check("without the key the hotel rates tool is refused with the way to connect, flights still work (Kiwi.com data)",
         a.get("status") in ("denied", "error") and "SerpApi" in str(a) and "flights work without it" in str(a), str(a)[:300])
-a = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-t1", "call_id": "c3", "tool": "places_search", "args": {"query": "ramen", "city": "Tokyo"}}).json()
-K.check("without the key the places tools are refused the same way", a.get("status") in ("denied", "error") and "restaurants" in str(a) and "SerpApi" in str(a), str(a)[:300])
+a = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-t1", "call_id": "c3", "tool": "place_details", "args": {"place_id": "pl_x"}}).json()
+K.check("without the key the place details tool is refused the same way", a.get("status") in ("denied", "error") and "SerpApi" in str(a), str(a)[:300])
+a = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-t1", "call_id": "c4", "tool": "hotels_search", "args": {"city": "Tokyo", "check_in": DATE, "check_out": DATE}}).json()
+K.check("without the key hotels_search answers from web search", a.get("status") == "ok" and "web search" in str((a.get("result") or {}).get("source", "")), str(a)[:200])
 a = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-t1", "call_id": "c2", "tool": "flights_search", "args": {"origin": "SIN", "destination": "NRT", "date": DATE}}).json()
 K.check("flights_search without the key answers from Kiwi.com data", a.get("status") == "ok" and "Kiwi.com" in (a.get("result") or {}).get("source", ""), str(a)[:200])
 K.finish()

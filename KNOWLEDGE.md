@@ -90,7 +90,10 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
 
 ## Flights & hotels search
 
-`flights_search` is always on: with a SerpApi key it is Google Flights data (below); without one Sentinel asks
+`flights_search` is always on and has a fallback chain like `web_search`: Kiwi.com first (free; date ranges of up to 14 days);
+with a SerpApi key, Google Flights (below) when Kiwi.com fails or finds nothing (the result's `fallback` line says why; each
+Google search costs a SerpApi credit); last the web search chain itself (search APIs, then the browser's engines) with the request
+spelled out as a query — web pages rather than offers, marked `flights_fallback` (`actions::flights_after_kiwi`). Sentinel asks
 Kiwi.com's public MCP server itself (`omuse_apps::kiwi`, `https://mcp.kiwi.com/`, two JSON-RPC calls, no key, no
 connector registration) and compacts the itineraries — airlines, flight numbers, local times, stops, price, baggage —
 with the booking links dropped (`compact_flights`; the `kw_…` offer ids resolve to the same details through
@@ -111,11 +114,16 @@ airport code (`NRT`), a city code (`TYO`, `OSA`, `SEL`, `LON`, `NYC` …), a cit
 search covers the whole city — Google gets every airport (`TYO` → `departure_id=HND,NRT`, `airport_codes`), Kiwi gets
 the city's name (`kiwi_place`: `TYO` → `Tokyo`). The flight skills carry the same list of multi-airport cities (a unit
 test in `airports.rs` keeps `skills/flight-booking` and `skills/travel-planning` in step with the table). The request's
-`cabin` (economy / premium_economy / business / first), `max_stops` (0, 1, 2; `nonstop_only` = 0), adults, return date,
+`cabin` (economy / premium_economy / business / first), `stops` (any / nonstop / one_stop_max / two_stops_max — an enum so a model that fills every field with a default lands on "any"; direct callers may still send `max_stops` 0–2 or `nonstop_only`; a price cap of 0 is ignored), adults, return date,
 price cap, sort and currency go through as given (Google `travel_class` / `stops`, Kiwi `cabinClass` /
 `max_sector_stopovers`), and every flights result carries a `searched` block (origin and destination as used, date,
 trip, adults, cabin, stops, and a rule line) so the executor answers in the cabin and stop limit the user asked for and
-searches again rather than presenting economy fares for a business-class request (`tests/kiwi_flights_e2e.py`,
+searches again rather than presenting economy fares for a business-class request. A premium-cabin itinerary with a short
+economy leg is kept and labelled (`tag_cabins`: `cabin_mix: "business + economy"`, `economy_legs`); it counts as the
+cabin searched. A range of departure dates is one call (`date` + `date_to`): the client runs one lookup per day itself
+(`date_range` / `merge_days`; Kiwi up to 14 days, four at a time; Google up to 7, each a billed SerpApi search), moves a
+return date with each departure, and returns one result with each offer's `date` and the cheapest per day in `by_date`
+— the prompt and the skills say never to plan or call per day (`tests/kiwi_flights_e2e.py`,
 `tests/travel_search_e2e.py`; the skills tell the executor to read date, cabin, stops and passengers from the request
 first, and that a cheapest-fare question is one search with no plan). Preferences: `flights_search` takes `airlines`
 (names or 2-letter codes) and `hotels_search` takes `brands`; the clients never drop anything for them — matching
@@ -149,13 +157,21 @@ note on how to connect. `[endpoints] serpapi` points the client at `tests/fake_a
 
 ## Search services: who answers what
 
-- `web_search` (every model call): Exa's free MCP → Tavily → Brave → Exa (the keys on hand, user over server) → the
-  browser's own search engines. The one that worked last goes first next time. The SerpApi key is never used here.
-- `flights_search` / `flight_offer`: Google Flights data with the SerpApi key, else Kiwi.com's public MCP (free,
-  information only, links stripped). Booking: the airline's own site or an agency the user chooses, never Kiwi.
-- `hotels_search` / `hotel_rooms`: Google Hotels data, SerpApi key required (the policy says so without it).
-- `places_search` / `place_details`: restaurants and other places, Google Maps data, SerpApi key required. Booking: the
-  restaurant's own site or the platform the user names.
+- `web_search` (every model call): the browser's own search engines first (free; as fast as the APIs — about 1.6 s a
+  search in `tests/search_timing_real.py`, 15 in a row without a challenge page on 2026-10-28), then the search APIs when
+  the browser fails, meets a challenge page or finds nothing: Brave → Exa's free MCP → Exa (the keys on hand, user over
+  server; among them the one that worked last goes first). Tavily is not in this chain. The SerpApi key is never used here.
+- `news_search` (every model call): Tavily's news topic (`topic: news`, `days`; dated articles with snippets) when a
+  Tavily key is set and the search connection is on, else `web_search` with "<query> news <period>"; `news_fallback`
+  says why. The `news-search` skill tells the model to answer with dates and sources.
+- `flights_search` / `flight_offer`: Kiwi.com's public MCP first (free, ranges of up to 14 days, information only, links
+  stripped); then Google Flights through the SerpApi key; then the web search chain. Booking: the airline's own site or an agency the user chooses, never Kiwi.
+- `hotels_search` / `hotel_rooms`: Google Hotels data with the SerpApi key; without it, or when Google finds nothing,
+  `hotels_search` falls back to the web search chain (the request spelled out, `hotels_fallback` says why).
+  `hotel_rooms` reads Google ids, so it needs the key (the policy says so).
+- `places_search` / `place_details`: restaurants and other places, Google Maps data with the key, else the web search
+  chain the same way (`places_fallback`); `place_details` needs the key. Booking: the restaurant's own site or the
+  platform the user names.
 - Keys: the user's (Settings → Connections) win per provider over the server's defaults (`[search]` in config.toml);
   the cards mark each key as "your key" or "server key"; removing an own key falls back to the server's.
 

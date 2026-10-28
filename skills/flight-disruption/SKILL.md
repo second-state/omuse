@@ -11,7 +11,7 @@ newer_than:60d` and calendar_list_events for the day: booking reference, passeng
 connecting flights, whether the ticket is one booking or separate tickets (matters for missed connections).
 
 ## 2. Live status (data first, browser second)
-- A connected data tool wins: the built-in `flights_search` (Google Flights data with the key, else Kiwi.com data for
+- A connected data tool wins: the built-in `flights_search` (Kiwi.com data, then Google Flights with the key, then web search — information only for
   information only — rebook on the airline's site, never through Kiwi), or an MCP connector's `flight_status`.
 - Else browser_read (no clicking) the airline's own flight status page, or FlightAware / Flightradar24 for the flight
   number, and the airport's departures page. Quote the new time, gate, and the airline's wording ("delayed",
@@ -23,7 +23,7 @@ connecting flights, whether the ticket is one booking or separate tickets (matte
 - **Rebooking**: the airline rebooks for free on its own cancellations and long delays; show the alternatives it
   offers (its app / site, or the airport desk and the phone line — phone_call if configured, with the user's approval).
   To compare, use `flights_search` (built in, or the connector's) — same route, same day and next morning, **the same
-  cabin as the user's ticket** (`cabin=business` for a business-class ticket), the city code for a city with several
+  cabin as the user's ticket** (`cabin=business` for a business-class ticket; an option with a short economy connection, `cabin_mix`, still counts — say which leg), the city code for a city with several
   airports (`TYO`, `SEL`, `LON` — one search), `airlines=[…]` from the Standing preferences block of your instructions when the
   user must buy a new ticket (the airline that owes the rebooking comes first regardless) — and present_choices;
   book a new ticket only if the user asks (then the `flight-booking` skill, approvals as usual).

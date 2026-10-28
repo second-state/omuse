@@ -2042,7 +2042,8 @@ and deliver what the user asked for with what you have (chart, file, answer); no
                 .flat_map(tool_calls)
                 .filter(|c| {
                     let n = stored_call(c).0;
-                    n.starts_with("browser_") || n == "web_search" // web_search counts: it is the search of the web
+                    n.starts_with("browser_") || n == "web_search" || n == "news_search"
+                    // the searches of the web count
                 })
                 .count();
             if web_calls as i64 >= WEB_NUDGE && !user_said(&transcript).contains(WEB_MARK) {
@@ -2229,8 +2230,14 @@ answer you can from what you have — what is done, the findings and what is mis
                         }
                         typed_this_turn = call.id.clone();
                     }
-                    if call.name == "web_search" {
-                        let qk = search_key(call.args.get("query").unwrap_or(&Value::Null));
+                    if call.name == "web_search" || call.name == "news_search" {
+                        // per tool: the same words may be a news search and a web search
+                        let raw = search_key(call.args.get("query").unwrap_or(&Value::Null));
+                        let qk = if raw.is_empty() {
+                            raw
+                        } else {
+                            format!("{}:{raw}", call.name)
+                        };
                         if let Some(first) = searched.get(&qk).filter(|_| !qk.is_empty()) {
                             // 2026-10-04 V1-07: the same weather / hotel searches ran 3 times in one task
                             skips.push(Some(Skip {

@@ -145,7 +145,9 @@ scenario (`tests/parallel_steps_e2e.py`).
 - Web search: `tests/web_search_e2e.py` (web_search through Brave / Tavily / Google (SerpApi), the browser's engines
   without a key or when switched off), `tests/search_card_ui.py` (the card), `tests/brave_travel_e2e.py` (a Brave key and
   no travel tools: flights, hotel and car searched through the API in one turn, no browser page).
-  `tests/web_search_real.py` (not in the default list, billed against the free tiers) connects the real Brave and Tavily
+  `tests/search_timing_real.py` (not in the default list, real network) times each web search source — Brave, Tavily, the
+  free Exa MCP and the browser's own engines — with `OMUSE_E2E_SEARCH_ENGINES=` (empty: the real DuckDuckGo / Bing
+  instead of the stand-in) and `SEARCH_TIMING_BURST=n` for a burst of browser searches. `tests/web_search_real.py` (not in the default list, billed against the free tiers) connects the real Brave and Tavily
   APIs with the keys `OMUSE_E2E_BRAVE_KEY` / `OMUSE_E2E_TAVILY_KEY` from the e2e env file — the endpoints come from
   `OMUSE_E2E_BRAVE_EP` / `OMUSE_E2E_TAVILY_EP` on the command line, see its docstring. `tests/flights_real.py` (real
   network, free) runs one `flights_search` through Kiwi.com's public MCP server without a key.

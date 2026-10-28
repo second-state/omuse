@@ -9,6 +9,9 @@ reservation links; needs the SerpApi key of Settings → Connections → Flights
 the same turn come before any browsing. Book on the restaurant's own site or the platform the user names; the browser
 is for that booking page only.
 
+
+**No plan for the search.** Searching is just searching: never call plan_task to search, compare or check a date range — one turn of search calls, then the answer. Plan only once one result has been picked and booking it takes several steps (and a "book it" follow-up goes straight to the booking page).
+
 ## 0. What you need
 - Date, time (and how flexible, e.g. ±30 min), party size, area, cuisine / budget — or a specific restaurant.
 - For the booking itself: the name, phone and email to book under. Look in memory first (memory_search "phone", "email", "booking name").

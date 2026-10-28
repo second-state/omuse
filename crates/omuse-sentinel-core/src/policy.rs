@@ -318,8 +318,9 @@ pub fn decide(
     if connector == "search" {
         return Ok(Decision::new(ALLOW, &t_risk, String::new()));
     }
-    // flights come free (Kiwi.com data); hotels and places need the SerpApi key (the user's, or the server's default)
-    let keyed_tool = tool.starts_with("hotel") || tool.starts_with("place");
+    // the searches always run (flights: Kiwi.com first; hotels and places fall back to web search without the SerpApi
+    // key); the detail tools read Google ids, so they need the key (the user's, or the server's default)
+    let keyed_tool = tool == "hotel_rooms" || tool == "place_details";
     if connector == "travel"
         && keyed_tool
         && !store.has_secret("cred_travel_1")?
@@ -328,7 +329,7 @@ pub fn decide(
         return Ok(Decision::new(
             DENY,
             &t_risk,
-            "酒店和餐厅搜索需要「机票与酒店搜索」的 SerpApi 密钥：请在「连接 Connections」页填写；机票搜索不用密钥 (hotels and restaurants need the SerpApi key of Flights & hotels; flights work without it)".to_string(),
+            "酒店房价和餐厅详情需要「机票与酒店搜索」的 SerpApi 密钥：请在「连接 Connections」页填写；没有密钥时搜索结果来自网页搜索，请用 browser_read 读酒店或餐厅的页面 (hotel rates and place details need the SerpApi key of Flights & hotels; without it the searches come from web search — browser_read the hotel's or restaurant's page; flights work without it)".to_string(),
         ));
     }
     if connector == "travel" && !truthy(&conn["enabled"]) && !keyed_tool {
@@ -2410,13 +2411,39 @@ mod tests {
     fn travel_without_a_key_says_how_to_connect_and_a_server_default_counts() {
         let (_t, store) = store();
         let args = json!({"origin": "SIN", "destination": "NRT", "date": "2026-11-20"});
-        // flights are free (Kiwi.com data) even without a key; hotels need the SerpApi key
+        // the searches run without a key (flights: Kiwi.com; hotels and places: web search); the detail tools need it
         let r = decide(&store, "flights_search", &args, "t1", None, None, false).unwrap();
         assert_eq!(r.decision, ALLOW, "{}", r.reason);
         let hargs = json!({"city": "Tokyo", "check_in": "2026-11-20", "check_out": "2026-11-23"});
         let r = decide(&store, "hotels_search", &hargs, "t1", None, None, false).unwrap();
+        assert_eq!(r.decision, ALLOW, "{}", r.reason);
+        let r = decide(
+            &store,
+            "places_search",
+            &json!({"query": "ramen", "city": "Tokyo"}),
+            "t1",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(r.decision, ALLOW, "{}", r.reason);
+        let r = decide(
+            &store,
+            "hotel_rooms",
+            &json!({"hotel_id": "ht_1", "check_in": "2026-11-20", "check_out": "2026-11-23"}),
+            "t1",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         assert_eq!(r.decision, DENY);
-        assert!(r.reason.contains("SerpApi") && r.reason.contains("flights work without it"));
+        assert!(
+            r.reason.contains("SerpApi")
+                && r.reason.contains("web search")
+                && r.reason.contains("flights work without it")
+        );
         // the server's default key (seeded into the connection config at startup) connects the hotels too
         store
             .save_connection(
@@ -2426,7 +2453,16 @@ mod tests {
                 Some(true),
             )
             .unwrap();
-        let r = decide(&store, "hotels_search", &hargs, "t1", None, None, false).unwrap();
+        let r = decide(
+            &store,
+            "hotel_rooms",
+            &json!({"hotel_id": "ht_1", "check_in": "2026-11-20", "check_out": "2026-11-23"}),
+            "t1",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         assert_eq!(r.decision, ALLOW, "{}", r.reason);
     }
 }

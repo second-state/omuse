@@ -454,10 +454,22 @@ def ddg_hits():
     return {"n": len(DDG_HITS), "queries": DDG_HITS[-5:]}
 
 
+DDG_DOWN = {"on": False}
+
+
+@app.post("/ddg/_down")
+async def ddg_down(request: Request):
+    """The browser's engines meet a challenge page (web_search then goes on to the search APIs)."""
+    DDG_DOWN["on"] = bool((await request.json()).get("on"))
+    return DDG_DOWN
+
+
 @app.get("/ddg")
 async def fake_ddg(q: str = ""):
     """DuckDuckGo-html-like results page (web_search)."""
     DDG_HITS.append(q)
+    if DDG_DOWN["on"]:
+        return HTMLResponse("<html><body>Please complete the challenge</body></html>")
     rows = "".join(f'<div class="result"><a class="result__a" href="/l/?uddg=http%3A%2F%2Fshop.test%3A8094%2Fslow%3Fs%3D0%26name%3DPage{i}">'
                    f'Result {i} for {q}</a><a class="result__snippet">Snippet {i} about {q}</a></div>' for i in range(1, 6))
     return HTMLResponse(f"<html><body>{rows}</body></html>")
@@ -895,6 +907,8 @@ def serp_search(request: Request):
     eng = q.get("engine")
     date = q.get("outbound_date", "2026-11-20")
     if eng == "google_flights":
+        if q.get("departure_id") == "ZZZ":   # a route Google has no flights for (the flight chain's last step)
+            return {"search_metadata": {}, "best_flights": [], "other_flights": []}
         if q.get("booking_token"):
             return {"search_metadata": {"google_flights_url": "https://www.google.com/travel/flights?booking"},
                     "selected_flights": [{"flights": [{"departure_airport": {"id": "SIN", "time": f"{date} 09:25"}, "arrival_airport": {"id": "NRT", "time": f"{date} 17:15"},
@@ -933,6 +947,8 @@ def serp_search(request: Request):
                 "organic_results": [{"position": i, "title": f"Google result {i} for {q.get('q', '')}", "link": f"http://shop.test:8094/slow?s=0&name=G{i}",
                                      "snippet": f"Google snippet {i} about {q.get('q', '')}", "date": "Oct 1, 2026"} for i in range(1, 6)]}
     if eng == "google_hotels":
+        if "Atlantis" in q.get("q", ""):   # a city Google has no hotels for (the hotel chain's web step)
+            return {"search_metadata": {}, "properties": []}
         if q.get("property_token"):
             return {"name": "Hotel Ginza Grand", "type": "hotel", "address": "1-1-1 Ginza, Chuo City, Tokyo", "phone": "+81 3 0000 0000", "website": "https://ginzagrand.example",
                     "extracted_hotel_class": 4, "overall_rating": 4.4, "reviews": 2100, "check_in_time": "3:00 PM", "check_out_time": "11:00 AM",
@@ -971,8 +987,19 @@ def search_reset():
     return {"ok": True}
 
 
+BRAVE_DOWN = {"on": False}
+
+
+@app.post("/brave/_down")
+async def brave_down(request: Request):
+    BRAVE_DOWN["on"] = bool((await request.json()).get("on"))
+    return BRAVE_DOWN
+
+
 @app.get("/brave/web/search")
 def brave_search(request: Request, q: str = "", count: int = 20):
+    if BRAVE_DOWN["on"]:
+        return JSONResponse({"type": "ErrorResponse", "error": {"code": "UNAVAILABLE", "detail": "service unavailable"}}, status_code=503)
     if request.headers.get("x-subscription-token") != BRAVE_KEY:
         return JSONResponse({"type": "ErrorResponse", "error": {"code": "SUBSCRIPTION_TOKEN_INVALID", "detail": "Invalid subscription token"}}, status_code=401)
     SEARCH_LOG.append({"provider": "brave", "q": q, "count": count})
@@ -997,7 +1024,7 @@ async def tavily_search(request: Request):
     if request.headers.get("authorization") != "Bearer " + TAVILY_KEY:
         return JSONResponse({"detail": {"error": "Unauthorized: missing or invalid API key."}}, status_code=401)
     b = await request.json()
-    SEARCH_LOG.append({"provider": "tavily", "q": b.get("query"), "count": b.get("max_results")})
+    SEARCH_LOG.append({"provider": "tavily", "q": b.get("query"), "count": b.get("max_results"), "topic": b.get("topic"), "days": b.get("days")})
     return {"query": b.get("query"), "results": [
         {"title": f"Tavily result {i} for {b.get('query')}", "url": f"http://shop.test:8094/slow?s=0&name=T{i}", "content": f"Tavily content {i} about {b.get('query')}",
          "score": 0.9 - i / 100, "published_date": None} for i in range(1, int(b.get("max_results") or 5) + 1)], "response_time": 0.3}
@@ -1058,6 +1085,15 @@ def _kiwi_airport(place) -> str:
     return _KIWI_CITIES.get(s.lower(), "SIN")
 
 
+KIWI_DOWN = {"on": False}
+
+
+@app.post("/kiwi-mcp/_down")
+async def kiwi_down(request: Request):
+    KIWI_DOWN["on"] = bool((await request.json()).get("on"))
+    return KIWI_DOWN
+
+
 @app.get("/kiwi-mcp/_log")
 def kiwi_log():
     return KIWI_LOG
@@ -1070,6 +1106,8 @@ async def kiwi_mcp(request: Request):
     rid = b.get("id")
     if b.get("method") == "initialize":
         return {"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}, "serverInfo": {"name": "kiwi", "version": "fake"}}}
+    if b.get("method") == "tools/call" and KIWI_DOWN["on"]:
+        return JSONResponse({"jsonrpc": "2.0", "id": rid, "error": {"code": -32000, "message": "upstream unavailable"}}, status_code=503)
     if b.get("method") == "tools/call":
         args = (b.get("params") or {}).get("arguments") or {}
         KIWI_LOG.append(args)
@@ -1091,8 +1129,15 @@ async def kiwi_mcp(request: Request):
              "outbound": {"from": fr, "to": to, "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d1}T13:30:00", "durationSeconds": 45300, "stops": 1, "route": [fr, via, to], "cabinClass": cabin,
                           "segments": [{"from": fr, "to": via, "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d1}T03:40:00", "durationSeconds": 13500, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX710", "cabinClass": cabin},
                                        {"from": via, "to": to, "departureTime": f"{d1}T08:00:00", "arrivalTime": f"{d1}T13:30:00", "durationSeconds": 16200, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX500", "cabinClass": cabin}]}, "inbound": None}]
+        if cabin == "Business":
+            # a business long-haul with a short economy feeder: a mixed-cabin itinerary that counts as business
+            its.append({"id": "kw3_0|kw3_1", "price": round(1900.0), "priceFormatted": f"1900 {cur}", "totalDurationSeconds": 36000, "bookingUrl": "https://kiwi.com/u/ghi789",
+                        "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 2},
+                        "outbound": {"from": fr, "to": to, "departureTime": f"{d}T07:00:00", "arrivalTime": f"{d}T19:00:00", "durationSeconds": 36000, "stops": 1, "route": [fr, "HND", to], "cabinClass": "Business",
+                                     "segments": [{"from": fr, "to": "HND", "departureTime": f"{d}T07:00:00", "arrivalTime": f"{d}T08:15:00", "durationSeconds": 4500, "carrier": "NH", "carrierName": "ANA", "flightNumber": "NH12", "cabinClass": "Economy"},
+                                                  {"from": "HND", "to": to, "departureTime": f"{d}T11:00:00", "arrivalTime": f"{d}T19:00:00", "durationSeconds": 28800, "carrier": "NH", "carrierName": "ANA", "flightNumber": "NH841", "cabinClass": "Business"}]}, "inbound": None})
         if args.get("max_sector_stopovers") == 0:
-            its = its[:1]
+            its = [x for x in its if x["outbound"]["stops"] == 0]
         data = {"query": f"{args.get('flyFrom')} → {args.get('flyTo')} on {d}", "currency": cur, "passengers": {"adults": args.get("adults", 1)}, "resultsCount": len(its), "itineraries": its,
                 "searchTimeMs": 1200, "error": None}
         body = {"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": json.dumps(data)}], "isError": False}}

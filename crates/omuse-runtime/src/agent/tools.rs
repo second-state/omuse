@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use crate::prompts;
 
 /// Tools a read-only sub-agent may use.
-pub const SUBAGENT_TOOLS: [&str; 29] = [
+pub const SUBAGENT_TOOLS: [&str; 30] = [
     "gmail_search",
     "gmail_get_message",
     "gmail_get_thread",
@@ -16,6 +16,7 @@ pub const SUBAGENT_TOOLS: [&str; 29] = [
     "browser_navigate",
     "browser_snapshot",
     "web_search",
+    "news_search",
     "browser_read",
     "browser_click",
     "browser_type",
@@ -45,7 +46,7 @@ pub const SUBAGENT_TOOLS: [&str; 29] = [
 /// A concurrent batch is sent to Sentinel with `no_ask`: a read that would need an approval (`browser_read` of a URL
 /// carrying data in a tainted task) comes back as an error telling the model to call it alone next turn, so no
 /// approval dialog is ever left behind for a call the task is not waiting on.
-pub const PARALLEL_TOOLS: [&str; 34] = [
+pub const PARALLEL_TOOLS: [&str; 35] = [
     "delegate",
     "calculate",
     "data_query",
@@ -79,6 +80,7 @@ pub const PARALLEL_TOOLS: [&str; 34] = [
     "slack_read_thread",
     "slack_search",
     "web_search",
+    "news_search",
     "browser_read",
 ];
 
@@ -222,9 +224,12 @@ parallel: steps that share a label (\"p1\") are independent and run at the same 
                 "parallel": s}}},
              "objective": s, "note": s}), &["steps"]),
         fn_("plan_task", "交给规划模型制定分步计划：多个相互依赖的步骤、多个来源或候选、子智能体、按顺序审批的操作或技能才需要；\
-能直接回答或几次调用就能查到的不用 Hand the request to the planning model for a step-by-step plan. Only for work that takes \
-several dependent steps, several sources or candidates to compare, sub-agents, approvals in sequence or a skill — not for a \
-question you can answer now or a lookup of a few calls, and not for a follow-up that acts on a result already in this conversation (book it / buy it / send it: go straight to the action). Once per task; a skill is followed from its sheet (a long skill brings its own plan with load_skill); afterwards update_plan. \
+能直接回答或几次调用就能查到的不用；查航班、酒店、餐厅只是搜索，一律不用（含日期范围、偏好、对比）；要从结果里挑一个去订、需要多步时才可能用 Hand the request to the planning model for a \
+step-by-step plan. Rarely needed: only for work that takes several dependent steps across different tools, sub-agents or approvals in \
+sequence. NEVER for flight, hotel or restaurant searches — they are just searches, even with a date range, a preference to compare, \
+several cities or a check of the sources: one turn of search calls (preferences go into the same call, flagged in the result). A plan \
+may come once one result has to be picked out and acted on (booked, with approvals) in several steps. Not for a \
+question you can answer now or a lookup of a few calls, and not for a follow-up that acts on a result already in this conversation (book it / buy it / send it: go straight to the action), nor for what one call covers (a date range is one flights_search with date_to). Once per task; a skill is followed from its sheet (a long skill brings its own plan with load_skill); afterwards update_plan. \
 objective: the job in one sentence; notes: what you already know or found and any constraints.",
             json!({"objective": s, "notes": s}), &["objective"]),
         fn_("files_list", &format!("列出工作区文件 List files in the workspace (Olares Files → Data/{}/workspace).", app_id), json!({"path": s}), &[]),

@@ -69,17 +69,20 @@ pub fn conn_view(ctx: &Ctx, name: &str) -> Result<Value, ApiError> {
     c["has_credential"] = json!(has);
     if name == "travel" {
         c["default_key"] = json!(!ctx.cfg.search.serpapi_key.trim().is_empty());
-        c["flights_source"] = json!(if has || !ctx.cfg.search.serpapi_key.trim().is_empty() {
+        // flights: Kiwi.com first; Google Flights is the fallback when a SerpApi key is set
+        c["flights_source"] = json!("kiwi");
+        c["flights_fallback"] = json!(if has || !ctx.cfg.search.serpapi_key.trim().is_empty() {
             "google"
         } else {
-            "kiwi"
+            ""
         });
     }
     if name == "search" {
-        // every provider in the order it is tried, with where its key comes from ("user", "server" or "")
+        // every provider: the web chain in the order it is tried (after the browser's engines), then Tavily for news; with
+        // where its key comes from ("user", "server" or "") and what it answers ("web" or "news")
         let user = search_user_keys(ctx);
         let defaults = ctx.cfg.search.default_keys();
-        let rows: Vec<Value> = Provider::ORDER
+        let rows: Vec<Value> = Provider::LISTED
             .iter()
             .map(|p| {
                 let source = if !p.needs_key() {
@@ -95,7 +98,7 @@ pub fn conn_view(ctx: &Ctx, name: &str) -> Result<Value, ApiError> {
                 } else {
                     ""
                 };
-                json!({"id": p.id(), "label": p.label(), "source": source})
+                json!({"id": p.id(), "label": p.label(), "source": source, "role": p.role()})
             })
             .collect();
         c["providers"] = json!(rows);
@@ -1136,7 +1139,7 @@ fn search_user_keys(ctx: &Ctx) -> Map<String, Value> {
 fn search_config(ctx: &Ctx) -> Value {
     let user = search_user_keys(ctx);
     let defaults = ctx.cfg.search.default_keys();
-    let have: Vec<&str> = Provider::ORDER
+    let have: Vec<&str> = Provider::LISTED
         .iter()
         .filter(|p| {
             (!p.needs_key() && ctx.cfg.search.free_exa)
@@ -1258,6 +1261,11 @@ pub async fn search_test(State(ctx): State<App>) -> JsonResult {
         .map(|(p, _, src)| (p.id().to_string(), json!(src)))
         .collect();
     let mut results = Vec::new();
+    let mut clients = clients;
+    // Tavily is not in the web chain but its (news) key is tested too
+    if let Some((_, key, _)) = crate::actions::search_keys(&ctx).into_iter().find(|(p, _, _)| *p == Provider::Tavily) {
+        clients.push(omuse_apps::websearch::WebSearch::new(ctx.http.clone(), Provider::Tavily, search_base(&ctx, Provider::Tavily), &key));
+    }
     for ws in clients {
         let p = ws.provider();
         let src = sources.get(p.id()).cloned().unwrap_or(json!(""));

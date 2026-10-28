@@ -112,7 +112,7 @@ pub fn seed_default_keys(cfg: &Config, store: &Store) {
         .flatten()
         .and_then(|s| s.get("keys").cloned())
         .unwrap_or(serde_json::json!({}));
-    let providers: Vec<&str> = omuse_apps::websearch::Provider::ORDER
+    let providers: Vec<&str> = omuse_apps::websearch::Provider::LISTED
         .iter()
         .filter(|p| {
             (!p.needs_key() && cfg.search.free_exa)

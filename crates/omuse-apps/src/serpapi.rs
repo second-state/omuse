@@ -30,8 +30,18 @@ pub fn stops_param(a: &Value) -> Option<u8> {
     max_stops(a).map(|n| n + 1)
 }
 
-/// The request's stop limit: `max_stops` 0..=2, or 0 for `nonstop_only`; `None` when any number of stops is fine.
+/// The request's stop limit; `None` when any number of stops is fine. The tool schema has `stops` = any | nonstop |
+/// one_stop_max | two_stops_max (a model that fills every field with a default lands on "any", which is what the user
+/// meant when they said nothing); direct callers may still send `max_stops` 0..=2 or `nonstop_only`.
 pub fn max_stops(a: &Value) -> Option<u8> {
+    if let Some(s) = a.get("stops").and_then(Value::as_str) {
+        return match s.trim().to_lowercase().replace(['-', ' '], "_").as_str() {
+            "nonstop" | "direct" | "0" => Some(0),
+            "one_stop_max" | "1" => Some(1),
+            "two_stops_max" | "2" => Some(2),
+            _ => None,
+        };
+    }
     if let Some(n) = a.get("max_stops").and_then(Value::as_i64) {
         return Some(n.clamp(0, 2) as u8);
     }
@@ -39,6 +49,14 @@ pub fn max_stops(a: &Value) -> Option<u8> {
         return Some(0);
     }
     None
+}
+
+/// A price cap from the request: only a positive number caps anything (a model filling defaults sends 0).
+pub fn price_cap(a: &Value, key: &str) -> Option<i64> {
+    a.get(key)
+        .and_then(Value::as_f64)
+        .filter(|m| *m > 0.0)
+        .map(|m| m as i64)
 }
 
 /// What was searched, in the words the answer should use — appended to every flights result so the cabin, the
@@ -62,7 +80,9 @@ pub fn searched(a: &Value, from: &str, to: &str) -> Value {
         "trip": if ret.is_empty() { "one way".to_string() } else { format!("round trip, return {ret}") },
         "adults": a.get("adults").and_then(Value::as_i64).filter(|n| *n >= 1).unwrap_or(1),
         "cabin": cabin, "stops": stops,
-        "rule": format!("every offer below is a {cabin} fare with {stops}; answer in these terms, and if the user asked for a different cabin, date or stop limit, search again instead of presenting these{}", if pref_list(a, "airlines").is_empty() { "" } else { "; offers marked preferred are on the user's preferred airlines — show the best of them next to the cheapest, with the price difference" }),
+        "rule": format!("every offer below is a {cabin} fare with {stops}; answer in these terms — name the cabin ({cabin}) and the stop limit in the answer — and if the user asked for a different cabin, date or stop limit, search again instead of presenting these{}{}",
+            if cabin == "economy" { String::new() } else { format!("; an itinerary whose main legs are in this cabin but with a lower-cabin leg (a short economy connection, `cabin_mix`) counts as a {cabin} itinerary — keep it, and say which legs are in which cabin") },
+            if pref_list(a, "airlines").is_empty() { "" } else { "; offers marked preferred are on the user's preferred airlines — show the best of them next to the cheapest, with the price difference" }),
     })
 }
 
@@ -120,6 +140,152 @@ pub fn mark_preferred(items: &mut Value, prefs: &[String], field: &str) -> usize
         }
     }
     n
+}
+
+/// Label each offer's cabin for a premium-cabin search: `cabin` = what was searched, and on an itinerary whose legs are
+/// not all in that cabin (a business long-haul with an economy connection) `cabin_mix` = "business + economy" with
+/// `economy_legs` naming them. Such an itinerary counts as the searched cabin. Economy searches are left alone.
+pub fn tag_cabins(offers: &mut Value, a: &Value) {
+    let want = match get_str(a, "cabin").to_lowercase().as_str() {
+        "premium_economy" | "premium economy" => "premium economy",
+        "business" => "business",
+        "first" => "first",
+        _ => return,
+    };
+    for o in offers.as_array_mut().into_iter().flatten() {
+        let legs: Vec<(String, String)> = arr(o, "legs")
+            .iter()
+            .map(|l| {
+                let c = get_str(l, "cabin").to_lowercase().replace('_', " ");
+                (
+                    format!(
+                        "{} {}-{}",
+                        get_str(l, "flight_number"),
+                        get_str(l, "from"),
+                        get_str(l, "to")
+                    ),
+                    c,
+                )
+            })
+            .collect();
+        o["cabin"] = json!(want);
+        // a leg counts as lower when its cabin is economy-like and the searched cabin is above it
+        let lower: Vec<&(String, String)> = legs
+            .iter()
+            .filter(|(_, c)| {
+                !c.is_empty()
+                    && !c.contains(want)
+                    && (c.contains("economy") || c.contains("coach") || c.contains("basic"))
+            })
+            .collect();
+        if !lower.is_empty() && lower.len() < legs.len() {
+            let other = if lower.iter().any(|(_, c)| c.contains("premium")) {
+                "premium economy"
+            } else {
+                "economy"
+            };
+            o["cabin_mix"] = json!(format!("{want} + {other}"));
+            o["economy_legs"] = json!(lower
+                .iter()
+                .map(|(l, _)| l.trim().to_string())
+                .collect::<Vec<_>>());
+        } else if !lower.is_empty() {
+            // every leg is below the searched cabin: not a match, say so plainly
+            o["cabin"] = json!("economy (not the cabin searched)");
+        }
+    }
+}
+
+/// The departure dates of a request: `date`, or every day from `date` to `date_to` (inclusive), at most `max_days`;
+/// the bool says whether the range was cut. A return date moves with each departure so the stay stays as long.
+pub fn date_range(a: &Value, max_days: usize) -> Result<(Vec<(String, String)>, bool), String> {
+    let parse = |k: &str| chrono::NaiveDate::parse_from_str(get_str(a, k).trim(), "%Y-%m-%d");
+    let first = parse("date").map_err(|_| "date must be YYYY-MM-DD".to_string())?;
+    let last = match get_str(a, "date_to").trim() {
+        "" => first,
+        _ => parse("date_to").map_err(|_| "date_to must be YYYY-MM-DD".to_string())?,
+    };
+    if last < first {
+        return Err("date_to is before date".into());
+    }
+    let stay = parse("return_date").ok().map(|r| r - first);
+    let span = (last - first).num_days() as usize + 1;
+    let days: Vec<(String, String)> = (0..span.min(max_days))
+        .map(|i| {
+            let d = first + chrono::Duration::days(i as i64);
+            (
+                d.format("%Y-%m-%d").to_string(),
+                stay.map(|s| (d + s).format("%Y-%m-%d").to_string())
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    Ok((days, span > max_days))
+}
+
+/// Merge one search per day into one result: every offer carries its `date`, sorted by price (at most 20), with the
+/// cheapest offer of each day in `by_date` and the range in `searched.dates`.
+pub fn merge_days(days: Vec<(String, Value)>, cut: bool, asked_to: &str) -> Value {
+    let price = |o: &Value| o.get("price").and_then(Value::as_f64);
+    let mut offers: Vec<Value> = Vec::new();
+    let mut by_date = Vec::new();
+    let mut base = Value::Null;
+    for (day, res) in days {
+        let list: Vec<Value> = arr(&res, "offers").to_vec();
+        let cheapest = list
+            .iter()
+            .filter_map(|o| price(o).map(|p| (p, o)))
+            .min_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+        by_date.push(match cheapest {
+            Some((p, o)) => json!({"date": day, "cheapest": p, "offer_id": o["offer_id"], "airlines": o["airlines"], "count": list.len()}),
+            None => json!({"date": day, "count": 0, "note": res.get("note").cloned().unwrap_or(Value::Null)}),
+        });
+        for mut o in list {
+            o["date"] = json!(day);
+            offers.push(o);
+        }
+        if base.is_null() {
+            base = res;
+        }
+    }
+    offers.sort_by(|x, y| {
+        price(x)
+            .unwrap_or(f64::MAX)
+            .partial_cmp(&price(y).unwrap_or(f64::MAX))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    offers.truncate(20);
+    for (i, o) in offers.iter_mut().enumerate() {
+        o["rank"] = json!(i + 1);
+    }
+    let first = by_date
+        .first()
+        .map(|d| get_str(d, "date"))
+        .unwrap_or_default();
+    let last = by_date
+        .last()
+        .map(|d| get_str(d, "date"))
+        .unwrap_or_default();
+    let mut out = base;
+    out["count"] = json!(offers.len());
+    out["offers"] = json!(offers);
+    out["by_date"] = json!(by_date);
+    // one day's price insight and Google link do not describe the whole range
+    if let Some(o) = out.as_object_mut() {
+        o.remove("price_insight");
+        o.remove("google_url");
+    }
+    out["searched"]["date"] = json!(first);
+    out["searched"]["dates"] = json!(format!(
+        "{first} to {last} ({} days{})",
+        by_date.len(),
+        if cut {
+            format!("; cut short of {asked_to}: search the rest in a second call")
+        } else {
+            String::new()
+        }
+    ));
+    out
 }
 
 /// The SerpApi client for one key.
@@ -652,6 +818,25 @@ impl SerpApi {
 
     /// `flights_search`: Google Flights for a route and date (a return date makes it a round trip).
     pub async fn flights(&self, a: &Value) -> Result<Value, SerpError> {
+        let (days, cut) = date_range(a, 7).map_err(SerpError)?;
+        if days.len() == 1 && !cut {
+            return self.flights_day(a).await;
+        }
+        let runs = days.iter().map(|(d, r)| {
+            let mut x = a.clone();
+            x["date"] = json!(d);
+            x["return_date"] = json!(r);
+            async move { (d.clone(), self.flights_day(&x).await) }
+        });
+        let mut out = Vec::new();
+        for (d, r) in futures_util::future::join_all(runs).await {
+            out.push((d, r.unwrap_or_else(|e| json!({"offers": [], "note": e.0}))));
+        }
+        Ok(merge_days(out, cut, &get_str(a, "date_to")))
+    }
+
+    /// One departure date (the range is handled by [`SerpApi::flights`]).
+    async fn flights_day(&self, a: &Value) -> Result<Value, SerpError> {
         let origin = get_str(a, "origin");
         let dest = get_str(a, "destination");
         let from = airport_codes(&origin)
@@ -712,8 +897,8 @@ impl SerpApi {
         if let Some(st) = stops_param(a) {
             params.push(("stops", st.to_string()));
         }
-        if let Some(m) = a.get("max_price").and_then(Value::as_f64) {
-            params.push(("max_price", format!("{}", m as i64)));
+        if let Some(m) = price_cap(a, "max_price") {
+            params.push(("max_price", m.to_string()));
         }
         // preferred airlines given as 2-letter codes or alliances narrow Google's search; names only flag the offers
         let airlines = pref_list(a, "airlines");
@@ -733,6 +918,7 @@ impl SerpApi {
         let data = self.get("search.json", &params).await?;
         let mut out = compact_flights(&data, &currency);
         let found = mark_preferred(&mut out["offers"], &airlines, "airlines");
+        tag_cabins(&mut out["offers"], a);
         out["searched"] = searched(a, &params[1].1, &params[2].1);
         if !airlines.is_empty() {
             out["searched"]["airlines"] = json!(airlines);
@@ -862,8 +1048,8 @@ impl SerpApi {
                 (s..=5).map(|x| x.to_string()).collect::<Vec<_>>().join(","),
             ));
         }
-        if let Some(m) = a.get("max_price_per_night").and_then(Value::as_f64) {
-            params.push(("max_price", format!("{}", m as i64)));
+        if let Some(m) = price_cap(a, "max_price_per_night") {
+            params.push(("max_price", m.to_string()));
         }
         if truthy(&a["free_cancellation"]) {
             params.push(("free_cancellation", "true".to_string()));
@@ -1060,7 +1246,94 @@ mod tests {
     }
 
     #[test]
+    fn mixed_cabin_itineraries_count_as_the_premium_cabin() {
+        let mut offers = json!([
+            {"legs": [{"flight_number": "NH 1", "from": "KIX", "to": "HND", "cabin": "Economy"}, {"flight_number": "NH 841", "from": "HND", "to": "SIN", "cabin": "Business"}]},
+            {"legs": [{"flight_number": "SQ 637", "from": "HND", "to": "SIN", "cabin": "Business"}]},
+            {"legs": [{"flight_number": "TR 801", "from": "NRT", "to": "SIN", "cabin": "Economy"}]}]);
+        tag_cabins(&mut offers, &json!({"cabin": "business"}));
+        assert_eq!(offers[0]["cabin"], "business");
+        assert_eq!(offers[0]["cabin_mix"], "business + economy");
+        assert_eq!(offers[0]["economy_legs"], json!(["NH 1 KIX-HND"]));
+        assert_eq!(offers[1]["cabin"], "business");
+        assert!(offers[1].get("cabin_mix").is_none());
+        assert_eq!(offers[2]["cabin"], "economy (not the cabin searched)");
+        // economy searches are not labelled
+        let mut e = json!([{"legs": [{"cabin": "Economy"}]}]);
+        tag_cabins(&mut e, &json!({"cabin": "economy"}));
+        assert!(e[0].get("cabin").is_none());
+        assert!(searched(&json!({"cabin": "business"}), "A", "B")["rule"]
+            .as_str()
+            .unwrap()
+            .contains("counts as a business itinerary"));
+        assert!(!searched(&json!({}), "A", "B")["rule"]
+            .as_str()
+            .unwrap()
+            .contains("counts as"));
+    }
+
+    #[test]
+    fn a_date_range_is_one_call_with_a_moving_return() {
+        let (d, cut) = date_range(&json!({"date": "2026-12-01"}), 7).unwrap();
+        assert_eq!(d, [("2026-12-01".to_string(), String::new())]);
+        assert!(!cut);
+        let (d, cut) = date_range(
+            &json!({"date": "2026-12-30", "date_to": "2027-01-02", "return_date": "2027-01-06"}),
+            7,
+        )
+        .unwrap();
+        assert_eq!(
+            d.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(),
+            ["2026-12-30", "2026-12-31", "2027-01-01", "2027-01-02"]
+        );
+        assert_eq!(d[3].1, "2027-01-09", "the stay keeps its length");
+        assert!(!cut);
+        let (d, cut) =
+            date_range(&json!({"date": "2026-12-01", "date_to": "2026-12-31"}), 7).unwrap();
+        assert!(d.len() == 7 && cut);
+        assert!(date_range(&json!({"date": "2026-12-05", "date_to": "2026-12-01"}), 7).is_err());
+        let m = merge_days(
+            vec![
+                (
+                    "2026-12-01".into(),
+                    json!({"offers": [{"offer_id": "a", "price": 500, "airlines": "X"}, {"offer_id": "b", "price": 300, "airlines": "Y"}], "searched": {"cabin": "business"}}),
+                ),
+                (
+                    "2026-12-02".into(),
+                    json!({"offers": [{"offer_id": "c", "price": 200, "airlines": "Z"}]}),
+                ),
+                (
+                    "2026-12-03".into(),
+                    json!({"offers": [], "note": "no flights"}),
+                ),
+            ],
+            false,
+            "2026-12-03",
+        );
+        assert_eq!(m["offers"][0]["offer_id"], "c");
+        assert_eq!(m["offers"][0]["date"], "2026-12-02");
+        assert_eq!(m["count"], 3);
+        assert_eq!(m["by_date"][0]["cheapest"], 300.0);
+        assert_eq!(m["by_date"][2]["count"], 0);
+        assert_eq!(m["searched"]["dates"], "2026-12-01 to 2026-12-03 (3 days)");
+        assert_eq!(m["searched"]["cabin"], "business");
+    }
+
+    #[test]
     fn stop_limit_and_the_searched_echo() {
+        // the schema's `stops`: "any" (a filled-in default) means no limit
+        assert_eq!(
+            max_stops(&json!({"stops": "any", "max_stops": 0, "nonstop_only": false})),
+            None
+        );
+        assert_eq!(max_stops(&json!({"stops": "nonstop"})), Some(0));
+        assert_eq!(max_stops(&json!({"stops": "one_stop_max"})), Some(1));
+        assert_eq!(max_stops(&json!({"stops": "two_stops_max"})), Some(2));
+        assert_eq!(price_cap(&json!({"max_price": 0}), "max_price"), None);
+        assert_eq!(
+            price_cap(&json!({"max_price": 900.5}), "max_price"),
+            Some(900)
+        );
         assert_eq!(stops_param(&json!({})), None);
         assert_eq!(stops_param(&json!({"nonstop_only": true})), Some(1));
         assert_eq!(stops_param(&json!({"max_stops": 0})), Some(1));
@@ -1079,6 +1352,10 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("business fare with nonstop only"));
+        assert!(s["rule"]
+            .as_str()
+            .unwrap()
+            .contains("name the cabin (business)"));
         let s = searched(&json!({"return_date": "2026-12-09"}), "SIN", "TYO");
         assert_eq!(s["cabin"], "economy");
         assert_eq!(s["stops"], "any number of stops");

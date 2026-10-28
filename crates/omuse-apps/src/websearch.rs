@@ -39,13 +39,21 @@ impl Provider {
         Provider::Exa,
         Provider::ExaMcp,
     ];
-    /// The order providers are tried in: the free Exa MCP first, then the keyed ones.
-    pub const ORDER: [Provider; 4] = [
-        Provider::ExaMcp,
-        Provider::Tavily,
-        Provider::Brave,
-        Provider::Exa,
-    ];
+    /// The order the search APIs are tried in by `web_search`, after the browser's own engines (free, and as fast in
+    /// the measurements of 2026-10-28): Brave, then Exa's free MCP, then an Exa key. Tavily is not in this chain: it
+    /// answers `news_search` (its news topic gives dated articles with snippets).
+    pub const ORDER: [Provider; 3] = [Provider::Brave, Provider::ExaMcp, Provider::Exa];
+    /// Every provider as listed (keys looked up, the Settings card): the web chain in order, then Tavily for news.
+    pub const LISTED: [Provider; 4] = [Provider::Brave, Provider::ExaMcp, Provider::Exa, Provider::Tavily];
+
+    /// What a provider answers: "news" (Tavily) or "web".
+    pub fn role(self) -> &'static str {
+        if self == Provider::Tavily {
+            "news"
+        } else {
+            "web"
+        }
+    }
 
     pub fn parse(s: &str) -> Option<Provider> {
         match s.trim().to_lowercase().as_str() {
@@ -179,7 +187,7 @@ fn mcp_payload(text: &str) -> Option<Value> {
 /// [`Provider::ORDER`] without it.
 pub fn order(last_ok: Option<Provider>, available: &[Provider]) -> Vec<Provider> {
     let mut out: Vec<Provider> = Vec::new();
-    if let Some(p) = last_ok.filter(|p| available.contains(p)) {
+    if let Some(p) = last_ok.filter(|p| available.contains(p) && Provider::ORDER.contains(p)) {
         out.push(p);
     }
     for p in Provider::ORDER {
@@ -370,6 +378,30 @@ impl WebSearch {
         }
     }
 
+    /// News: Tavily's `news` topic for the last `days` days (dated articles with snippets). Only Tavily does this.
+    pub async fn news(&self, query: &str, n: usize, days: u32) -> Result<Value, SearchError> {
+        if self.provider != Provider::Tavily {
+            return Err(SearchError("news search needs Tavily".into()));
+        }
+        let q = query.trim();
+        if q.is_empty() {
+            return Err(SearchError("empty query".into()));
+        }
+        let n = n.clamp(1, 20);
+        let r = self
+            .client
+            .post(format!("{}/search", self.base))
+            .bearer_auth(&self.key)
+            .json(&json!({"query": q, "max_results": n, "search_depth": "basic", "topic": "news", "days": days.clamp(1, 365)}))
+            .timeout(self.timeout)
+            .send()
+            .await
+            .map_err(|e| SearchError(format!("Tavily: {e}")))?;
+        let data = self.finish(r).await?;
+        let results = compact(Provider::Tavily, &data, n);
+        Ok(json!({"query": q, "engine": "tavily news", "days": days, "results": results}))
+    }
+
     /// Exa's MCP server: `initialize`, then `tools/call web_search_exa` (streamable HTTP, no session, no key).
     async fn search_exa_mcp(&self, q: &str, n: usize) -> Result<Value, SearchError> {
         let post = |body: Value| {
@@ -501,29 +533,24 @@ mod tests {
         assert_eq!(rows[0]["age"], "2026-10-01");
         assert_eq!(rows[1]["snippet"], "sum");
         assert_eq!(Provider::parse("Exa"), Some(Provider::Exa));
-        // the order: the free Exa MCP, then Tavily, Brave, Exa — the last one that worked comes first
+        // the API order after the browser: Brave, the free Exa MCP, Exa — the last one that worked comes first; Tavily is
+        // never in it (it answers news_search)
         let all = Provider::ALL;
         assert_eq!(
             order(None, &all),
-            vec![
-                Provider::ExaMcp,
-                Provider::Tavily,
-                Provider::Brave,
-                Provider::Exa
-            ]
+            vec![Provider::Brave, Provider::ExaMcp, Provider::Exa]
         );
         assert_eq!(
             order(Some(Provider::Exa), &all),
-            vec![
-                Provider::Exa,
-                Provider::ExaMcp,
-                Provider::Tavily,
-                Provider::Brave
-            ]
+            vec![Provider::Exa, Provider::Brave, Provider::ExaMcp]
+        );
+        assert_eq!(
+            order(Some(Provider::Tavily), &all),
+            vec![Provider::Brave, Provider::ExaMcp, Provider::Exa]
         );
         assert_eq!(
             order(Some(Provider::Exa), &[Provider::Brave, Provider::Tavily]),
-            vec![Provider::Tavily, Provider::Brave]
+            vec![Provider::Brave]
         );
         assert!(order(None, &[]).is_empty());
         let txt = "Title: Second State\nURL: https://github.com/second-state\nPublished: N/A\nAuthor: N/A\nHighlights:\n# Second State\n\nFast, safe, portable.\n\nTitle: Other\nURL: https://o.example/\nPublished: 2026-01-02\nHighlights:\nsome text\n";
