@@ -81,9 +81,10 @@ impl Runtime {
             .is_some_and(|t| t.get("plan").is_some_and(|p| !arr(p, "steps").is_empty()))
     }
 
-    /// The plan for a task that just loaded a skill, appended to the skill text: the planner gets the skill's own
-    /// steps and plans them for this request. "" when the task already has a plan, planning was cancelled, or the
-    /// planner saw nothing to plan.
+    /// The plan for a task that just loaded a skill with `plan: on` in its front matter, appended to the skill
+    /// text: the planner gets the skill's own steps and plans them for this request. "" when the task already has a
+    /// plan, planning was cancelled, or the planner saw nothing to plan. Most skills carry no flag: their sheet is
+    /// the procedure and the executor follows it without a planner call.
     async fn skill_plan(&self, task_id: &str, skill: &str, text: &str) -> String {
         if self.has_plan(task_id) {
             return String::new();
@@ -1179,9 +1180,13 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                             .into_owned();
                         // `browser: off` (the city guides): no browser for the rest of this task, sub-agents
                         // included; loading a skill without it lifts the policy again
-                        let off = crate::skills::front_matter(&text)
+                        let fm = crate::skills::front_matter(&text);
+                        let off = fm
                             .get("browser")
                             .is_some_and(|v| v.eq_ignore_ascii_case("off"));
+                        // `plan: on` (long, branching or parallel skills): the planner makes the plan from the
+                        // skill's own steps, once per task; every other skill is followed from its sheet
+                        let plan_on = fm.get("plan").is_some_and(|v| v.eq_ignore_ascii_case("on"));
                         {
                             let mut inner = self.inner.lock();
                             if off {
@@ -1190,8 +1195,11 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                                 inner.no_browser.remove(&tid);
                             }
                         }
-                        // a skill is a multi-step job: the planner makes the plan from the skill's own steps (once per task)
-                        let plan = self.skill_plan(&tid, &want, &text).await;
+                        let plan = if plan_on {
+                            self.skill_plan(&tid, &want, &text).await
+                        } else {
+                            String::new()
+                        };
                         if off {
                             return Ok(format!(
                                 "{text}\n\n(System) This skill answers without the browser: the browser tools and sub-agents (delegate) are off for the rest of this task. Use this sheet and data tools (market_data, connectors); a task that needs a website goes to a skill made for it.{plan}"

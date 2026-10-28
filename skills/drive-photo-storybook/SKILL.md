@@ -2,6 +2,8 @@
 name: drive-photo-storybook
 description: 用 Google Drive 里的旅行照片做故事书 / 相册 PDF：挑选和整理一次旅行或活动的照片，按需要修图（去背景、换风格、加字），为每页写几句故事或说明，排成 PDF，放回 Drive 并发到对话里 Turn the trip or event photos in Google Drive into a story book or album PDF — pick and order the photos, edit them where asked (restyle, remove things, add captions), write a short story or caption per page, lay it out as a PDF, show it in the chat and put it back in Drive.
 browser: off
+
+plan: on
 ---
 # Photo story book from Drive / 用 Drive 照片做故事书
 

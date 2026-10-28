@@ -57,6 +57,8 @@ names = K.names(t)
 K.check("the task completed and sends the user to the airline's site or an agency, with no Kiwi link", t["status"] == "COMPLETED" and "singaporeair.com" in (t.get("result") or "")
         and "kiwi.com/u" not in (t.get("result") or "").lower() and "information only" in (t.get("result") or ""), (t["status"], (t.get("result") or "")[:300]))
 K.check("skill, then flights_search and web_search in ONE turn, no browser", names == ["load_skill", "flights_search", "web_search"] and any(sorted(b) == ["flights_search", "web_search"] for b in K.batches(t)), (names, K.batches(t)))
+K.check("an ordinary skill is followed from its sheet: no plan, no planner call, never PLANNING", not any(e["type"] == "plan" for e in t["events"])
+        and not (t.get("plan") or {}).get("steps") and "PLANNING" not in t["_seen"], ([e["type"] for e in t["events"]], t["_seen"]))
 sysp = [x["system"] for x in c.get(LLM + "/calls_for", params={"marker": "KIWIFLIGHTS"}).json()]
 K.check("the agent's instructions carry the rule: Kiwi.com data for information only, book on the airline's site or an agency, together with web_search",
         sysp and "Kiwi.com data" in sysp[0] and "INFORMATION ONLY" in sysp[0] and "never book through Kiwi" in sysp[0] and "together with web_search" in sysp[0], sysp[0][:200] if sysp else None)

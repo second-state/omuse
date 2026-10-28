@@ -36,6 +36,9 @@ names = K.names(t)
 K.check("the task fills the portal form and hands the browser over for the sign-in and the Submit (takeover card)", t["status"] == "WAITING_EXTERNAL"
         and "Submit" in str((t.get("waiting") or {}).get("reason")), (t["status"], t.get("waiting"), t.get("error")))
 K.check("the csr-trip-claim skill was loaded", K.loaded(t, "csr-trip-claim"), names)
+# (PLANNING itself is too brief to catch with the fake planner: the plan event and the stored plan are the evidence)
+K.check("a long skill (plan: on) brings a plan with its sheet: the planner ran once after load_skill", (t.get("plan") or {}).get("steps")
+        and sum(e["type"] == "plan" for e in t["events"]) >= 1, (t.get("plan"), [e["type"] for e in t["events"]]))
 K.check("booking, charge and refund were searched in mail in one turn, with the profile", any(b.count("gmail_search") == 3 for b in K.batches(t))
         and "profile_get" in names, (K.batches(t), names))
 K.check("the claimable amount was computed with calculate (paid minus refunded)", "calculate" in names

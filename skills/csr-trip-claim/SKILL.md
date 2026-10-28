@@ -1,6 +1,8 @@
 ---
 name: csr-trip-claim
 description: 用 Chase Sapphire Reserve（或 Preferred）刷的机票/酒店/行程，因生病、受伤等原因没去成或中途中断：判断该报行程取消还是行程中断、20 天/90 天时限、先向航空公司要退款和书面说明、医生证明、在 chasecardbenefits.com 立案（登录和最终提交交给用户）、整理理赔材料包 PDF、设提醒 Trip cancellation / interruption claim on the Chase Sapphire Reserve (or Preferred) card — you fell sick or were hurt and missed a flight, hotel or tour paid with the card: which benefit applies, the 20-day and 90-day clocks, the airline refund and letter first, the physician statement, the claim started at chasecardbenefits.com (login and final submit are the user's), a claim packet PDF, and reminders until it is paid.
+
+plan: on
 ---
 # Chase Sapphire trip cancellation / interruption claim / Sapphire 卡行程保险理赔
 

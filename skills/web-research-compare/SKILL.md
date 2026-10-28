@@ -1,6 +1,8 @@
 ---
 name: web-research-compare
 description: 网页调研并做对比（如酒店、产品）Research several options on the web and produce a comparison table.
+
+plan: on
 ---
 # Web research & comparison / 调研对比
 
