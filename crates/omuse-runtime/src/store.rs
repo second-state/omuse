@@ -226,8 +226,10 @@ pub fn redacted(s: &Value) -> Value {
 
 /// `PROFILE_FIELDS`: key, 中文, English.
 pub const PROFILE_FIELDS: [(&str, &str, &str); 14] = [
-    ("name_zh", "中文姓名", "Chinese name"),
     ("name_en", "英文姓名（证件拼写）", "Name as on passport"),
+    // the key stays `name_zh` (profiles saved before keep their value); it holds any other name: Chinese, Japanese, a
+    // married or former name
+    ("name_zh", "其他姓名", "Other name"),
     ("preferred_name", "称呼", "Preferred name"),
     ("phone", "手机", "Mobile phone"),
     ("email_personal", "私人邮箱", "Personal email"),

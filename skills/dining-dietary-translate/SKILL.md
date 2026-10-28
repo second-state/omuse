@@ -36,8 +36,8 @@ most restaurants add service and tax. Useful phrases in the local script + roman
 no ice, less sugar, allergy sentence).
 
 ## 4. Finding and booking a place
-- `places_search` (Google Maps data: query such as "vegan ramen", city, area, min_rating, open_now) and `web_search`
-  in one turn when the key is set; else `web_search`. Book on the restaurant's own site or the platform the user names.
+- `places_search` only (Google Maps data: query such as "vegan ramen", city, area, min_rating, open_now; without the
+  key it falls back to web search by itself) — no `web_search` beside it. Book on the restaurant's own site or the platform the user names.
 The `restaurant-booking` skill (Google Maps / Chope / TableCheck / official sites) or `michelin-dining` (starred and
 Bib Gourmand via the travel data connector) — filter by the dietary need and say which places state it on their page;
 never promise a kitchen is allergen-free.

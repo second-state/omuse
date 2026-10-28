@@ -288,6 +288,80 @@ pub const HOTEL_GROUPS: &[(&str, &[&str])] = &[
     ("Dusit", &["Dusit Thani", "dusitD2", "Dusit Princess"]),
 ];
 
+/// IATA airline code → the airline's own website, where a flight from Kiwi.com data is booked (Kiwi gives no link).
+pub const AIRLINE_SITES: &[(&str, &str)] = &[
+    ("SQ", "singaporeair.com"),
+    ("TR", "flyscoot.com"),
+    ("CX", "cathaypacific.com"),
+    ("UO", "hkexpress.com"),
+    ("HX", "hongkongairlines.com"),
+    ("NH", "ana.co.jp"),
+    ("JL", "jal.co.jp"),
+    ("MM", "flypeach.com"),
+    ("GK", "jetstar.com"),
+    ("JQ", "jetstar.com"),
+    ("3K", "jetstar.com"),
+    ("KE", "koreanair.com"),
+    ("OZ", "flyasiana.com"),
+    ("7C", "jejuair.net"),
+    ("TW", "twayair.com"),
+    ("LJ", "jinair.com"),
+    ("CI", "china-airlines.com"),
+    ("BR", "evaair.com"),
+    ("JX", "starlux-airlines.com"),
+    ("IT", "tigerairtw.com"),
+    ("TG", "thaiairways.com"),
+    ("AK", "airasia.com"),
+    ("FD", "airasia.com"),
+    ("D7", "airasia.com"),
+    ("MH", "malaysiaairlines.com"),
+    ("GA", "garuda-indonesia.com"),
+    ("VN", "vietnamairlines.com"),
+    ("VJ", "vietjetair.com"),
+    ("PR", "philippineairlines.com"),
+    ("5J", "cebupacificair.com"),
+    ("CA", "airchina.com.cn"),
+    ("MU", "ceair.com"),
+    ("CZ", "csair.com"),
+    ("HU", "hainanairlines.com"),
+    ("QF", "qantas.com"),
+    ("NZ", "airnewzealand.com"),
+    ("EK", "emirates.com"),
+    ("QR", "qatarairways.com"),
+    ("EY", "etihad.com"),
+    ("TK", "turkishairlines.com"),
+    ("LH", "lufthansa.com"),
+    ("LX", "swiss.com"),
+    ("OS", "austrian.com"),
+    ("KL", "klm.com"),
+    ("AF", "airfrance.com"),
+    ("BA", "britishairways.com"),
+    ("VS", "virginatlantic.com"),
+    ("IB", "iberia.com"),
+    ("AY", "finnair.com"),
+    ("SK", "flysas.com"),
+    ("UA", "united.com"),
+    ("DL", "delta.com"),
+    ("AA", "aa.com"),
+    ("AC", "aircanada.com"),
+    ("AS", "alaskaair.com"),
+    ("B6", "jetblue.com"),
+    ("WN", "southwest.com"),
+    ("AI", "airindia.com"),
+    ("6E", "goindigo.in"),
+    ("UL", "srilankan.com"),
+];
+
+/// The airline's own website for a flight number ("SQ638", "SQ 638") or an airline code; `None` when unknown.
+pub fn airline_site(flight_or_code: &str) -> Option<&'static str> {
+    let s = flight_or_code.trim().to_ascii_uppercase();
+    let code: String = s.chars().take(2).collect();
+    AIRLINE_SITES
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map(|(_, d)| *d)
+}
+
 fn same(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
 }
@@ -356,6 +430,15 @@ pub fn expand(prefs: &[String], kind: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn airline_sites_from_flight_numbers() {
+        assert_eq!(airline_site("SQ638"), Some("singaporeair.com"));
+        assert_eq!(airline_site("cx 710"), Some("cathaypacific.com"));
+        assert_eq!(airline_site("3K 521"), Some("jetstar.com"));
+        assert_eq!(airline_site("ZZ1"), None);
+        assert_eq!(airline_site(""), None);
+    }
 
     #[test]
     fn alliances_and_groups_expand_to_their_members() {

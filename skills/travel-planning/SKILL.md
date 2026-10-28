@@ -7,15 +7,15 @@ plan: on
 ---
 # Travel planning / 旅行规划
 
-Flights, hotels and cars: `flights_search` (always there: Kiwi.com data, then Google Flights with the Flights & hotels key, then the web search chain —
-Kiwi.com data for information only — never book through Kiwi or give a Kiwi link; the booking is on the airline's site
-or with an agency the user chooses) together with `web_search` in the same turn come first; `hotels_search` /
-`hotel_rooms` need the key. Without them, when the Web search connection is on (Brave / Tavily / Google — your instructions' Connections
-section says so), `web_search` answers from the API (so does `web_search`): use focused queries (route and dates, the area and dates, the
-car class and pick-up place) and compile options, prices and links from the snippets — do NOT open Google Flights,
-Kayak, Skyscanner, Booking, Agoda, Rentalcars or the companies' search pages in the browser; the browser is for the final
-booking page only. With none of these, say so in one line (the connection takes a minute) and then use the browser
-as below.
+Flights, hotels and cars — one data tool each, and nothing beside it:
+- **Flights:** `flights_search` only (Kiwi.com data, then Google Flights with the Flights & hotels key, then web search,
+  all by itself). Kiwi.com data is information only: never book through Kiwi or give a Kiwi link; each offer's
+  `book_at` is the airline's own website, where the booking happens (or with an agency the user chooses).
+- **Hotels:** `hotels_search` only (Google Hotels with the key, else web search by itself); `hotel_rooms` needs the key.
+- **Cars:** no data tool exists — `web_search` with a focused query (pick-up place, dates, car class), compiling
+  companies, prices and links from the snippets.
+Never open Google Flights, Kayak, Skyscanner, Booking, Agoda, Rentalcars or the companies' search pages in the browser
+to search; the browser is for the final booking page only.
 
 ## 0. Ground rules
 - Research only: never book, pay or hold anything. Stop at the page that asks for passenger or card details and say so.
@@ -125,7 +125,7 @@ as below.
   only in peak periods — check JR Central's notice for the dates in question).
 
 ## 7. Car rental
-- Any destination: with the Web search connection on, `web_search` the pick-up city or airport, dates, car class
+- Any destination: `web_search` the pick-up city or airport, dates, car class
   and "rental" (plus `site:rentalcars.com` / `site:kayak.com/cars` / the local brands) and compile companies, classes,
   prices and links from the snippets; otherwise the browser, reading result pages only. Book on the company's own site
   at the end, after the user picks.
