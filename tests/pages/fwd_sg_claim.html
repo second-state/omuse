@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Claim online — Travel — FWD Singapore (test)</title></head>
+<body>
+<h1>Travel claim</h1>
+<p class="note">Test stand-in for FWD Singapore's travel claim form. Nothing is sent anywhere.</p>
+<form id="claim" action="/fwd_sg_claim_done.html" method="get">
+  <label>Policy number <input name="policy" id="policy"></label><br>
+  <label>Full name <input name="name" id="name"></label><br>
+  <label>Email <input name="email" id="email"></label><br>
+  <label>Mobile number <input name="mobile" id="mobile"></label><br>
+  <label>NRIC or passport number <input name="idno" id="idno"></label><br>
+  <label>Type of claim <select name="type" id="type"><option>Travel delay</option><option>Trip cancellation</option><option>Baggage</option><option>Medical expenses</option></select></label><br>
+  <label>Date of incident <input name="date" id="date" placeholder="YYYY-MM-DD"></label><br>
+  <label>What happened <textarea name="what" id="what"></textarea></label><br>
+  <label>Amount claimed (SGD) <input name="amount" id="amount"></label><br>
+  <label>Supporting documents <input type="file" name="docs" id="docs"></label><br>
+  <button type="submit" id="submit">Submit claim</button>
+</form>
+</body></html>

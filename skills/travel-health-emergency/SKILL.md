@@ -18,6 +18,8 @@ hotel front desk can call too.
 - Find the user's insurance first: gmail_search `insurance (policy OR certificate OR assistance OR travel)` — the
   **24-hour assistance line** on the policy arranges hospitals, direct billing and evacuation; call it before paying
   large bills (phone_call if configured, approved by the user). Credit-card travel cover: check the card's benefits mail.
+- An FWD policy (Singapore, or a Hong Kong plan underwritten by bolttech) → load_skill("fwd-travel-insurance") for the
+  claim itself: it knows FWD's claim form and bolttech's claims mailbox.
 - Where to go: the embassy's list of English-speaking hospitals / clinics (browser_read the embassy page for the
   city), international clinics in big cities, hotel doctors; pharmacies: Japan (drugstores, pharmacist for some
   medicines), Korea (약국), Thailand (pharmacies sell many medicines over the counter), Singapore (Guardian, Watsons,

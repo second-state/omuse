@@ -103,7 +103,8 @@ r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-brand", "call_i
 q = [x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_hotels" and not x.get("property_token")][-1]
 ho = ((r.get("result") or {}).get("content") or {})
 K.check("a preferred hotel brand goes into the Google Hotels query; the result says the brand was searched and how many matched", q["q"] == "Hilton hotels near Ginza Tokyo"
-        and ho.get("searched", {}).get("brands") == ["Hilton"] and ho["searched"]["preferred_found"] == 0 and "preferred brands" in ho["searched"]["rule"], (q.get("q"), ho.get("searched")))
+        and ho.get("searched", {}).get("brands") == ["Hilton"] and ho["searched"]["preferred_found"] == 0 and "preferred brands" in ho["searched"]["rule"]
+        and "do not search again without them" in ho["searched"]["rule"] and "ask whether to search all hotels" in ho["searched"]["rule"], (q.get("q"), ho.get("searched")))
 r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-alli", "call_id": "c-alli", "tool": "flights_search",
                                                    "args": {"origin": "SIN", "destination": "NRT", "date": DATE, "airlines": ["Star Alliance"], "currency": "SGD"}}).json()
 q = [x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_flights" and not x.get("booking_token")][-1]

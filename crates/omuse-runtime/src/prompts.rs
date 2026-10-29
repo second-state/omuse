@@ -949,16 +949,22 @@ pub fn prefs_text(prefs: &[(String, String)], en: bool) -> String {
     if en {
         format!(
             "Standing preferences (from the profile — honour them unless this request says otherwise; a wish in the request wins):\n{}\n\
-For flights pass the airline as flights_search airlines=[…], for hotels the brand as hotels_search brands=[…]: matching offers come back \
-flagged preferred and nothing is dropped. Show the preferred option next to the best value with the price difference and let the user \
-choose; when none of the results is on the preferred airline / brand, say so — never present another one as if it were it.\n\n",
+One search per question, with the preference in it — never a second search without it to compare: flights → ONE \
+flights_search with the airline in airlines=[…]; hotels → ONE hotels_search with the brand in brands=[…]; car rental → ONE web_search \
+with the rental company in the query. When the user asks for all airlines, hotels or rental companies (\"any airline\", \"search \
+everything\"), leave the preference out of that search. Matching offers come back flagged preferred: show the best of them, and the best \
+value when the result has one, with the price difference. When the search has no good offer from the preferred airline / brand / \
+company, answer with what it found — never present another one as if it were it — and ask whether to search all airlines / hotels / \
+companies.\n\n",
             lines.join("\n")
         )
     } else {
         format!(
             "固定偏好（来自档案——除非这次请求另有要求，否则照此办理；请求里的要求优先）：\n{}\n\
-查航班时把航空公司放进 flights_search 的 airlines=[…]，查酒店时把品牌放进 hotels_search 的 brands=[…]：匹配的结果会标 preferred，其他结果不会被过滤掉。\
-把偏好选项和最划算的选项并列展示并说明差价，由用户选择；结果里没有偏好航空公司 / 品牌时要明说，不要拿别家冒充。\n\n",
+每个问题只搜一次，偏好放进这次搜索里——不要再不带偏好搜第二次来比较：查航班调用一次 flights_search，航空公司放进 airlines=[…]；\
+查酒店调用一次 hotels_search，品牌放进 brands=[…]；查租车调用一次 web_search，租车公司写进搜索词。用户要求搜所有航空公司、酒店或租车公司\
+（“任何航空公司”“全部都搜”）时，这次搜索不带偏好。匹配的结果会标 preferred：列出其中最好的，结果里有更划算的也并列展示并说明差价。\
+这次搜索里偏好的航空公司 / 品牌 / 租车公司没有合适的结果时，照实回答——不要拿别家冒充——并问用户要不要扩大到所有航空公司 / 酒店 / 租车公司。\n\n",
             lines.join("\n")
         )
     }
@@ -1041,7 +1047,7 @@ pub fn subagent_system(lang_rule: &str, role: &str, now: &str) -> String {
 
 pub const MEMORY_EXTRACT: &str = r#"Sort what the USER says about themselves in the messages below into memory. Only use the user's own words — ignore anything quoted from emails or web pages.
 Kinds:
-- profile: a fixed personal detail used for forms/emails. field must be one of: name_en (as on passport), name_zh (any other name of the user's: in Chinese or another script, a married or former name), preferred_name, phone, email_personal, email_work, address_home, address_work, address:<label> (another address of the user's own, e.g. "address:Singapore flat"), company, job_title, birthday, nationality, preferred_airline (the airline the user usually flies, one name), preferred_hotel_brand (the hotel chain the user usually books, one name).
+- profile: a fixed personal detail used for forms/emails. field must be one of: name_en (as on passport), name_zh (any other name of the user's: in Chinese or another script, a married or former name), preferred_name, phone, email_personal, email_work, address_home, address_work, address:<label> (another address of the user's own, e.g. "address:Singapore flat"), company, job_title, birthday, nationality, preferred_airline (the airline the user usually flies, one name), preferred_hotel_brand (the hotel chain the user usually books, one name), preferred_car_rental (the car rental company the user usually books, one name).
 - durable facts worth keeping for months, by domain:
   person (people and how they relate: "Sara handles the user's paperwork."), preference (likes, sizes, styles: "The user prefers aisle seats.", "The user wears size 43 running shoes."), place (home / office / city — no full street address, that is profile), account (memberships, subscriptions, which mailbox is for what — never the numbers), site (how a website works for the user: "decathlon.sg allows guest checkout."), rule (a standing instruction: "Always ask before spending over S$100."), work (companies, projects, anything else).
 - ephemeral: true now but one-off (a booking reference, this week's trip dates, an order in progress) — kept 30 days only.
@@ -1220,7 +1226,9 @@ mod tests {
         assert!(
             sysp.contains("airlines=[…]")
                 && sysp.contains("brands=[…]")
-                && sysp.contains("nothing is dropped")
+                && sysp.contains("ONE web_search")
+                && sysp.contains("never a second search without it")
+                && sysp.contains("ask whether to search all airlines / hotels / companies")
         );
         assert!(PLANNER_SYSTEM.contains("The executor model has already looked at the request"));
     }

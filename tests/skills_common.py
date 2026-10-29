@@ -5,6 +5,7 @@ under tests/pages (http://shop.test:8099/…), uploads through /api/upload. Each
 the agent use and the rules it must keep (no browser where a data source exists, secrets only through the vault, …)."""
 from __future__ import annotations
 
+import base64
 import email.utils
 import imaplib
 import json
@@ -36,8 +37,9 @@ def finish():
 
 
 # ------------------------------------------------------------------ the world
-def seed_mail(messages: list[tuple[str, str, str, float | None]]) -> None:
-    """(from, subject, body, age_days) → INBOX, replacing whatever an earlier suite left there."""
+def seed_mail(messages: list[tuple]) -> None:
+    """(from, subject, body, age_days[, [(filename, bytes), …]]) → INBOX, replacing whatever an earlier suite left
+    there; the optional fifth item attaches files (PDFs)."""
     m = imaplib.IMAP4("127.0.0.1", 1143)
     m.login(USER, PW)
     m.select("INBOX")
@@ -46,12 +48,23 @@ def seed_mail(messages: list[tuple[str, str, str, float | None]]) -> None:
         m.expunge()
     except Exception:
         pass
-    for i, (frm, subject, body, age) in enumerate(messages):
+    for i, (frm, subject, body, age, *rest) in enumerate(messages):
         when = time.time() - (age or 0) * 86400
-        raw = (f"From: {frm}\r\nTo: {USER}\r\nSubject: {subject}\r\nDate: {email.utils.formatdate(when, localtime=True)}\r\n"
-               f"Message-ID: <skill{i}{int(when)}@example.com>\r\nContent-Type: text/plain; charset=utf-8\r\n"
-               f"Content-Transfer-Encoding: 8bit\r\n\r\n{body}\r\n")
-        m.append("INBOX", None, imaplib.Time2Internaldate(when), raw.encode("utf-8"))
+        head = (f"From: {frm}\r\nTo: {USER}\r\nSubject: {subject}\r\nDate: {email.utils.formatdate(when, localtime=True)}\r\n"
+                f"Message-ID: <skill{i}{int(when)}@example.com>\r\nMIME-Version: 1.0\r\n")
+        files = rest[0] if rest else []
+        if not files:
+            raw = (head + "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+                   + f"{body}\r\n").encode("utf-8")
+        else:
+            b = f"=_skill{i}"
+            parts = [f"--{b}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n{body}\r\n"]
+            for name, data in files:
+                b64 = base64.encodebytes(data).decode().replace("\n", "\r\n")
+                parts.append(f"--{b}\r\nContent-Type: application/pdf; name=\"{name}\"\r\nContent-Transfer-Encoding: base64\r\n"
+                             f"Content-Disposition: attachment; filename=\"{name}\"\r\n\r\n{b64}")
+            raw = (head + f"Content-Type: multipart/mixed; boundary=\"{b}\"\r\n\r\n" + "".join(parts) + f"--{b}--\r\n").encode("utf-8")
+        m.append("INBOX", None, imaplib.Time2Internaldate(when), raw)
     m.logout()
 
 

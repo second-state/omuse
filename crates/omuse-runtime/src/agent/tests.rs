@@ -1032,7 +1032,7 @@ async fn an_ordinary_skill_is_followed_from_its_sheet_without_a_planner_call() {
 }
 
 #[test]
-fn standing_preferences_come_from_the_two_fixed_fields_and_matching_custom_ones_only() {
+fn standing_preferences_come_from_the_fixed_fields_and_matching_custom_ones_only() {
     let (rt, _d) = rt();
     assert!(rt.standing_prefs().is_empty());
     rt.store
@@ -1040,6 +1040,9 @@ fn standing_preferences_come_from_the_two_fixed_fields_and_matching_custom_ones_
         .unwrap();
     rt.store
         .set_profile("preferred_hotel_brand", " IHG One Rewards ", "test")
+        .unwrap();
+    rt.store
+        .set_profile("preferred_car_rental", "Hertz", "test")
         .unwrap();
     rt.store
         .set_profile("custom:Other airlines", "Singapore Airlines, JAL", "test")
@@ -1067,6 +1070,10 @@ fn standing_preferences_come_from_the_two_fixed_fields_and_matching_custom_ones_
             "Preferred hotel brand".to_string(),
             "IHG One Rewards".to_string()
         )
+    );
+    assert_eq!(
+        prefs[2],
+        ("Preferred car rental".to_string(), "Hertz".to_string())
     );
     let labels: Vec<&str> = prefs.iter().map(|(k, _)| k.as_str()).collect();
     assert!(labels.contains(&"Other airlines") && labels.contains(&"Hilton Honors status"));

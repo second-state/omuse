@@ -1254,7 +1254,7 @@ work around it; write the final answer saying what you would do and how far you 
     /// Long-term facts for this task (personal context v1): the ones that matter for what is asked, grouped by
     /// domain. A golden A/B run can ask for the old selection with `ctx_mode[task_id] = "legacy"`.
     /// The profile's standing preferences for the executor prompt, as (label, value): the fixed
-    /// `preferred_airline` / `preferred_hotel_brand` fields, then any custom field whose label carries one of
+    /// `preferred_airline` / `preferred_hotel_brand` / `preferred_car_rental` fields, then any custom field whose label carries one of
     /// `store::PREFERENCE_WORDS` (a second airline, a loyalty programme, a seat wish…). Empty values are skipped;
     /// nothing else of the profile is ever put in the prompt.
     pub fn standing_prefs(&self) -> Vec<(String, String)> {

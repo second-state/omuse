@@ -20,6 +20,8 @@ use crate::pages::{err_text, Clip, TaskPage};
 use crate::textfmt::{cut, BLOCKED_EXT, MAX_DOWNLOAD};
 
 const MEDIA_MAX: usize = 50 * 1024 * 1024;
+/// Characters not kept in the stem of a saved file's name.
+static STEM_BAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\w\-() 一-鿿]+").unwrap());
 const MEDIA_TYPES: &[(&str, &str)] = &[
     ("image/jpeg", ".jpg"),
     ("image/png", ".png"),
@@ -156,6 +158,129 @@ impl Broker {
         json!({"downloads": st.downloads[n.saturating_sub(30)..].to_vec()})
     }
 
+    /// GET `url` with the browser's cookies for it (Playwright's `context.request` shared them) and the page as
+    /// referer: `(mime, body)` of a successful response, `None` when the request failed or was not 2xx.
+    async fn fetch_with_cookies(
+        &self,
+        page: &TaskPage,
+        url: &str,
+        accept: &str,
+        max: usize,
+    ) -> Result<Option<(String, Vec<u8>)>, ApiError> {
+        let cookie = match page
+            .page
+            .execute(GetCookiesParams {
+                urls: Some(vec![url.to_string()]),
+            })
+            .await
+        {
+            Ok(r) => r
+                .result
+                .cookies
+                .iter()
+                .map(|c| format!("{}={}", c.name, c.value))
+                .collect::<Vec<_>>()
+                .join("; "),
+            Err(_) => String::new(),
+        };
+        let mut req = self
+            .http
+            .get(url)
+            .timeout(Duration::from_secs(45))
+            .header("Referer", page.url())
+            .header("Accept", accept);
+        if !cookie.is_empty() {
+            req = req.header("Cookie", cookie);
+        }
+        let Ok(resp) = req.send().await else {
+            return Ok(None);
+        };
+        let mime = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
+        let clen: usize = resp
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if clen > max {
+            return Err(ApiError::new(
+                413,
+                format!("文件超过 {} MB (file over {} MB)", max >> 20, max >> 20),
+            ));
+        }
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        Ok(resp.bytes().await.ok().map(|b| (mime, b.to_vec())))
+    }
+
+    /// A PDF the page navigated to (Chromium shows it in its viewer and saves nothing): fetched again with the
+    /// page's cookies and written to `downloads/<name>.pdf`, listed with the browser's downloads.
+    pub async fn save_pdf(&self, page: &TaskPage, url: &str) -> Result<Value, ApiError> {
+        let (ok, why) = check_url(url);
+        if !ok {
+            return Err(ApiError::new(403, why));
+        }
+        let max = MAX_DOWNLOAD as usize;
+        let data = match self
+            .fetch_with_cookies(page, url, "application/pdf,*/*;q=0.5", max)
+            .await?
+        {
+            Some((_, d)) if d.starts_with(b"%PDF-") && d.len() <= max => d,
+            _ => {
+                return Err(ApiError::new(
+                    422,
+                    "无法保存这个 PDF (could not save this PDF)",
+                ))
+            }
+        };
+        let path = url::Url::parse(url)
+            .map(|u| u.path().to_string())
+            .unwrap_or_default();
+        let fname = path.rsplit('/').next().unwrap_or("").to_string();
+        let fname = percent_encoding::percent_decode_str(&fname)
+            .decode_utf8_lossy()
+            .to_string();
+        let (stem, _) = split_ext(&fname);
+        let stem = STEM_BAD.replace_all(&stem, "_").to_string();
+        let stem = take_chars(stem.trim_matches(|c| c == '_' || c == ' '), 80).to_string();
+        let stem = if stem.is_empty() {
+            "document".to_string()
+        } else {
+            stem
+        };
+        let folder = self.workspace.join("downloads");
+        std::fs::create_dir_all(&folder)
+            .map_err(|e| crate::broker::browser_error(&e.to_string()))?;
+        let mut dest = folder.join(format!("{}.pdf", stem));
+        let mut n = 1;
+        while dest.exists() {
+            n += 1;
+            dest = folder.join(format!("{}_{}.pdf", stem, n));
+        }
+        std::fs::write(&dest, &data).map_err(|e| crate::broker::browser_error(&e.to_string()))?;
+        let rel = rel_ws(&dest, &self.workspace);
+        let name = dest
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.st.lock().downloads.push(
+            json!({"name": name, "url": take_chars(url, 300), "ts": now_ts(),
+            "status": "ok", "size": data.len(), "path": rel}),
+        );
+        Ok(json!({"path": rel, "size": data.len(),
+            "note": "PDF 已保存 saved: read it with files_read, or pdf_form_fields / pdf_form_fill when it is a form"}))
+    }
+
     /// Save an image / video / audio from the page into workspace/media/<YYYY-MM>/ (`save_media`).
     pub async fn save_media(
         &self,
@@ -167,8 +292,6 @@ impl Broker {
     ) -> Result<Value, ApiError> {
         static DATA_RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"(?s)^data:([\w/+.-]+)(;base64)?,(.*)").unwrap());
-        static STEM_BAD: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"[^\w\-() 一-鿿]+").unwrap());
         let mut url = url.to_string();
         let mut name = name.to_string();
         let mut loc: Option<ElementRef> = None;
@@ -209,58 +332,11 @@ impl Broker {
             if !ok {
                 return Err(ApiError::new(403, why));
             }
-            // the browser's cookies for that URL go along (Playwright's context.request shared them)
-            let cookie = match page
-                .page
-                .execute(GetCookiesParams {
-                    urls: Some(vec![url.clone()]),
-                })
-                .await
+            if let Some((m, d)) = self
+                .fetch_with_cookies(page, &url, "image/*,video/*,audio/*,*/*;q=0.5", MEDIA_MAX)
+                .await?
             {
-                Ok(r) => r
-                    .result
-                    .cookies
-                    .iter()
-                    .map(|c| format!("{}={}", c.name, c.value))
-                    .collect::<Vec<_>>()
-                    .join("; "),
-                Err(_) => String::new(),
-            };
-            let mut req = self
-                .http
-                .get(&url)
-                .timeout(Duration::from_secs(45))
-                .header("Referer", page.url())
-                .header("Accept", "image/*,video/*,audio/*,*/*;q=0.5");
-            if !cookie.is_empty() {
-                req = req.header("Cookie", cookie);
-            }
-            match req.send().await {
-                Ok(resp) => {
-                    mime = resp
-                        .headers()
-                        .get("content-type")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("")
-                        .split(';')
-                        .next()
-                        .unwrap_or("")
-                        .trim()
-                        .to_lowercase();
-                    let clen: usize = resp
-                        .headers()
-                        .get("content-length")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(0);
-                    if clen > MEDIA_MAX {
-                        return Err(ApiError::new(413, "文件超过 50 MB (file over 50 MB)"));
-                    }
-                    if resp.status().is_success() {
-                        data = resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
-                    }
-                }
-                Err(_) => data.clear(),
+                (mime, data) = (m, d);
             }
         }
         if !data.is_empty() && media_ext(&mime).is_none() {

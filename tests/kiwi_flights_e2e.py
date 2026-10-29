@@ -77,6 +77,8 @@ res3 = ((r3.get("result") or {}).get("content") or {})
 K.check("preferred airlines flag the matching offers and drop nothing: SQ preferred, the CX pair kept", res3.get("count") == 2 and res3["offers"][0].get("preferred") is True
         and "preferred" not in res3["offers"][1] and res3["searched"]["airlines"] == ["Singapore Airlines", "NH"] and res3["searched"]["preferred_found"] == 1
         and "preferred airlines" in res3["searched"]["rule"], (res3.get("searched"), [o.get("preferred") for o in res3.get("offers", [])]))
+K.check("the result's rule makes the preferred search the only one and says to ask before searching all airlines",
+        "do not search again without them" in res3["searched"]["rule"] and "ask whether to search all airlines" in res3["searched"]["rule"], res3["searched"]["rule"])
 c.post(FAKE + "/kiwi-mcp/_down", json={"on": True})
 rw = act("flights_search", {"origin": "SIN", "destination": "TYO", "date": DATE, "cabin": "business", "stops": "nonstop", "currency": "SGD"})
 c.post(FAKE + "/kiwi-mcp/_down", json={"on": False})
@@ -134,7 +136,22 @@ K.check("the preferred alliance was passed to the search; SQ (a Star Alliance me
 sysp = [x["system"] for x in c.get(LLM + "/calls_for", params={"marker": "BIZFLIGHTS"}).json()]
 K.check("the executor's instructions carry the standing preferences (the alliance, the loyalty custom field) and nothing else from the profile",
         sysp and "Standing preferences" in sysp[0] and "- Preferred airline: Star Alliance" in sysp[0] and "- Star Alliance status: Gold" in sysp[0]
-        and "Shoe size" not in sysp[0] and "nothing is dropped" in sysp[0], (sysp[0][sysp[0].find("Standing"):][:300] if sysp else None))
+        and "Shoe size" not in sysp[0], (sysp[0][sysp[0].find("Standing"):][:300] if sysp else None))
+K.check("the standing preferences say: ONE search with the preference (flights, hotels, car rental), none without it, all only when asked or after asking",
+        sysp and "never a second search without it to compare" in sysp[0] and "ONE flights_search with the airline in airlines=[…]" in sysp[0]
+        and "ONE hotels_search with the brand" in sysp[0] and "ONE web_search with the rental company" in sysp[0]
+        and "When the user asks for all airlines, hotels or rental companies" in sysp[0] and "ask whether to search all airlines / hotels / companies" in sysp[0], (sysp[0][sysp[0].find("Standing"):][:700] if sysp else None))
+
+# the preferred airline has nothing on the route: still ONE search (with the preference), and the answer asks before broadening
+K.set_profile(preferred_airline="Emirates")
+tp = K.run(f"PREFNONE cheapest flight Singapore to Tokyo on {DATE} DATE={DATE}")
+np_ = K.names(tp)
+fsp = [x["args"] for x in K.calls(tp) if x.get("name") == "flights_search"]
+K.check("a preferred airline with no offer: ONE flights_search carrying the preference, no second search without it",
+        np_ == ["load_skill", "flights_search"] and len(fsp) == 1 and fsp[0].get("airlines") == ["Emirates"], (np_, fsp))
+K.check("the search reports no preferred offer and the answer says so and asks whether to search all airlines",
+        tp["status"] == "COMPLETED" and "no Emirates flight" in (tp.get("result") or "") and (tp.get("result") or "").endswith("Shall I search all airlines?"),
+        (tp["status"], (tp.get("result") or "")[:300]))
 
 # a range of dates from the chat: one flights_search with date + date_to, no plan
 f1 = (dt.date.fromisoformat(DATE) + dt.timedelta(days=7)).isoformat(); f2 = (dt.date.fromisoformat(DATE) + dt.timedelta(days=11)).isoformat()

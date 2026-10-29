@@ -225,7 +225,7 @@ pub fn redacted(s: &Value) -> Value {
 }
 
 /// `PROFILE_FIELDS`: key, 中文, English.
-pub const PROFILE_FIELDS: [(&str, &str, &str); 14] = [
+pub const PROFILE_FIELDS: [(&str, &str, &str); 15] = [
     ("name_en", "英文姓名（证件拼写）", "Name as on passport"),
     // the key stays `name_zh` (profiles saved before keep their value); it holds any other name: Chinese, Japanese, a
     // married or former name
@@ -246,16 +246,25 @@ pub const PROFILE_FIELDS: [(&str, &str, &str); 14] = [
         "常用酒店品牌",
         "Preferred hotel brand",
     ),
+    (
+        "preferred_car_rental",
+        "常用租车公司",
+        "Preferred car rental",
+    ),
 ];
 
-/// The profile keys that are standing preferences the executor always sees (`Runtime::standing_prefs`): the two
+/// The profile keys that are standing preferences the executor always sees (`Runtime::standing_prefs`): the
 /// fixed ones, and any custom field whose label carries one of [`PREFERENCE_WORDS`].
-pub const PREFERENCE_KEYS: [&str; 2] = ["preferred_airline", "preferred_hotel_brand"];
+pub const PREFERENCE_KEYS: [&str; 3] = [
+    "preferred_airline",
+    "preferred_hotel_brand",
+    "preferred_car_rental",
+];
 
 /// Words (lower-case) that mark a custom profile field as a travel / loyalty preference.
-pub const PREFERENCE_WORDS: [&str; 16] = [
+pub const PREFERENCE_WORDS: [&str; 18] = [
     "airline", "carrier", "航空", "alliance", "loyalty", "miles", "mileage", "status", "seat",
-    "hotel", "酒店", "brand", "chain", "会员", "member", "常用",
+    "hotel", "酒店", "brand", "chain", "会员", "member", "常用", "rental", "租车",
 ];
 
 /// A fixed field, a further address written as `address:<label>` (a flat in another city, the parents' house), or a

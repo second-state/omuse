@@ -40,6 +40,8 @@ connecting flights, whether the ticket is one booking or separate tickets (matte
 If a travel-insurance email exists (gmail_search `insurance (policy OR certificate OR travel)`), read the delay
 benefit: usually a fixed amount per block of 6 or 8 hours, or expenses up to a cap, and it needs a **delay
 certificate** from the airline (ask at the desk or via the airline's online form), boarding passes and receipts.
+An FWD policy (Singapore, or a Hong Kong plan underwritten by bolttech) → load_skill("fwd-travel-insurance") for the
+claim itself: it knows FWD's claim form and bolttech's claims mailbox.
 Write the checklist, draft the certificate request (gmail_create_draft to the airline) and, after the trip, the
 claim email. If no policy was found, say that delays, missed connections and lost luggage are among the most common
 claims and ask whether they are covered (credit cards often include delay cover) — one line, no selling.

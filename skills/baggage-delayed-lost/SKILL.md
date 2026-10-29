@@ -36,6 +36,9 @@ settlement letter, receipts, photos, boarding passes, bag tags). Many policies p
 claim from the airline first and keep its reply. No policy found → one line: lost and delayed luggage are among the
 most common travel claims; ask whether a credit card or an employer covers it.
 
+An FWD policy (Singapore, or a Hong Kong plan underwritten by bolttech) → load_skill("fwd-travel-insurance") for the
+claim itself: it knows FWD's claim form and bolttech's claims mailbox.
+
 ## 5. Write the letters (drafts, approved by the user)
 - To the airline: delayed-bag expenses claim (file reference, flight, bag tags, itemised receipts, bank details to be
   given securely — not in the email body), or the lost-bag claim after 21 days with the inventory.

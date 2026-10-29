@@ -74,9 +74,13 @@ to search; the browser is for the final booking page only.
   The result's `searched` block repeats the cabin, stops and date used: present only those. A business itinerary with a
   short economy connection (`cabin_mix`) still counts as business — keep it and name the economy leg.
 - Standing preferences are in your instructions (the "Standing preferences" block: the profile's preferred airline or
-  alliance, hotel brand or group, loyalty status) — pass them as `airlines=[…]` / `brands=[…]` (an alliance or group
-  stands for its members); a wish in the request wins; show the preferred option next to the best value with the
-  price difference.
+  alliance, hotel brand or group, car rental company, loyalty status) — pass them as `airlines=[…]` / `brands=[…]` (an
+  alliance or group stands for its members) and put the rental company in the car web_search; a wish in the request
+  wins; show the preferred option next to the best value with the price difference.
+- **One search, with the preference in it** — flights, hotels and cars alike: never a second search without the
+  preference to compare. The user asks for all airlines / hotels / companies ("any", "search everything") → leave the
+  preference out of that one search. No good preferred result → answer with what was found and ask whether to search
+  all airlines / hotels / rental companies; search again only after the user says yes.
 - In the browser (fallback only) use IATA codes (SIN, NRT, HND, KIX, ICN, HKG, YVR); "Tokyo" = `TYO` there too.
 - Fallback when Google Flights fails twice: the airline sites (singaporeair.com, jal.co.jp, ana.co.jp, flyscoot.com)
   or Skyscanner `https://www.skyscanner.com.sg/transport/flights/sin/tyoa/261120/?adultsv2=1&cabinclass=economy&preferdirects=true`.
@@ -125,10 +129,12 @@ to search; the browser is for the final booking page only.
   only in peak periods — check JR Central's notice for the dates in question).
 
 ## 7. Car rental
-- Any destination: `web_search` the pick-up city or airport, dates, car class
-  and "rental" (plus `site:rentalcars.com` / `site:kayak.com/cars` / the local brands) and compile companies, classes,
-  prices and links from the snippets; otherwise the browser, reading result pages only. Book on the company's own site
-  at the end, after the user picks.
+- Any destination: ONE `web_search` with the pick-up city or airport, dates, car class and "rental" — and the
+  preferred rental company from the Standing preferences (the profile's Preferred car rental, e.g. "Hertz car rental
+  Narita Airport 20–23 Nov compact") unless the user asked for all companies (then plus `site:rentalcars.com` /
+  `site:kayak.com/cars` / the local brands) — and compile companies, classes, prices and links from the snippets;
+  otherwise the browser, reading result pages only. No good offer from the preferred company → say so and ask whether
+  to search all rental companies. Book on the company's own site at the end, after the user picks.
 
 ### Japan
 - Compare on one aggregator plus one company site: ToCoo! (`https://www2.tocoo.jp/en/`), Tabirai (`https://www.tabirai.net/car/`),

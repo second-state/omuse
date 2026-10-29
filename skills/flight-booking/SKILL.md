@@ -32,9 +32,14 @@ Before any call, take from the user's words (ask once only when one is genuinely
   an alliance such as Star Alliance — and any custom airline / loyalty field), then memory (`memory_search("airline")`
   in the same turn as the search when neither says anything). Pass them as `airlines=["Singapore Airlines", "NH"]` or
   `airlines=["Star Alliance"]` (names, 2-letter codes or an alliance, which stands for all its members): matching
-  offers come back flagged `preferred`, nothing is dropped. In the answer show the best preferred-airline option **next to** the cheapest, with the price
-  difference, and let the user choose; if the user asked for an airline that has no offer in the data, say so plainly
-  instead of silently switching. Mention when a fare is on the user's status airline (lounge, baggage, miles).
+  offers come back flagged `preferred`. Mention when a fare is on the user's status airline (lounge, baggage, miles).
+- **One search, with the preference in it.** The airline preference goes into the single `flights_search` — never a
+  second search without it to compare. When the user asks for **all airlines** ("any airline", "search everything",
+  "not just Star Alliance"), leave `airlines` out of that one search. Answer from what the search returned: the best
+  preferred offer, and the cheapest other offer when the result has one, with the price difference.
+- **No good preferred result** (`preferred_found` is 0, or none fits the date, cabin, stops or budget): still answer —
+  say plainly what the preferred airlines have (or that they have nothing) instead of silently switching, and ask
+  "Shall I search all airlines?". Search again without `airlines` only after the user says yes.
 - Every result carries `searched` (cabin, stops, date, trip, adults): check it matches the request before you answer,
   and name the cabin and the stop limit in the answer.
 

@@ -1,0 +1,25 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Travel Insurance Online Quotes — FWD Singapore (test)</title></head>
+<body>
+<h1>Get a travel insurance quote</h1>
+<p class="note">Test stand-in for FWD Singapore's quote page. Plans and premiums are made up; nothing is sent anywhere.</p>
+<form id="quote" onsubmit="event.preventDefault(); document.getElementById('plans').hidden = false;">
+  <label>Destination <input name="dest" id="dest" placeholder="Country or region"></label><br>
+  <label>Departure date <input name="from" id="from" placeholder="YYYY-MM-DD"></label><br>
+  <label>Return date <input name="to" id="to" placeholder="YYYY-MM-DD"></label><br>
+  <label>Travellers <input name="pax" id="pax" value="1"></label><br>
+  <button type="submit" id="go">Get quote</button>
+</form>
+<section id="plans" hidden>
+  <h2>Your plans</h2>
+  <table>
+    <tr><th>Plan</th><th>Premium</th><th>Overseas medical</th><th>Trip cancellation</th><th>Travel delay</th><th>Baggage</th><th></th></tr>
+    <tr><td>Premium</td><td>SGD 34.00</td><td>SGD 200,000</td><td>SGD 5,000</td><td>SGD 100 every 6 hours, up to SGD 1,000</td><td>SGD 3,000</td>
+        <td><a href="/fwd_sg_apply.html?plan=Premium&amp;premium=34.00">Select Premium</a></td></tr>
+    <tr><td>Business</td><td>SGD 47.00</td><td>SGD 1,000,000</td><td>SGD 10,000</td><td>SGD 100 every 6 hours, up to SGD 1,500</td><td>SGD 5,000</td>
+        <td><a href="/fwd_sg_apply.html?plan=Business&amp;premium=47.00">Select Business</a></td></tr>
+    <tr><td>First</td><td>SGD 68.00</td><td>SGD 1,500,000</td><td>SGD 15,000</td><td>SGD 100 every 6 hours, up to SGD 2,000</td><td>SGD 7,500</td>
+        <td><a href="/fwd_sg_apply.html?plan=First&amp;premium=68.00">Select First</a></td></tr>
+  </table>
+</section>
+</body></html>
