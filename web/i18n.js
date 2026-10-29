@@ -352,6 +352,7 @@ window.OMUSE_EN = {
 "执行过程 Activity": "Activity",
 "执行过程 Timeline": "Timeline",
 "找到 {0}：{1}": "Found {0}: {1}",
+"示例 Examples": "Examples",
 "技能 Skills": "Skills",
 "把 16 位密码粘贴到下方，点击「连接并测试」。同一邮箱再添加一次 = 更新密码。": "Paste the 16-character password below and click \"Connect & test\". Adding the same address again updates its password.",
 "拒绝原因（可选，会告诉 Agent）Reason for denying (optional)": "Reason for denying (optional, shared with the Agent)",

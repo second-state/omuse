@@ -296,6 +296,19 @@ with short arguments and no repetition.".to_string();
             } else if allow.is_some_and(|a| !a.contains(&name)) {
                 content = format!("ERROR: tool {} is not available to this agent.", name);
                 ok = false;
+            } else if !crate::bots::has_tool(self.bot_of(t), name) {
+                // another bot's tool (crate::bots, `tools:`): never run here, whatever the model asked for
+                let owners: Vec<String> = crate::bots::tool_owners(name)
+                    .iter()
+                    .map(|b| format!("{} ({})", b.id, b.name))
+                    .collect();
+                content = if self.bot_of(t).is_main() {
+                    format!("ERROR: the tool {name} belongs to the bot(s) {}: hand the request over with ask_bot instead of answering yourself.", owners.join(", "))
+                } else {
+                    format!("ERROR: the tool {name} is not one of the {} bot's: it belongs to {}. Tell the user in one line which bot handles it.", self.bot_of(t).name, owners.join(", "))
+                };
+                ok = false;
+                refused = true;
             } else if REMAKE_TOOLS.contains(&name)
                 && self
                     .inner

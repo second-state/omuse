@@ -8,6 +8,8 @@ rm -rf $T; mkdir -p $T/{sdata,data,workspace,bprofile}
 BIN="${OMUSE_BIN:-$PWD/target/release/omuse}"
 export PYTHONPATH=$PWD
 (cd tests/pages && env -u HTTPS_PROXY -u HTTP_PROXY python3 -m http.server 8099 >$T/pages.log 2>&1 &)
+# inside the test container only: the official sites' stand-ins over HTTPS on 443 (tests/https_standins.py)
+[ "${OMUSE_STANDINS:-}" = 1 ] && python3 tests/https_standins.py >$T/standins.log 2>&1 &
 TEST_PAGE=http://shop.test:8099/page.html python3 -m uvicorn tests.fake_llm:app --port 8090 >$T/llm.log 2>&1 &
 python3 -m uvicorn tests.fake_telegram:app --port 8091 >$T/tg.log 2>&1 &
 python3 -m uvicorn tests.fake_mcp:app --port 8093 >$T/mcp.log 2>&1 &

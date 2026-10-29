@@ -159,9 +159,15 @@ scenario (`tests/parallel_steps_e2e.py`).
 - FWD travel insurance: `tests/fwd_insurance_e2e.py` (Singapore: quote, plans compared, application filled from the
   Vault and handed over for Pay; delay claim from mail on FWD's form, handed over for Submit. Hong Kong: bolttech's PDF
   claim form opened from its link, filled and attached to an email draft, never sent).
-- Bots: `tests/bots_e2e.py` (each bot's skills, the hand-over from Main and its answer with the link, a follow-up to
+- Bots: `tests/bots_e2e.py` (each bot's skills and tools, the planner's routing and its checks, the hand-over from Main and its answer with the link, a follow-up to
   the same bot conversation, an approval and a takeover inside a bot shown in Main, cancel), `tests/bots_ui.py` (the
-  menu, the bot views, the links between Main and a bot's conversation).
+  menu, the bot views, the links between Main and a bot's conversation). `tests/bots_real.py` (not in the default list,
+  billed) sends travel, city, card and general requests to Main with a real model and checks where each one went:
+  `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh bots_real` (`OMUSE_E2E_PLANNER` /
+  `OMUSE_E2E_EXECUTOR` on the command line override the env file's models). `tests/run_in_docker.sh real` runs every
+  real-model suite (REAL_SUITES in the script; tests/real_common.py drives the new ones) with the env file's models —
+  planner xai/grok-4.7, executor openai/gpt-6-luna (openai-codex/gpt-6-luna times out too often through the gateway
+  for now).
 - Streamed answers: `tests/stream_e2e.py` (answer_delta events, reasoning held back, tool-call turns flagged, the
   setting off), `tests/stream_ui.py` (the live bubble while the task runs); `tests/stream_real.py` (not in the default
   list, billed) does one request against the gateway in the e2e env file and, when that provider streams as it

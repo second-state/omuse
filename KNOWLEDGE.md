@@ -510,8 +510,11 @@ Two views are routable but unlisted:
 The chat is split into bots. A bot is a set of skills and a short prompt of its own; every bot shares the memory, the
 profile, the Vault, the connectors and the approval rules. The bots are built in (`bots/<id>.md`, compiled into the
 binary like the skills): front matter with `name`, `name_zh`, `icon`, `order` (the menu), `description` /
-`description_zh` (what the main bot routes by) and `skills` (comma list); the body is the bot's prompt, added to the
-executor prompt.
+`description_zh` (what the main bot routes by), `skills` (comma list) and `tools` (comma list: tools only the bots
+that name them may use — the travel searches `flights_search`, `flight_offer`, `hotels_search`, `hotel_rooms`; a
+connector's `mcp_<server>__<name>` counts as `<name>`) and `examples` / `examples_zh` (3–5 requests it handles, `|`
+between them: shown as buttons above the chat input of the bot's empty conversation; a click fills the input); the body
+is the bot's prompt, added to the executor prompt.
 
 - **Main** (`main`) is the entrance: it has every skill no specialised bot lists (imported skills included) plus the
   ones its own file names (`pdf-forms`). The specialised bots: Travel booking (`travel`), City guides (`cities`),
@@ -521,7 +524,17 @@ executor prompt.
 - **A conversation belongs to one bot**: `conversations.bot_id` (`main` for older ones) and `parent_conv` (the main
   conversation that handed it over). `GET /api/bots`, `GET /api/conversations?bot=<id>`, `POST /api/chat` with `bot`
   for a new conversation. The executor's skill list and `load_skill` are the bot's; another bot's skill is refused
-  with the bot that has it.
+  with the bot that has it. The same for tools: another bot's tool is not offered, and a call to it is refused in
+  code (2026-10-29: with the real model, Main answered a flight question with `flights_search` itself).
+- **Routing** (`Runtime::route`, agent/bots.rs): every new request in Main first goes to the **planner model**
+  (Settings → planner model; the default model when none is set) with the bots' descriptions and the recent
+  conversation. It answers `{"bot", "question", "conversation_id"}`: the bot, the request rewritten to stand alone
+  (the user's words plus what the bot needs from the conversation, no condition the user did not give) and, for a
+  follow-up, the bot conversation to continue. The code checks it (`checked_route`: a known bot; the conversation
+  only when it is that bot's and was started from this one; an empty question becomes the request) and hands over at
+  once — a `route` event, then an `ask_bot` tool call marked `routed`. `main`: the executor answers without
+  `ask_bot`. No usable answer (`route` with `bot: null`, or `route_error`): the executor gets `ask_bot` and decides.
+  Not for scheduled runs, goal checks or a task resumed after an approval.
 - **Hand-over** (`ask_bot(bot, question, conversation_id?)`, main bot only, alone in its turn): a new conversation in
   that bot (or the one given, for a follow-up) gets the question; the main task waits in `WAITING_BOT` (the bot's task
   starts only once the main task is suspended); when the bot's task ends, the main task ends at once with the bot's

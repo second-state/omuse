@@ -170,9 +170,13 @@ def run(message: str, *, follow_up: str | None = None, timeout: float = 120) -> 
     while time.time() < deadline:
         t = task(tid)
         st = t.get("status")
+        # a main-bot task waiting for a bot (WAITING_BOT): the bot's task raises the approvals
+        kid = (t.get("waiting") or {}).get("task_id") if st == "WAITING_BOT" else None
+        if kid and task(kid).get("status") == "WAITING_APPROVAL":
+            st = "WAITING_APPROVAL"
         if st == "WAITING_APPROVAL":
             seen = time.monotonic()
-            pend = [a for a in c.get(B + "/sentinel/api/approvals?status=pending", headers=H).json()["approvals"] if a["task_id"] == tid]
+            pend = [a for a in c.get(B + "/sentinel/api/approvals?status=pending", headers=H).json()["approvals"] if a["task_id"] in (tid, kid)]
             for a in pend:
                 rr = c.post(f"{B}/sentinel/api/approvals/{a['id']}/resolve", json={"decision": "approve", "scope": "ONCE"}, headers=H)
                 done = time.monotonic()

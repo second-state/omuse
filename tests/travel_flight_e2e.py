@@ -2,7 +2,9 @@
 connector's MCP tools (tests/fake_travel.py on 8097), shows the options, confirms the purchase once and only then opens
 the airline's booking page in the browser to fill in the traveller (passport and card from the vault) and pay.
 
-Default: the scripted fake model (FLIGHTBOOK). OMUSE_E2E_REAL=1: a real model with a plain request (see travel_common.py)."""
+Default: the scripted fake model (FLIGHTBOOK). OMUSE_E2E_REAL=1: a real model with a plain request (see travel_common.py)
+that names the Travel connector as the user's booking agency: the skill books on the airline's own site unless the user
+chooses an agency, and the airline's real site is outside the test world."""
 import os
 import sys
 
@@ -14,9 +16,13 @@ D = T.day(21)
 try:
     T.setup()
     if T.REAL:
-        info = T.run(f"Book me the cheapest direct flight from Singapore to Tokyo on {D} for one adult. I'm Lucas Lu, "
-                     "lucas@example.com, +65 8000 0000. My passport and card are in the vault.",
-                     follow_up="Yes, please book the cheapest direct flight now with my passport and card from the vault.",
+        # the user's own agency (the skill books on the airline's site or "the agency the user chooses"): its offers and
+        # booking page come from the Travel connector, so the whole booking stays inside the test world
+        info = T.run(f"Book me the cheapest direct flight from Singapore to Tokyo on {D} for one adult. I book through my "
+                     "travel agency, the Travel connector: use its flight search and its booking page, not the airline's "
+                     "site. I'm Lucas Lu, lucas@example.com, +65 8000 0000. My passport and card are in the vault.",
+                     follow_up="Yes, please book the cheapest direct flight now on my agency's booking page (the Travel "
+                               "connector's offer) with my passport and card from the vault.",
                      timeout=1200)
         tools, expect, max_browser = ("flights_search",), None, 18
     else:

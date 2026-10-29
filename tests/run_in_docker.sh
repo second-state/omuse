@@ -5,22 +5,31 @@
 # expect a fresh install.
 #   bash tests/run_in_docker.sh                 # every suite
 #   bash tests/run_in_docker.sh e2e_027 mcp_e2e # only these
+#   bash tests/run_in_docker.sh real            # the real-model suites (REAL_SUITES below; billed), with the env file
+#                                                 OMUSE_E2E_ENV_FILE (default ~/.config/omuse/e2e.env)
 # OMUSE_IMAGE picks the image (default: omuse-test, built from Dockerfile.test when missing). Exit code 1 if a suite fails.
 # docker_browser_e2e.py is not part of this: it needs a real model (see its docstring).
 set -u
 if [ "${1:-}" != "--inside" ]; then
   cd "$(dirname "$0")/.."
+  if [ "${1:-}" = real ] && [ -z "${OMUSE_E2E_ENV_FILE:-}" ]; then
+    OMUSE_E2E_ENV_FILE="$HOME/.config/omuse/e2e.env"
+    [ -f "$OMUSE_E2E_ENV_FILE" ] || { echo "real: needs OMUSE_E2E_ENV_FILE (the model endpoint, key and names)"; exit 1; }
+  fi
   IMAGE="${OMUSE_IMAGE:-omuse-test}"
   docker image inspect "$IMAGE" >/dev/null 2>&1 || docker build -f Dockerfile.test -t "$IMAGE" . || exit 1
-  # root: Dovecot. shop.test / opentable.test: the hostnames the test pages are served under.
+  # root: Dovecot. shop.test / opentable.test: the hostnames the test pages are served under. eservices.ica.gov.sg and
+  # www.fwd.com.sg: the official sites' stand-ins (tests/https_standins.py), so a real model sees the real site names.
   # OMUSE_E2E_ENV_FILE: real-model runs of the travel suites (endpoint, key and model names; the key stays in that file).
+  # OMUSE_E2E_EXECUTOR / OMUSE_E2E_PLANNER set on the command line override that file's model names.
   # OMUSE_E2E_OUT: a writable host directory, mounted at /repo-out (suite logs, TIMING lines, screenshots_real.py pictures).
   EXTRA=()
   # OMUSE_E2E_{BRAVE,TAVILY,SERPAPI}_EP: the real search endpoints instead of the fakes (web_search_real.py).
-  [ -n "${OMUSE_E2E_ENV_FILE:-}" ] && EXTRA+=(--env-file "$OMUSE_E2E_ENV_FILE" -e OMUSE_E2E_REAL=1 -e OMUSE_E2E_MODELS -e OMUSE_E2E_BRAVE_EP -e OMUSE_E2E_TAVILY_EP -e OMUSE_E2E_EXA_EP -e OMUSE_E2E_EXA_MCP_EP -e OMUSE_E2E_KIWI_MCP_EP -e OMUSE_E2E_SERPAPI_EP ${OMUSE_E2E_SEARCH_ENGINES+-e OMUSE_E2E_SEARCH_ENGINES} ${SEARCH_TIMING_BURST:+-e SEARCH_TIMING_BURST})
+  [ -n "${OMUSE_E2E_ENV_FILE:-}" ] && EXTRA+=(--env-file "$OMUSE_E2E_ENV_FILE" -e OMUSE_E2E_REAL=1 -e OMUSE_E2E_MODELS ${OMUSE_E2E_EXECUTOR:+-e OMUSE_E2E_EXECUTOR} ${OMUSE_E2E_PLANNER:+-e OMUSE_E2E_PLANNER} -e OMUSE_E2E_BRAVE_EP -e OMUSE_E2E_TAVILY_EP -e OMUSE_E2E_EXA_EP -e OMUSE_E2E_EXA_MCP_EP -e OMUSE_E2E_KIWI_MCP_EP -e OMUSE_E2E_SERPAPI_EP ${OMUSE_E2E_SEARCH_ENGINES+-e OMUSE_E2E_SEARCH_ENGINES} ${SEARCH_TIMING_BURST:+-e SEARCH_TIMING_BURST})
   [ -n "${OMUSE_E2E_OUT:-}" ] && { mkdir -p "$OMUSE_E2E_OUT"; EXTRA+=(-v "$(cd "$OMUSE_E2E_OUT" && pwd)":/repo-out); }
   exec docker run --rm --user 0 ${EXTRA[@]+"${EXTRA[@]}"} ${OMUSE_TEST_NAME:+--name "$OMUSE_TEST_NAME"} \
     --add-host shop.test:127.0.0.1 --add-host opentable.test:127.0.0.1 \
+    --add-host eservices.ica.gov.sg:127.0.0.1 --add-host www.fwd.com.sg:127.0.0.1 \
     -v "$PWD":/repo:ro --entrypoint bash "$IMAGE" /repo/tests/run_in_docker.sh --inside "$@"
 fi
 shift
@@ -33,8 +42,20 @@ cp tests/dovecot.conf /srv/dove/; cp tests/dovecot-oauth2.conf /srv/dove/oauth2.
 echo "tester@example.com:{PLAIN}secretpass123" > /srv/dove/users; chown -R nobody:nogroup /srv/dove/mail
 dovecot -c /srv/dove/dovecot.conf || echo "WARNING: dovecot did not start"
 export PYTHONPATH=/src
+# the stand-ins' test CA, trusted by this container's Chromium only (its NSS database); started per suite by run_local.sh
+export OMUSE_STANDINS=1
+python3 -c "from tests.https_standins import certificate; certificate()" \
+  && mkdir -p "$HOME/.pki/nssdb" && { [ -f "$HOME/.pki/nssdb/cert9.db" ] || certutil -d "sql:$HOME/.pki/nssdb" -N --empty-password; } \
+  && certutil -d "sql:$HOME/.pki/nssdb" -A -t "C,," -n omuse-standins -i /tmp/claude-0/standins/ca.pem \
+  || echo "WARNING: the HTTPS stand-ins' CA is not trusted"
 
-if [ $# -gt 0 ]; then
+# the real-model suites: plain requests to Main (tests/real_common.py) and the older real ones; each needs OMUSE_E2E_REAL
+REAL_SUITES="bots_real arrival_real insurance_real cards_real photos_real mail_real calendar_real research_real docs_real \
+travel_ask_real travel_flight_e2e travel_hotel_e2e travel_michelin_e2e city_guides_real browser_auto_real stream_real"
+if [ "$*" = real ]; then
+  [ -n "${OMUSE_E2E_REAL:-}" ] || { echo "real: OMUSE_E2E_REAL is not set (pass OMUSE_E2E_ENV_FILE)"; exit 1; }
+  SUITES="$REAL_SUITES"
+elif [ $# -gt 0 ]; then
   SUITES="$*"
 else
   SUITES="integration $(ls tests | grep -E '(_e2e|_ui)\.py$|^e2e_0|^browser_parallel|^popup_takeover|^takeover_burst|^i18n_check' | sed 's/\.py$//' | grep -v docker_browser_e2e)"
@@ -42,7 +63,7 @@ fi
 failed=""
 for f in $SUITES; do
   f="${f%.py}"
-  bash tests/stop_local.sh >/dev/null 2>&1; pkill -f "uvicorn|http.server|chrome|omuse" >/dev/null 2>&1; sleep 1
+  bash tests/stop_local.sh >/dev/null 2>&1; pkill -f "uvicorn|http.server|https_standins|chrome|omuse" >/dev/null 2>&1; sleep 1
   bash tests/run_local.sh > /tmp/up.log 2>&1 < /dev/null
   for i in $(seq 1 20); do
     curl -s -o /dev/null http://127.0.0.1:8082/ && curl -sf -o /dev/null http://127.0.0.1:8080/sentinel/api/health && break

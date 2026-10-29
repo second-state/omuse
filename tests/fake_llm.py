@@ -14,6 +14,7 @@ import datetime as _dtm
 import json
 import os
 import re
+import time
 import uuid
 
 from fastapi import FastAPI, Request
@@ -194,6 +195,8 @@ async def _chat(req: Request, b: dict):
         from fastapi.responses import JSONResponse
         return JSONResponse({"error": {"message": "image input is not supported by this model"}}, status_code=400)
     sys = msgs[0]["content"] if msgs and msgs[0]["role"] == "system" else ""
+    if sys.startswith("## Route"):   # the main bot's router (agent/bots.rs `route`): main, unless bots_e2e asks
+        return route_reply(str(msgs[-1]["content"]))
     # retry policy (retry_e2e.py): the first calls of a task fail, then it works
     goal_txt = "\n".join(str(m["content"]) for m in msgs if m["role"] == "user")   # the goal (the last user message is the status note)
     m = re.search(r"RETRY(429|503)x(\d)", goal_txt)
@@ -1443,6 +1446,32 @@ def fwd_insurance(goal, msgs):
     return None
 
 
+def route_reply(user):
+    """The router's JSON (bots_e2e.py): BOTHAND / BOTAPPR / BOTWAIT go to Travel booking with the kid's marker as the
+    question, BOTFOLLOW to the conversation the history names, BOTROUTEFAIL gets no JSON (the executor decides with
+    ask_bot), BOTROUTEBAD names a bot that does not exist; everything else stays in Main."""
+    req = user.split("The user's new request:\n", 1)[-1]
+    date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", req) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-12-20")).group(1)
+    if "BOTROUTEFAIL" in req:
+        return reply("I am not sure.")
+    if "BOTROUTEBAD" in req:
+        return reply(json.dumps({"bot": "no-such-bot", "question": "x"}))
+    slow = " BOTSLOW" if "BOTSLOW" in req else ""
+    if slow:   # bots_ui.py: the routing takes a while, so Main's timer must be longer than the bot's by that much
+        time.sleep(2)
+    for marker, kid in (("BOTHAND", f"BOTKID1 cheapest flight Singapore to Tokyo on {date} DATE={date}"),
+                        ("BOTAPPR", "BOTKIDAPPR book the SQ638 for SGD 620"), ("BOTWAIT", "BOTKIDWAIT log in to the airline site")):
+        if marker in req:
+            return reply(json.dumps({"bot": "travel", "question": kid + slow}))
+    if "BOTFOLLOW" in req:
+        m = re.search(r"\[answered by the travel bot in conversation (conv_\w+)\]", user)
+        return reply(json.dumps({"bot": "travel", "question": "BOTKID2 and the return flight a week later",
+                                 "conversation_id": m.group(1) if m else ""}))
+    if "BOTCONVBAD" in req:   # a conversation that is not that bot's: the code starts a new one
+        return reply(json.dumps({"bot": "travel", "question": f"BOTKID1 checked conv DATE={date}", "conversation_id": "conv_nope"}))
+    return reply('```json\n{"bot": "main"}\n```')
+
+
 def bots_flow(goal, sys, msgs, tools_done, n, allu):
     """bots_e2e.py: the main bot hands a request to the Travel booking bot (ask_bot) and shows its answer; a follow-up
     goes back to the same bot conversation; an approval and a takeover inside the bot."""
@@ -1463,6 +1492,13 @@ def bots_flow(goal, sys, msgs, tools_done, n, allu):
                                              "question": "BOTKID2 and the return flight a week later"})])
         if "BOTSKILL" in goal:   # the main bot has no travel skill: load_skill is refused and points to ask_bot
             return reply("", [tc("load_skill", {"name": "flight-booking"})])
+        if "BOTTOOL" in goal:    # nor the travel searches: the tool is not offered, and a call is refused
+            offered = any((x.get("function") or {}).get("name") == "flights_search" for x in (CALLS[-1].get("tools") or []))
+            return reply("", [tc("flights_search", {"origin": "SIN", "destination": "TYO", "date": date, "offered": offered})])
+        if "BOTROUTEFAIL" in goal or "BOTROUTEBAD" in goal:   # no routing decision: the executor hands over itself
+            return reply("", [tc("ask_bot", {"bot": "travel", "question": f"BOTKID1 executor hand-over DATE={date}"})])
+    if main and "BOTTOOL" in goal:
+        return reply("MAIN SAW: " + str(tools_done[-1]["content"])[:200])
     if main and "BOTSKILL" in goal:
         return reply("MAIN SAW: " + str(tools_done[-1]["content"])[:200])
     if travel and "BOTKID1" in goal:
@@ -1470,6 +1506,8 @@ def bots_flow(goal, sys, msgs, tools_done, n, allu):
             return reply("", [tc("load_skill", {"name": "flight-booking"})])
         if n == 1:
             return reply("", [tc("flights_search", {"origin": "SIN", "destination": "TYO", "date": date, "cabin": "economy", "currency": "SGD"})])
+        if "BOTSLOW" in goal:   # bots_ui.py: the bot works a while, so its own timer shows it
+            time.sleep(2)
         return reply(f"TRAVELBOT ANSWER {date}: Singapore Airlines SQ638 SGD 620 direct; Cathay Pacific via HKG SGD 510.")
     if travel and "BOTKID2" in goal:
         earlier = "TRAVELBOT ANSWER" in allu or any("TRAVELBOT ANSWER" in str(m["content"]) for m in msgs if m["role"] == "assistant")
