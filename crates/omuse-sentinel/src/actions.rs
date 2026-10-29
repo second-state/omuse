@@ -111,6 +111,23 @@ fn act(msg: impl Into<String>) -> ExecError {
     ExecError::Action(ActionError::new(msg))
 }
 
+/// The travel and web search tools' arguments, validated in code before any source is asked
+/// (`omuse_apps::travel_args`): invalid numbers replaced, impossible dates refused with how to fix them.
+fn checked_travel_args(
+    tool: &str,
+    args: &Value,
+) -> Result<omuse_apps::travel_args::Checked, ExecError> {
+    omuse_apps::travel_args::validate(tool, args, chrono::Utc::now().date_naive()).map_err(act)
+}
+
+/// Tell the model which arguments were replaced (`input_fixed`), next to the result.
+fn with_fixed(mut res: Value, fixed: &[String]) -> Value {
+    if !fixed.is_empty() && res.is_object() {
+        res["input_fixed"] = json!(fixed);
+    }
+    res
+}
+
 fn act_status(msg: impl Into<String>, status: &str) -> ExecError {
     ExecError::Action(ActionError::with_status(msg, status))
 }
@@ -805,18 +822,24 @@ pub async fn execute(
         return telegram_send(st, take_chars(&text, 3500)).await;
     }
     if connector == "travel" {
-        let res = travel_sync(st, tool, args, task_id).await?;
+        let checked = checked_travel_args(tool, args)?;
+        let res = with_fixed(
+            travel_sync(st, tool, &checked.args, task_id).await?,
+            &checked.fixed,
+        );
         if read {
             store.update_task_ctx(task_id, Some(&data_class), None, None)?;
         }
         return Ok(res);
     }
     if connector == "search" {
+        let checked = checked_travel_args(tool, args)?;
         let res = if tool == "news_search" {
-            news_search_sync(st, args, task_id).await?
+            news_search_sync(st, &checked.args, task_id).await?
         } else {
-            web_search_sync(st, args, task_id).await?
+            web_search_sync(st, &checked.args, task_id).await?
         };
+        let res = with_fixed(res, &checked.fixed);
         store.update_task_ctx(task_id, Some(&data_class), None, None)?;
         return Ok(res);
     }

@@ -304,3 +304,172 @@ mod tests {
         assert!(!token_ok(Some("abc"), ""));
     }
 }
+
+/// The arguments that cap a price (a search's budget). Only a positive number is a cap.
+pub const PRICE_CAP_KEYS: [&str; 7] = [
+    "max_price",
+    "max_price_per_night",
+    "price_to",
+    "price_max",
+    "max_budget",
+    "budget",
+    "max_total",
+];
+/// Counts of people (or rooms) a search needs at least one of.
+pub const PEOPLE_KEYS: [&str; 9] = [
+    "adults",
+    "guests",
+    "travelers",
+    "travellers",
+    "passengers",
+    "party_size",
+    "people",
+    "pax",
+    "rooms",
+];
+/// Counts that may be zero but never negative.
+pub const ZERO_OK_KEYS: [&str; 3] = ["children", "infants", "kids"];
+
+/// Validate the numbers in a tool call's arguments (nested ones included) and replace what makes no sense with what
+/// the user would mean; returns one note per change. Applied by Sentinel to every action before it runs (built-in
+/// tools and connector tools alike) and by the runtime to every call before it is logged or sent, so a model filling
+/// in defaults can never search with "nothing is affordable" or "nobody travels":
+///
+/// * a price cap ([`PRICE_CAP_KEYS`]) that is not a positive number (0, negative, "", "0", null) is removed — no
+///   budget from the user means every price;
+/// * a count of people or rooms ([`PEOPLE_KEYS`]) that is not a whole number ≥ 1 becomes 1 (a fraction ≥ 1 is cut to
+///   a whole number; null is removed, so the tool's own default applies);
+/// * children / infants ([`ZERO_OK_KEYS`]) below 0 or not a number become 0;
+/// * a minimum rating outside 0–5, a minimum star class outside 1–5 and a price level outside 1–4 are removed.
+pub fn sanitize_search_args(args: &mut Value) -> Vec<String> {
+    fn num(v: &Value) -> Option<f64> {
+        match v {
+            Value::Number(n) => n.as_f64(),
+            Value::String(s) => s.trim().parse::<f64>().ok(),
+            _ => None,
+        }
+        .filter(|x| x.is_finite())
+    }
+    let mut notes = Vec::new();
+    match args {
+        Value::Object(m) => {
+            let keys: Vec<String> = m.keys().cloned().collect();
+            for k in keys {
+                let v = m[&k].clone();
+                let key = k.as_str();
+                if PRICE_CAP_KEYS.contains(&key) {
+                    let drop = match &v {
+                        Value::Number(_) => num(&v).is_none_or(|x| x <= 0.0),
+                        Value::String(s) => {
+                            s.trim().is_empty() || num(&v).is_some_and(|x| x <= 0.0)
+                        }
+                        Value::Null | Value::Bool(_) => true,
+                        _ => false,
+                    };
+                    if drop {
+                        m.remove(&k);
+                        notes.push(format!("{k} {v} → no limit"));
+                    }
+                } else if PEOPLE_KEYS.contains(&key) {
+                    if v.is_null() {
+                        m.remove(&k);
+                        continue;
+                    }
+                    let n = num(&v)
+                        .filter(|x| *x >= 1.0)
+                        .map(|x| x.floor() as i64)
+                        .unwrap_or(1);
+                    if v.as_i64() != Some(n) {
+                        m.insert(k.clone(), Value::from(n));
+                        notes.push(format!("{k} {v} → {n}"));
+                    }
+                } else if ZERO_OK_KEYS.contains(&key) {
+                    if v.is_null() {
+                        m.remove(&k);
+                        continue;
+                    }
+                    let n = num(&v)
+                        .filter(|x| *x >= 0.0)
+                        .map(|x| x.floor() as i64)
+                        .unwrap_or(0);
+                    if v.as_i64() != Some(n) {
+                        m.insert(k.clone(), Value::from(n));
+                        notes.push(format!("{k} {v} → {n}"));
+                    }
+                } else if let Some((lo, hi, lo_open)) = match key {
+                    "min_rating" => Some((0.0, 5.0, true)),
+                    "min_stars" | "stars" => Some((1.0, 5.0, false)),
+                    "min_price_level" | "max_price_level" => Some((1.0, 4.0, false)),
+                    _ => None,
+                } {
+                    let ok = num(&v)
+                        .is_some_and(|x| (if lo_open { x > lo } else { x >= lo }) && x <= hi);
+                    if !ok {
+                        m.remove(&k);
+                        notes.push(format!("{k} {v} → removed (out of range)"));
+                    }
+                }
+            }
+            for v in m.values_mut() {
+                if v.is_object() || v.is_array() {
+                    notes.extend(sanitize_search_args(v));
+                }
+            }
+        }
+        Value::Array(xs) => {
+            for v in xs {
+                notes.extend(sanitize_search_args(v));
+            }
+        }
+        _ => {}
+    }
+    notes
+}
+
+#[cfg(test)]
+mod search_args_tests {
+    use super::sanitize_search_args;
+    use serde_json::json;
+
+    #[test]
+    fn zero_and_empty_price_caps_mean_unlimited() {
+        let mut a = json!({"origin": "SIN", "max_price": 0, "max_price_per_night": "0", "price_to": -1, "budget": null,
+                           "max_total": "", "sort": "price", "tasks": [{"max_price": 0.0, "q": "x"}]});
+        assert_eq!(sanitize_search_args(&mut a).len(), 6);
+        assert_eq!(
+            a,
+            json!({"origin": "SIN", "sort": "price", "tasks": [{"q": "x"}]})
+        );
+        // a real budget stays, a budget in words too
+        let mut b = json!({"max_price": 900, "max_price_per_night": "250", "budget": "under 500 SGD", "max_price_level": 2});
+        assert!(sanitize_search_args(&mut b).is_empty());
+        assert_eq!(b["max_price"], 900);
+        assert_eq!(b["budget"], "under 500 SGD");
+    }
+
+    #[test]
+    fn people_counts_are_at_least_one_and_children_never_negative() {
+        let mut a = json!({"adults": 0, "guests": -2, "party_size": "abc", "travelers": 2.7, "passengers": "3",
+                           "rooms": true, "children": -1, "infants": "x", "pax": null});
+        let notes = sanitize_search_args(&mut a);
+        assert_eq!(
+            a,
+            json!({"adults": 1, "guests": 1, "party_size": 1, "travelers": 2, "passengers": 3, "rooms": 1,
+                             "children": 0, "infants": 0})
+        );
+        assert_eq!(notes.len(), 8, "{notes:?}");
+        let mut ok = json!({"adults": 2, "guests": 4, "children": 0});
+        assert!(sanitize_search_args(&mut ok).is_empty());
+    }
+
+    #[test]
+    fn ratings_stars_and_price_levels_out_of_range_are_dropped() {
+        let mut a =
+            json!({"min_rating": 0, "min_stars": 7, "max_price_level": 0, "min_price_level": 5});
+        assert_eq!(sanitize_search_args(&mut a).len(), 4);
+        assert_eq!(a, json!({}));
+        let mut ok =
+            json!({"min_rating": 4.5, "min_stars": 4, "max_price_level": 3, "min_price_level": 1});
+        assert!(sanitize_search_args(&mut ok).is_empty());
+    }
+}

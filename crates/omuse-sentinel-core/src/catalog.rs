@@ -487,7 +487,7 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
                    "date_to": {"type": S, "description": "last departure date of a range, YYYY-MM-DD (inclusive); omit for one day"},
                    "stops": {"type": S, "enum": ["any", "nonstop", "one_stop_max", "two_stops_max"], "description": "any unless the user limited stops (direct = nonstop)"},
                    "airlines": {"type": "array", "items": {"type": S}, "description": "preferred airlines: names (Singapore Airlines), 2-letter codes (SQ) or an alliance; matches are flagged preferred (codes and alliances also narrow Google Flights to them); omit when the user asks for all airlines"},
-                   "max_price": {"type": "number", "description": "per adult, in currency; omit for no cap"},
+                   "max_price": {"type": "number", "exclusiveMinimum": 0, "description": "per adult, in currency; omit for no cap"},
                    "sort": {"type": S, "enum": ["best", "price", "departure", "arrival", "duration"]},
                    "currency": {"type": S, "description": "ISO code, default USD"}}), &["origin", "destination", "date"])));
     add("flight_offer", tool("travel", "search", "read", "low", "PUBLIC",
@@ -505,7 +505,7 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
          total, nearby places, amenities and a hotel_id for hotel_rooms.",
         obj(json!({"city": {"type": S}, "area": {"type": S}, "check_in": {"type": S}, "check_out": {"type": S},
                    "guests": {"type": "integer", "minimum": 1}, "min_stars": {"type": "integer", "minimum": 2, "maximum": 5},
-                   "max_price_per_night": {"type": "number"}, "free_cancellation": {"type": "boolean"}, "min_rating": {"type": "number"},
+                   "max_price_per_night": {"type": "number", "exclusiveMinimum": 0}, "free_cancellation": {"type": "boolean"}, "min_rating": {"type": "number"},
                    "brands": {"type": "array", "items": {"type": S}, "description": "preferred hotel brands or groups (Marriott, Hilton, IHG …); matches are flagged preferred; omit when the user asks for all hotels"},
                    "sort": {"type": S, "enum": ["best", "price", "rating", "reviews"]}, "currency": {"type": S}}), &["city", "check_in", "check_out"])));
     add("places_search", tool("travel", "search", "search", "low", "PUBLIC",

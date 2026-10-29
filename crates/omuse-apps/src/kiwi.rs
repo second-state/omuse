@@ -271,7 +271,7 @@ impl KiwiMcp {
         );
         let mut args = json!({
             "flyFrom": from.clone(), "flyTo": to.clone(), "departureDate": date,
-            "adults": a.get("adults").and_then(Value::as_i64).filter(|n| *n >= 1).unwrap_or(1),
+            "adults": crate::serpapi::people(a, "adults", 1, 9),
             "cabinClass": cabin, "currency": currency, "sort": sort,
         });
         let ret = get_str(a, "return_date");

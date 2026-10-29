@@ -31,6 +31,18 @@ names = cat_names()
 K.check("without a key the flight tools are in the catalog", "flights_search" in names and "flight_offer" in names, [n for n in names if "flight" in n or "hotel" in n])
 cv = next(x for x in c.get(B + "/sentinel/api/connections", headers=H).json()["connections"] if x["name"] == "travel")
 K.check("the connection view says flights come from Kiwi.com", cv.get("flights_source") == "kiwi" and not cv["has_credential"], cv)
+# invalid numbers never reach Kiwi.com: a price cap of 0 means no limit, 0 travellers means 1
+r = act("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": DATE, "adults": 0, "max_price": 0, "currency": "SGD"})
+kl0 = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
+s0 = ((r.get("result") or {}).get("content") or {}).get("searched") or {}
+K.check("max_price 0 and adults 0: Kiwi.com is asked with no price limit and 1 adult, and the result says so", "price_to" not in kl0 and kl0.get("adults") == 1
+        and s0.get("max_price") == "no limit (every price)" and s0.get("adults") == 1 and ((r.get("result") or {}).get("content") or {}).get("count") == 2, (kl0, s0))
+r = act("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": DATE, "adults": "-3", "max_price": -50, "currency": "SGD"})
+kl0 = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
+K.check("a negative price and a negative traveller count are fixed the same way", "price_to" not in kl0 and kl0.get("adults") == 1, kl0)
+r = act("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": DATE, "adults": 2, "max_price": 700, "currency": "SGD"})
+kl0 = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
+K.check("a real budget and a real party size go through unchanged", kl0.get("price_to") == 700 and kl0.get("adults") == 2, kl0)
 r = act("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": DATE, "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"})
 env = r.get("result") or {}
 res = env.get("content") or {}
@@ -141,6 +153,14 @@ K.check("the standing preferences say: ONE search with the preference (flights, 
         sysp and "never a second search without it to compare" in sysp[0] and "ONE flights_search with the airline in airlines=[…]" in sysp[0]
         and "ONE hotels_search with the brand" in sysp[0] and "ONE web_search with the rental company" in sysp[0]
         and "When the user asks for all airlines, hotels or rental companies" in sysp[0] and "ask whether to search all airlines / hotels / companies" in sysp[0], (sysp[0][sysp[0].find("Standing"):][:700] if sysp else None))
+
+# the model sends max_price 0 and adults 0: the call that runs (and the timeline) has no cap and 1 adult
+tz = K.run(f"ZEROCAP cheapest flight Singapore to Tokyo on {DATE} DATE={DATE}")
+fz = [x["args"] for x in K.calls(tz) if x.get("name") == "flights_search"]
+kz = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
+K.check("through the agent: the recorded flights_search has no max_price and adults 1; Kiwi.com got no price_to; offers came back",
+        tz["status"] == "COMPLETED" and len(fz) == 1 and "max_price" not in fz[0] and fz[0].get("adults") == 1 and "price_to" not in kz and kz.get("adults") == 1
+        and "any price" in (tz.get("result") or ""), (fz, kz, (tz.get("result") or "")[:200]))
 
 # the preferred airline has nothing on the route: still ONE search (with the preference), and the answer asks before broadening
 K.set_profile(preferred_airline="Emirates")
