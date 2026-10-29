@@ -196,11 +196,13 @@ impl Runtime {
             let task_id = get_str(t, "id");
             let name = call.name.as_str();
             let sub = mode.sub;
-            let args = if truthy(&call.args) {
+            let mut args = if truthy(&call.args) {
                 call.args.clone()
             } else {
                 json!({})
             };
+            // invalid numbers become what the user means (no budget = every price, 0 travellers = 1)
+            omuse_common::util::sanitize_search_args(&mut args);
             let mut ev =
                 json!({"call_id": call.id, "name": name, "args": preview_args(&args), "sub": sub});
             if !mode.lane.is_empty() {

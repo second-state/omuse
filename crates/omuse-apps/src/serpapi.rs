@@ -51,6 +51,20 @@ pub fn max_stops(a: &Value) -> Option<u8> {
     None
 }
 
+/// A count of people from the request (`adults`, `guests`): `missing` when not given; a whole number from 1 to `max`
+/// otherwise — 0, a negative number or anything that is not a number is 1, more than `max` is `max`.
+pub fn people(a: &Value, key: &str, missing: i64, max: i64) -> i64 {
+    match a.get(key) {
+        None | Some(Value::Null) => missing,
+        Some(v) => v
+            .as_f64()
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+            .filter(|x| x.is_finite() && *x >= 1.0)
+            .map(|x| (x.floor() as i64).min(max))
+            .unwrap_or(1),
+    }
+}
+
 /// A price cap from the request: only a positive number caps anything (a model filling defaults sends 0).
 pub fn price_cap(a: &Value, key: &str) -> Option<i64> {
     a.get(key)
@@ -78,8 +92,9 @@ pub fn searched(a: &Value, from: &str, to: &str) -> Value {
     json!({
         "origin": from, "destination": to, "date": get_str(a, "date"),
         "trip": if ret.is_empty() { "one way".to_string() } else { format!("round trip, return {ret}") },
-        "adults": a.get("adults").and_then(Value::as_i64).filter(|n| *n >= 1).unwrap_or(1),
+        "adults": people(a, "adults", 1, 9),
         "cabin": cabin, "stops": stops,
+        "max_price": price_cap(a, "max_price").map_or_else(|| json!("no limit (every price)"), |m| json!(m)),
         "rule": format!("every offer below is a {cabin} fare with {stops}; answer in these terms — name the cabin ({cabin}) and the stop limit in the answer — and if the user asked for a different cabin, date or stop limit, search again instead of presenting these{}{}",
             if cabin == "economy" { String::new() } else { format!("; an itinerary whose main legs are in this cabin but with a lower-cabin leg (a short economy connection, `cabin_mix`) counts as a {cabin} itinerary — keep it, and say which legs are in which cabin") },
             if pref_list(a, "airlines").is_empty() { "" } else { "; this search used the user's preferred airlines (offers marked preferred are on them) and is the only one — do not search again without them; when no preferred offer is good (preferred_found 0, or none fits the request), answer with what was found and ask whether to search all airlines" }),
@@ -869,11 +884,7 @@ impl SerpApi {
             "duration" => "5",
             _ => "1",
         };
-        let adults = a
-            .get("adults")
-            .and_then(Value::as_i64)
-            .filter(|n| *n >= 1)
-            .unwrap_or(1);
+        let adults = people(a, "adults", 1, 9);
         let mut params = vec![
             ("engine", "google_flights".to_string()),
             ("departure_id", from),
@@ -1024,11 +1035,7 @@ impl SerpApi {
                 c
             }
         };
-        let guests = a
-            .get("guests")
-            .and_then(Value::as_i64)
-            .filter(|n| *n >= 1)
-            .unwrap_or(2);
+        let guests = people(a, "guests", 2, 20);
         let mut params = vec![
             ("engine", "google_hotels".to_string()),
             ("q", q),
@@ -1064,7 +1071,10 @@ impl SerpApi {
             } else {
                 ""
             };
-            params.push(("rating", code.to_string()));
+            // Google's rating filter starts at 3.5: a lower minimum is no filter at all, not an empty parameter
+            if !code.is_empty() {
+                params.push(("rating", code.to_string()));
+            }
         }
         match get_str(a, "sort").to_lowercase().as_str() {
             "price" => params.push(("sort_by", "3".to_string())),
@@ -1078,6 +1088,7 @@ impl SerpApi {
         out["searched"] = json!({
             "city": city.trim(), "area": area.trim(), "check_in": params[2].1, "check_out": params[3].1, "guests": guests,
             "brands": brands, "preferred_found": found,
+            "max_price_per_night": price_cap(a, "max_price_per_night").map_or_else(|| json!("no limit (every price)"), |m| json!(m)),
             "rule": if brands.is_empty() { "answer for the city, area, dates and guests searched" } else { "this search used the user's preferred brands (hotels marked preferred are them) and is the only one — do not search again without them; show the best of them next to the best value, with the price difference; when no preferred hotel is good (preferred_found 0, or none fits the request), answer with what was found and ask whether to search all hotels" },
         });
         Ok(out)
@@ -1175,11 +1186,7 @@ impl SerpApi {
                 c
             }
         };
-        let guests = a
-            .get("guests")
-            .and_then(Value::as_i64)
-            .filter(|n| *n >= 1)
-            .unwrap_or(2);
+        let guests = people(a, "guests", 2, 20);
         let data = self
             .get(
                 "search.json",
@@ -1330,6 +1337,15 @@ mod tests {
         assert_eq!(max_stops(&json!({"stops": "one_stop_max"})), Some(1));
         assert_eq!(max_stops(&json!({"stops": "two_stops_max"})), Some(2));
         assert_eq!(price_cap(&json!({"max_price": 0}), "max_price"), None);
+        assert_eq!(price_cap(&json!({"max_price": -5}), "max_price"), None);
+        assert_eq!(people(&json!({}), "adults", 1, 9), 1);
+        assert_eq!(people(&json!({}), "guests", 2, 20), 2);
+        for bad in [json!(0), json!(-3), json!("x"), json!(0.5), json!(true)] {
+            assert_eq!(people(&json!({"adults": bad}), "adults", 1, 9), 1);
+        }
+        assert_eq!(people(&json!({"adults": "3"}), "adults", 1, 9), 3);
+        assert_eq!(people(&json!({"adults": 2.9}), "adults", 1, 9), 2);
+        assert_eq!(people(&json!({"adults": 40}), "adults", 1, 9), 9);
         assert_eq!(
             price_cap(&json!({"max_price": 900.5}), "max_price"),
             Some(900)

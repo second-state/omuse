@@ -126,7 +126,9 @@ scenario (`tests/parallel_steps_e2e.py`).
 ## Tests
 
 - Rust: `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --check`.
-- Full local suite: `tests/run_in_docker.sh` (fresh stack per suite).
+- Full local suite: `tests/run_in_docker.sh` (fresh stack per suite). After every suite `tests/args_guard.py` checks
+  that no search ran with a price cap ≤ 0 or fewer than 1 traveller (the recorded tool calls and the requests the fake
+  Kiwi.com, SerpApi and travel connector received); a violation fails the suite.
 - Real-model runs: the travel suites with `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env` (`OMUSE_E2E_MODELS=alt` for
   the second model pair); `tests/travel_ask_real.py` asks two research-only travel questions and checks that no
   browser, approval or takeover was involved, with a TIMING line each; `tests/browser_auto_real.py` reads a hotel booking from mail and

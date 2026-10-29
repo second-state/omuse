@@ -1021,6 +1021,8 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
         Some(Value::Object(m)) => Value::Object(m.clone()),
         _ => json!({}),
     };
+    // invalid numbers become what the user means: a price cap of 0 = no limit, 0 travellers = 1 (see the function)
+    omuse_common::util::sanitize_search_args(&mut args);
     let task_id = s_or(&b, "task_id", "");
     let call_id = s_or(&b, "call_id", "");
     // a sub-agent's browser lane: its own page in the broker; policy, taint and audit stay with the task

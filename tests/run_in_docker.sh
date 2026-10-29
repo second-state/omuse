@@ -55,6 +55,11 @@ for f in $SUITES; do
   rm -f /tmp/claude-0/travel_last.json
   # real-model runs take longer
   timeout "${OMUSE_SUITE_TIMEOUT:-$([ -n "${OMUSE_E2E_REAL:-}" ] && echo 1800 || echo 420)}" python3 "tests/$f.py" > "/tmp/out-$f.log" 2>&1; rc=$?
+  # every suite: no search ran with a price cap ≤ 0 or fewer than 1 traveller (tests/args_guard.py)
+  if ! python3 tests/args_guard.py > "/tmp/guard-$f.log" 2>&1; then
+    rc=1
+    sed 's/^GUARD /FAIL args guard: /' "/tmp/guard-$f.log" | grep '^FAIL' >> "/tmp/out-$f.log"
+  fi
   echo "SUITE $f rc=$rc $(( $(date +%s) - t0 ))s pass=$(grep -c '^PASS' "/tmp/out-$f.log") fail=$(grep -c '^FAIL' "/tmp/out-$f.log")"
   grep '^TIMING ' "/tmp/out-$f.log" | sed 's/^/  /'
   if [ -d /repo-out ]; then

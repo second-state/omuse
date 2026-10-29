@@ -10,6 +10,7 @@ Behaviour is chosen from the latest user goal text:
  - 'SCHEDULE' goal -> schedule_create then final
  - otherwise -> plain answer
 """
+import datetime as _dtm
 import json
 import os
 import re
@@ -1572,9 +1573,12 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
                 return reply("NO_SEARCH_API")
             # one data tool each, in ONE turn: flights_search (Kiwi.com), hotels_search (web search without the key), and
             # web_search only for the car (no data tool for cars)
-            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": "2026-11-20", "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"}),
-                              tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": "2026-11-20", "check_out": "2026-11-23", "min_stars": 4}),
-                              tc_("web_search", {"query": "Tokyo Narita airport car rental 20 Nov 2026 compact", "max_results": 5})])
+            # the trip date comes from the request (DATE=…), so it never falls in the past
+            d1 = _dtm.date.fromisoformat(re.search(r"DATE=(\d{4}-\d\d-\d\d)", goal).group(1))
+            d3 = d1 + _dtm.timedelta(days=3)
+            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": d1.isoformat(), "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"}),
+                              tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": d1.isoformat(), "check_out": d3.isoformat(), "min_stars": 4}),
+                              tc_("web_search", {"query": f"Tokyo Narita airport car rental {d1.day} {d1:%b %Y} compact", "max_results": 5})])
         allt = "\n".join(str(m["content"]) for m in tools_done)
         srcs = re.findall(r"web search \(([^)]+)\)", allt)
         kiwi = "Kiwi.com" in allt and "kiwi.com/u/" not in allt.lower()
@@ -1608,6 +1612,12 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         pref = ' — your preferred airline (flagged preferred in the data)' if '"preferred": true' in allt or '\\"preferred\\": true' in allt else ''
         return reply(f"BUSINESS CLASS, nonstop, {date} Tokyo (all airports) → Singapore, searched as {m.group(1) if m else '?'} / nonstop only: "
                      f"Singapore Airlines SQ638 09:25 → 17:15, SGD 2108 (business, 1 checked bag){pref}. Book on singaporeair.com or with your agency — say the word.")
+    if "ZEROCAP" in goal:   # a model filling defaults: max_price 0 and adults 0 — the tool must search every price for 1 adult
+        date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
+        if n == 0:
+            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "TYO", "date": date, "adults": 0, "max_price": 0,
+                                                     "cabin": "economy", "stops": "any", "sort": "price", "currency": "SGD"})])
+        return reply(f"{date} Singapore → Tokyo, any price: Cathay Pacific via HKG SGD 510; Singapore Airlines SQ638 SGD 620 direct.")
     if "PREFNONE" in goal:   # the preferred airline goes into the ONE search; it has no offer → answer and ask before searching all airlines
         date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
         if n == 0:

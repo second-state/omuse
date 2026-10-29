@@ -14,4 +14,5 @@ pub mod py;
 pub mod pydt;
 pub mod serpapi;
 pub mod slack;
+pub mod travel_args;
 pub mod websearch;

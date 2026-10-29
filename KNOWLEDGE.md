@@ -155,6 +155,31 @@ the add form). The travel skills name the built-in tools first, then an MCP conn
 note on how to connect. `[endpoints] serpapi` points the client at `tests/fake_apps.py`'s stand-in (`/serpapi/*`);
 `tests/travel_search_e2e.py`, `tests/travel_card_ui.py`.
 
+## Search input validation (`omuse_apps::travel_args`, `omuse_common::util::sanitize_search_args`)
+
+The model's arguments are never trusted for numbers: a model filling in defaults sends `max_price: 0` ("nothing is
+affordable") or `adults: 0`. Validation is code, deterministic, and runs before any data source is asked:
+
+- **Sentinel, every action** (`/internal/act`): `sanitize_search_args` on the arguments of every tool, built-in and
+  connector alike — a price cap (`max_price`, `max_price_per_night`, `price_to`, `budget` …) that is not a positive
+  number is removed (no limit), a count of people or rooms (`adults`, `guests`, `party_size`, `passengers` …) below 1
+  becomes 1, children / infants below 0 become 0, a rating outside 0–5, a star class outside 1–5 and a price level
+  outside 1–4 are removed. The runtime applies the same function before a call is logged, so the timeline shows what
+  ran.
+- **The travel and web search tools** (`travel_args::validate`): per tool — `flights_search`, `flight_offer`,
+  `hotels_search`, `hotel_rooms`, `places_search`, `place_details`, `web_search`, `news_search`. Values that have an
+  obvious meaning are replaced (adults 1–9, guests 1–20, an unknown cabin → economy, unknown stops → any, an unknown
+  sort → the source's order, a bad currency → the default, `max_stops` outside 0–2 → removed, yes/no flags made real
+  booleans, a minimum price level above the maximum → swapped, `2026/11/5` → `2026-11-05`, `max_results` outside 1–20
+  → 8) and reported to the model as `input_fixed`; what cannot be guessed is refused with how to fix it (no or an
+  impossible date, a date in the past, a return before the departure, a range ending before it starts, check-out on
+  or before check-in, more than 30 nights, origin = destination, a missing city or id).
+- The flight and hotel clients keep their own defaults on top (`serpapi::people`, `price_cap`), and each result's
+  `searched` block states the price limit (`no limit (every price)`) and the party size used.
+- `tests/args_guard.py` runs after **every** e2e suite (`tests/run_in_docker.sh`): no recorded tool call and no request
+  to the fake Kiwi.com, SerpApi or travel connector may carry a price cap ≤ 0 or fewer than 1 traveller; a violation
+  fails the suite.
+
 ## Search services: who answers what
 
 - `web_search` (every model call): the browser's own search engines first (free; as fast as the APIs — about 1.6 s a
