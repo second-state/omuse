@@ -1958,6 +1958,22 @@ pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str)
                 Ok(d) if d["count"].as_u64().unwrap_or(0) > 0 => {
                     ("Kiwi.com flights (information only)", d)
                 }
+                // narrowed to the user's preferred airlines and none flies it: that is the answer (the model says so and
+                // asks before searching all airlines) — Google Flights may still have them, the web search would not filter
+                Ok(d) if get_str(&d["searched"], "airline_filter").starts_with("only these airlines") => {
+                    let google = if keyed {
+                        travel_client(st)?.flights(args).await.ok()
+                    } else {
+                        None
+                    };
+                    match google {
+                        Some(mut g) if g["count"].as_u64().unwrap_or(0) > 0 => {
+                            g["fallback"] = json!("Kiwi.com found no flight on the preferred airlines; these are Google Flights results");
+                            ("Google Flights (fallback)", g)
+                        }
+                        _ => ("Kiwi.com flights (information only)", d),
+                    }
+                }
                 Ok(_) => {
                     failed.push("Kiwi.com found no flights".into());
                     flights_after_kiwi(st, args, task_id, keyed, failed).await?

@@ -102,6 +102,38 @@ pub fn searched(a: &Value, from: &str, to: &str) -> Value {
     })
 }
 
+fn join_ids(ids: &[u64]) -> String {
+    let mut v: Vec<u64> = Vec::new();
+    for i in ids {
+        if !v.contains(i) {
+            v.push(*i);
+        }
+    }
+    v.iter().map(u64::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// The preferences plus the IATA codes they stand for, for [`mark_preferred`] (an offer flags by its flight number's code).
+pub fn with_codes(prefs: &[String], codes: &Result<Vec<String>, Vec<String>>) -> Vec<String> {
+    let mut v = prefs.to_vec();
+    if let Ok(c) = codes {
+        v.extend(
+            c.iter()
+                .filter(|x| !v.contains(x))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+    }
+    v
+}
+
+/// What the airline preference did to the search, in the result's `searched` (the model reports it as it is).
+pub fn airline_filter_note(codes: &Result<Vec<String>, Vec<String>>) -> Value {
+    match codes {
+        Ok(c) => json!(format!("only these airlines were searched: {}", c.join(","))),
+        Err(u) => json!(format!("all airlines were searched (no airline code known for {}); offers on the preferred airlines are marked preferred", u.join(", "))),
+    }
+}
+
 /// A list argument (`airlines`, `brands`): a JSON array of strings, or one comma-separated string; trimmed, empty
 /// entries dropped.
 pub fn pref_list(a: &Value, key: &str) -> Vec<String> {
@@ -912,29 +944,40 @@ impl SerpApi {
         if let Some(m) = price_cap(a, "max_price") {
             params.push(("max_price", m.to_string()));
         }
-        // preferred airlines given as 2-letter codes or alliances narrow Google's search; names only flag the offers
+        // preferred airlines narrow Google's search: alliances by Google's own alliance values, airlines by IATA code
+        // (names through crate::loyalty::airline_codes); one it cannot place leaves all airlines in
         let airlines = pref_list(a, "airlines");
-        let google: Vec<String> = airlines
-            .iter()
-            .filter_map(|x| {
-                if x.len() == 2 && x.chars().all(|c| c.is_ascii_alphanumeric()) {
-                    Some(x.to_ascii_uppercase())
-                } else {
-                    crate::loyalty::alliance(x).map(|al| al.1.to_string())
+        let filter = crate::loyalty::airline_codes(&airlines);
+        if filter.is_ok() && !airlines.is_empty() {
+            let mut google: Vec<String> = Vec::new();
+            for x in &airlines {
+                let one = match crate::loyalty::alliance(x) {
+                    Some(al) => vec![al.1.to_string()],
+                    None => {
+                        crate::loyalty::airline_codes(std::slice::from_ref(x)).unwrap_or_default()
+                    }
+                };
+                for g in one {
+                    if !google.contains(&g) {
+                        google.push(g);
+                    }
                 }
-            })
-            .collect();
-        if !airlines.is_empty() && google.len() == airlines.len() {
+            }
             params.push(("include_airlines", google.join(",")));
         }
         let data = self.get("search.json", &params).await?;
         let mut out = compact_flights(&data, &currency);
-        let found = mark_preferred(&mut out["offers"], &airlines, "airlines");
+        let found = mark_preferred(
+            &mut out["offers"],
+            &with_codes(&airlines, &filter),
+            "airlines",
+        );
         tag_cabins(&mut out["offers"], a);
         out["searched"] = searched(a, &params[1].1, &params[2].1);
         if !airlines.is_empty() {
             out["searched"]["airlines"] = json!(airlines);
             out["searched"]["preferred_found"] = json!(found);
+            out["searched"]["airline_filter"] = airline_filter_note(&filter);
         }
         // a booking-options request must repeat the route and dates: keep them with each offer's token
         let route = json!({"departure_id": params[1].1, "arrival_id": params[2].1, "outbound_date": params[3].1,
@@ -1012,8 +1055,15 @@ impl SerpApi {
         }
         let area = get_str(a, "area");
         let brands = pref_list(a, "brands");
-        // one or two preferred brands or groups go into Google's query ("Hilton hotels near Ginza Tokyo", "IHG hotels
-        // near …" — a programme's name is cut to its first word); more only flag the results
+        let query = |lead: &str| {
+            if area.trim().is_empty() {
+                format!("{lead}{} hotels", city.trim())
+            } else {
+                format!("{lead}hotels near {} {}", area.trim(), city.trim())
+            }
+        };
+        // without Google brand ids: one or two preferred brands or groups go into the query instead ("Hilton hotels near
+        // Ginza Tokyo", "IHG hotels near …" — a programme's name is cut to its first word); more only flag the results
         let word = |b: &String| match crate::loyalty::hotel_group(b) {
             Some(g) => crate::loyalty::group_word(g.0).to_string(),
             None => b.clone(),
@@ -1022,11 +1072,6 @@ impl SerpApi {
             1 => format!("{} ", word(&brands[0])),
             2 => format!("{} or {} ", word(&brands[0]), word(&brands[1])),
             _ => String::new(),
-        };
-        let q = if area.trim().is_empty() {
-            format!("{lead}{} hotels", city.trim())
-        } else {
-            format!("{lead}hotels near {} {}", area.trim(), city.trim())
         };
         let currency = {
             let c = get_str(a, "currency").to_uppercase();
@@ -1039,7 +1084,7 @@ impl SerpApi {
         let guests = people(a, "guests", 2, 20);
         let mut params = vec![
             ("engine", "google_hotels".to_string()),
-            ("q", q),
+            ("q", query("")),
             ("check_in_date", check_in),
             ("check_out_date", check_out),
             ("adults", guests.to_string()),
@@ -1083,14 +1128,53 @@ impl SerpApi {
             "reviews" => params.push(("sort_by", "13".to_string())),
             _ => {}
         }
-        let data = self.get("search.json", &params).await?;
+        // preferred brands and groups narrow the search with Google's own brand filter (a group's id takes all its
+        // brands): known groups at once (crate::loyalty::GOOGLE_HOTEL_GROUP_IDS); any other preference by name from the
+        // `brands` list of a first, unfiltered search of the same place; one Google does not list there → the query
+        let fixed: Option<Vec<u64>> = brands
+            .iter()
+            .map(|b| crate::loyalty::google_group_id(b).map(u64::from))
+            .collect();
+        let mut filter = "";
+        let data = match fixed {
+            Some(ids) if !brands.is_empty() => {
+                params.push(("brands", join_ids(&ids)));
+                filter = "brands";
+                self.get("search.json", &params).await?
+            }
+            _ if brands.is_empty() => self.get("search.json", &params).await?,
+            _ => {
+                let first = self.get("search.json", &params).await?;
+                let list = arr(&first, "brands");
+                let found: Vec<Vec<u64>> = brands
+                    .iter()
+                    .map(|b| match crate::loyalty::google_group_id(b) {
+                        Some(id) => vec![u64::from(id)],
+                        None => crate::loyalty::google_brand_ids(b, list),
+                    })
+                    .collect();
+                if found.iter().all(|f| !f.is_empty()) {
+                    params.push(("brands", join_ids(&found.concat())));
+                    filter = "brands";
+                } else {
+                    params[1].1 = query(&lead);
+                    filter = "query";
+                }
+                self.get("search.json", &params).await?
+            }
+        };
         let mut out = compact_hotels(&data, &currency);
         let found = mark_preferred(&mut out["hotels"], &brands, "name");
+        let brand_filter = match filter {
+            "brands" => json!(format!("only these brands were searched (Google's brand filter; a group takes all its brands): {}", brands.join(", "))),
+            "query" => json!(format!("Google lists no brand filter for {} here: the brand names went into the search words, other hotels may appear; those of the preferred brands are marked preferred", brands.join(", "))),
+            _ => Value::Null,
+        };
         out["searched"] = json!({
             "city": city.trim(), "area": area.trim(), "check_in": params[2].1, "check_out": params[3].1, "guests": guests,
-            "brands": brands, "preferred_found": found,
+            "brands": brands, "preferred_found": found, "brand_filter": brand_filter,
             "max_price_per_night": price_cap(a, "max_price_per_night").map_or_else(|| json!("no limit (every price)"), |m| json!(m)),
-            "rule": if brands.is_empty() { "answer for the city, area, dates and guests searched" } else { "this search used the user's preferred brands (hotels marked preferred are them) and is the only one — do not search again without them; show the best of them next to the best value, with the price difference; when no preferred hotel is good (preferred_found 0, or none fits the request), answer with what was found and ask whether to search all hotels" },
+            "rule": if brands.is_empty() { "answer for the city, area, dates and guests searched" } else if filter == "brands" { "this search was limited to the user's preferred brands and is the only one — do not search again without them; when none of them is good (no hotels, or none fits the request), say so and ask whether to search all hotels" } else { "this search used the user's preferred brands (hotels marked preferred are them) and is the only one — do not search again without them; show the best of them next to the best value, with the price difference; when no preferred hotel is good (preferred_found 0, or none fits the request), answer with what was found and ask whether to search all hotels" },
         });
         Ok(out)
     }

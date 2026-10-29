@@ -52,4 +52,17 @@ K.check("a 3-day range against the real Kiwi: one call, three days with a cheape
         and all(b.get("count", 0) > 0 for b in rg["by_date"]) and all(o.get("date") for o in rg["offers"])
         and [o["price"] for o in rg["offers"]] == sorted(o["price"] for o in rg["offers"]), json.dumps(r)[:500])
 K.check("the result repeats the search: Tokyo, business, nonstop only", res.get("searched", {}).get("origin") == "Tokyo" and res["searched"]["cabin"] == "business" and res["searched"]["stops"] == "nonstop only", res.get("searched"))
+# an alliance: Kiwi.com knows none, so Star Alliance goes in as its members' IATA codes (select_airlines) and every
+# offer that comes back is flown by Star Alliance airlines only
+STAR = {"A3", "AC", "CA", "AI", "NZ", "NH", "OZ", "OS", "AV", "SN", "CM", "OU", "MS", "ET", "BR", "LO", "LH", "ZH", "SQ", "SA", "LX", "TP", "TG", "TK", "UA"}
+t0 = time.time()
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "fr-t4", "call_id": "c4", "tool": "flights_search",
+                                                  "args": {"origin": "SIN", "destination": "TYO", "date": DATE, "airlines": ["Star Alliance"], "currency": "SGD"}}, timeout=120).json()
+res = (r.get("result") or {}).get("content") or {}
+offers = res.get("offers") or []
+carriers = sorted({leg["flight_number"].replace(" ", "")[:2] for o in offers for leg in o.get("legs", [])})
+print(f"INFO Star Alliance {time.time() - t0:.1f} s, {len(offers)} offers, carriers {carriers}: " + " | ".join(f"{o['airlines']} {o['price']}" for o in offers[:4]))
+K.check("Star Alliance against the real Kiwi: offers come back, every leg on a Star Alliance airline, all marked preferred",
+        r.get("status") == "ok" and offers and set(carriers) <= STAR and all(o.get("preferred") for o in offers)
+        and "only these airlines were searched" in str(res.get("searched", {}).get("airline_filter")), (carriers, res.get("searched")))
 K.finish()

@@ -284,6 +284,15 @@ impl KiwiMcp {
         if let Some(m) = crate::serpapi::price_cap(a, "max_price") {
             args["price_to"] = json!(m);
         }
+        // preferred airlines narrow the search itself: Kiwi takes IATA codes only, so an alliance goes in as all its
+        // members and a name as its code (crate::loyalty::airline_codes); one it cannot place leaves all airlines in
+        let prefs = crate::serpapi::pref_list(a, "airlines");
+        let filter = crate::loyalty::airline_codes(&prefs);
+        if let Ok(codes) = &filter {
+            if !codes.is_empty() {
+                args["select_airlines"] = json!(codes.join(","));
+            }
+        }
         let post = |body: Value| {
             self.client
                 .post(&self.url)
@@ -340,13 +349,17 @@ impl KiwiMcp {
             ))
         })?;
         let mut out = compact_flights(&data);
-        let airlines = crate::serpapi::pref_list(a, "airlines");
-        let found = crate::serpapi::mark_preferred(&mut out["offers"], &airlines, "airlines");
+        let found = crate::serpapi::mark_preferred(
+            &mut out["offers"],
+            &crate::serpapi::with_codes(&prefs, &filter),
+            "airlines",
+        );
         crate::serpapi::tag_cabins(&mut out["offers"], a);
         out["searched"] = crate::serpapi::searched(a, &from, &to);
-        if !airlines.is_empty() {
-            out["searched"]["airlines"] = json!(airlines);
+        if !prefs.is_empty() {
+            out["searched"]["airlines"] = json!(prefs);
             out["searched"]["preferred_found"] = json!(found);
+            out["searched"]["airline_filter"] = crate::serpapi::airline_filter_note(&filter);
         }
         Ok(out)
     }

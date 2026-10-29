@@ -107,8 +107,24 @@ fn calls_before(transcript: &[Value], call_id: &str) -> Vec<(String, Value)> {
     prev
 }
 
+/// The page a browser call ended on (the `"url"` its result reports), by call id.
+fn result_urls(transcript: &[Value]) -> std::collections::HashMap<String, String> {
+    static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""url":\s*"([^"]+)""#).unwrap());
+    transcript
+        .iter()
+        .filter(|m| get_str(m, "role") == "tool")
+        .filter_map(|m| {
+            let c = content_of(m);
+            URL.captures(&c)
+                .map(|u| (get_str(m, "tool_call_id"), u[1].to_string()))
+        })
+        .collect()
+}
+
 /// browser_type into a field the agent already filled on this page, with different text, is almost always a mix-up
 /// (e.g. typing the first name into the booking-number box and wiping it). Ask it to use the right field instead.
+/// Refs are per page: a field typed on another page (2026-10-29: "Japan" in the quote page's e1, then the application
+/// page's e1 is the full name — reached by a plain link click) is a different field.
 pub fn retype_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
     if call.name != "browser_type" {
         return None;
@@ -118,8 +134,27 @@ pub fn retype_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
     if r.is_empty() || get_truthy(args, "replace") {
         return None;
     }
+    let urls = result_urls(transcript);
+    let mut ids: Vec<String> = Vec::new();
+    'outer: for m in transcript {
+        for tc in tool_calls(m) {
+            if get_str(tc, "id") == call.id {
+                break 'outer;
+            }
+            ids.push(get_str(tc, "id"));
+        }
+    }
+    // the page the agent is on now: the last browser call's
+    let here = ids.iter().rev().find_map(|i| urls.get(i)).cloned();
     let prev = calls_before(transcript, &call.id);
-    for (nm, a) in prev.iter().rev() {
+    for ((nm, a), id) in prev.iter().zip(ids.iter()).rev() {
+        if nm == "browser_type" && sget(a, "ref") == r {
+            if let (Some(then), Some(now)) = (urls.get(id), here.as_ref()) {
+                if then != now {
+                    return None;
+                }
+            }
+        }
         if nm == "browser_navigate" || nm == "browser_back" {
             return None;
         }
