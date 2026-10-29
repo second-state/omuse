@@ -311,6 +311,9 @@ async def _chat(req: Request, b: dict):
         # a summary, not the raw <subagent_report> tags (angle-bracket markup is stripped from answers)
         found = re.findall(r"SUBREPORT (Hotel\w+)", "\n".join(str(m["content"]) for m in tools_done))
         return reply("PARALLEL RESULT: " + ", ".join(found))
+    bk = bots_flow(goal, sys, msgs, tools_done, n, allu)
+    if bk is not None:
+        return bk
     sk = travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames)
     if sk is not None:
         return sk
@@ -1437,6 +1440,49 @@ def fwd_insurance(goal, msgs):
                      "- **Email:** a draft to claims.hk@bolttechinsurance.com with the form and Cathay Pacific's delay letter attached — sign the form, "
                      "replace it in the draft and send it.\n- **Reminders:** a weekly mail check for bolttech's reply.\n\n"
                      "bolttech claims enquiries: +852 3123 3344. Emergency assistance: +852 2000 0100 (from your policy). bolttech decides the claim.")
+    return None
+
+
+def bots_flow(goal, sys, msgs, tools_done, n, allu):
+    """bots_e2e.py: the main bot hands a request to the Travel booking bot (ask_bot) and shows its answer; a follow-up
+    goes back to the same bot conversation; an approval and a takeover inside the bot."""
+    main = "## Bots" in sys
+    travel = "You are the Travel booking bot" in sys
+    date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", allu) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-12-20")).group(1)
+    if main and n == 0:
+        for marker, kid in (("BOTHAND", f"BOTKID1 cheapest flight Singapore to Tokyo on {date} DATE={date}"),
+                            ("BOTAPPR", "BOTKIDAPPR book the SQ638 for SGD 620"), ("BOTWAIT", "BOTKIDWAIT log in to the airline site")):
+            if marker in goal:
+                return reply("", [tc("ask_bot", {"bot": "travel", "question": kid})])
+        if "BOTFOLLOW" in goal:
+            hist = "\n".join(str(m["content"]) for m in msgs if m["role"] in ("user", "assistant"))
+            m = re.search(r"\[answered by the travel bot in conversation (conv_\w+)\]", hist)
+            if not m:
+                return reply("NO HANDOFF IN HISTORY")
+            return reply("", [tc("ask_bot", {"bot": "travel", "conversation_id": m.group(1),
+                                             "question": "BOTKID2 and the return flight a week later"})])
+        if "BOTSKILL" in goal:   # the main bot has no travel skill: load_skill is refused and points to ask_bot
+            return reply("", [tc("load_skill", {"name": "flight-booking"})])
+    if main and "BOTSKILL" in goal:
+        return reply("MAIN SAW: " + str(tools_done[-1]["content"])[:200])
+    if travel and "BOTKID1" in goal:
+        if n == 0:
+            return reply("", [tc("load_skill", {"name": "flight-booking"})])
+        if n == 1:
+            return reply("", [tc("flights_search", {"origin": "SIN", "destination": "TYO", "date": date, "cabin": "economy", "currency": "SGD"})])
+        return reply(f"TRAVELBOT ANSWER {date}: Singapore Airlines SQ638 SGD 620 direct; Cathay Pacific via HKG SGD 510.")
+    if travel and "BOTKID2" in goal:
+        earlier = "TRAVELBOT ANSWER" in allu or any("TRAVELBOT ANSWER" in str(m["content"]) for m in msgs if m["role"] == "assistant")
+        return reply("TRAVELBOT FOLLOW-UP: " + ("the outbound was SQ638, so the return is SQ637 a week later." if earlier else "NO CONTEXT"))
+    if travel and "BOTKIDAPPR" in goal:
+        if n == 0:
+            return reply("", [tc("purchase_confirm", {"site": "shop.test", "items": [{"name": "Flight SQ638 SIN-NRT", "price": 620}],
+                                                      "total": 620, "currency": "SGD"})])
+        return reply("TRAVELBOT BOOKED: the purchase of SQ638 was approved.")
+    if travel and "BOTKIDWAIT" in goal:
+        if n == 0:
+            return reply("", [tc("browser_request_takeover", {"reason": "please log in to the airline site"})])
+        return reply("TRAVELBOT DONE after the takeover.")
     return None
 
 

@@ -6,6 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests import skills_common as K  # noqa: E402
+K.BOT = "cards"   # the Credit cards bot has this suite's skills (crate::bots)
 
 K.setup()
 K.set_profile(**{"custom:credit cards": "Chase Sapphire Reserve; Citi Double Cash", "custom:card market": "US"})

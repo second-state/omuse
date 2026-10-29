@@ -316,6 +316,14 @@ in the chat) and write the final answer.");
                 content = self.dry_run_stop(&task_id, name, &args, "").await;
                 ok = false;
                 refused = true;
+            } else if name == "ask_bot" && !sub {
+                match self.ask_bot(t, &args, call, remaining).await {
+                    Ok(sp) => return Err(sp),
+                    Err(e) => {
+                        content = e;
+                        ok = false;
+                    }
+                }
             } else if is_local(name) {
                 match self.local(t, name, &args).await {
                     Ok(c) => {

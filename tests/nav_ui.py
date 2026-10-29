@@ -1,4 +1,5 @@
-"""Sidebar navigation: Chat, Browser, Connections, Memory · Trust, Audit · Skills, Settings (two separators); the Tasks and
+"""Sidebar navigation: the bots (Main first, then the specialised ones) · Browser, Connections, Memory · Trust, Audit ·
+Skills, Settings (three separators); the Tasks and
 Automations views are not listed but #tasks/<id> still opens a task (Audit links to it); the Health section of the Trust page
 is in English when the UI language is English (no Chinese in any component detail)."""
 import asyncio
@@ -31,9 +32,12 @@ async def main():
         await pg.goto(B + "#chat")
         await pg.wait_for_selector("#navlinks a")
         labels = await pg.evaluate("() => [...document.querySelectorAll('#navlinks a')].map(a => [...a.childNodes].filter(n => !(n.classList && (n.classList.contains('ic') || n.classList.contains('badge')))).map(n => n.textContent).join('').trim())")
-        check("the sidebar shows the eight views in order", labels == ["Chat", "Browser", "Connections", "Memory", "Trust", "Audit", "Skills", "Settings"], labels)
+        BOTS = ["Main", "Travel booking", "City guides", "Arrival & entry", "Travel insurance & claims", "Credit cards", "Photos & videos"]
+        check("the sidebar shows the bots (Main first) in place of Chat, then the seven views in order",
+              labels == BOTS + ["Browser", "Connections", "Memory", "Trust", "Audit", "Skills", "Settings"], labels)
         seps = await pg.evaluate("() => [...document.querySelectorAll('#navlinks > *')].map(e => e.classList.contains('navsep') ? '|' : (a => [...a.childNodes].filter(n => !(n.classList && (n.classList.contains('ic') || n.classList.contains('badge')))).map(n => n.textContent).join('').trim())(e)).join(' ')")
-        check("two separators: after Memory and after Audit", seps == "Chat Browser Connections Memory | Trust Audit | Skills Settings", seps)
+        check("the bots are the first section; separators after the bots, after Memory and after Audit",
+              seps == " ".join(BOTS) + " | Browser Connections Memory | Trust Audit | Skills Settings", seps)
         check("no Tasks or Automations tab", "Tasks" not in labels and "Automations" not in labels, labels)
         await pg.goto(B + "#tasks/" + t["id"])
         await pg.wait_for_selector("#taskDetail", timeout=10000)

@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests import skills_common as K  # noqa: E402
+K.BOT = "arrival"   # the Arrival & entry bot has this suite's skills (crate::bots)
 
 PASSPORT = "E1234567X"
 K.setup()

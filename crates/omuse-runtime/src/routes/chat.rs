@@ -124,6 +124,11 @@ pub async fn chat(st: St, body: Bytes) -> R {
         .unwrap_or_default();
     if cid.is_empty() || rt.store.conv(&cid)?.is_none() {
         cid = rt.store.create_conv(take_chars(&text, 40), "chat", None)?;
+        // a new conversation in a bot's view belongs to that bot (crate::bots); unknown ids stay with the main bot
+        let bot = super::pstr(&b, "bot", "");
+        if let Some(bot) = crate::bots::get(bot.trim()) {
+            rt.store.set_conv_bot(&cid, &bot.id, "")?;
+        }
     }
     let atts_v = Value::Array(atts.clone());
     let meta = if atts.is_empty() {
@@ -155,7 +160,32 @@ pub async fn conversations(st: St, q: Q) -> R {
     if let Some(kind) = q.get("kind").filter(|k| !k.is_empty()) {
         rows.retain(|r| get_str(r, "kind") == *kind);
     }
+    if let Some(bot) = q.get("bot").filter(|k| !k.is_empty()) {
+        // conversations saved before bots existed have no bot: they are the main bot's
+        rows.retain(|r| {
+            let b = get_str(r, "bot_id");
+            b == *bot || (b.is_empty() && bot == crate::bots::MAIN)
+        });
+    }
     Ok(Json(json!({"conversations": rows})))
+}
+
+/// `GET /api/bots`: the bots, the main one first, each with the skills it may use now (enabled ones only).
+pub async fn bots(st: St) -> R {
+    let list: Vec<Value> = crate::bots::all()
+        .iter()
+        .map(|b| {
+            let mut v = b.to_json();
+            v["skills"] = json!(st
+                .rt
+                .bot_skills(b)
+                .iter()
+                .map(|s| get_str(s, "name"))
+                .collect::<Vec<_>>());
+            v
+        })
+        .collect();
+    Ok(Json(json!({"bots": list})))
 }
 
 pub async fn conversation(st: St, UrlPath(cid): UrlPath<String>) -> R {

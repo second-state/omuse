@@ -102,6 +102,7 @@ label.field .req { color: var(--danger); font-weight: 700; }
 .st-RUNNING { background: var(--accent-soft); color: var(--accent); }
 .st-WAITING_APPROVAL { background: var(--approve-soft); color: var(--approve); }
 .st-WAITING_EXTERNAL, .st-PAUSED { background: var(--warn-soft); color: var(--warn); }
+.st-WAITING_BOT { background: var(--accent-soft); color: var(--accent); }
 .st-COMPLETED { background: var(--ok-soft); color: var(--ok); }
 .st-FAILED, .st-CANCELLED { background: var(--danger-soft); color: var(--danger); }
 .risk-low { background: var(--ok-soft); color: var(--ok); } .risk-medium { background: var(--warn-soft); color: var(--warn); }
@@ -420,3 +421,9 @@ table.data tr.clickable { cursor: pointer; } table.data tr.clickable:hover { bac
 /* profile: fields prefilled from an ID photo, and the card the first-login nudge lands on */
 input.prefilled { background: var(--ok-soft, #e6f6ee); }
 .card.flash { box-shadow: 0 0 0 3px var(--accent, #0f8a5f); transition: box-shadow 1.5s ease-out 1.5s; }
+
+/* bots: the link from a handed-over answer to the bot's conversation, and back */
+.handoff-link { display: inline-block; margin-top: 8px; color: var(--accent); text-decoration: none; font-weight: 600; }
+.handoff-link:hover { text-decoration: underline; }
+.from-main { color: var(--accent); text-decoration: none; white-space: nowrap; }
+.bot-intro h3 { margin-top: 0; }

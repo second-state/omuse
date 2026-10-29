@@ -6,6 +6,8 @@ This guard checks what really ran, whatever the suite did:
   * every tool call the runtime recorded (events of type tool_call in runtime.db, sub-agents included);
   * every request the fake providers received: Kiwi.com MCP (price_to, adults), SerpApi (max_price, adults), the fake
     travel connector (its tool calls' arguments).
+It also checks the bots (crate::bots): a load_skill refused because the skill is another bot's means the suite talked to
+the wrong bot (set K.BOT / travel_common.BOT) — only bots_e2e's BOTSKILL case asks for that refusal on purpose.
 Exit 1 with one GUARD line per violation; prints "ARGS GUARD OK" otherwise. Missing services or an empty database are
 fine (a suite that never started the stack)."""
 import json
@@ -66,6 +68,16 @@ def main():
             except ValueError:
                 continue
             bad_values(d.get("args") or {}, f"tool_call {d.get('name')} in {tid}", out)
+        goals = dict(con.execute("SELECT id, goal FROM tasks"))
+        for tid, data in con.execute("SELECT task_id, data FROM events WHERE type='tool_result'"):
+            try:
+                d = json.loads(data or "{}")
+            except ValueError:
+                continue
+            pv = str(d.get("preview") or "")
+            if d.get("name") == "load_skill" and ("belongs to the bot(s)" in pv or "is not one of the" in pv) \
+                    and "BOTSKILL" not in (goals.get(tid) or ""):
+                out.append(f"load_skill refused in {tid} (wrong bot for this suite): {pv[:160]}")
     for i, args in enumerate(get("http://127.0.0.1:8094/kiwi-mcp/_log") or []):
         bad_values(args, f"Kiwi.com request #{i}", out)
     for i, q in enumerate(get("http://127.0.0.1:8094/serpapi/_log") or []):

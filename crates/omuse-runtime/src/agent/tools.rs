@@ -581,6 +581,11 @@ completes (it is marked running/done for you). A sub-agent sees nothing of this 
 needs (what to find, where, what to return, in which language) in task.",
             json!({"role": s, "task": s, "step": s,
                    "tasks": {"type": "array", "items": {"type": "object", "properties": {"role": s, "task": s, "step": s}, "required": ["task"]}}}), &[]),
+        fn_("ask_bot", "把请求交给一个专门助手（新对话，或用 conversation_id 继续它之前的对话）并等它回答；它的回答会原样显示给用户 \
+Hand the user's request to a specialised bot (see \"## Bots\"): bot = its id; question = the request in full with what the bot needs \
+from this conversation (it does not see this chat); conversation_id = that bot's earlier conversation to continue (a follow-up), \
+omitted for a new one. Alone in its turn; the bot's answer is shown to the user word for word and this task ends with it.",
+            json!({"bot": s, "question": s, "conversation_id": s}), &["bot", "question"]),
         fn_("load_skill", "加载技能说明；file 可读取技能目录里的参考文件（如 cards/sg.md）Load a skill's detailed instructions by name; \
 with file, read a reference file that skill ships (e.g. file=\"cards/sg.md\", as its instructions name it).",
             json!({"name": s, "file": {"type": "string", "description": "optional: a reference file inside the skill's folder"}}), &["name"]),
