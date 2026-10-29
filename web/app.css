@@ -52,7 +52,18 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 #navlinks a:hover { background: var(--surface-2); }
 #navlinks a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 #navlinks a .badge { background: var(--approve); color: #fff; border-radius: 10px; padding: 0 6px; font-size: 11px; margin-left: 6px; }
-#navlinks .navsep { height: 1px; background: var(--line-2); margin: 6px 10px; }
+#navlinks .navhead { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); padding: 12px 10px 4px; }
+#navlinks .navhead:first-child { padding-top: 0; }
+/* a bot's icon: a robot head (line art) with a badge for what it does (app.js botIcon) */
+.boticon { display: inline-grid; place-items: center; flex: none; }
+.boticon svg { display: block; overflow: visible; width: 26px; height: 26px; }
+.bot-intro .boticon svg { width: 32px; height: 32px; }
+.boticon .head { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.boticon .head .dot { fill: currentColor; stroke: none; }
+.boticon .bb, .boticon .bb-fill { fill: var(--accent); }
+.boticon .bb { stroke: var(--surface); stroke-width: 1.4; }
+.boticon .bg { fill: var(--accent-ink); }
+#navlinks a .ic.boticon { width: 26px; opacity: 1; margin: -3px 0; }
 .nav-foot { margin-top: auto; font-size: 11.5px; color: var(--faint); padding: 0 8px; }
 
 #main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }

@@ -180,7 +180,7 @@ const safe = fn => async (...a) => { try { return await fn(...a); } catch (e) { 
 const S = {
   view: 'chat', conv: null, convs: [], convData: null, tasks: {}, events: {}, approvals: [], selTask: null, name: 'OMuse',
   settings: null, browserTimer: null, taskFilter: '', auditTask: '', seenApprovals: new Set(), sending: false,
-  bots: [], bot: 'main',
+  bots: [], bot: 'main', lives: {},   // lives: task id -> the answer text streamed so far
 };
 
 // Bots (GET /api/bots): the main bot and the specialised ones, each a chat of its own in the menu. Main is #chat/<conv>,
@@ -193,28 +193,48 @@ async function loadBots() {
   try { S.bots = (await api('bots')).bots || []; } catch (e) { S.bots = []; }
 }
 
-// Every view the router knows. The navigation shows them in NAV order, in four groups (the bots first); `tasks` (the task list and
+// Every view the router knows. The navigation shows them in NAV order, in four named sections (Bots, Tools, Trust, Config); `tasks` (the task list and
 // detail, reached from Audit's task links, chat cards and #tasks/<id>) and `schedules` (the Automations page, kept
 // reachable at #schedules while timer tasks are rethought — see KNOWLEDGE.md) are not listed.
 const VIEWS = [
   ['chat', '💬', T('对话'), 'Chat'], ['browser', '🌐', T('浏览器'), 'Browser'], ['connections', '🔌', T('连接'), 'Connections'],
-  ['memory', '🧠', T('记忆'), 'Memory'], ['trust', '📈', T('可信度'), 'Trust'], ['activity', '📜', T('活动审计'), 'Audit'],
+  ['memory', '🧠', T('记忆'), 'Memory'], ['trust', '📈', T('状态'), 'Status'], ['activity', '📜', T('活动审计'), 'Audit'],
   ['skills', '🎓', T('技能'), 'Skills'], ['settings', '⚙️', T('设置'), 'Settings'],
   ['tasks', '🗂', T('任务'), 'Tasks'], ['schedules', '⚡', T('自动化'), 'Automations'],
 ];
-const NAV = [['chat'], ['browser', 'connections', 'memory'], ['trust', 'activity'], ['skills', 'settings']];   // 'chat' = the bots
+// the sections: [Chinese title, English title, views] ('chat' = the bots)
+const NAV = [[T('助手'), 'Bots', ['chat']], [T('工具'), 'Tools', ['browser', 'connections', 'memory']],
+  [T('可信'), 'Trust', ['trust', 'activity']], [T('配置'), 'Config', ['skills', 'settings']]];
+
+// A bot's icon: a robot head with a badge for what the bot does (bots/<id>.md `badge`). Fixed markup, no user data.
+const BOT_BADGES = {   // each drawn in a 10 × 10 box, placed on the badge
+  chat: '<rect class="bg" x="1" y="1.4" width="8" height="5.6" rx="1.6"/><path class="bg" d="M2.6 6.6 2.2 9.4 5.2 6.9Z"/>',
+  plane: '<rect class="bg" x=".4" y="4.35" width="9.2" height="1.3" rx=".65"/><path class="bg" d="M5.4 5 2.9.5h1.6L7.6 5ZM5.4 5 2.9 9.5h1.6L7.6 5ZM1.5 5 .5 2.4h1.1L2.9 5ZM1.5 5 .5 7.6h1.1L2.9 5Z"/>',
+  shield: '<path class="bg" d="M5 .5 9 2v3.2c0 2.4-1.7 3.8-4 4.4-2.3-.6-4-2-4-4.4V2Z"/>',
+  card: '<rect class="bg" x=".5" y="1.8" width="9" height="6.4" rx="1.1"/><rect class="bb-fill" x=".5" y="3.2" width="9" height="1.4"/>',
+  camera: '<rect class="bg" x=".5" y="2.6" width="9" height="6.4" rx="1.3"/><rect class="bg" x="3.2" y="1.1" width="3.6" height="2.2" rx=".5"/><circle class="bb-fill" cx="5" cy="5.8" r="1.9"/>',
+};
+function botIcon(b) {
+  const el = h('span', { class: 'ic boticon', 'aria-hidden': 'true' });
+  const badge = BOT_BADGES[b && b.badge] || '';
+  el.innerHTML = '<svg viewBox="0 0 24 24"><g class="head">'
+    + '<path d="M8.5 2.4v2.1"/><circle cx="8.5" cy="1.9" r="1.2" class="dot"/>'
+    + '<rect x="1" y="4.5" width="15" height="11.5" rx="3.8"/><circle cx="5.6" cy="10.2" r="1.5" class="dot"/><circle cx="11.4" cy="10.2" r="1.5" class="dot"/></g>'
+    + (badge ? '<circle class="bb" cx="17.5" cy="17.5" r="6.5"/><g transform="translate(12.5 12.5)">' + badge + '</g>' : '') + '</svg>';
+  return el;
+}
 
 function renderNav() {
   const nav = $('#navlinks'); nav.innerHTML = '';
-  NAV.forEach((group, gi) => {
-    if (gi) nav.append(h('div', { class: 'navsep', role: 'separator' }));
+  NAV.forEach(([zh, en, group]) => {
+    nav.append(h('div', { class: 'navhead', role: 'heading', 'aria-level': '2' }, LANG === 'en' ? en : zh));
     for (const id of group) {
       if (id === 'chat' && S.bots.length) {
         // the bots in place of Chat: Main first (the entrance), then the specialised ones
         for (const b of S.bots) {
           const on = S.view === 'chat' && S.bot === b.id;
           nav.append(h('a', { href: convHash(b.id), class: 'botlink' + (on ? ' active' : ''), title: botDesc(b), 'data-bot': b.id },
-            h('span', { class: 'ic' }, b.icon), botName(b),
+            botIcon(b), botName(b),
             b.id === 'main' && waitingCount() ? h('span', { class: 'badge' }, waitingCount()) : null));
         }
         continue;
@@ -415,7 +435,7 @@ const convHasActiveTask = () => S.convData && Object.keys(S.convData.tasks || {}
 // the answer as the model writes it (see onDelta).
 function appendCard(msgs, t) {
   msgs.append(taskCard(t));
-  if (working(t)) msgs.append(liveBubble({ task_id: t.id, text: S.live && S.live.task_id === t.id ? S.live.text : '' }));
+  if (busy(t)) msgs.append(liveBubble({ task_id: t.id, text: S.lives[t.id] || '' }));
 }
 
 function renderThread(thread) {
@@ -443,7 +463,7 @@ function renderThread(thread) {
   if ((!d || !d.messages.length) && myBot && myBot.id !== 'main') {
     // an empty chat of a specialised bot: what it does and which skills it has
     msgs.append(h('div', { class: 'msg' }, h('div', { class: 'card bot-intro' },
-      h('h3', null, myBot.icon + ' ' + botName(myBot)),
+      h('h3', { class: 'row', style: 'gap:8px;align-items:center' }, botIcon(myBot), botName(myBot)),
       h('p', { class: 'sub' }, botDesc(myBot)),
       h('p', { class: 'small muted' }, T('技能 Skills') + ': ' + (myBot.skills || []).join(', ')))));
   } else if (!d || !d.messages.length) {
@@ -716,6 +736,17 @@ function verbNow(t) {
   return verbFor(t.id, moved);
 }
 const working = t => t && ['CREATED', 'PLANNING', 'RUNNING'].includes(t.status);
+// A main-bot task handed to another bot (WAITING_BOT) keeps its reply bubble while that bot works: the dots and the
+// verb move with the bot's model and tool calls, then the bot's answer streams in (Main's answer is that answer, word
+// for word). The bubble goes while the bot waits for the user (the approval or takeover card is mirrored in Main).
+const relaying = t => {
+  if (!t || t.status !== 'WAITING_BOT' || !t.waiting) return false;
+  const kid = S.tasks[t.waiting.task_id];
+  return !kid || !['WAITING_APPROVAL', 'WAITING_EXTERNAL'].includes(kid.status);
+};
+const busy = t => working(t) || relaying(t);
+// the main-bot task waiting for this bot task, if any
+const relayOf = tid => Object.values(S.tasks).find(p => p.status === 'WAITING_BOT' && p.waiting && p.waiting.task_id === tid);
 // how long a turn has taken: ticking while the task is active, the total once it is finished
 function fmtSecs(s) {
   s = Math.max(0, Math.round(s));
@@ -2615,11 +2646,27 @@ async function viewActivity(root) {
 
 // ================================================================== SETTINGS
 // ================================================================== SKILLS
+// the skills of each bot, in the menu's order ([bot, skills]); a skill no bot lists (none should) goes last, under Other
+function skillGroups(skills) {
+  const out = S.bots.map(b => [b, skills.filter(k => (k.bots || []).includes(b.id))]).filter(([, l]) => l.length);
+  const rest = skills.filter(k => !S.bots.some(b => (k.bots || []).includes(b.id)));
+  if (rest.length) out.push([null, rest]);
+  return out;
+}
+
 async function viewSkills(root) {
   const r = await api('skills');
-  const boxes = {};
+  // grouped by bot (k.bots: the bots that may use it; an imported skill no bot names is Main's). A shared skill shows
+  // under each of its bots with one on/off state: its checkboxes move together.
+  const boxes = {};   // skill name -> its checkboxes
+  const box = k => {
+    const b = h('input', { type: 'checkbox', checked: k.enabled, style: 'margin-top:4px',
+      onchange: e => boxes[k.name].forEach(x => { x.checked = e.target.checked; }) });
+    (boxes[k.name] = boxes[k.name] || []).push(b);
+    return b;
+  };
   const row = k => h('label', { class: 'row', style: 'align-items:flex-start;gap:10px;padding:8px 0;border-top:1px solid var(--line-2);cursor:pointer' },
-    boxes[k.name] = h('input', { type: 'checkbox', checked: k.enabled, style: 'margin-top:4px' }),
+    box(k),
     h('div', { style: 'flex:1;min-width:200px' }, h('span', { class: 'mono' }, k.name), ' ',
       h('span', { class: 'pill ' + (k.source === 'imported' ? 'st-RUNNING' : 'st-CREATED') }, k.source === 'imported' ? T('导入 imported') : T('内置 built-in')),
       h('div', { class: 'small muted' }, B(k.description)),
@@ -2627,17 +2674,21 @@ async function viewSkills(root) {
     k.source === 'imported' ? h('button', { class: 'btn danger small', onclick: safe(async e => { e.preventDefault(); if (!confirmInline(Tf("删除导入的技能「{0}」？", k.name))) return; await api('skills/' + k.name, { method: 'DELETE' }); route(); }) }, T('删除')) : null);
   const url = h('input', { type: 'text', placeholder: 'https://github.com/owner/repo/tree/main/skills/my-skill' });
   const save = async () => {
-    const disabled = Object.entries(boxes).filter(([, b]) => !b.checked).map(([n]) => n);
+    const disabled = Object.entries(boxes).filter(([, b]) => !b[0].checked).map(([n]) => n);
     await api('skills', { method: 'PUT', body: { disabled } }); toast(T('已保存 Saved'));
   };
   root.append(h('div', { class: 'card stack', id: 'skills' }, h('h3', null, T('🎓 技能 Skills')),
     h('p', { class: 'sub' }, T('技能是一份 SKILL.md：告诉 Agent 某类任务怎么做（网购、订餐厅、回邮件…）。勾选的技能会出现在 Agent 的指令里，由它按需加载；取消勾选的技能 Agent 看不到。默认全部启用。')),
     r.env ? h('p', { class: 'small muted' }, Tf("首次启动时由环境变量 OMUSE_SKILLS 设定了初始选择：{0}。之后以这里保存的为准。", r.env)) : null,
     h('div', { class: 'row' },
-      h('button', { class: 'btn small', onclick: () => Object.values(boxes).forEach(b => { b.checked = true; }) }, T('全选')),
-      h('button', { class: 'btn small', onclick: () => Object.values(boxes).forEach(b => { b.checked = false; }) }, T('全不选')),
+      h('button', { class: 'btn small', onclick: () => Object.values(boxes).flat().forEach(b => { b.checked = true; }) }, T('全选')),
+      h('button', { class: 'btn small', onclick: () => Object.values(boxes).flat().forEach(b => { b.checked = false; }) }, T('全不选')),
       h('span', { class: 'small muted' }, Tf("{0} 个技能", r.skills.length))),
-    h('div', null, ...r.skills.map(row)),
+    ...skillGroups(r.skills).map(([b, list]) => h('section', { class: 'skillgroup', 'data-bot': b ? b.id : '' },
+      h('h4', { class: 'row', style: 'gap:8px;align-items:center;margin:22px 0 4px' }, botIcon(b), b ? botName(b) : T('其他 Other'),
+        h('span', { class: 'small faint', style: 'font-weight:400' }, Tf("{0} 个技能", list.length))),
+      b ? h('div', { class: 'small muted' }, botDesc(b)) : null,
+      h('div', null, ...list.map(row)))),
     h('div', null, h('button', { class: 'btn primary', onclick: safe(save) }, T('保存选择 Save')))),
   h('div', { class: 'card stack', style: 'margin-top:16px', id: 'skillImport' }, h('h3', null, T('⬇ 从 GitHub 导入技能 Import')),
     h('p', { class: 'sub' }, T('粘贴 GitHub 上技能的链接：仓库（根目录有 SKILL.md）、技能所在的目录（…/tree/分支/路径）或 SKILL.md 文件本身。导入的技能保存在这台 OMuse 上，默认启用。只导入你信任的技能：它的内容就是给 Agent 的指令。')),
@@ -2892,28 +2943,34 @@ function fillLive(el, text) {
 // keep the bubble in step with the task: there while it works, gone when it waits for the user or is finished
 function syncLive(t) {
   const el = document.getElementById('live-' + t.id);
-  if (!working(t)) {
-    if (S.live && S.live.task_id === t.id) S.live = null;
+  if (!busy(t)) {
+    delete S.lives[t.id];
     if (el) el.remove();
     return;
   }
   if (el || S.view !== 'chat') return;
   const card = document.getElementById('tc-' + t.id);
-  if (card && card.parentElement) card.parentElement.after(liveBubble({ task_id: t.id, text: S.live && S.live.task_id === t.id ? S.live.text : '' }));
+  if (card && card.parentElement) card.parentElement.after(liveBubble({ task_id: t.id, text: S.lives[t.id] || '' }));
 }
 function onDelta(ev) {
   const t = S.tasks[ev.task_id];
   if (t && !working(t)) return;   // the stored answer is on its way
-  S.live = { task_id: ev.task_id, conv_id: ev.conv_id, text: ev.calls ? '' : (ev.text || '') };
-  if (S.view !== 'chat' || ev.conv_id !== S.conv) return;
+  const text = ev.calls ? '' : (ev.text || '');
+  showLive(ev.task_id, ev.conv_id, text);
+  const p = relayOf(ev.task_id);   // a bot answering for Main: the same text in Main's bubble
+  if (p) showLive(p.id, p.conv_id, text);
+}
+function showLive(tid, convId, text) {
+  S.lives[tid] = text;
+  if (S.view !== 'chat' || convId !== S.conv) return;
   const msgs = $('.thread .msgs'); if (!msgs) return;
   const near = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 80;
-  let el = document.getElementById('live-' + ev.task_id);
+  let el = document.getElementById('live-' + tid);
   if (!el) {
-    el = liveBubble(S.live);
-    const card = document.getElementById('tc-' + ev.task_id);
+    el = liveBubble({ task_id: tid, text });
+    const card = document.getElementById('tc-' + tid);
     if (card && card.parentElement && card.parentElement.parentElement === msgs) card.parentElement.after(el); else msgs.append(el);
-  } else fillLive(el, S.live.text);
+  } else fillLive(el, text);
   if (near) msgs.scrollTop = msgs.scrollHeight;
 }
 function onEvent(ev) {
@@ -2926,10 +2983,13 @@ function onEvent(ev) {
     if (card && S.view === 'chat') { const fresh = taskCard(S.tasks[t.id]); const det = card.querySelector('details.trace'); const wasOpen = det && det.open;
       card.parentElement.replaceWith(fresh); if (wasOpen) { const d2 = fresh.querySelector('details.trace'); if (d2) d2.open = true; } }
     syncLive(S.tasks[t.id]);
+    const p = relayOf(t.id); if (p) syncLive(p);   // the bot Main waits for stopped for the user, or went on again
     if (S.view === 'tasks' && S.selTask === t.id) { const box = $('#taskDetail'); if (box) renderTaskDetail(box, t.id); }
     if (t.status === 'COMPLETED' && t.source === 'schedule') toast(Tf("⏰ 定时任务完成：{0}", (t.goal.slice(0, 40))));
   } else if (ev.kind === 'task_event') {
-    if (ev.type === 'thinking' || ev.type === 'tool_call') bumpVerb(ev.task_id);   // the verb moves only when the task does
+    if (ev.type === 'thinking' || ev.type === 'tool_call') {   // the verb moves only when the task does (and Main's, for its bot)
+      bumpVerb(ev.task_id); const p = relayOf(ev.task_id); if (p) bumpVerb(p.id);
+    }
     const tl = document.getElementById('tl-' + ev.task_id);
     if (tl && tl.closest('details').open && ev.type !== 'thinking') { if (tl.querySelector('.muted.small')) tl.innerHTML = ''; tl.append(evLine(ev)); }
     // the model call is being retried: say so on the card ("Retrying 1 of 3"); the next event clears it

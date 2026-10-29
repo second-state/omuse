@@ -1194,8 +1194,8 @@ async fn load_skill_reads_a_reference_file_inside_the_skill_folder_only() {
 async fn a_browser_off_skill_hides_the_browser_until_another_skill_is_loaded() {
     let (rt, _d) = rt();
     let conv = rt.store.create_conv("c", "chat", None).unwrap();
-    // the City guides bot has both: tokyo (browser off) and restaurant-booking
-    rt.store.set_conv_bot(&conv, "cities", "").unwrap();
+    // the Travel bot has both: tokyo (browser off) and restaurant-booking
+    rt.store.set_conv_bot(&conv, "travel", "").unwrap();
     let t = rt
         .store
         .create_task("g", &conv, "chat", "", "", None)
@@ -1277,7 +1277,7 @@ async fn ask_bot_opens_a_bot_conversation_and_the_answer_comes_back_to_main() {
         ),
         (
             json!({"bot": "travel", "question": "q", "conversation_id": main_cid}),
-            "is not a conversation of the Travel booking bot",
+            "is not a conversation of the Travel bot",
         ),
     ] {
         let e = rt.ask_bot(&parent, &args, &c, &[]).await.err().unwrap();
@@ -1312,7 +1312,7 @@ async fn ask_bot_opens_a_bot_conversation_and_the_answer_comes_back_to_main() {
     // a specialised bot cannot hand over
     let child = rt.store.task(&child_tid).unwrap().unwrap();
     let e = rt
-        .ask_bot(&child, &json!({"bot": "cities", "question": "q"}), &c, &[])
+        .ask_bot(&child, &json!({"bot": "cards", "question": "q"}), &c, &[])
         .await
         .err()
         .unwrap();

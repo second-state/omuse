@@ -1,6 +1,7 @@
 """Bots in the web UI: the left menu lists Main first, then the specialised bots; each bot is a chat view of its own
 (#bot/<id>/<conv>); a handed-over answer in Main links to the bot's conversation, which links back to Main; a chat
-started in a bot's view belongs to that bot."""
+started in a bot's view belongs to that bot; while a bot answers for Main, Main's chat shows the dots and a verb, then
+the bot's answer streaming in."""
 import asyncio
 import datetime as dt
 import os
@@ -43,7 +44,7 @@ async def main():
         await pg.goto(B + "#chat")
         await pg.wait_for_selector("#navlinks a.botlink")
         bots = await pg.evaluate("() => [...document.querySelectorAll('#navlinks a.botlink')].map(a => [a.dataset.bot, a.getAttribute('href'), a.classList.contains('active')])")
-        check("the menu lists the seven bots, Main first and active on #chat", [b[0] for b in bots] == ["main", "travel", "cities", "arrival", "insurance", "cards", "photos"]
+        check("the menu lists the five bots, Main first and active on #chat", [b[0] for b in bots] == ["main", "travel", "insurance", "cards", "photos"]
               and bots[0][1] == "#chat" and bots[1][1] == "#bot/travel" and bots[0][2] and not bots[1][2], bots)
         check("the title is the bot's name", (await pg.inner_text("#viewTitle")).strip() == "Main")
         mb = next(b for b in K.c.get(K.B + "/api/bots", headers=K.H).json()["bots"] if b["id"] == "main")
@@ -58,14 +59,14 @@ async def main():
         check("Main's timer shows the whole answer time, routing and the bot's work included", await tm.count() == 1
               and (await tm.inner_text()).strip() == fmt(main_s) and float(await tm.get_attribute("data-start")) == t["created_at"],
               (await tm.count(), await tm.all_inner_texts(), fmt(main_s)))
-        check("the handed-over answer links to the bot's conversation", "Continue in" in txt and "Travel booking" in txt
+        check("the handed-over answer links to the bot's conversation", "Continue in" in txt and "Travel" in txt
               and await link.first.get_attribute("href") == f"#bot/travel/{kid_cid}", txt)
         await link.first.click()
         await pg.wait_for_function(f"() => location.hash === '#bot/travel/{kid_cid}'", timeout=10000)
         await pg.wait_for_selector(".thread-head .from-main", timeout=10000)
         active = await pg.evaluate("() => [...document.querySelectorAll('#navlinks a.botlink.active')].map(a => a.dataset.bot)")
-        check("the bot's conversation opens in its view: Travel booking active, its title in the bar", active == ["travel"]
-              and (await pg.inner_text("#viewTitle")).strip() == "Travel booking", active)
+        check("the bot's conversation opens in its view: Travel active, its title in the bar", active == ["travel"]
+              and (await pg.inner_text("#viewTitle")).strip() == "Travel", active)
         back = await pg.locator(".thread-head .from-main").get_attribute("href")
         check("the bot's conversation links back to Main", back == "#chat/" + main_cid, back)
         km = pg.locator(f"#tc-{kid.get('id')} .timer")
@@ -73,7 +74,7 @@ async def main():
         check("the bot's conversation has its own timer: the time spent inside the bot", (await km.first.inner_text()).strip() == fmt(kid_s)
               and fmt(kid_s) != fmt(main_s), (await km.all_inner_texts(), fmt(kid_s), fmt(main_s)))
         conv_titles = await pg.evaluate("() => [...document.querySelectorAll('.convlist .conv')].length")
-        check("the Travel booking list shows only its own conversation(s)", conv_titles >= 1)
+        check("the Travel list shows only its own conversation(s)", conv_titles >= 1)
         check("the question shows where it came from", await pg.locator(".msg.user .from-main").count() == 1)
         # a new chat in the bot's view: the bot's intro, no Main suggestions; the message goes to that bot
         await pg.click(".thread-head .btn.primary")
@@ -81,8 +82,8 @@ async def main():
         intro = await pg.locator(".bot-intro").inner_text()
         ex = await pg.evaluate("() => [...document.querySelectorAll('.composer .suggest button')].map(b => b.textContent)")
         tb = next(b for b in K.c.get(K.B + "/api/bots", headers=K.H).json()["bots"] if b["id"] == "travel")
-        check("an empty Travel booking chat introduces the bot and its skills, and shows its own examples above the input (not Main's)",
-              "Travel booking" in intro and "flight-booking" in intro and ex == tb["examples"] and len(ex) >= 3, (intro[:200], ex))
+        check("an empty Travel chat introduces the bot and its skills, and shows its own examples above the input (not Main's)",
+              "Travel" in intro and "flight-booking" in intro and ex == tb["examples"] and len(ex) >= 3, (intro[:200], ex))
         await pg.locator(".composer .suggest button").first.click()
         check("an example fills the input", await pg.input_value("#chatInput") == tb["examples"][0], await pg.input_value("#chatInput"))
         await pg.fill("#chatInput", "")
@@ -110,6 +111,21 @@ async def main():
         except Exception:
             pass
         check("#chat/<id> of a bot's conversation lands in that bot's view", await pg.locator(".thread-head .from-main").count() == 1)
+        # a hand-over seen live from Main: the dancing dots and a verb while the bot works, then its answer streaming in
+        await pg.goto(B + "#chat")
+        await pg.wait_for_selector("#chatInput")
+        await pg.fill("#chatInput", f"BOTHAND BOTSLOW BOTSTREAM cheapest flight Singapore to Tokyo on {DATE} DATE={DATE}")
+        await pg.keyboard.press("Enter")
+        await pg.wait_for_selector(".taskcard .handoff", timeout=15000)
+        dots = await pg.evaluate("() => { const l = document.querySelector('.thread .msg.assistant.live'); return l ? [l.classList.contains('wait'), !!l.querySelector('.dance'), (l.querySelector('.verb') || {}).textContent || ''] : null; }")
+        check("while the bot works, Main's chat shows the dancing dots and a verb", dots and dots[0] and dots[1] and dots[2].strip(), dots)
+        await pg.wait_for_function("() => { const l = document.querySelector('.thread .msg.assistant.live:not(.wait)'); return l && l.textContent.includes('TRAVELBOT ANSWER'); }", timeout=20000)
+        part = await pg.evaluate("() => document.querySelector('.thread .msg.assistant.live').textContent")
+        check("then the bot's answer streams into Main's chat", "TRAVELBOT ANSWER" in part, part[:200])
+        await pg.wait_for_selector(".msg.assistant:not(.live) .handoff-link >> nth=0", timeout=20000)
+        await pg.wait_for_function("() => !document.querySelector('.thread .msg.assistant.live')", timeout=10000)
+        final = await pg.evaluate("() => [...document.querySelectorAll('.thread .msg.assistant .bubble')].map(b => b.textContent).pop()")
+        check("the stored answer replaces the live bubble, with the link to the bot", "TRAVELBOT ANSWER" in final and "Continue in" in final, final[:200])
         check("no page errors", not errs, errs)
         await br.close()
 

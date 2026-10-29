@@ -35,10 +35,14 @@ check("no OMUSE_SKILLS in the test stack", sk["env"] == "")
 # each bot's instructions list the enabled skills of that bot (crate::bots); together the bots cover every skill
 bots = {b["id"]: set(b["skills"]) for b in c.get(B + "/api/bots", headers=H).json()["bots"]}
 check("together the bots have every enabled skill", set().union(*bots.values()) == set(names), sorted(set(names) - set().union(*bots.values())))
+byname = {k["name"]: k.get("bots") for k in sk["skills"]}
+check("each skill names the bots that may use it (the Skills page groups by them)", byname.get("tokyo") == ["travel"]
+      and byname.get("pdf-forms") == ["main", "travel", "insurance"] and byname.get("news-search") == ["main"]
+      and all(byname[n] for n in names), {n: byname.get(n) for n in ("tokyo", "pdf-forms", "news-search")})
 listed = run("SKILLCHECK")
 check("Main's instructions list Main's enabled skills", listed.startswith("SKILLS=") and set(listed[7:].split(",")) == bots["main"], (listed, sorted(bots["main"])))
 listed = run("SKILLCHECK", bot="travel")
-check("the Travel booking bot's instructions list its own", listed.startswith("SKILLS=") and set(listed[7:].split(",")) == bots["travel"], (listed, sorted(bots["travel"])))
+check("the Travel bot's instructions list its own", listed.startswith("SKILLS=") and set(listed[7:].split(",")) == bots["travel"], (listed, sorted(bots["travel"])))
 
 # turn two off
 off = ["online-shopping", "phone-call"]
@@ -57,6 +61,7 @@ check("a skill is imported from a GitHub folder link", r.status_code == 200 and 
 sk = c.get(B + "/api/skills").json()["skills"]
 fw = next((s for s in sk if s["name"] == "flight-watch"), None)
 check("the imported skill is listed, enabled, with its source link", fw and fw["enabled"] and fw["source"] == "imported" and fw["url"].startswith("https://github.com/acme"), fw)
+check("a newly imported skill belongs to Main", fw and fw.get("bots") == ["main"], fw and fw.get("bots"))
 listed = run("SKILLCHECK")
 check("the imported skill reaches the agent", "flight-watch" in listed, listed)
 out = run("LOADSKILL flight-watch")

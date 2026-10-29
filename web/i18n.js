@@ -1095,5 +1095,9 @@ window.OMUSE_EN = {
 "移动、重命名、移到回收站（需审批；不会永久删除）": "Move, rename and move to the bin (asks for approval; never a permanent delete)",
 "正常 ✓ {0}，已用 {1} GB": "OK ✓ {0}, {1} GB used",
 "断开 Google Drive？授权会被删除（日历连接保留）。": "Disconnect Google Drive? The authorisation is deleted (the calendar connection stays).",
-"方式 {0}": "Method {0}"
+"方式 {0}": "Method {0}",
+"助手": "Bots",
+"工具": "Tools",
+"可信": "Trust",
+"配置": "Config"
 };

@@ -2,6 +2,7 @@
 name: Main
 name_zh: 主助手
 icon: 💬
+badge: chat
 order: 0
 description: Everyday help — email, news, research, shopping, documents, calls — and the entrance that hands specialised questions to the other bots.
 description_zh: 日常助手：邮件、新闻、调研、购物、文件、电话；专门的问题交给其他助手

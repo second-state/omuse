@@ -152,7 +152,7 @@ def task(tid: str) -> dict:
     return t.get("task") or t
 
 
-# the travel suites talk to the Travel booking bot (crate::bots), which has the flight, hotel and restaurant skills
+# the travel suites talk to the Travel bot (crate::bots), which has the flight, hotel and restaurant skills
 BOT = "travel"
 
 

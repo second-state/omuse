@@ -1,5 +1,5 @@
 """Bots (crate::bots) with a real model (OMUSE_E2E_REAL=1, see travel_common.py): requests sent to the main bot are
-handed to the right specialised bot with ask_bot (Travel booking, City guides, Credit cards), the bot's answer comes
+handed to the right specialised bot with ask_bot (Travel, City guides, Credit cards), the bot's answer comes
 back word for word with the link to its conversation, a follow-up goes back to the same bot conversation, and a
 general request stays in Main. One TIMING line per request (model time excluded).
 
@@ -71,15 +71,15 @@ def handed(label: str, info: dict, bot: str, *, kid_conv: str | None = None) -> 
 
 T.setup()
 try:
-    # 1. a flight question to Main → Travel booking, which searches
+    # 1. a flight question to Main → Travel, which searches
     info = T.run(f"What is the cheapest flight from Singapore to Tokyo on {DATE}?", timeout=600)
     kid = handed("flight", info, "travel")
     kn = [x["name"] for x in T.calls_of([kid["id"]])] if kid.get("id") else []
-    T.check("flight: the Travel booking bot searched flights itself", any(n.endswith("flights_search") for n in kn), kn)
+    T.check("flight: the Travel bot searched flights itself", any(n.endswith("flights_search") for n in kn), kn)
     kid_conv = next((e["data"]["conv_id"] for e in T.task(info["tasks"][-1]).get("events", []) if e["type"] == "handoff"), None)
     main_conv = info["conv_id"]
 
-    # 2. a follow-up in the same main conversation → the same Travel booking conversation
+    # 2. a follow-up in the same main conversation → the same Travel conversation
     r = T.c.post(T.B + "/api/chat", json={"message": "And the cheapest return flight a week later?", "conversation_id": main_conv}, headers=T.H).json()
     t0 = time.monotonic()
     end = T.task(r["task_id"])
@@ -90,11 +90,11 @@ try:
     info2 = {"tasks": [r["task_id"]], "approvals": [], "t0": t0, "t1": time.monotonic(), "excluded": [], "conv_id": main_conv}
     handed("follow-up", info2, "travel", kid_conv=kid_conv)
     users = [m["content"] for m in conv(kid_conv)["messages"] if m["role"] == "user"] if kid_conv else []
-    T.check("follow-up: the Travel booking conversation now has both questions", len(users) == 2, [u[:80] for u in users])
+    T.check("follow-up: the Travel conversation now has both questions", len(users) == 2, [u[:80] for u in users])
 
-    # 3. a city guide question → City guides
+    # 3. a city guide question → Travel
     info = T.run("I'm visiting Tokyo for the first time next month. How do I get from Narita airport to Shinjuku, and which transit card should I get?", timeout=600)
-    handed("city", info, "cities")
+    handed("city", info, "travel")
 
     # 4. which card to pay with → Credit cards
     info = T.run("Which credit card should I use to pay for a S$300 dinner in Singapore? I have a DBS Altitude Visa and a Citi Rewards Mastercard.", timeout=600)

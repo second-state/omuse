@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests import skills_common as K  # noqa: E402
-K.BOT = "cities"   # the City guides bot has this suite's skills (crate::bots)
+K.BOT = "travel"   # the Travel bot has this suite's skills (crate::bots)
 
 # the skills folder: next to tests/ in a checkout; in the Docker runner the repository is mounted at /repo
 ROOT = next(d for d in (os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills"), "/repo/skills")

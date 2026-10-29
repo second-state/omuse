@@ -2,7 +2,8 @@
 name: Credit cards
 name_zh: 信用卡
 icon: 💳
-order: 5
+badge: card
+order: 3
 description: Which of the user's credit cards to use for a purchase (points, miles, cashback, fees), and claims on card benefits such as Chase Sapphire trip cancellation and interruption.
 description_zh: 这笔消费刷哪张卡（积分、里程、返现、手续费），以及信用卡权益理赔（如 Chase Sapphire 行程取消与中断）
 skills: credit-card-picker, csr-trip-claim

@@ -1725,16 +1725,17 @@ mod tests {
         )
         .await
         .unwrap();
-        let reqs = tr.requests.lock();
-        let first = reqs[0].json.as_ref().unwrap();
-        assert_eq!(first["service_tier"], "fast");
-        assert_eq!(first["reasoning_effort"], "high");
-        assert!(first.get("chat_template_kwargs").is_none());
-        // rejected by name: sent again without service_tier, the effort kept
-        let second = reqs[1].json.as_ref().unwrap();
-        assert!(second.get("service_tier").is_none());
-        assert_eq!(second["reasoning_effort"], "high");
-        drop(reqs);
+        {
+            let reqs = tr.requests.lock();
+            let first = reqs[0].json.as_ref().unwrap();
+            assert_eq!(first["service_tier"], "fast");
+            assert_eq!(first["reasoning_effort"], "high");
+            assert!(first.get("chat_template_kwargs").is_none());
+            // rejected by name: sent again without service_tier, the effort kept
+            let second = reqs[1].json.as_ref().unwrap();
+            assert!(second.get("service_tier").is_none());
+            assert_eq!(second["reasoning_effort"], "high");
+        }
         // off / unset: neither field is sent
         let plain: SettingsFn =
             Arc::new(|| json!({"model_base_url": "http://x/v1", "model_name": "m"}));

@@ -525,11 +525,11 @@ mod tests {
             ok,
         );
         assert_eq!(r, Route::Bot(json!({"bot": "cards", "question": "q"})));
-        // no question: the request itself
+        // no question: the request itself; a merged bot's old id is the bot it was merged into
         let r = checked_route(&json!({"bot": "cities"}), " what to see in Osaka ", ok);
         assert_eq!(
             r,
-            Route::Bot(json!({"bot": "cities", "question": "what to see in Osaka"}))
+            Route::Bot(json!({"bot": "travel", "question": "what to see in Osaka"}))
         );
         assert_eq!(
             checked_route(&json!({"bot": "main", "question": "x"}), "g", ok),
@@ -551,20 +551,16 @@ mod tests {
         let main = bots::get_or_main(bots::MAIN);
         let en = bot_prompt(main, true);
         assert!(en.contains("## You are the Main bot") && en.contains("## Bots"));
-        assert!(
-            en.contains("- travel — Travel booking:") && en.contains("- photos — Photos & videos:")
-        );
+        assert!(en.contains("- travel — Travel:") && en.contains("- photos — Photos & videos:"));
         assert!(!en.contains("- main —"));
         assert!(
             en.contains("ask_bot(bot, question): ONE call")
                 && en.contains("conversation_id = that conversation")
         );
         let zh = bot_prompt(main, false);
-        assert!(zh.contains("## 专门助手") && zh.contains("- travel — 旅行预订（Travel booking）"));
+        assert!(zh.contains("## 专门助手") && zh.contains("- travel — 旅行（Travel）"));
         let travel = bot_prompt(bots::get("travel").unwrap(), true);
-        assert!(
-            travel.contains("## You are the Travel booking bot") && !travel.contains("## Bots")
-        );
+        assert!(travel.contains("## You are the Travel bot") && !travel.contains("## Bots"));
         assert!(travel.contains("say in one line which bot handles it"));
     }
 }

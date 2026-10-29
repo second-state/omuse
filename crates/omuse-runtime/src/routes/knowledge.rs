@@ -30,9 +30,16 @@ pub async fn skills_list(st: St) -> R {
     let mut out = Vec::new();
     for x in sk.listing(&st.rt.store.settings()?) {
         let mut x = without_path(&x);
+        let name = get_str(&x, "name");
         if get_str(&x, "source") == "imported" {
-            x["url"] = json!(sk.source_link(&get_str(&x, "name")));
+            x["url"] = json!(sk.source_link(&name));
         }
+        // the bots that may use it (the Skills page groups by bot; an unclaimed skill is Main's)
+        x["bots"] = json!(crate::bots::all()
+            .iter()
+            .filter(|b| crate::bots::has_skill(b, &name))
+            .map(|b| b.id.as_str())
+            .collect::<Vec<_>>());
         out.push(x);
     }
     // env: informational only (seed at first start)

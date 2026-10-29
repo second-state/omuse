@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests import skills_common as K  # noqa: E402
-K.BOT = "travel"   # the Travel booking bot has this suite's skills (crate::bots)
+K.BOT = "travel"   # the Travel bot has this suite's skills (crate::bots)
 
 B, H, c = K.B, K.H, K.c
 FAKE = "http://127.0.0.1:8094"
