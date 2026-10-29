@@ -250,13 +250,8 @@ function route() {
 }
 
 // ================================================================== CHAT
-const SUGGESTIONS = [
-  T('看看这周有哪些重要邮件需要我回复'),
-  T('给 John 回复：周二下午 3 点可以'),
-  T('帮我研究东京三家酒店，并做一个比较'),
-  T('每天早上 8 点给我总结重要邮件'),
-  T('记住：我喜欢直飞航班和安静的精品酒店'),
-];
+// what a bot handles, shown above the input of an empty conversation (bots/<id>.md: examples / examples_zh)
+const botExamples = b => !b ? [] : (LANG === 'en' ? (b.examples || []) : (b.examples_zh || b.examples || []).map(ZH));
 
 async function viewChat(root) {
   const wrap = h('div', { class: 'chat' });
@@ -511,7 +506,8 @@ function renderThread(thread) {
   }
   if (oldComp) oldComp.remove();
   const comp = h('div', { class: 'composer' }); comp.dataset.key = compKey;
-  if ((!d || !d.messages.length) && S.bot === 'main') comp.append(h('div', { class: 'suggest' }, SUGGESTIONS.map(s => h('button', { onclick: () => { ta.value = s; S.draft = s; grow(); ta.focus(); } }, s))));
+  const examples = (!d || !d.messages.length) ? botExamples(myBot) : [];
+  if (examples.length) comp.append(h('div', { class: 'suggest', 'aria-label': T('示例 Examples') }, examples.map(s => h('button', { onclick: () => { ta.value = s; S.draft = s; grow(); ta.focus(); } }, s))));
   const hadFocus = document.activeElement && document.activeElement.id === 'chatInput';
   const narrow = isNarrow();
   const ph = S.conv ? (narrow ? T('继续这个对话…') : T('继续这个对话… (Enter 发送，Shift+Enter 换行)'))

@@ -1913,6 +1913,13 @@ call notify_user only if something the user cares about happened.",
 that text (the post, story, poem, message, translation …) in Chinese — or in the language they name. \
 Your own notes and the short explanation around it stay in English.";
         }
+        // the main bot: the planner picks the bot before the first turn (agent/bots.rs, `route`)
+        let routing = bot.is_main()
+            && transcript.is_empty()
+            && !t.get("pending").is_some_and(truthy)
+            && get_str(&t, "source") == "chat"
+            && goal.is_none();
+        let route_history = if routing { history.clone() } else { Vec::new() };
         if transcript.is_empty() {
             let mut first = goal_text.clone();
             if !arr(&t, "attachments").is_empty() {
@@ -1922,6 +1929,45 @@ Your own notes and the short explanation around it stay in English.";
             transcript = vec![json!({"role": "system", "content": ""})];
             transcript.extend(history);
             transcript.push(user_msg(first));
+        }
+
+        let mut routed_main = false;
+        if routing {
+            match self.route(&t, &route_history).await {
+                super::bots::Route::Bot(args) => {
+                    let call = ToolCall {
+                        id: "route_1".into(),
+                        name: "ask_bot".into(),
+                        args: args.clone(),
+                    };
+                    self.event(
+                        task_id,
+                        "tool_call",
+                        json!({"call_id": call.id, "name": "ask_bot", "args": args, "sub": false, "routed": true}),
+                    )
+                    .await;
+                    match self.ask_bot(&t, &args, &call, &[]).await {
+                        Ok(sp) => {
+                            transcript.push(assistant_with_calls("", std::slice::from_ref(&call)));
+                            return self.suspend(task_id, sp, transcript).await;
+                        }
+                        Err(e) => {
+                            self.event(task_id, "route_error", json!({"message": e}))
+                                .await;
+                        }
+                    }
+                }
+                super::bots::Route::Main => {
+                    routed_main = true;
+                    extra += if lg0 == "en" {
+                        "\n## Routing\nThe planner checked this request against the bots above: it is yours. Answer it \
+yourself; ask_bot is not available for it."
+                    } else {
+                        "\n## 分派\n规划模型已经对照上面的专门助手看过这个请求：它归你。你自己回答；这次不能用 ask_bot。"
+                    };
+                }
+                super::bots::Route::Unknown => {}
+            }
         }
 
         // ---------------------------------------------------------- resume after approval / takeover
@@ -2104,10 +2150,15 @@ unverified. This is an internal efficiency control — never mention a 'budget' 
                     goal.is_some(),
                 );
                 let tl = self.without_browser_if_off(task_id, tl);
-                // ask_bot is the main bot's
+                // ask_bot is the main bot's; a tool a bot file claims (the travel searches) only its bots'
                 let tl: Vec<Value> = tl
                     .into_iter()
-                    .filter(|x| bot.is_main() || tool_name(x) != "ask_bot")
+                    .filter(|x| {
+                        let n = tool_name(x);
+                        // the planner kept the request in Main: no hand-over from the executor either
+                        (n != "ask_bot" || (bot.is_main() && !routed_main))
+                            && crate::bots::has_tool(bot, n)
+                    })
                     .collect();
                 let tl = Self::budget(&mut transcript, tl, max_steps - steps, lg);
                 tools = Some(if lg == "en" {

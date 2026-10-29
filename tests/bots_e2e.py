@@ -51,6 +51,9 @@ ev = [e for e in t["events"] if e["type"] in ("handoff", "handoff_done")]
 K.check("the main task handed over once (ask_bot → handoff event) and ended COMPLETED after the bot answered",
         t["status"] == "COMPLETED" and K.names(t) == ["ask_bot"] and [e["type"] for e in ev] == ["handoff", "handoff_done"]
         and "WAITING_BOT" in t["_seen"], (t["status"], K.names(t), [e["type"] for e in ev], t["_seen"]))
+ro = [e["data"] for e in t["events"] if e["type"] == "route"]
+K.check("the planner routed the request (route event: travel) and the hand-over came from the routing, not the executor",
+        [r.get("bot") for r in ro] == ["travel"] and (K.calls(t) or [{}])[0].get("routed") is True, (ro, K.calls(t)))
 h = (ev[0]["data"] if ev else {})
 kid_cid, kid_tid = h.get("conv_id"), h.get("task_id")
 kid = c.get(f"{B}/api/tasks/{kid_tid}").json() if kid_tid else {}
@@ -83,6 +86,25 @@ K.check("the bot's conversation now has both questions", [m["content"][:7] for m
 t3 = K.run("BOTSKILL load the flight skill yourself", bot="main")
 K.check("in Main, load_skill of a travel skill is refused and points to ask_bot", t3["status"] == "COMPLETED"
         and "belongs to the bot(s) travel" in (t3.get("result") or "") and "ask_bot" in (t3.get("result") or ""), (t3.get("result") or "")[:300])
+
+K.check("the planner kept that request in Main (route event: main)", [e["data"].get("bot") for e in t3["events"] if e["type"] == "route"] == ["main"],
+        [e["data"] for e in t3["events"] if e["type"] == "route"])
+t3 = K.run(f"BOTTOOL search the flight yourself DATE={DATE}", bot="main")
+fc = [x for x in K.calls(t3) if x["name"] == "flights_search"]
+K.check("Main is not offered the travel searches, and a call to one is refused and points to ask_bot", t3["status"] == "COMPLETED"
+        and fc and fc[0]["args"].get("offered") is False and "belongs to the bot(s) travel" in (t3.get("result") or ""), (fc, (t3.get("result") or "")[:300]))
+for marker in ("BOTROUTEFAIL", "BOTROUTEBAD"):
+    t4 = K.run(f"{marker} cheapest flight DATE={DATE}", bot="main")
+    ro = [e["data"] for e in t4["events"] if e["type"] == "route"]
+    hs = [e["data"] for e in t4["events"] if e["type"] == "handoff"]
+    K.check(f"{marker}: no usable routing decision (route bot null), so the executor got ask_bot and handed over itself",
+            t4["status"] == "COMPLETED" and ro and ro[0].get("bot") is None and hs and not K.calls(t4)[0].get("routed")
+            and (t4.get("result") or "").startswith("TRAVELBOT ANSWER"), (t4["status"], ro, hs, (t4.get("result") or "")[:120]))
+t4 = K.run(f"BOTCONVBAD cheapest flight DATE={DATE}", bot="main")
+hs = [e["data"] for e in t4["events"] if e["type"] == "handoff"]
+K.check("a conversation the planner names that is not that bot's (conv_nope) is dropped: a new Travel booking conversation",
+        t4["status"] == "COMPLETED" and hs and hs[0]["conv_id"].startswith("conv_") and hs[0]["conv_id"] != "conv_nope"
+        and "conversation_id" not in K.calls(t4)[0]["args"], (t4["status"], hs, K.calls(t4)[:1]))
 
 # ---------------------------------------------------------------- an approval inside the bot shows in Main too
 r = c.post(B + "/api/chat", json={"message": "BOTAPPR book the flight", "bot": "main"}, headers=H).json()

@@ -28,6 +28,7 @@ CASES = [
      ["Hoàn Kiếm", "Hoan Kiem", "Old Quarter", "Tây Hồ", "Tay Ho", "Ba Đình"], ["₫", "VND", "dong"]),
 ]
 
+T.BOT = "cities"   # the City guides bot has the city guides (crate::bots)
 T.setup()
 tasks_all = []
 for skill, prompt, places, money in CASES:

@@ -173,15 +173,10 @@ pub fn hostname_of(url: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Registered-domain-ish host of a URL (last two labels), lowercase; `""` when unparsable.
+/// Registered domain of a URL (`omuse_common::guard::registered_domain`: amazon.com.sg, not com.sg), lowercase;
+/// `""` when unparsable.
 pub fn domain_of(url: &str) -> String {
-    let h = hostname_of(url);
-    let parts: Vec<&str> = h.split('.').collect();
-    if parts.len() >= 2 {
-        parts[parts.len() - 2..].join(".")
-    } else {
-        h
-    }
+    omuse_common::guard::registered_domain(&hostname_of(url))
 }
 
 // ---------------------------------------------------------------- risky UI words
@@ -530,6 +525,12 @@ mod tests {
         assert!(!check_url("javascript:alert(1)").0);
         assert!(check_url("https://news.com/").0);
         assert_eq!(domain_of("https://www.bad.com/x"), "bad.com");
+        // two shops under com.sg are two sites (a purchase approved on one never covers the other)
+        assert_eq!(domain_of("https://www.shop-a.com.sg/pay"), "shop-a.com.sg");
+        assert_ne!(
+            domain_of("https://shop-a.com.sg/"),
+            domain_of("https://shop-b.com.sg/")
+        );
         assert_eq!(domain_of("nonsense"), "");
         assert!(host_is_private("[::1]"));
         assert!(host_is_private("svc"));

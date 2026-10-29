@@ -142,7 +142,9 @@ try:
     rfinal = T.task(rinfo["tasks"][-1])
     rcalls = T.calls_of(rinfo["tasks"])
     trace(rinfo["tasks"])
-    rfs = [x for x in rcalls if x["name"] == "flights_search"]
+    # a call whose arguments did not parse (the model once wrote max_price as 0.000… until it was cut off) was refused
+    # and retried: only the calls that ran count
+    rfs = [x for x in rcalls if x["name"] == "flights_search" and "_unparsed" not in x["args"]]
     T.check("range: the task completed", rfinal.get("status") == "COMPLETED", (rfinal.get("status"), rfinal.get("error")))
     # never one search per day: every flights_search covers the whole range (a model may repeat the same call to double-check)
     T.check("range: the built-in flights_search covers the whole range (date + date_to) in each call, never one call per day", bool(rfs)
@@ -150,8 +152,10 @@ try:
     T.check("range: no stop limit invented (the question said nothing about stops)", bool(rfs) and str(rfs[0]["args"].get("stops", "any")) in ("any", "")
             and rfs[0]["args"].get("max_stops") is None and not rfs[0]["args"].get("nonstop_only"), [x["args"] for x in rfs])
     T.check("range: no plan", not any(e["type"] == "plan" for e in rfinal.get("events", [])), [e["type"] for e in rfinal.get("events", [])][:12])
+    # ISO, "8 Dec" or "Dec 8" (also the start of a span such as "Dec 8–12")
     T.check("range: the answer names a date in the range", any(str(dt.date.fromisoformat(r1) + dt.timedelta(days=i)) in str(rfinal.get("result"))
-            or (dt.date.fromisoformat(r1) + dt.timedelta(days=i)).strftime("%-d %b") in str(rfinal.get("result")) for i in range(5)), str(rfinal.get("result"))[:400])
+            or any((dt.date.fromisoformat(r1) + dt.timedelta(days=i)).strftime(f) in str(rfinal.get("result")) for f in ("%-d %b", "%b %-d"))
+            for i in range(5)), str(rfinal.get("result"))[:400])
     T.check("business: no web_search beside the flight search", not [x for x in calls if x["name"] == "web_search"], [x["name"] for x in calls])
     T.check("business: the browser was never used", not [x for x in calls if x["name"].startswith("browser_")], [x["name"] for x in calls])
     pref = str(args.get("airlines", "")).lower()

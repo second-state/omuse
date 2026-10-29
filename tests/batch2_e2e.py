@@ -81,7 +81,8 @@ check("trigger rule only when its phrase is said", not any("准备出差" in f f
 tid = c.post(B + "/api/chat", json={"message": "CTXCHECK " + q}, headers=H).json()["task_id"]
 t = wait_task(tid)
 calls = c.get(LLM + "/calls_for", params={"marker": "CTXCHECK"}).json()
-sysp = calls[0]["system"] if calls else ""
+# the executor's call (the main bot's router runs first: its prompt starts with "## Route")
+sysp = next((x["system"] for x in calls if not x["system"].startswith("## Route")), "")
 check("executor prompt carries the grouped context and the don't-ask-again rule",
       "[偏好 Preferences]" in sysp and "43码" in sysp and "do NOT ask the user again" in sysp, sysp[-1500:])
 ev = [e for e in t["events"] if e["type"] == "context_used"]

@@ -99,7 +99,7 @@ impl V<'_> {
 
     fn price_cap(&mut self, k: &str) {
         if let Some(v) = self.m.get(k) {
-            match num(v).filter(|x| *x > 0.0) {
+            match num(v).filter(|x| *x >= 1.0) {
                 Some(x) => {
                     let x = json!(x);
                     if self.m.get(k).and_then(Value::as_f64).is_none() {

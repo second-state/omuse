@@ -47,6 +47,10 @@ if os.path.isfile(pdf_path):
     check("real PDF with Chinese text", data[:5] == b"%PDF-" and "未来学院" in txt and "腾讯" in txt and "WorkBuddy" in txt, txt[:200])
     check("local image embedded", any(len(p.images) for p in rd.pages), [len(p.images) for p in rd.pages])
     check("page numbers in footer", "1 / 1" in txt or "1 /" in txt, txt[-80:])
+    res = [e["data"] for e in t.get("events", []) if e["type"] == "tool_result" and e["data"].get("name") == "make_pdf"]
+    n = len(rd.pages)
+    check(f"make_pdf tells the model the page count ({n} page{'s' if n != 1 else ''})",
+          any(f", {n} page" in str(x.get("preview") or "") for x in res), [str(x.get("preview"))[:200] for x in res])
 conv = c.get(f"{B}/api/conversations/{r['conversation_id']}").json()
 check("PDF handed over as a file card", any('"type": "file"' in m["content"] and "cn.pdf" in m["content"]
                                             for m in conv["messages"] if m["role"] == "system"), conv["messages"][-3:])

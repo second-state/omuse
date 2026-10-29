@@ -353,6 +353,7 @@ window.OMUSE_TW = {
 "执行过程 Activity": "執行過程 Activity",
 "执行过程 Timeline": "執行過程 Timeline",
 "找到 {0}：{1}": "找到 {0}：{1}",
+"示例 Examples": "示例 Examples",
 "技能 Skills": "技能 Skills",
 "把 16 位密码粘贴到下方，点击「连接并测试」。同一邮箱再添加一次 = 更新密码。": "把 16 位密碼貼到下方，點選「連線並測試」。同一信箱再新增一次 = 更新密碼。",
 "拒绝原因（可选，会告诉 Agent）Reason for denying (optional)": "拒絕原因（選填，會告訴 Agent）Reason for denying (optional)",

@@ -731,9 +731,12 @@ pub fn decide(
                 format!("域名 {dom} 在黑名单中 (blocked domain)"),
             ));
         }
-        if !vault::domain_ok(&it, &dom) {
+        // the item's sites against the page's whole host name: "the last two labels" made eservices.ica.gov.sg
+        // "gov.sg", which never matched an item kept for ica.gov.sg (2026-10-29, arrival_real)
+        let host = guard::hostname_of(&page_url);
+        if !vault::domain_ok(&it, &host) {
             let doms = str_list(it.get("domains")).join(", ");
-            return Ok(Decision::new(DENY, "high", format!("「{label}」只允许在 {doms} 使用，当前网站是 {dom} (item restricted to other sites)")));
+            return Ok(Decision::new(DENY, "high", format!("「{label}」只允许在 {doms} 使用，当前网站是 {host} (item restricted to other sites)")));
         }
         if field_str(&it, "kind") == "card" && purchase.is_none() && injection.is_empty() {
             // 2026-10-06 golden G04: the card was filled before the purchase was confirmed, so the user would get a
@@ -2094,6 +2097,39 @@ mod tests {
         );
         assert_eq!(r.decision, DENY);
         assert_eq!(r.reason, "「Visa」只允许在 shop.test 使用，当前网站是 evil.example (item restricted to other sites)");
+        // a site under a two-label suffix (gov.sg, com.sg, co.uk): matched by the whole host name
+        let pp = vault::save_item(
+            &store,
+            &json!({"kind": "id_document", "label": "Passport", "domains": "ica.gov.sg",
+                                                 "values": {"number": "E1234567X"}}),
+            None,
+        )
+        .unwrap();
+        let pargs = json!({"ref": "e1", "item_id": pp["id"], "field": "number"});
+        let pel = json!({"tag": "input", "input_type": "text", "name": "Passport number"});
+        let at = |url: &str| {
+            dec(
+                &store,
+                "browser_fill_secret",
+                pargs.clone(),
+                "t1",
+                Some(pel.clone()),
+                Some(json!({"url": url})),
+            )
+        };
+        assert_eq!(
+            at("https://eservices.ica.gov.sg/sgarrivalcard/").decision,
+            ASK
+        );
+        assert_eq!(at("https://ica.gov.sg/").decision, ASK);
+        let r = at("https://eservices.mom.gov.sg/");
+        assert_eq!(r.decision, DENY);
+        assert!(
+            r.reason
+                .ends_with("当前网站是 eservices.mom.gov.sg (item restricted to other sites)"),
+            "{}",
+            r.reason
+        );
         assert_eq!(
             dec(
                 &store,

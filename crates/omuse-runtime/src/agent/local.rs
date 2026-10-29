@@ -391,8 +391,19 @@ request — keep it short and leave out what the request does not need. The skil
                     .get("size")
                     .and_then(omuse_common::util::as_i64)
                     .unwrap_or(0);
-                Ok(format!("PDF 已在本机生成 created locally: {} ({} KB)。如果用户要这个文件，用 send_file 发给他 Use send_file to give it to the user.",
-                           get_str(&r, "path"), size / 1024))
+                // 2026-10-29 (docs_real): "a one-page packing list" came out as 2 pages and the answer said one — the
+                // model never saw the page count; now it does, and can shorten and render again
+                let pages = self
+                    .path(&get_str(&r, "path"))
+                    .ok()
+                    .and_then(|p| lopdf::Document::load(p).ok())
+                    .map(|d| d.get_pages().len());
+                let pages = pages.map_or_else(String::new, |n| {
+                    format!(", {n} page{}", if n == 1 { "" } else { "s" })
+                });
+                Ok(format!("PDF 已在本机生成 created locally: {} ({} KB{})。如果用户要这个文件，用 send_file 发给他 Use send_file to give it to the user. \
+If the user asked for a page count and this is not it, shorten or tighten the content and render it again before sending.",
+                           get_str(&r, "path"), size / 1024, pages))
             }
             "make_xlsx" => self.make_xlsx(a),
             "make_docx" => self.make_docx(a),

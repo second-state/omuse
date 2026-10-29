@@ -6,8 +6,8 @@ This guard checks what really ran, whatever the suite did:
   * every tool call the runtime recorded (events of type tool_call in runtime.db, sub-agents included);
   * every request the fake providers received: Kiwi.com MCP (price_to, adults), SerpApi (max_price, adults), the fake
     travel connector (its tool calls' arguments).
-It also checks the bots (crate::bots): a load_skill refused because the skill is another bot's means the suite talked to
-the wrong bot (set K.BOT / travel_common.BOT) — only bots_e2e's BOTSKILL case asks for that refusal on purpose.
+It also checks the bots (crate::bots): a load_skill or a tool refused because it is another bot's means the suite talked to
+the wrong bot (set K.BOT / travel_common.BOT) — only bots_e2e's BOTSKILL and BOTTOOL cases ask for that refusal on purpose.
 Exit 1 with one GUARD line per violation; prints "ARGS GUARD OK" otherwise. Missing services or an empty database are
 fine (a suite that never started the stack)."""
 import json
@@ -37,8 +37,8 @@ def bad_values(obj, where, out):
     if isinstance(obj, dict):
         for k, v in obj.items():
             n = num(v)
-            if k in PRICE and (v is None or isinstance(v, bool) or (isinstance(v, str) and not v.strip()) or (n is not None and n <= 0)):
-                out.append(f"{where}: {k}={v!r} (a price cap must be a positive number or absent = unlimited)")
+            if k in PRICE and (v is None or isinstance(v, bool) or (isinstance(v, str) and not v.strip()) or (n is not None and n < 1)):
+                out.append(f"{where}: {k}={v!r} (a price cap must be at least 1 or absent = unlimited)")
             elif k in PEOPLE and (n is None or n < 1):
                 out.append(f"{where}: {k}={v!r} (at least 1)")
             elif k in ZERO_OK and (n is None or n < 0):
@@ -75,11 +75,11 @@ def main():
             except ValueError:
                 continue
             pv = str(d.get("preview") or "")
-            if d.get("name") == "load_skill" and ("belongs to the bot(s)" in pv or "is not one of the" in pv) \
-                    and "BOTSKILL" not in (goals.get(tid) or ""):
-                out.append(f"load_skill refused in {tid} (wrong bot for this suite): {pv[:160]}")
+            if ("belongs to the bot(s)" in pv or "is not one of the" in pv) and "BOTSKILL" not in (goals.get(tid) or "") \
+                    and "BOTTOOL" not in (goals.get(tid) or ""):
+                out.append(f"{d.get('name')} refused in {tid} (wrong bot for this suite): {pv[:160]}")
     for i, args in enumerate(get("http://127.0.0.1:8094/kiwi-mcp/_log") or []):
-        bad_values(args, f"Kiwi.com request #{i}", out)
+        bad_values(args, f"Kiwi.com request #{i} {json.dumps(args)[:600]}", out)
     for i, q in enumerate(get("http://127.0.0.1:8094/serpapi/_log") or []):
         if q.get("engine") in ("google_flights", "google_hotels"):
             bad_values(q, f"SerpApi {q.get('engine')} request #{i}", out)

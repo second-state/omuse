@@ -359,10 +359,9 @@ pub fn sanitize_search_args(args: &mut Value) -> Vec<String> {
                 let key = k.as_str();
                 if PRICE_CAP_KEYS.contains(&key) {
                     let drop = match &v {
-                        Value::Number(_) => num(&v).is_none_or(|x| x <= 0.0),
-                        Value::String(s) => {
-                            s.trim().is_empty() || num(&v).is_some_and(|x| x <= 0.0)
-                        }
+                        // below 1 (0.5 would become a cap of 0 once rounded down) is no cap
+                        Value::Number(_) => num(&v).is_none_or(|x| x < 1.0),
+                        Value::String(s) => s.trim().is_empty() || num(&v).is_some_and(|x| x < 1.0),
                         Value::Null | Value::Bool(_) => true,
                         _ => false,
                     };
@@ -434,8 +433,9 @@ mod search_args_tests {
     #[test]
     fn zero_and_empty_price_caps_mean_unlimited() {
         let mut a = json!({"origin": "SIN", "max_price": 0, "max_price_per_night": "0", "price_to": -1, "budget": null,
-                           "max_total": "", "sort": "price", "tasks": [{"max_price": 0.0, "q": "x"}]});
-        assert_eq!(sanitize_search_args(&mut a).len(), 6);
+                           "max_total": "", "sort": "price", "tasks": [{"max_price": 0.0, "q": "x"}], "price_max": 0.5,
+                           "max_budget": "0.9"});
+        assert_eq!(sanitize_search_args(&mut a).len(), 8);
         assert_eq!(
             a,
             json!({"origin": "SIN", "sort": "price", "tasks": [{"q": "x"}]})

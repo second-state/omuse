@@ -67,10 +67,11 @@ pub fn people(a: &Value, key: &str, missing: i64, max: i64) -> i64 {
 
 /// A price cap from the request: only a positive number caps anything (a model filling defaults sends 0).
 pub fn price_cap(a: &Value, key: &str) -> Option<i64> {
+    // below 1 (0.5 would truncate to a cap of 0) is no cap at all
     a.get(key)
         .and_then(Value::as_f64)
-        .filter(|m| *m > 0.0)
-        .map(|m| m as i64)
+        .filter(|m| m.is_finite() && *m >= 1.0)
+        .map(|m| m.floor() as i64)
 }
 
 /// What was searched, in the words the answer should use — appended to every flights result so the cabin, the
@@ -1207,6 +1208,29 @@ impl SerpApi {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_price_cap_below_one_is_no_cap_and_a_real_one_is_rounded_down() {
+        for v in [
+            json!(0),
+            json!(0.5),
+            json!(0.99),
+            json!(-3),
+            json!("500"),
+            json!(null),
+        ] {
+            assert_eq!(
+                price_cap(&json!({"max_price": v}), "max_price"),
+                None,
+                "{v}"
+            );
+        }
+        assert_eq!(price_cap(&json!({"max_price": 1}), "max_price"), Some(1));
+        assert_eq!(
+            price_cap(&json!({"max_price": 699.6}), "max_price"),
+            Some(699)
+        );
+    }
     use super::*;
 
     #[test]

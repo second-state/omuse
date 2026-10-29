@@ -18,9 +18,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 FROM ${TEST_BASE}
 USER root
-# the programs the binary calls (as in ./Dockerfile) plus the test-only IMAP server and process tools
+# the programs the binary calls (as in ./Dockerfile) plus the test-only IMAP server, process tools and certutil (the
+# HTTPS stand-ins' test CA, tests/https_standins.py)
 RUN apt-get update && apt-get install -y --no-install-recommends tini tzdata curl jq psmisc dovecot-imapd \
-      ffmpeg libheif-examples fonts-noto-cjk \
+      ffmpeg libheif-examples fonts-noto-cjk libnss3-tools \
     && rm -rf /var/lib/apt/lists/*
 # the Python packages the test scripts, fake services and analysis tools import (tests/requirements.txt)
 COPY tests/requirements.txt /tmp/req/requirements.txt

@@ -630,18 +630,34 @@ pub fn check_url(url: &str) -> (bool, String) {
     (true, String::new())
 }
 
-/// Registered-domain-ish host of a URL (last two labels), lowercase; "" when unparsable.
+/// Second-level labels under a two-letter country code that are part of the suffix (amazon.com.sg, ica.gov.sg,
+/// x.co.uk), as in the browser's pacing key (`omuse_browser::textfmt::reg_domain`).
+const CC_SLD2: &[&str] = &["com", "co", "net", "org", "gov", "edu", "ac"];
+
+/// The registered domain of a lowercase host name: the last two labels, or three under a country code's
+/// second level (`www.amazon.com.sg` → `amazon.com.sg`, so two shops there are never one site).
+pub fn registered_domain(host: &str) -> String {
+    let parts: Vec<&str> = host.split('.').collect();
+    let n = parts.len();
+    if n >= 3
+        && parts[n - 1].len() == 2
+        && parts[n - 1].chars().all(|c| c.is_ascii_alphabetic())
+        && CC_SLD2.contains(&parts[n - 2])
+    {
+        parts[n - 3..].join(".")
+    } else if n >= 2 {
+        parts[n - 2..].join(".")
+    } else {
+        host.to_string()
+    }
+}
+
+/// Registered domain of a URL (see [`registered_domain`]), lowercase; "" when unparsable.
 pub fn domain_of(url: &str) -> String {
     let Ok(p) = urlparse(url) else {
         return String::new();
     };
-    let h = p.hostname().unwrap_or_default().to_lowercase();
-    let parts: Vec<&str> = h.split('.').collect();
-    if parts.len() >= 2 {
-        parts[parts.len() - 2..].join(".")
-    } else {
-        h
-    }
+    registered_domain(&p.hostname().unwrap_or_default().to_lowercase())
 }
 
 /// `urlparse(url).scheme` (lowercase), "" when there is none or the URL is unparsable.
@@ -1339,6 +1355,11 @@ mod tests {
             ("http://a.b.c.lan./", "lan."),
             ("http://fec0::1/", "fec0"),
             ("http://a_b.com/", "a_b.com"),
+            ("https://www.amazon.com.sg/dp/1", "amazon.com.sg"),
+            ("https://eservices.ica.gov.sg/sgarrivalcard/", "ica.gov.sg"),
+            ("https://shop.co.uk/", "shop.co.uk"),
+            ("https://co.uk/", "co.uk"),
+            ("https://a.b.com.au/", "b.com.au"),
         ] {
             assert_eq!(domain_of(u), d, "{u}");
         }

@@ -5,7 +5,9 @@
 //! The bots are built in (`bots/<id>.md`, compiled into the binary): front matter with the name (English and Chinese),
 //! an icon, the order in the menu, a description the main bot routes by, and the skills; the body is the bot's prompt.
 //! The main bot has every skill no specialised bot lists (imported skills included) plus the ones its own file names;
-//! specialised bots may share skills. The main bot hands a request to a specialised bot with `ask_bot`
+//! specialised bots may share skills. Tools work the same way: a tool a bot file names under `tools:` (the travel
+//! searches) is only for the bots that name it, so the main bot cannot answer such a request itself; a connector's
+//! tool `mcp_<server>__<name>` counts as `<name>`. The main bot hands a request to a specialised bot with `ask_bot`
 //! (`Runtime::ask_bot`).
 
 use std::collections::HashSet;
@@ -34,6 +36,12 @@ pub struct Bot {
     pub description_zh: String,
     /// The skills its file names (for the main bot: the shared ones it keeps besides every unlisted skill).
     pub skills: Vec<String>,
+    /// The tools only the bots that name them may use.
+    pub tools: Vec<String>,
+    /// Requests it handles, shown above the chat input of an empty conversation (`examples` / `examples_zh`, `|`
+    /// between them).
+    pub examples: Vec<String>,
+    pub examples_zh: Vec<String>,
     /// The bot's own instructions, added to the executor prompt.
     pub prompt: String,
 }
@@ -55,7 +63,8 @@ impl Bot {
     /// The API view (`GET /api/bots`).
     pub fn to_json(&self) -> Value {
         json!({"id": self.id, "name": self.name, "name_zh": self.name_zh, "icon": self.icon, "order": self.order,
-               "description": self.description, "description_zh": self.description_zh, "skills": self.skills})
+               "description": self.description, "description_zh": self.description_zh, "skills": self.skills,
+               "examples": self.examples, "examples_zh": self.examples_zh})
     }
 }
 
@@ -84,13 +93,23 @@ pub fn parse(id: &str, text: &str) -> Option<Bot> {
         order: field("order").parse().unwrap_or(99),
         description: field("description"),
         description_zh: field("description_zh"),
-        skills: field("skills")
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect(),
+        skills: list(&field("skills")),
+        tools: list(&field("tools")),
+        examples: split(&field("examples"), '|'),
+        examples_zh: split(&field("examples_zh"), '|'),
         prompt: m[2].trim().to_string(),
     })
+}
+
+fn list(v: &str) -> Vec<String> {
+    split(v, ',')
+}
+
+fn split(v: &str, sep: char) -> Vec<String> {
+    v.split(sep)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 static BOTS: LazyLock<Vec<Bot>> = LazyLock::new(|| {
@@ -134,6 +153,27 @@ pub fn has_skill(bot: &Bot, name: &str) -> bool {
             .any(|b| !b.is_main() && b.skills.iter().any(|s| s == name))
 }
 
+/// The tool's name without a connector's `mcp_<server>__` prefix.
+fn base_tool(name: &str) -> &str {
+    name.strip_prefix("mcp_")
+        .and_then(|n| n.split_once("__"))
+        .map_or(name, |(_, n)| n)
+}
+
+/// Whether `bot` may use the tool `name`: every tool except the ones other bots' files claim under `tools:`.
+pub fn has_tool(bot: &Bot, name: &str) -> bool {
+    let n = base_tool(name);
+    bot.tools.iter().any(|t| t == n) || !BOTS.iter().any(|b| b.tools.iter().any(|t| t == n))
+}
+
+/// The bots whose files claim the tool `name` (for the refusal).
+pub fn tool_owners(name: &str) -> Vec<&'static Bot> {
+    let n = base_tool(name);
+    BOTS.iter()
+        .filter(|b| b.tools.iter().any(|t| t == n))
+        .collect()
+}
+
 /// The enabled skills (as `Skills::enabled` lists them) that `bot` may use.
 pub fn filter_skills(bot: &Bot, skills: Vec<Value>) -> Vec<Value> {
     skills
@@ -163,6 +203,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn travel_searches_are_the_travel_bots_only() {
+        let (main, travel, insurance, cities) = (
+            get(MAIN).unwrap(),
+            get("travel").unwrap(),
+            get("insurance").unwrap(),
+            get("cities").unwrap(),
+        );
+        for t in [
+            "flights_search",
+            "flight_offer",
+            "hotels_search",
+            "hotel_rooms",
+        ] {
+            assert!(!has_tool(main, t), "{t}");
+            assert!(has_tool(travel, t), "{t}");
+            assert!(!has_tool(main, &format!("mcp_travel__{t}")), "{t}");
+            assert!(has_tool(travel, &format!("mcp_travel__{t}")), "{t}");
+        }
+        assert!(has_tool(insurance, "flights_search") && !has_tool(insurance, "hotels_search"));
+        assert!(!has_tool(cities, "flights_search"));
+        for t in [
+            "web_search",
+            "places_search",
+            "calculate",
+            "ask_bot",
+            "mcp_x__web_search",
+            "mcp_flights_search",
+        ] {
+            assert!(has_tool(main, t), "{t}");
+        }
+        let owners: Vec<&str> = tool_owners("flights_search")
+            .iter()
+            .map(|b| b.id.as_str())
+            .collect();
+        assert_eq!(owners, ["travel", "insurance"]);
+    }
+
+    #[test]
     fn built_in_bots_parse_with_main_first_and_known_skills() {
         let ids: Vec<&str> = all().iter().map(|b| b.id.as_str()).collect();
         assert_eq!(
@@ -187,6 +265,14 @@ mod tests {
                 !b.description.is_empty() && !b.prompt.is_empty(),
                 "{}",
                 b.id
+            );
+            // examples above the chat input: a few, in both languages, one for one
+            assert!(
+                (3..=5).contains(&b.examples.len()) && b.examples.len() == b.examples_zh.len(),
+                "{}: {:?} / {:?}",
+                b.id,
+                b.examples,
+                b.examples_zh
             );
         }
         let builtin: HashSet<String> = crate::skills::BUILTIN

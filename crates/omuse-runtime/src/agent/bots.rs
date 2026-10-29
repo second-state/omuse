@@ -7,17 +7,24 @@
 //! ([`Runtime::handoff_done`], from `set_status`), the main task resumes and ends at once with the bot's answer, kept
 //! word for word in the main conversation with a link (`meta.handoff`) to the bot's conversation. An approval or a
 //! takeover the bot asks for is shown in the main conversation too ([`Runtime::mirror_to_parent`]).
+//!
+//! Which bot answers is decided before the executor's first turn, by the planner model ([`Runtime::route`]): it reads
+//! the request, the recent conversation and the bots, and names the bot, a self-contained question for it (the
+//! request plus what the bot needs from this conversation) and, for a follow-up, the bot conversation to continue. The
+//! code checks the decision (a known bot; a conversation of that bot started from this one) and hands over at once. When
+//! the planner keeps the request in Main, the executor answers without `ask_bot`; only when the planner fails does the
+//! executor get `ask_bot` and decide itself.
 
 use futures::future::BoxFuture;
 use omuse_common::pyjson;
-use omuse_common::util::{get_str, now_ts, take_chars, truncate};
+use omuse_common::util::{get_str, now_ts, py_str, take_chars, truncate, truthy};
 use serde_json::{json, Value};
 
 use super::lang::agent_lang;
-use super::runtime::{Runtime, Suspend};
+use super::runtime::{opts, Runtime, Suspend};
 use super::util::sget;
 use crate::bots::{self, Bot};
-use crate::llm::ToolCall;
+use crate::llm::{extract_json, ChatOpts, ToolCall};
 
 /// The status of a main-bot task that waits for a specialised bot's answer.
 pub const WAITING_BOT: &str = "WAITING_BOT";
@@ -85,7 +92,134 @@ bot handles it — the user can ask in Main, or open that bot from the menu."
     out
 }
 
+/// The planner's routing decision for a main-bot request.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Route {
+    /// Hand over: the `ask_bot` arguments (`bot`, `question`, `conversation_id` when continuing).
+    Bot(Value),
+    /// Main answers itself.
+    Main,
+    /// The planner gave no usable answer: the executor decides (with `ask_bot`).
+    Unknown,
+}
+
+/// The router's system prompt: the bots and the rules for the JSON answer.
+pub fn route_prompt() -> String {
+    let lines: Vec<String> = bots::all()
+        .iter()
+        .filter(|b| !b.is_main())
+        .map(|b| format!("- {} — {}: {}", b.id, b.name, b.description))
+        .collect();
+    format!("## Route\nYou route a request the user sent to OMuse's main bot. Specialised bots (each has its own skills; \
+all share the user's memory, profile, Vault and connectors):\n{}\n\
+- main — everything else: general questions, writing, email, news, research, shopping, documents, calls, schedules.\n\n\
+Answer with ONE JSON object and nothing else: {{\"bot\": \"<id>\", \"question\": \"…\", \"conversation_id\": \"…\"}}.\n\
+- bot: the bot whose work the request is; for a request that needs two bots, the one for the main part. \"main\" when \
+no specialised bot fits.\n\
+- question (not for main): the request for that bot, standing on its own, because the bot does not see this \
+conversation: the user's words, plus what the bot needs from the conversation (dates, places, names, what was \
+already decided or answered). Keep every condition the user gave exactly; add none they did not give (no budget or \
+price limit, no number of travellers, no airline, no dates) — the bot has the profile and asks if it must. Write it \
+in the language the user wrote in.\n\
+- conversation_id: only for a follow-up on something a bot already answered in this conversation (the history marks \
+it \"[answered by the <bot> bot in conversation conv_…]\"): that conversation, so the bot keeps its context. Leave it \
+out otherwise.", lines.join("\n"))
+}
+
+/// The routing decision as the code accepts it: a specialised bot that exists, a non-empty question (the request
+/// itself when the planner left it out), and a conversation to continue only when it is that bot's and was started from
+/// `parent_conv`; anything else is [`Route::Unknown`] (or [`Route::Main`] for `main`).
+pub fn checked_route(raw: &Value, goal: &str, conv_ok: impl Fn(&str, &str) -> bool) -> Route {
+    if !raw.is_object() {
+        return Route::Unknown;
+    }
+    let want = sget(raw, "bot").trim().to_lowercase();
+    if want == bots::MAIN {
+        return Route::Main;
+    }
+    let Some(bot) = bots::get(&want).filter(|b| !b.is_main()) else {
+        return Route::Unknown;
+    };
+    let mut question = sget(raw, "question").trim().to_string();
+    if question.is_empty() {
+        question = goal.trim().to_string();
+    }
+    let mut args = json!({"bot": bot.id, "question": question});
+    let cid = sget(raw, "conversation_id").trim().to_string();
+    if !cid.is_empty() && conv_ok(&cid, &bot.id) {
+        args["conversation_id"] = json!(cid);
+    }
+    Route::Bot(args)
+}
+
 impl Runtime {
+    /// The main bot's first step: the planner model picks the bot for this request (see the module docs).
+    pub(crate) async fn route(&self, t: &Value, history: &[Value]) -> Route {
+        let tid = get_str(t, "id");
+        let parent = get_str(t, "conv_id");
+        let goal = get_str(t, "goal");
+        let recent: Vec<String> = history[history.len().saturating_sub(12)..]
+            .iter()
+            .map(|m| {
+                format!(
+                    "{}: {}",
+                    get_str(m, "role"),
+                    take_chars(&m.get("content").map(py_str).unwrap_or_default(), 800)
+                )
+            })
+            .collect();
+        let user = format!(
+            "Today: {}\n\nConversation so far:\n{}\n\nThe user's new request:\n{}",
+            chrono::Utc::now().format("%Y-%m-%d"),
+            if recent.is_empty() {
+                "(none)".to_string()
+            } else {
+                recent.join("\n")
+            },
+            goal
+        );
+        let msgs = [
+            json!({"role": "system", "content": route_prompt()}),
+            json!({"role": "user", "content": user}),
+        ];
+        let pm = sget(&self.settings(), "planner_model");
+        let o = ChatOpts {
+            max_tokens: Some(1200),
+            temperature: Some(0.0),
+            model: if pm.is_empty() { None } else { Some(pm) },
+            no_think: true,
+            ..opts("router", &tid)
+        };
+        let raw = match self.chat_or_cancel(&tid, &msgs, None, &o).await {
+            Some(Ok(r)) => extract_json(&r.content).unwrap_or(Value::Null),
+            Some(Err(e)) => {
+                self.event(
+                    &tid,
+                    "route_error",
+                    json!({"message": take_chars(&e.to_string(), 300)}),
+                )
+                .await;
+                Value::Null
+            }
+            None => Value::Null,
+        };
+        let route = checked_route(&raw, &goal, |cid, bot| {
+            self.store.conv(cid).ok().flatten().is_some_and(|c| {
+                get_str(&c, "bot_id") == bot && get_str(&c, "parent_conv") == parent
+            })
+        });
+        let ev = match &route {
+            Route::Bot(a) => {
+                json!({"bot": a.get("bot"), "conversation_id": a.get("conversation_id"),
+                                    "question": take_chars(&sget(a, "question"), 500)})
+            }
+            Route::Main => json!({"bot": bots::MAIN}),
+            Route::Unknown => json!({"bot": null, "raw": take_chars(&pyjson::dumps(&raw), 300)}),
+        };
+        self.event(&tid, "route", ev).await;
+        route
+    }
+
     /// The bot of the conversation a task belongs to.
     pub fn bot_of(&self, t: &Value) -> &'static Bot {
         bots::get_or_main(&self.store.conv_bot(&get_str(t, "conv_id")))
@@ -158,9 +292,14 @@ skills, or say which bot the user should ask.",
             let mid = self
                 .store
                 .add_msg(&cid, "user", &question, "", Some(&meta))?;
-            let child = self
-                .store
-                .create_task(&question, &cid, "chat", "", "", None)?;
+            let child = self.store.create_task(
+                &question,
+                &cid,
+                "chat",
+                "",
+                "",
+                t.get("attachments").filter(|a| truthy(a)),
+            )?;
             self.store.db.execute(
                 "UPDATE messages SET task_id=? WHERE id=?",
                 omuse_common::params![get_str(&child, "id").as_str(), mid],
@@ -355,6 +494,57 @@ skills, or say which bot the user should ask.",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_prompt_lists_every_specialised_bot_and_main() {
+        let p = route_prompt();
+        for b in bots::all().iter().filter(|b| !b.is_main()) {
+            assert!(p.contains(&format!("- {} — {}", b.id, b.name)), "{}", b.id);
+        }
+        assert!(p.contains("- main — everything else") && p.contains("add none they did not give"));
+    }
+
+    #[test]
+    fn the_routing_decision_is_checked_in_code() {
+        let ok = |cid: &str, bot: &str| cid == "conv_kid" && bot == "travel";
+        let r = checked_route(
+            &json!({"bot": " Travel ", "question": "SIN to TYO on 2026-12-01", "conversation_id": "conv_kid"}),
+            "g",
+            ok,
+        );
+        assert_eq!(
+            r,
+            Route::Bot(
+                json!({"bot": "travel", "question": "SIN to TYO on 2026-12-01", "conversation_id": "conv_kid"})
+            )
+        );
+        // a conversation that is not that bot's (or not from this one) is dropped: a new one
+        let r = checked_route(
+            &json!({"bot": "cards", "question": "q", "conversation_id": "conv_kid"}),
+            "g",
+            ok,
+        );
+        assert_eq!(r, Route::Bot(json!({"bot": "cards", "question": "q"})));
+        // no question: the request itself
+        let r = checked_route(&json!({"bot": "cities"}), " what to see in Osaka ", ok);
+        assert_eq!(
+            r,
+            Route::Bot(json!({"bot": "cities", "question": "what to see in Osaka"}))
+        );
+        assert_eq!(
+            checked_route(&json!({"bot": "main", "question": "x"}), "g", ok),
+            Route::Main
+        );
+        for raw in [
+            json!({"bot": "nope"}),
+            json!({}),
+            Value::Null,
+            json!("travel"),
+            json!({"bot": ""}),
+        ] {
+            assert_eq!(checked_route(&raw, "g", ok), Route::Unknown, "{raw}");
+        }
+    }
 
     #[test]
     fn main_prompt_lists_the_other_bots_and_the_hand_over_rules() {
