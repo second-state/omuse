@@ -203,6 +203,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_dockerfile_that_builds_the_binary_copies_the_bots() {
+        // 0.5.0's release build failed: Dockerfile.fly copied skills/ but not bots/ (include_dir! needs both)
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut seen = 0;
+        for e in std::fs::read_dir(&root).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("Dockerfile") {
+                continue;
+            }
+            let text = std::fs::read_to_string(e.path()).unwrap();
+            if text.contains("COPY skills ./skills") {
+                seen += 1;
+                assert!(
+                    text.contains("COPY bots ./bots"),
+                    "{name} copies skills/ but not bots/"
+                );
+            }
+        }
+        assert!(seen >= 3, "found {seen} Dockerfiles that build the binary");
+    }
+
+    #[test]
     fn travel_searches_are_the_travel_bots_only() {
         let (main, travel, insurance, cities) = (
             get(MAIN).unwrap(),

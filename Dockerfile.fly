@@ -8,6 +8,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY web ./web
 COPY skills ./skills
+COPY bots ./bots
 ARG OMUSE_VERSION=
 ENV OMUSE_VERSION=$OMUSE_VERSION
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
