@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from playwright.async_api import async_playwright  # noqa: E402
 
 from tests import skills_common as K  # noqa: E402
-K.BOT = "arrival"   # the Arrival & entry bot has this suite's skills (crate::bots)
+K.BOT = "travel"   # the Travel bot has this suite's skills (crate::bots)
 
 K.setup(mail=[("Singapore Airlines <noreply@singaporeair.example>", "Your e-ticket: SQ 231 SYD-SIN 2026-11-02",
                "Booking ref 9QW3PL. SQ 231 departs Sydney 2026-11-02 10:30, arrives Singapore 16:20.", 1),

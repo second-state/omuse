@@ -32,18 +32,18 @@ def conv(cid):
 # ---------------------------------------------------------------- the bots and their skills
 bots = c.get(B + "/api/bots", headers=H).json()["bots"]
 ids = [b["id"] for b in bots]
-K.check("seven bots, Main first: main, travel, cities, arrival, insurance, cards, photos", ids == ["main", "travel", "cities", "arrival", "insurance", "cards", "photos"], ids)
+K.check("five bots, Main first: main, travel, insurance, cards, photos", ids == ["main", "travel", "insurance", "cards", "photos"], ids)
 sk = {b["id"]: set(b["skills"]) for b in bots}
 K.check("each bot has its own skills; Main keeps the general ones and none of the travel ones",
-        "flight-booking" in sk["travel"] and "flight-booking" not in sk["main"] and "news-search" in sk["main"] and "tokyo" in sk["cities"]
-        and "sg-arrival-card" in sk["arrival"] and "fwd-travel-insurance" in sk["insurance"] and "drive-video-edit" in sk["photos"]
+        "flight-booking" in sk["travel"] and "flight-booking" not in sk["main"] and "news-search" in sk["main"] and "tokyo" in sk["travel"]
+        and "sg-arrival-card" in sk["travel"] and "fwd-travel-insurance" in sk["insurance"] and "drive-video-edit" in sk["photos"]
         and "drive-video-edit" not in sk["main"] and "credit-card-picker" in sk["cards"] and "credit-card-picker" not in sk["main"],
         {k: sorted(v)[:4] for k, v in sk.items()})
-K.check("bots may share a skill (pdf-forms: Main, Arrival & entry, Travel insurance)", all("pdf-forms" in sk[b] for b in ("main", "arrival", "insurance")))
+K.check("bots may share a skill (pdf-forms: Main, Travel, Insurance & claims)", all("pdf-forms" in sk[b] for b in ("main", "travel", "insurance")))
 K.check("every bot has a name in both languages, an icon and a description",
         all(b["name"] and b["name_zh"] and b["icon"] and b["description"] for b in bots), [(b["id"], b["name"], b["name_zh"]) for b in bots])
 
-# ---------------------------------------------------------------- the main bot hands a flight question to Travel booking
+# ---------------------------------------------------------------- the main bot hands a flight question to Travel
 t = K.run(f"BOTHAND cheapest flight Singapore to Tokyo on {DATE} DATE={DATE}", bot="main")
 K.trace(t)
 main_cid = t["_conv"]
@@ -66,7 +66,7 @@ last = [m for m in mc["messages"] if m["role"] == "assistant"][-1]
 K.check("the main conversation's answer carries the link to the bot's conversation (meta.handoff)",
         (last.get("meta") or {}).get("handoff", {}).get("bot") == "travel" and last["meta"]["handoff"]["conv_id"] == kid_cid, last.get("meta"))
 kc = conv(kid_cid)
-K.check("the bot's conversation belongs to Travel booking and points back to the main conversation; its first message says where it came from",
+K.check("the bot's conversation belongs to Travel and points back to the main conversation; its first message says where it came from",
         kc["conversation"]["bot_id"] == "travel" and kc["conversation"]["parent_conv"] == main_cid
         and kc["messages"][0]["role"] == "user" and kc["messages"][0]["content"].startswith("BOTKID1")
         and (kc["messages"][0].get("meta") or {}).get("from", {}).get("conv_id") == main_cid, (kc["conversation"], kc["messages"][:1]))
@@ -77,7 +77,7 @@ K.check("each bot lists its own conversations", main_cid in lm and kid_cid not i
 # ---------------------------------------------------------------- a follow-up goes back to the same bot conversation
 t2 = K.run(f"BOTFOLLOW and the return a week later? DATE={DATE}", conv=main_cid)
 ev2 = [e["data"] for e in t2["events"] if e["type"] == "handoff"]
-K.check("the follow-up was handed to the same Travel booking conversation (the history named it)", t2["status"] == "COMPLETED"
+K.check("the follow-up was handed to the same Travel conversation (the history named it)", t2["status"] == "COMPLETED"
         and ev2 and ev2[0]["conv_id"] == kid_cid and [x["args"].get("conversation_id") for x in K.calls(t2)] == [kid_cid], (t2["status"], ev2, (t2.get("result") or "")[:200]))
 K.check("the bot kept its context: it answered from its own earlier answer", "the outbound was SQ638" in (t2.get("result") or ""), (t2.get("result") or "")[:200])
 K.check("the bot's conversation now has both questions", [m["content"][:7] for m in conv(kid_cid)["messages"] if m["role"] == "user"] == ["BOTKID1", "BOTKID2"])
@@ -102,7 +102,7 @@ for marker in ("BOTROUTEFAIL", "BOTROUTEBAD"):
             and (t4.get("result") or "").startswith("TRAVELBOT ANSWER"), (t4["status"], ro, hs, (t4.get("result") or "")[:120]))
 t4 = K.run(f"BOTCONVBAD cheapest flight DATE={DATE}", bot="main")
 hs = [e["data"] for e in t4["events"] if e["type"] == "handoff"]
-K.check("a conversation the planner names that is not that bot's (conv_nope) is dropped: a new Travel booking conversation",
+K.check("a conversation the planner names that is not that bot's (conv_nope) is dropped: a new Travel conversation",
         t4["status"] == "COMPLETED" and hs and hs[0]["conv_id"].startswith("conv_") and hs[0]["conv_id"] != "conv_nope"
         and "conversation_id" not in K.calls(t4)[0]["args"], (t4["status"], hs, K.calls(t4)[:1]))
 
@@ -139,7 +139,7 @@ K.check("cancelling the main task cancels the bot's task as well", p["status"] =
 # ---------------------------------------------------------------- a chat started in a bot's view belongs to that bot
 r = c.post(B + "/api/chat", json={"message": "BOTKID1 straight to the travel bot DATE=" + DATE, "bot": "travel"}, headers=H).json()
 t5 = K.wait_end(r["task_id"])
-K.check("a conversation started in the Travel booking view is the bot's, and the bot answers there itself (no hand-over)",
+K.check("a conversation started in the Travel view is the bot's, and the bot answers there itself (no hand-over)",
         conv(r["conversation_id"])["conversation"]["bot_id"] == "travel" and t5["status"] == "COMPLETED"
         and [x["name"] for x in K.calls(t5)] == ["load_skill", "flights_search"], (t5["status"], [x["name"] for x in K.calls(t5)]))
 r = c.post(B + "/api/chat", json={"message": "hello", "bot": "no-such-bot"}, headers=H).json()

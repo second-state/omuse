@@ -2,7 +2,8 @@
 name: Photos & videos
 name_zh: 照片与视频
 icon: 🎞️
-order: 6
+badge: camera
+order: 4
 description: Vacation photos and videos in Google Drive — storybooks and albums, edited highlight videos, and freeing up space.
 description_zh: Google Drive 里的旅行照片和视频：故事书与相册、剪辑精华视频、清理空间
 skills: drive-photo-storybook, drive-video-edit, drive-cleanup

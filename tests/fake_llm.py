@@ -151,13 +151,13 @@ def last_auth():
 @app.post("/v1/chat/completions")
 async def chat(req: Request):
     """The scripted reply; as `data:` chunks (content in small pieces, tool calls in two fragments, usage last) when the
-    request says `stream: true` — slowly (50 ms a piece) for STREAMSLOW goals so a page can be watched filling up."""
+    request says `stream: true` — slowly (50 ms a piece) for STREAMSLOW and BOTSTREAM goals so a page can be watched filling up."""
     b = await req.json()
     out = await _chat(req, b)
     if isinstance(out, dict) and b.get("stream"):
         from fastapi.responses import StreamingResponse
         goal = "\n".join(str(m["content"]) for m in b.get("messages") or [] if m.get("role") == "user")
-        return StreamingResponse(sse(out, 0.05 if "STREAMSLOW" in goal else 0.001), media_type="text/event-stream")
+        return StreamingResponse(sse(out, 0.05 if "STREAMSLOW" in goal or "BOTSTREAM" in goal else 0.001), media_type="text/event-stream")
     return out
 
 
@@ -1447,7 +1447,7 @@ def fwd_insurance(goal, msgs):
 
 
 def route_reply(user):
-    """The router's JSON (bots_e2e.py): BOTHAND / BOTAPPR / BOTWAIT go to Travel booking with the kid's marker as the
+    """The router's JSON (bots_e2e.py): BOTHAND / BOTAPPR / BOTWAIT go to Travel with the kid's marker as the
     question, BOTFOLLOW to the conversation the history names, BOTROUTEFAIL gets no JSON (the executor decides with
     ask_bot), BOTROUTEBAD names a bot that does not exist; everything else stays in Main."""
     req = user.split("The user's new request:\n", 1)[-1]
@@ -1456,8 +1456,9 @@ def route_reply(user):
         return reply("I am not sure.")
     if "BOTROUTEBAD" in req:
         return reply(json.dumps({"bot": "no-such-bot", "question": "x"}))
-    slow = " BOTSLOW" if "BOTSLOW" in req else ""
-    if slow:   # bots_ui.py: the routing takes a while, so Main's timer must be longer than the bot's by that much
+    # BOTSLOW / BOTSTREAM (bots_ui.py) go on to the bot: it works a while / streams its answer slowly
+    slow = "".join(" " + m for m in ("BOTSLOW", "BOTSTREAM") if m in req)
+    if "BOTSLOW" in req:   # bots_ui.py: the routing takes a while, so Main's timer must be longer than the bot's by that much
         time.sleep(2)
     for marker, kid in (("BOTHAND", f"BOTKID1 cheapest flight Singapore to Tokyo on {date} DATE={date}"),
                         ("BOTAPPR", "BOTKIDAPPR book the SQ638 for SGD 620"), ("BOTWAIT", "BOTKIDWAIT log in to the airline site")):
@@ -1473,10 +1474,10 @@ def route_reply(user):
 
 
 def bots_flow(goal, sys, msgs, tools_done, n, allu):
-    """bots_e2e.py: the main bot hands a request to the Travel booking bot (ask_bot) and shows its answer; a follow-up
+    """bots_e2e.py: the main bot hands a request to the Travel bot (ask_bot) and shows its answer; a follow-up
     goes back to the same bot conversation; an approval and a takeover inside the bot."""
     main = "## Bots" in sys
-    travel = "You are the Travel booking bot" in sys
+    travel = "You are the Travel bot" in sys
     date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", allu) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-12-20")).group(1)
     if main and n == 0:
         for marker, kid in (("BOTHAND", f"BOTKID1 cheapest flight Singapore to Tokyo on {date} DATE={date}"),

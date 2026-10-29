@@ -3,7 +3,8 @@
 //! (`conversations.bot_id`, `main` by default).
 //!
 //! The bots are built in (`bots/<id>.md`, compiled into the binary): front matter with the name (English and Chinese),
-//! an icon, the order in the menu, a description the main bot routes by, and the skills; the body is the bot's prompt.
+//! an icon (an emoji for text, and the badge on the menu's robot icon), the order in the menu, the ids of bots merged
+//! into it (`aliases`: their saved conversations are moved to it when the store opens), a description the main bot routes by, and the skills; the body is the bot's prompt.
 //! The main bot has every skill no specialised bot lists (imported skills included) plus the ones its own file names;
 //! specialised bots may share skills. Tools work the same way: a tool a bot file names under `tools:` (the travel
 //! searches) is only for the bots that name it, so the main bot cannot answer such a request itself; a connector's
@@ -31,7 +32,11 @@ pub struct Bot {
     pub name: String,
     pub name_zh: String,
     pub icon: String,
+    /// What the web UI draws on the bot's robot icon in the menu (`plane`, `shield`, …).
+    pub badge: String,
     pub order: i64,
+    /// The ids of earlier bots merged into this one.
+    pub aliases: Vec<String>,
     pub description: String,
     pub description_zh: String,
     /// The skills its file names (for the main bot: the shared ones it keeps besides every unlisted skill).
@@ -62,7 +67,8 @@ impl Bot {
 
     /// The API view (`GET /api/bots`).
     pub fn to_json(&self) -> Value {
-        json!({"id": self.id, "name": self.name, "name_zh": self.name_zh, "icon": self.icon, "order": self.order,
+        json!({"id": self.id, "name": self.name, "name_zh": self.name_zh, "icon": self.icon, "badge": self.badge,
+               "order": self.order,
                "description": self.description, "description_zh": self.description_zh, "skills": self.skills,
                "examples": self.examples, "examples_zh": self.examples_zh})
     }
@@ -90,7 +96,9 @@ pub fn parse(id: &str, text: &str) -> Option<Bot> {
         name,
         name_zh: field("name_zh"),
         icon: field("icon"),
+        badge: field("badge"),
         order: field("order").parse().unwrap_or(99),
+        aliases: list(&field("aliases")),
         description: field("description"),
         description_zh: field("description_zh"),
         skills: list(&field("skills")),
@@ -129,9 +137,17 @@ pub fn all() -> &'static [Bot] {
     &BOTS
 }
 
-/// The bot with this id.
+/// The bot with this id, or the bot an earlier bot of that id was merged into.
 pub fn get(id: &str) -> Option<&'static Bot> {
-    BOTS.iter().find(|b| b.id == id)
+    BOTS.iter()
+        .find(|b| b.id == id)
+        .or_else(|| BOTS.iter().find(|b| b.aliases.iter().any(|a| a == id)))
+}
+
+/// `(old id, bot it was merged into)` for every merged bot.
+pub fn renamed() -> impl Iterator<Item = (&'static str, &'static str)> {
+    BOTS.iter()
+        .flat_map(|b| b.aliases.iter().map(move |a| (a.as_str(), b.id.as_str())))
 }
 
 /// The bot with this id, or the main bot for an empty or unknown id (a conversation saved before bots existed).
@@ -226,11 +242,11 @@ mod tests {
 
     #[test]
     fn travel_searches_are_the_travel_bots_only() {
-        let (main, travel, insurance, cities) = (
+        let (main, travel, insurance, cards) = (
             get(MAIN).unwrap(),
             get("travel").unwrap(),
             get("insurance").unwrap(),
-            get("cities").unwrap(),
+            get("cards").unwrap(),
         );
         for t in [
             "flights_search",
@@ -244,7 +260,7 @@ mod tests {
             assert!(has_tool(travel, &format!("mcp_travel__{t}")), "{t}");
         }
         assert!(has_tool(insurance, "flights_search") && !has_tool(insurance, "hotels_search"));
-        assert!(!has_tool(cities, "flights_search"));
+        assert!(!has_tool(cards, "flights_search"));
         for t in [
             "web_search",
             "places_search",
@@ -265,21 +281,13 @@ mod tests {
     #[test]
     fn built_in_bots_parse_with_main_first_and_known_skills() {
         let ids: Vec<&str> = all().iter().map(|b| b.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            [
-                "main",
-                "travel",
-                "cities",
-                "arrival",
-                "insurance",
-                "cards",
-                "photos"
-            ]
-        );
+        assert_eq!(ids, ["main", "travel", "insurance", "cards", "photos"]);
         for b in all() {
             assert!(
-                !b.name.is_empty() && !b.name_zh.is_empty() && !b.icon.is_empty(),
+                !b.name.is_empty()
+                    && !b.name_zh.is_empty()
+                    && !b.icon.is_empty()
+                    && !b.badge.is_empty(),
                 "{}",
                 b.id
             );
@@ -317,6 +325,17 @@ mod tests {
     }
 
     #[test]
+    fn the_merged_travel_bots_are_aliases_of_travel() {
+        // City guides and Arrival & entry were merged into Travel (0.5.3)
+        assert_eq!(get("cities").unwrap().id, "travel");
+        assert_eq!(get("arrival").unwrap().id, "travel");
+        assert!(get("nope").is_none());
+        let mut r: Vec<_> = renamed().collect();
+        r.sort();
+        assert_eq!(r, [("arrival", "travel"), ("cities", "travel")]);
+    }
+
+    #[test]
     fn main_keeps_unclaimed_skills_and_shares_listed_ones() {
         let main = get_or_main("");
         assert!(main.is_main() && get_or_main("nope").is_main());
@@ -326,11 +345,8 @@ mod tests {
         // an imported skill no bot names belongs to main
         assert!(has_skill(main, "my-imported-skill") && !has_skill(travel, "my-imported-skill"));
         // shared: listed by a specialised bot and by main
-        assert!(has_skill(main, "pdf-forms") && has_skill(get("arrival").unwrap(), "pdf-forms"));
-        assert!(
-            has_skill(get("cities").unwrap(), "michelin-dining")
-                && has_skill(travel, "michelin-dining")
-        );
+        assert!(has_skill(main, "pdf-forms") && has_skill(travel, "pdf-forms"));
+        assert!(has_skill(travel, "tokyo") && has_skill(travel, "sg-arrival-card"));
         let cards = get("cards").unwrap();
         assert!(has_skill(cards, "credit-card-picker") && !has_skill(main, "credit-card-picker"));
         assert!(

@@ -772,6 +772,13 @@ impl Store {
                 )?;
             }
         }
+        // a bot merged into another (bots/<id>.md `aliases`): its conversations are the other bot's now
+        for (old, new) in crate::bots::renamed() {
+            db.execute(
+                "UPDATE conversations SET bot_id=? WHERE bot_id=?",
+                params![new, old],
+            )?;
+        }
         let fcols = cols("facts")?;
         for (col, ddl) in [
             ("tier", "TEXT DEFAULT 'long'"),
@@ -2008,6 +2015,25 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let st = Store::new(d.path(), cfg("")).unwrap();
         (d, st)
+    }
+
+    #[test]
+    fn a_merged_bots_conversations_move_to_the_bot_it_was_merged_into() {
+        let d = tempfile::tempdir().unwrap();
+        let st = Store::new(d.path(), cfg("")).unwrap();
+        let (a, b, m) = (
+            st.create_conv("a", "chat", None).unwrap(),
+            st.create_conv("b", "chat", None).unwrap(),
+            st.create_conv("m", "chat", None).unwrap(),
+        );
+        st.set_conv_bot(&a, "cities", "").unwrap();
+        st.set_conv_bot(&b, "arrival", &m).unwrap();
+        drop(st);
+        let st = Store::new(d.path(), cfg("")).unwrap(); // the upgrade: the store opens again
+        assert_eq!(st.conv_bot(&a), "travel");
+        assert_eq!(st.conv_bot(&b), "travel");
+        assert_eq!(get_str(&st.conv(&b).unwrap().unwrap(), "parent_conv"), m);
+        assert_eq!(st.conv_bot(&m), "main");
     }
 
     #[test]

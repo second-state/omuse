@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests import skills_common as K  # noqa: E402
-K.BOT = "insurance"   # the Travel insurance & claims bot has this suite's skills (crate::bots)
+K.BOT = "insurance"   # the Insurance & claims bot has this suite's skills (crate::bots)
 
 LOSS = (dt.date.today() - dt.timedelta(days=3)).isoformat()
 BOOKED = (dt.date.today() - dt.timedelta(days=40)).isoformat()

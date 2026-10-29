@@ -1,6 +1,6 @@
 """SG Arrival Card with a real model (tests/real_common.py): a plain request to Main to fill in the card. The ICA site
 is the stand-in served inside the test container at its real address (tests/https_standins.py: https://eservices.ica.gov.sg,
-tests/pages/sgac.html), so the agent works on what looks like the official site. Main must hand it to the Arrival & entry bot, which loads sg-arrival-card, takes
+tests/pages/sgac.html), so the agent works on what looks like the official site. Main must hand it to the Travel bot, which loads sg-arrival-card, takes
 the flight and hotel from mail and the name from the profile, puts the passport number in only through the Vault
 (browser_fill_secret, approved; never typed, never in the answer or the trace) and fills the form but does NOT submit it
 (it hands over for the Submit, or asks the user to confirm). If the bot asks for a missing detail before opening
@@ -47,14 +47,14 @@ R.timing("sgac", first)
 info = first
 if not first["takeover"] and not [n for n in first["names"] if n.startswith("browser_")]:
     # the bot asked something before opening the form: answer once, in the same conversation, and let it go on
-    R.routed("sgac question", first, "arrival")
+    R.routed("sgac question", first, "travel")
     info = R.ask("Male, holiday, flying back to Sydney after the 3 nights; no symptoms and no Africa or South America "
                  "in the last 6 days. Everything else is as you found it — please go ahead and fill in the form.",
                  conv=first["conv_id"], timeout=1200)
     R.timing("sgac follow-up", info)
     for k in ("calls", "names", "approvals", "tasks"):
         info[k] = first[k] + info[k]
-R.routed("sgac", info, "arrival")
+R.routed("sgac", info, "travel")
 R.finished("sgac", info, takeover=True)
 evs = events(info)
 end = info["kid"] or info["main"]
