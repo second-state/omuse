@@ -1332,6 +1332,9 @@ pub fn snap_envelope(store: &Store, task_id: &str, snap: &Value) -> anyhow::Resu
     if !flags.is_empty() {
         set(&mut out, "injection_warning", strings_value(&flags));
     }
+    if let Some(pdf) = snap.get("pdf").filter(|p| p.is_object()) {
+        set(&mut out, "pdf", pdf.clone());
+    }
     if let Some(blk) = snap.get("blocked").filter(|b| b.is_object()) {
         let status = blk
             .get("status")

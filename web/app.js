@@ -2196,8 +2196,9 @@ function memEntitiesCard(r) {
       h('div', { class: 'muted small' }, T('暂无')));
 }
 
-// the dropdowns of the two preference fields (Memory → Profile): an airline or an alliance, a hotel brand or a group /
-// loyalty programme (the agent expands an alliance or group to its members); anything else goes in a custom field.
+// the dropdowns of the preference fields (Memory → Profile): an airline or an alliance, a hotel brand or a group /
+// loyalty programme (the agent expands an alliance or group to its members), a car rental company; anything else goes
+// in a custom field.
 // ALLIANCES and HOTEL_GROUPS must match omuse_apps::loyalty (a unit test checks).
 const ALLIANCES = ['Star Alliance', 'oneworld', 'SkyTeam'];
 const AIRLINES = ['Singapore Airlines', 'ANA', 'Japan Airlines', 'Cathay Pacific', 'Korean Air', 'Asiana Airlines', 'EVA Air', 'China Airlines', 'STARLUX',
@@ -2213,9 +2214,12 @@ const HOTEL_BRANDS = ['Marriott', 'JW Marriott', 'Westin', 'Sheraton', 'W Hotels
   'Raffles', 'Mövenpick', 'Banyan Tree', 'Ramada', 'Days Inn', 'Comfort Inn', 'Best Western', 'Radisson Blu', 'Shangri-La', 'Mandarin Oriental', 'Four Seasons',
   'The Peninsula', 'Aman', 'Rosewood', 'Kempinski', 'Anantara', 'Centara', 'Dusit Thani', 'Meliá', 'Hotel Okura', 'Hotel Nikko', 'Prince Hotels', 'Toyoko Inn',
   'APA Hotel', 'Dorsett', 'Lotte Hotels', 'Shilla', 'Atour', 'Ji Hotel'];
+const CAR_RENTALS = ['Hertz', 'Avis', 'Budget', 'Enterprise', 'National', 'Alamo', 'Sixt', 'Europcar', 'Thrifty', 'Dollar', 'Toyota Rent a Car',
+  'Times Car Rental', 'Nippon Rent-A-Car', 'Orix Rent-A-Car', 'Lotte Rent-a-car', 'SK Rent-a-car', 'Goldcar', 'Green Motion'];
 const PROFILE_CHOICES = {
   preferred_airline: () => [[T('航空联盟 Alliances'), ALLIANCES], [T('航空公司 Airlines'), AIRLINES]],
   preferred_hotel_brand: () => [[T('酒店集团 / 会员计划 Hotel groups'), HOTEL_GROUPS], [T('酒店品牌 Brands'), HOTEL_BRANDS]],
+  preferred_car_rental: () => [[T('租车公司 Rental companies'), CAR_RENTALS]],
 };
 
 function memProfileCard(r, v) {
@@ -2338,7 +2342,7 @@ function memProfileCard(r, v) {
     h('p', { class: 'sub' }, T('填表、写邮件时才会用到的固定信息。Agent 只在需要时读取；它发现的新信息会先放到「待确认」，你同意后才会修改。证件号、会员号、卡号请放进下面的保险箱。')),
     ocrBox,
     h('div', { class: 'grid2', style: 'gap:4px 12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))' }, rows),
-    h('div', { class: 'small muted', id: 'pref-hint' }, T('常用航空公司可以选一家航空公司或一个航空联盟（如星空联盟）；常用酒店品牌可以选一个品牌（如假日酒店）或一个酒店集团。不在列表里？用下面的「添加自定义字段」填写，Agent 同样会照顾到。')),
+    h('div', { class: 'small muted', id: 'pref-hint' }, T('常用航空公司可以选一家航空公司或一个航空联盟（如星空联盟）；常用酒店品牌可以选一个品牌（如假日酒店）或一个酒店集团；常用租车公司选一家（如赫兹）。不在列表里？用下面的「添加自定义字段」填写，Agent 同样会照顾到。')),
     addrBox, h('div', null, h('button', { class: 'btn small', type: 'button', onclick: () => addrBox.append(addRow('address')) }, T('＋ 再加一个地址 Add address'))),
     customBox, h('div', null, h('button', { class: 'btn small', type: 'button', onclick: () => customBox.append(addRow('custom')) }, T('＋ 添加自定义字段 Add field'))),
     h('div', null, h('button', { class: 'btn primary', onclick: save }, T('保存档案 Save profile'))));

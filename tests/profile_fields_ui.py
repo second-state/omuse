@@ -12,7 +12,7 @@ from tests.skills_common import check, finish  # noqa: E402
 
 B = K.B + "/"
 K.c.put(K.B + "/api/settings", json={"language": "en", "ui_language": "en", "profile_reminder": False}, headers=K.H)
-for k in ("custom:Airline", "custom:Seat", "custom:Hotel chain", "address:Beach house"):
+for k in ("custom:Airline", "custom:Seat", "custom:Hotel chain", "address:Beach house", "preferred_car_rental"):
     K.c.put(K.B + "/api/profile", json={"key": k, "value": ""}, headers=K.H)
 
 
@@ -40,10 +40,16 @@ async def main():
               and air_groups == ["Alliances", "Airlines"] and all(x in air_opts for x in ("Star Alliance", "oneworld", "United", "ANA")) and len(air_opts) > 30, (air_groups, air_opts[:6]))
         check("Preferred hotel brand is a dropdown: blank, then Hotel groups (IHG One Rewards…) and Brands (Holiday Inn…)", await hot.count() == 1 and hot_opts[0] == "—"
               and hot_groups == ["Hotel groups / loyalty programmes", "Brands"] and all(x in hot_opts for x in ("IHG One Rewards", "Marriott Bonvoy", "Holiday Inn", "Hyatt Regency")), (hot_groups, hot_opts[:6]))
+        car = card.locator("select[data-key=preferred_car_rental]")
+        car_opts = await car.locator("option").all_inner_texts()
+        car_groups = await car.locator("optgroup").evaluate_all("els => els.map(e => e.label)")
+        check("Preferred car rental is a dropdown: blank, then Rental companies (Hertz, Avis, Sixt…)", await car.count() == 1 and car_opts[0] == "—"
+              and car_groups == ["Rental companies"] and all(x in car_opts for x in ("Hertz", "Avis", "Sixt", "Toyota Rent a Car")), (car_groups, car_opts[:6]))
         hint = await card.locator("#pref-hint").inner_text()
-        check("the hint explains airline or alliance, brand or group, and custom fields for anything else", "Star Alliance" in hint and "IHG" in hint and "Not on the list" in hint and "custom field" in hint, hint)
+        check("the hint explains airline or alliance, brand or group, and custom fields for anything else", "Star Alliance" in hint and "IHG" in hint and "Hertz" in hint and "Not on the list" in hint and "custom field" in hint, hint)
         await air.select_option("Star Alliance")
         await hot.select_option("Holiday Inn")
+        await car.select_option("Hertz")
         await card.locator("button", has_text="Add field").click()
         await card.locator("button", has_text="Add field").click()
         rows = card.locator(".newfield[data-kind=custom]")
@@ -58,10 +64,10 @@ async def main():
         await card.locator("button", has_text="Save profile").click()
         await pg.wait_for_selector(".toast")
         toast = await pg.locator(".toast").inner_text()
-        check("saving reports the four new fields and the two dropdown choices", "6" in toast, toast)
+        check("saving reports the four new fields and the three dropdown choices", "7" in toast, toast)
         prof = K.c.get(K.B + "/api/memory").json().get("profile", {})
-        check("the dropdown choices are saved as the standard fields", prof.get("preferred_airline") == "Star Alliance" and prof.get("preferred_hotel_brand") == "Holiday Inn",
-              {k: prof.get(k) for k in ("preferred_airline", "preferred_hotel_brand")})
+        check("the dropdown choices are saved as the standard fields", prof.get("preferred_airline") == "Star Alliance" and prof.get("preferred_hotel_brand") == "Holiday Inn"
+              and prof.get("preferred_car_rental") == "Hertz", {k: prof.get(k) for k in ("preferred_airline", "preferred_hotel_brand", "preferred_car_rental")})
         await pg.wait_for_function("() => document.querySelectorAll('#profile .removable').length >= 4", timeout=10000)
         keys = await pg.evaluate("() => [...document.querySelectorAll('#profile .removable')].map(e => e.dataset.key)")
         check("all three custom fields and the address are saved, each with a remove button",
@@ -74,7 +80,8 @@ async def main():
         await pg.reload()
         await pg.wait_for_selector("#profile .removable")
         check("after a reload the dropdowns show the saved choices", await pg.locator("#profile select[data-key=preferred_airline]").input_value() == "Star Alliance"
-              and await pg.locator("#profile select[data-key=preferred_hotel_brand]").input_value() == "Holiday Inn")
+              and await pg.locator("#profile select[data-key=preferred_hotel_brand]").input_value() == "Holiday Inn"
+              and await pg.locator("#profile select[data-key=preferred_car_rental]").input_value() == "Hertz")
         keys = await pg.evaluate("() => [...document.querySelectorAll('#profile .removable')].map(e => e.dataset.key)")
         check("after a reload the fields are still there", sorted(keys) == sorted(["custom:Airline", "custom:Hotel chain", "address:Beach house"]), keys)
         lay = await pg.evaluate("""() => { const card = document.querySelector('#profile'); const grid = card.querySelector('.grid2');
@@ -93,6 +100,6 @@ async def main():
 
 
 asyncio.run(main())
-for k in ("custom:Airline", "custom:Hotel chain", "address:Beach house"):
+for k in ("custom:Airline", "custom:Hotel chain", "address:Beach house", "preferred_car_rental"):
     K.c.put(K.B + "/api/profile", json={"key": k, "value": ""}, headers=K.H)
 finish()

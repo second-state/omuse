@@ -82,7 +82,7 @@ pub fn searched(a: &Value, from: &str, to: &str) -> Value {
         "cabin": cabin, "stops": stops,
         "rule": format!("every offer below is a {cabin} fare with {stops}; answer in these terms — name the cabin ({cabin}) and the stop limit in the answer — and if the user asked for a different cabin, date or stop limit, search again instead of presenting these{}{}",
             if cabin == "economy" { String::new() } else { format!("; an itinerary whose main legs are in this cabin but with a lower-cabin leg (a short economy connection, `cabin_mix`) counts as a {cabin} itinerary — keep it, and say which legs are in which cabin") },
-            if pref_list(a, "airlines").is_empty() { "" } else { "; offers marked preferred are on the user's preferred airlines — show the best of them next to the cheapest, with the price difference" }),
+            if pref_list(a, "airlines").is_empty() { "" } else { "; this search used the user's preferred airlines (offers marked preferred are on them) and is the only one — do not search again without them; when no preferred offer is good (preferred_found 0, or none fits the request), answer with what was found and ask whether to search all airlines" }),
     })
 }
 
@@ -1078,7 +1078,7 @@ impl SerpApi {
         out["searched"] = json!({
             "city": city.trim(), "area": area.trim(), "check_in": params[2].1, "check_out": params[3].1, "guests": guests,
             "brands": brands, "preferred_found": found,
-            "rule": if brands.is_empty() { "answer for the city, area, dates and guests searched" } else { "hotels marked preferred are the user's preferred brands — show the best of them next to the best value, with the price difference; say so when none was found" },
+            "rule": if brands.is_empty() { "answer for the city, area, dates and guests searched" } else { "this search used the user's preferred brands (hotels marked preferred are them) and is the only one — do not search again without them; show the best of them next to the best value, with the price difference; when no preferred hotel is good (preferred_found 0, or none fits the request), answer with what was found and ask whether to search all hotels" },
         });
         Ok(out)
     }

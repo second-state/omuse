@@ -154,6 +154,9 @@ scenario (`tests/parallel_steps_e2e.py`).
 - Profile fields: `tests/profile_fields_ui.py` (custom fields and addresses without limit, add and remove).
 - Sapphire trip claim: `tests/csr_claim_e2e.py` (the booking, charge and refund from mail in one turn, the airline
   letter drafted, the packet PDF, the portal form filled and handed over for Submit, reminders).
+- FWD travel insurance: `tests/fwd_insurance_e2e.py` (Singapore: quote, plans compared, application filled from the
+  Vault and handed over for Pay; delay claim from mail on FWD's form, handed over for Submit. Hong Kong: bolttech's PDF
+  claim form opened from its link, filled and attached to an email draft, never sent).
 - Streamed answers: `tests/stream_e2e.py` (answer_delta events, reasoning held back, tool-call turns flagged, the
   setting off), `tests/stream_ui.py` (the live bubble while the task runs); `tests/stream_real.py` (not in the default
   list, billed) does one request against the gateway in the e2e env file and, when that provider streams as it

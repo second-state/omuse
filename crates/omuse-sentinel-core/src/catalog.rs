@@ -477,7 +477,8 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
          each departure so the stay keeps its length. Never one call (or a plan) per day. Fill cabin, stops, adults and the date from the user's words: a business-class request is cabin=business, \
          \"direct\" is stops=nonstop; nothing said about stops is stops=any. A premium-cabin itinerary with a short economy leg comes back with cabin_mix (e.g. \"business + economy\") \
          and counts as that cabin — keep it and name the economy leg. airlines: the user's preferred airlines (from the request, else the profile's travel preferences) — \
-         matching offers come back flagged preferred, the others stay, so show the best preferred option next to the cheapest. The result \
+         ONE search with them, never a second one without them; leave airlines out when the user asks for all airlines. Matching \
+         offers come back flagged preferred; when none is good, answer and ask whether to search all airlines. The result \
          repeats what was searched (`searched`); present only that cabin and stop limit. Returns itineraries (airlines, flight numbers, \
          local times, duration, stops, price) with an offer_id for flight_offer.",
         obj(json!({"origin": {"type": S}, "destination": {"type": S}, "date": {"type": S}, "return_date": {"type": S},
@@ -485,7 +486,7 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
                    "cabin": {"type": S, "enum": ["economy", "premium_economy", "business", "first"]},
                    "date_to": {"type": S, "description": "last departure date of a range, YYYY-MM-DD (inclusive); omit for one day"},
                    "stops": {"type": S, "enum": ["any", "nonstop", "one_stop_max", "two_stops_max"], "description": "any unless the user limited stops (direct = nonstop)"},
-                   "airlines": {"type": "array", "items": {"type": S}, "description": "preferred airlines: names (Singapore Airlines) or 2-letter codes (SQ); matches are flagged preferred, nothing is dropped"},
+                   "airlines": {"type": "array", "items": {"type": S}, "description": "preferred airlines: names (Singapore Airlines), 2-letter codes (SQ) or an alliance; matches are flagged preferred (codes and alliances also narrow Google Flights to them); omit when the user asks for all airlines"},
                    "max_price": {"type": "number", "description": "per adult, in currency; omit for no cap"},
                    "sort": {"type": S, "enum": ["best", "price", "departure", "arrival", "duration"]},
                    "currency": {"type": S, "description": "ISO code, default USD"}}), &["origin", "destination", "date"])));
@@ -498,13 +499,14 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
         "搜索酒店（Google Hotels 数据）：城市或区域、入住和退房日期、人数；可选最低星级、每晚最高价、免费取消、最低评分、排序、币种 Search \
          hotels (Google Hotels data): city (and area), check_in / check_out YYYY-MM-DD, guests; optional min_stars, max_price_per_night, \
          free_cancellation, min_rating, sort (price | rating | reviews), currency; brands: the user's preferred hotel brands (from the \
-         request, else the profile's travel preferences) — one or two go into the search and matching hotels come back flagged preferred, \
-         the others stay. The result repeats what was searched (`searched`). Returns hotels with stars, rating, price per night and \
+         request, else the profile's travel preferences) — ONE search with them, never a second one without them; leave brands out when \
+         the user asks for all hotels. One or two go into the search and matching hotels come back flagged preferred; when none is \
+         good, answer and ask whether to search all hotels. The result repeats what was searched (`searched`). Returns hotels with stars, rating, price per night and \
          total, nearby places, amenities and a hotel_id for hotel_rooms.",
         obj(json!({"city": {"type": S}, "area": {"type": S}, "check_in": {"type": S}, "check_out": {"type": S},
                    "guests": {"type": "integer", "minimum": 1}, "min_stars": {"type": "integer", "minimum": 2, "maximum": 5},
                    "max_price_per_night": {"type": "number"}, "free_cancellation": {"type": "boolean"}, "min_rating": {"type": "number"},
-                   "brands": {"type": "array", "items": {"type": S}, "description": "preferred hotel brands or chains (Marriott, Hilton, Hyatt …); matches are flagged preferred, nothing is dropped"},
+                   "brands": {"type": "array", "items": {"type": S}, "description": "preferred hotel brands or groups (Marriott, Hilton, IHG …); matches are flagged preferred; omit when the user asks for all hotels"},
                    "sort": {"type": S, "enum": ["best", "price", "rating", "reviews"]}, "currency": {"type": S}}), &["city", "check_in", "check_out"])));
     add("places_search", tool("travel", "search", "search", "low", "PUBLIC",
         "餐厅和地点搜索（Google Maps 数据）：要找什么（拉面、寿司、咖啡馆、药店…）、城市、区域；可选最低评分、现在营业、价位 1–4 Restaurants and other \

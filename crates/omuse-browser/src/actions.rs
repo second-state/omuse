@@ -430,6 +430,14 @@ impl Broker {
                     }
                 }
                 self.settle(&page, 1200).await;
+                // a PDF opens in Chromium's viewer, which neither the snapshot nor the downloads list can use:
+                // keep a copy in downloads/ so files_read and pdf_form_fields can work with it
+                if page.nav.lock().mime.as_deref() == Some("application/pdf") {
+                    saved = match self.save_pdf(&page, &page.url()).await {
+                        Ok(v) => v,
+                        Err(e) => json!({"error": e.to_string()}),
+                    };
+                }
             }
             "snapshot" => {}
             "click" => {
@@ -699,6 +707,11 @@ impl Broker {
         let near = action == "scroll" || get_truthy(body, "near");
         let max_chars = body.get("max_chars").and_then(as_i64).unwrap_or(12000);
         let mut snap = self.snapshot(&task_id, max_chars, near).await?;
+        if !saved.is_null() {
+            if let Some(o) = snap.as_object_mut() {
+                o.insert("pdf".into(), saved);
+            }
+        }
         if matches!(
             action,
             "navigate" | "click" | "snapshot" | "back" | "wait" | "press"

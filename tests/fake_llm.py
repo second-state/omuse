@@ -1251,6 +1251,194 @@ SHOW_CITY = "We're moving to Shanghai for work with two kids. Where do expat fam
 SHOW_SGAC = "Fill in my Singapore arrival card for Sunday's flight."
 
 
+def fwd_insurance(goal, msgs):
+    """fwd-travel-insurance: FWDBUY (Singapore quote → plan → application → hand-over for Pay), FWDCLAIM (Singapore
+    delay claim on FWD's online form → hand-over for Submit), FWDHKCLAIM (bolttech's PDF claim form → email draft)."""
+    import datetime as _dt
+    calls = _travel_calls(msgs)
+    names = [c[0] for c in calls]
+
+    def has(name):
+        return name in names
+
+    def result(name):
+        return next((r for n, _, r in reversed(calls) if n == name), "")
+
+    def page():   # the newest page text (every browser call returns one)
+        return next((r for n, _, r in reversed(calls) if n.startswith("browser_") and "[e" in r), "")
+
+    inc = (re.search(r"INC=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", goal + " 2026-10-20")).group(1)
+    d30 = (_dt.date.fromisoformat(inc) + _dt.timedelta(days=30)).isoformat()
+    if not has("load_skill"):
+        return reply("", [tc("load_skill", {"name": "fwd-travel-insurance"})])
+
+    if "FWDBUY" in goal:
+        d1, d2 = re.findall(r"(20\d\d-\d\d-\d\d)", goal)[:2]
+        if not has("gmail_search"):
+            return reply("", [tc("gmail_search", {"query": f"(flight OR e-ticket OR hotel OR booking) (Tokyo OR Japan) newer_than:90d"}),
+                              tc("profile_get", {"fields": ["name_en", "birthday", "email_personal", "phone"]})])
+        if not has("browser_navigate"):
+            return reply("", [tc("browser_navigate", {"url": PAGES + "/fwd_sg_quote.html"})])
+        if not has("browser_type"):
+            pg = page()
+            return reply("", [tc("browser_type", {"ref": _snap_ref(pg, lbl) or "e1", "text": v})
+                              for lbl, v in [("Destination", "Japan"), ("Departure date", d1), ("Return date", d2)]])
+        if not has("browser_click"):
+            return reply("", [tc("browser_click", {"ref": _snap_ref(page(), "Get quote", "button") or "e1"})])
+        if not has("present_choices"):
+            quote = result("browser_click")
+            plans = re.findall(r"(Premium|Business|First)\W+SGD (\d+\.\d\d)\W+SGD ([\d,]+)\W+SGD ([\d,]+)", quote)
+            if len(plans) != 3:
+                return reply("FWD FAIL: no plans on the quote page: " + quote[-1200:])
+            return reply("", [tc("present_choices", {"question": "Which FWD plan?", "kind": "comparison", "options": [
+                {"label": p, "details": [f"SGD {pr}", f"Overseas medical SGD {med}", f"Trip cancellation SGD {can}"],
+                 "source_url": PAGES + "/fwd_sg_quote.html",
+                 "note": "Cheapest with at least SGD 10,000 trip cancellation — recommended." if p == "Business" else ""}
+                for p, pr, med, can in plans]})])
+        if not has("vault_list"):
+            return reply("", [tc("vault_list", {})])
+        vl = result("vault_list")
+        card, passport = _vault_id(vl, "card"), _vault_id(vl, "id_document")
+        if not has("purchase_confirm"):
+            return reply("", [tc("purchase_confirm", {"site": "shop.test", "items": [{"name": f"FWD Business travel insurance, Japan, {d1} to {d2}, 1 traveller",
+                                                                                      "qty": 1, "price": 47.0}],
+                                                      "shipping": 0, "total": 47.0, "currency": "SGD", "delivery": "Policy by email",
+                                                      "card_item_id": card, "note": "Single trip, Business plan"})])
+        if sum(n == "browser_navigate" for n in names) < 2:
+            return reply("", [tc("browser_navigate", {"url": PAGES + "/fwd_sg_apply.html?plan=Business&premium=47.00"})])
+        pg = page()
+        if sum(n == "browser_type" for n in names) < 4:
+            return reply("", [tc("browser_type", {"ref": _snap_ref(pg, lbl) or "e1", "text": v}) for lbl, v in
+                              [("Full name", "TAN WEI MING"), ("Date of birth", "1985-04-12"), ("Email", "weiming@example.com"), ("Mobile number", "+65 9123 4567")]])
+        fills = [a for n, a, _ in calls if n == "browser_fill_secret"]
+        todo = [("Passport number", passport, "number"), ("Card number", card, "number"), ("Expiry", card, "expiry"),
+                ("CVC", card, "cvc"), ("Name on card", card, "holder")]
+        if len(fills) < len(todo):
+            lbl, item, field = todo[len(fills)]
+            return reply("", [tc("browser_fill_secret", {"ref": _snap_ref(pg, lbl) or "e1", "item_id": item, "field": field})])
+        if not has("browser_request_takeover"):
+            return reply("", [tc("browser_request_takeover", {"reason": "The FWD application is filled in (Business plan, SGD 47.00) — check it and press Pay now yourself"})])
+        return reply("**FWD Singapore** (FWD Singapore Pte. Ltd. is the insurer) — quote for Japan, "
+                     f"{d1} to {d2}, 1 traveller:\n\n| Plan | Premium | Trip cancellation |\n|---|---|---|\n| Premium | SGD 34.00 | SGD 5,000 |\n"
+                     "| **Business** | **SGD 47.00** | **SGD 10,000** |\n| First | SGD 68.00 | SGD 15,000 |\n\n"
+                     "**Business** is the cheapest plan with at least SGD 10,000 trip cancellation. The application is filled in "
+                     "(name, date of birth, email, mobile; passport and card from your Vault) — check it and press **Pay now**; I did not pay.\n\n"
+                     "Overseas emergencies: **+65 6322 2072**.")
+
+    if "FWDCLAIM" in goal:
+        if not has("gmail_search"):
+            return reply("", [tc("gmail_search", {"query": "(FWD OR bolttech) (policy OR certificate) travel newer_than:365d"}),
+                              tc("gmail_search", {"query": "(Singapore Airlines OR SQ 636) (delay OR delayed OR cancelled OR irregularity OR baggage) newer_than:60d"}),
+                              tc("gmail_search", {"query": "(receipt OR invoice OR clinic OR hospital) newer_than:60d"}),
+                              tc("profile_get", {"fields": ["name_en", "email_personal", "phone", "address_home"]})])
+        if not has("gmail_get_message"):
+            delay = next((r for n, a, r in calls if n == "gmail_search" and "SQ 636" in str(a)), "")
+            return reply("", [tc("gmail_get_message", {"message_id": _msg_id(delay)})])
+        if not has("gmail_save_attachment"):
+            msg = result("gmail_get_message")
+            fn = (re.search(r'"filename": "([^"]+\.pdf)"', msg) or re.search(r"(delay_certificate_SQ636\.pdf)", msg + " delay_certificate_SQ636.pdf")).group(1)
+            return reply("", [tc("gmail_save_attachment", {"message_id": re.search(r'"id": "([^"]+)"', msg).group(1) if '"id"' in msg else "1",
+                                                           "filename": fn})])
+        if not has("calculate"):
+            return reply("", [tc("calculate", {"expression": "(17*60+45 - (10*60+30)) / 60"})])
+        if not has("browser_navigate"):
+            return reply("", [tc("browser_navigate", {"url": PAGES + "/fwd_sg_claim.html"})])
+        if not has("vault_list"):
+            return reply("", [tc("vault_list", {})])
+        pg = page()
+        if not has("browser_type"):
+            vals = [("Policy number", "TI-SG-2026-55123"), ("Full name", "TAN WEI MING"), ("Email", "weiming@example.com"),
+                    ("Mobile number", "+65 9123 4567"), ("Date of incident", inc),
+                    ("What happened", f"Flight SQ 636 SIN-HND on {inc} was scheduled at 10:30 and left at 17:45: a delay of 7 hours 15 minutes (late inbound aircraft)."),
+                    ("Amount claimed", "100.00")]
+            return reply("", [tc("browser_type", {"ref": _snap_ref(pg, lbl) or "e1", "text": v}) for lbl, v in vals])
+        if not has("browser_fill_secret"):
+            return reply("", [tc("browser_fill_secret", {"ref": _snap_ref(pg, "NRIC or passport number") or "e1",
+                                                         "item_id": _vault_id(result("vault_list"), "id_document"), "field": "number"})])
+        if not has("browser_upload"):
+            saved = re.search(r"(attachments/[^\s\"\\]+\.pdf)", result("gmail_save_attachment"))
+            return reply("", [tc("browser_upload", {"ref": _snap_ref(pg, "Supporting documents") or "e1",
+                                                    "path": saved.group(1) if saved else "attachments/delay_certificate_SQ636.pdf"})])
+        if not has("browser_request_takeover"):
+            return reply("", [tc("browser_request_takeover", {"reason": "The FWD travel claim is filled in with the delay certificate attached — check it and press Submit claim yourself"})])
+        if not has("schedule_create"):
+            return reply("", [tc("schedule_create", {"name": f"FWD claim SQ 636 delay — check mail weekly (notify by {d30})", "kind": "cron", "spec": "0 9 * * 1",
+                                                     "goal": "Check Gmail for any email from FWD about the travel delay claim on policy TI-SG-2026-55123; notify me of news"})])
+        if not has("memory_remember"):
+            return reply("", [tc("memory_remember", {"fact": f"FWD Singapore travel delay claim, policy TI-SG-2026-55123 (Business): SQ 636 of {inc}, delayed 7 h 15 min, SGD 100 claimed; tell FWD by {d30}.",
+                                                     "domain": "trip"})])
+        return reply(f"**FWD Singapore's online claim form** — tell FWD by **{d30}** (30 days after the delay on {inc}).\n\n"
+                     "- **Policy:** TI-SG-2026-55123, Business plan.\n"
+                     "- **Delay:** SQ 636 was scheduled at 10:30 and left at 17:45 — **7 hours 15 minutes**. The plan pays SGD 100 for every 6 hours, "
+                     "so **SGD 100** is claimed (calculated: 7.25 hours → one full 6-hour block).\n"
+                     "- **Documents:** the policy email and Singapore Airlines' delay certificate (uploaded to the form). Keep boarding passes.\n"
+                     "- **Filled:** policy number, name, email, mobile, date, what happened, the amount; passport number from your Vault. "
+                     "**You press Submit claim** — I did not.\n- **Reminders:** a weekly mail check for FWD's reply.\n\n"
+                     "Overseas emergencies: +65 6322 2072; in Singapore +65 6820 8888. FWD decides the claim.")
+
+    if "FWDHKCLAIM" in goal:
+        form_url = PAGES + "/travel-insurance-clm-form-fillable.pdf"
+        if not has("gmail_search"):
+            return reply("", [tc("gmail_search", {"query": "(FWD OR bolttech) (policy OR certificate) travel newer_than:365d"}),
+                              tc("gmail_search", {"query": "(Cathay Pacific OR CX 543) (delay OR delayed OR cancelled OR irregularity OR baggage) newer_than:60d"}),
+                              tc("gmail_search", {"query": "(receipt OR invoice OR clinic OR hospital) newer_than:60d"}),
+                              tc("profile_get", {"fields": ["name_en", "email_personal", "phone", "address_home"]})])
+        if not has("gmail_get_message"):
+            delay = next((r for n, a, r in calls if n == "gmail_search" and "CX 543" in str(a)), "")
+            return reply("", [tc("gmail_get_message", {"message_id": _msg_id(delay)})])
+        if not has("gmail_save_attachment"):
+            msg = result("gmail_get_message")
+            fn = (re.search(r'"filename": "([^"]+\.pdf)"', msg) or re.search(r"(delay_letter_CX543\.pdf)", msg + " delay_letter_CX543.pdf")).group(1)
+            return reply("", [tc("gmail_save_attachment", {"message_id": re.search(r'"id": "([^"]+)"', msg).group(1) if '"id"' in msg else "1",
+                                                           "filename": fn})])
+        if not has("calculate"):
+            return reply("", [tc("calculate", {"expression": "floor(((15*60+20) - (9*60+5)) / 60 / 6) * 300"})])
+        if not has("browser_navigate"):
+            return reply("", [tc("browser_navigate", {"url": form_url})])
+        form = re.search(r'"path": "(downloads/[^"]+\.pdf)"', result("browser_navigate").replace('\\"', '"'))
+        if not form:
+            return reply("FWD FAIL: the claim form was not saved: " + result("browser_navigate")[:600])
+        form = form.group(1)
+        if not has("pdf_form_fields"):
+            return reply("", [tc("pdf_form_fields", {"path": form})])
+        if not has("pdf_form_fill"):
+            return reply("", [tc("pdf_form_fill", {"path": form, "values": {
+                "fill_17": "MT-HK-2026-00881", "Full name": "CHAN TAI MAN",
+                "Correspondence address": "Flat 12B, 88 Robinson Road, Mid-Levels, Hong Kong", "Email address": "taiman@example.com",
+                "fill_12": f"{inc} 09:05, Hong Kong International Airport",
+                "fill_11": f"{inc} 09:05", "fill_12_2": "HKG", "fill_13_2": "NRT", "fill_14_2": "CX 543",
+                "fill_15_2": f"{inc} 15:20", "fill_16_2": "HKG", "fill_17_2": "NRT", "fill_18_2": "CX 543",
+                "fill_1": "6 hours 15 minutes", "fill_7": "HKD 300", "fill_8": "Cathay Pacific"}})])
+        filled = re.search(r"(downloads/[^\s\"\\]+-filled\.pdf)", result("pdf_form_fill"))
+        filled = filled.group(1) if filled else form.replace(".pdf", "-filled.pdf")
+        if not has("send_file"):
+            return reply("", [tc("send_file", {"path": filled, "note": "bolttech claim form, filled — add your HKID, bank account and signature"})])
+        if not has("gmail_create_draft"):
+            saved = re.search(r"(attachments/[^\s\"\\]+\.pdf)", result("gmail_save_attachment"))
+            return reply("", [tc("gmail_create_draft", {
+                "to": "claims.hk@bolttechinsurance.com",
+                "subject": f"Travel insurance claim — policy MT-HK-2026-00881 — flight delay CX 543 {inc}",
+                "body": ("Dear bolttech Claims,\n\nPolicyholder: CHAN TAI MAN. Policy: MT-HK-2026-00881 (MyTravel, sold through FWD).\n"
+                         f"Cathay Pacific CX 543 Hong Kong to Tokyo Narita on {inc} was scheduled at 09:05 and departed at 15:20, a delay of 6 hours 15 minutes. "
+                         "I claim the travel delay benefit of HKD 300.\n\nAttached: the claim form and Cathay Pacific's delay confirmation.\n\nKind regards,\nChan Tai Man"),
+                "attachments": [filled, saved.group(1) if saved else "attachments/delay_letter_CX543.pdf"]})])
+        if not has("schedule_create"):
+            return reply("", [tc("schedule_create", {"name": "bolttech claim CX 543 delay — check mail weekly", "kind": "cron", "spec": "0 9 * * 1",
+                                                     "goal": "Check Gmail for any email from bolttech about the travel delay claim on policy MT-HK-2026-00881; notify me of news"})])
+        if not has("memory_remember"):
+            return reply("", [tc("memory_remember", {"fact": f"bolttech (FWD HK MyTravel) travel delay claim, policy MT-HK-2026-00881: CX 543 of {inc}, delayed 6 h 15 min, HKD 300 claimed; draft to claims.hk@bolttechinsurance.com.",
+                                                     "domain": "trip"})])
+        return reply("**bolttech's claim form by email** — your MyTravel plan is sold by FWD but underwritten by **bolttech Insurance (Hong Kong)**, "
+                     "so bolttech handles the claim. The time limit could not be checked: the policy wording is not in your mail, so send it as soon as possible.\n\n"
+                     "- **Delay:** CX 543 was scheduled at 09:05 and left at 15:20 — **6 hours 15 minutes**: one full 6-hour block × HKD 300 = **HKD 300**.\n"
+                     "- **Form:** filled with your policy number, name, address, email, the schedule, the hours and the amount (in the chat). "
+                     "**You add** your HKID number, bank account for the direct credit and your signature.\n"
+                     "- **Email:** a draft to claims.hk@bolttechinsurance.com with the form and Cathay Pacific's delay letter attached — sign the form, "
+                     "replace it in the draft and send it.\n- **Reminders:** a weekly mail check for bolttech's reply.\n\n"
+                     "bolttech claims enquiries: +852 3123 3344. Emergency assistance: +852 2000 0100 (from your policy). bolttech decides the claim.")
+    return None
+
+
 def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
     """One scripted agent per skill. Returns None when the goal is not one of these scenarios."""
     if "focused sub-agent" in sys:
@@ -1420,6 +1608,20 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         pref = ' — your preferred airline (flagged preferred in the data)' if '"preferred": true' in allt or '\\"preferred\\": true' in allt else ''
         return reply(f"BUSINESS CLASS, nonstop, {date} Tokyo (all airports) → Singapore, searched as {m.group(1) if m else '?'} / nonstop only: "
                      f"Singapore Airlines SQ638 09:25 → 17:15, SGD 2108 (business, 1 checked bag){pref}. Book on singaporeair.com or with your agency — say the word.")
+    if "PREFNONE" in goal:   # the preferred airline goes into the ONE search; it has no offer → answer and ask before searching all airlines
+        date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
+        if n == 0:
+            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
+        if n == 1:
+            pm = re.search(r"- Preferred airline: ([^\n]+)", sys)
+            args = {"origin": "SIN", "destination": "TYO", "date": date, "cabin": "economy", "stops": "any", "sort": "price", "currency": "SGD"}
+            if pm:
+                args["airlines"] = [x.strip() for x in pm.group(1).split(",")]
+            return reply("", [tc_("flights_search", args)])
+        allt = "\n".join(str(m["content"]) for m in tools_done)
+        none = re.search(r'\\?"preferred_found\\?": 0', allt) is not None
+        return reply(f"{date} Singapore → Tokyo: {'no Emirates flight came back on this route' if none else 'Emirates found'}; "
+                     "the search also returned Singapore Airlines SQ638 SGD 620 (direct) and Cathay Pacific via HKG SGD 510. Shall I search all airlines?")
     if "FLEXFLIGHTS" in goal:   # a range of dates: ONE flights_search with date + date_to, no plan
         d1 = re.search(r"FROM=(20\d\d-\d\d-\d\d)", goal).group(1); d2 = re.search(r"TO=(20\d\d-\d\d-\d\d)", goal).group(1)
         if n == 0:
@@ -1481,6 +1683,8 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
                      f"(Trip.com has it at SGD 612); cheapest overall Cathay via HKG SGD 510 (one stop, 12 h 35). "
                      f"HOTELS Ginza (Google Hotels): Hotel Ginza Grand 4★ rating 4.4, SGD 210/night, SGD 630 for 3 nights, free cancellation on Booking.com; "
                      f"the hotel's own site has a Deluxe Twin at SGD 199/night. Book the flight on singaporeair.com and the room on the hotel site — say the word.")
+    if any(k in goal for k in ("FWDBUY", "FWDCLAIM", "FWDHKCLAIM")):
+        return fwd_insurance(goal, msgs)
     if "CSRCLAIM" in goal:   # csr-trip-claim: mail in one turn, the arithmetic, the airline letter, the packet, the portal, hand-over
         import datetime as _dt
         loss = (re.search(r"LOSS=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-10-20")).group(1)

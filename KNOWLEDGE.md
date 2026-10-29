@@ -499,7 +499,7 @@ executor can still call `plan_task` itself when a request turns out to need one.
 `plan: on` is for the skills where the plan buys something — parallel groups run as sub-agents, visible progress over
 a long run with approvals in between, or a report compiled from many sources. After the review of October 2026 these
 seven carry it: `csr-trip-claim`, `travel-expense-report`, `travel-planning`, `deep-research`,
-`web-research-compare`, `drive-cleanup`, `drive-photo-storybook`. The other 51 (the bookings, the arrival cards, the
+`web-research-compare`, `drive-cleanup`, `drive-photo-storybook`. The other 53 (the bookings, the arrival cards, the
 disruption / baggage / emergency helpers, the city guides, mail, shopping, phone and PDF skills) run from their
 sheets. A unit test (`built_in_skills_spell_the_plan_flag_as_on_and_only_the_long_ones_carry_it`) keeps the list in
 step with the files; `tests/kiwi_flights_e2e.py` checks that a flight search makes no plan and
@@ -539,3 +539,29 @@ the guide and `market_data`.
    list and the 240-hour transit in all five Chinese guides; the RTS Link date in `singapore` and `kuala-lumpur`).
 4. Run `bash tests/run_in_docker.sh city_guides_e2e` (rebuild the test image first: skills are compiled in).
 
+## FWD travel insurance (`skills/fwd-travel-insurance/`)
+
+FWD has no public API, developer portal or MCP server (checked October 2026), so the skill works through FWD's own
+websites: the user signs in, pays and signs; OMuse prepares everything else. Partner sales of FWD (and Klook's FWD
+cover) run through bolttech's single partner API, which needs a commercial agreement and, in Singapore, an insurance
+intermediary licence: that is the route if buying should ever happen inside OMuse.
+
+- **Singapore**: FWD Singapore Pte. Ltd. is the insurer. Buying: the public quote page
+  (`fwd.com.sg/travel-insurance/online-quote/`), then the application with the passport and card from the Vault after
+  `purchase_confirm`, handed over for Pay. Claiming: the travel claim form (`fwd.com.sg/claim-online/travel.html`) or the
+  customer portal, filled and handed over for Submit; FWD asks to be told within 30 days. FWD's robots.txt keeps
+  crawlers off the quote pages; a browser acting for a signed-in user is not a crawler, but the pages may change.
+- **Hong Kong**: the three travel plans on fwd.com.hk (MyTravel, TravelCare Plus, GBA Easy Travel) are underwritten by
+  **bolttech Insurance (Hong Kong)**; FWD Financial sells them as bolttech's appointed agency. Only HKID holders in Hong
+  Kong whose trip starts there can buy. Claims go to bolttech: its fillable PDF form (every field carries a tooltip
+  label, so `pdf_form_fields` can map it) filled and attached, with the documents, to an email draft to
+  `claims.hk@bolttechinsurance.com`; the HKID, bank account and signature stay for the user.
+
+**PDF links in the browser.** Chromium shows a PDF in its viewer, which neither the snapshot nor the downloads list can
+use. Since this skill, `browser_navigate` notices a main document of type `application/pdf`, fetches it again with the
+page's cookies and keeps it as `downloads/<name>.pdf`; the result carries `pdf: {path, size}` and the file appears in
+`browser_downloads`. `files_read` and `pdf_form_fields` / `pdf_form_fill` then work on it (any PDF form on the web, not
+only this one).
+
+`tests/fwd_insurance_e2e.py` runs the three flows on stand-in pages (`tests/pages/fwd_sg_*.html`, a field-for-field
+stand-in of bolttech's form) and mail with PDF attachments (`skills_common.seed_mail` takes attachments).

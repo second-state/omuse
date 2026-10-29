@@ -56,6 +56,8 @@ pub struct NavState {
     pub commits: u64,
     /// HTTP status of the last main-document response.
     pub status: Option<i64>,
+    /// MIME type of the last main-document response (`application/pdf` when a link opened a PDF).
+    pub mime: Option<String>,
     /// `net::ERR_*` of the main document, when it failed.
     pub error: Option<String>,
     /// Request id of the main document in flight.
@@ -270,7 +272,9 @@ impl TaskPage {
                             .map(|f| f.inner() == &p.target)
                             .unwrap_or(false)
                     {
-                        p.nav.lock().status = Some(ev.response.status);
+                        let mut nav = p.nav.lock();
+                        nav.status = Some(ev.response.status);
+                        nav.mime = Some(ev.response.mime_type.to_lowercase());
                     }
                 }
             }));
@@ -592,6 +596,7 @@ impl TaskPage {
         let start = {
             let mut n = self.nav.lock();
             n.status = None;
+            n.mime = None;
             n.error = None;
             n.doc_req = None;
             n.commits
