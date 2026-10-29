@@ -142,7 +142,9 @@ try:
     rfinal = T.task(rinfo["tasks"][-1])
     rcalls = T.calls_of(rinfo["tasks"])
     trace(rinfo["tasks"])
-    rfs = [x for x in rcalls if x["name"] == "flights_search"]
+    # a call whose arguments did not parse (the model once wrote max_price as 0.000… until it was cut off) was refused
+    # and retried: only the calls that ran count
+    rfs = [x for x in rcalls if x["name"] == "flights_search" and "_unparsed" not in x["args"]]
     T.check("range: the task completed", rfinal.get("status") == "COMPLETED", (rfinal.get("status"), rfinal.get("error")))
     # never one search per day: every flights_search covers the whole range (a model may repeat the same call to double-check)
     T.check("range: the built-in flights_search covers the whole range (date + date_to) in each call, never one call per day", bool(rfs)
