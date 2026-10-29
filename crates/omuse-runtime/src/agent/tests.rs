@@ -1416,3 +1416,56 @@ async fn load_skill_stays_inside_the_bot() {
         .unwrap();
     assert!(!r.starts_with("ERROR"));
 }
+
+#[test]
+fn retype_guard_is_per_page() {
+    use super::guards::retype_guard;
+    // one browser call and its result: the result names the page it ended on
+    let step = |id: &str, name: &str, args: Value, url: &str| {
+        vec![
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
+                   "function": {"name": name, "arguments": args.to_string()}}]}),
+            json!({"role": "tool", "tool_call_id": id,
+                   "content": format!("{{\"source\": \"web page {url}\", \"url\": \"{url}\", \"snapshot\": \"…\"}}")}),
+        ]
+    };
+    let quote = "https://www.fwd.com.sg/travel-insurance/online-quote/";
+    let apply = "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business&premium=47.00";
+    let mut t = vec![json!({"role": "system", "content": ""})];
+    t.extend(step("c1", "browser_navigate", json!({"url": quote}), quote));
+    t.extend(step(
+        "c2",
+        "browser_type",
+        json!({"ref": "e1", "text": "Japan"}),
+        quote,
+    ));
+    // the same page: typing other text into the same field is a mix-up
+    let same = call(
+        "c3",
+        "browser_type",
+        json!({"ref": "e1", "text": "TAN WEI MING"}),
+    );
+    assert!(retype_guard(&t, &same).is_some_and(|e| e.contains("already typed \"Japan\" into e1")));
+    // a plain link click (no navigate, no submit) to the application page: its e1 is another field
+    t.extend(step("c3", "browser_click", json!({"ref": "e7"}), apply));
+    let next = call(
+        "c4",
+        "browser_type",
+        json!({"ref": "e1", "text": "TAN WEI MING"}),
+    );
+    assert_eq!(retype_guard(&t, &next), None);
+    // on the new page the guard works again
+    t.extend(step(
+        "c4",
+        "browser_type",
+        json!({"ref": "e1", "text": "TAN WEI MING"}),
+        apply,
+    ));
+    let again = call(
+        "c5",
+        "browser_type",
+        json!({"ref": "e1", "text": "1985-04-12"}),
+    );
+    assert!(retype_guard(&t, &again)
+        .is_some_and(|e| e.contains("already typed \"TAN WEI MING\" into e1")));
+}

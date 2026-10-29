@@ -91,7 +91,10 @@ try:
     else:
         # the built-in tool's stand-in (tests/fake_apps.py): the CX pair lands the next day and must not be the answer (the model may add
         # web_search facts, so the exact flight is not pinned here)
-        T.check("flight: the answer does not pick the pair that lands the next day (CX710 / CX500)", "CX710" not in res.replace(" ", "") and "CX500" not in res.replace(" ", ""), res[:800])
+        # the answer may name the CX pair to explain why it does not qualify; what it picks is the first flight it names
+        first = re.search(r"\b([A-Z][A-Z0-9])\s?(\d{2,4})\b", res)
+        T.check("flight: the answer does not pick the pair that lands the next day (CX710 / CX500)",
+                bool(first) and first.group(1) + first.group(2) not in ("CX710", "CX500"), res[:800])
 
     # 2. the restaurants: options only, nothing booked
     rs = fake_travel.michelin_search({"city": "Tokyo", "distinction": "3 Stars"})["restaurants"]

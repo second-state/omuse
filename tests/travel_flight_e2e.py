@@ -21,8 +21,10 @@ try:
         info = T.run(f"Book me the cheapest direct flight from Singapore to Tokyo on {D} for one adult. I book through my "
                      "travel agency, the Travel connector: use its flight search and its booking page, not the airline's "
                      "site. I'm Lucas Lu, lucas@example.com, +65 8000 0000. My passport and card are in the vault.",
+                     # "complete the booking and pay": the skill hands a filled page over unless the user said to pay now
                      follow_up="Yes, please book the cheapest direct flight now on my agency's booking page (the Travel "
-                               "connector's offer) with my passport and card from the vault.",
+                               "connector's offer) with my passport and card from the vault — complete the booking and "
+                               "pay now, don't hand it back to me.",
                      timeout=1200)
         tools, expect, max_browser = ("flights_search",), None, 18
     else:

@@ -3,6 +3,7 @@ it — the flight data only (airlines, flight numbers, local times, stops, price
 flight-booking skill calls it together with web_search in ONE turn; the answer sends the user to the airline's site or an
 agency, never to Kiwi. Without the key hotels and places come from web search and the detail tools say they need the key (travel_search_e2e has the keyed paths)."""
 import datetime as dt
+import json
 import os
 import sys
 import time
@@ -44,6 +45,27 @@ K.check("a negative price and a negative traveller count are fixed the same way"
 r = act("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": DATE, "adults": 2, "max_price": 700, "currency": "SGD"})
 kl0 = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
 K.check("a real budget and a real party size go through unchanged", kl0.get("price_to") == 700 and kl0.get("adults") == 2, kl0)
+# an alliance preference narrows the search itself: Kiwi.com takes IATA codes only, so Star Alliance goes in as its
+# members' codes (SQ's direct flight stays, Cathay's one-stop goes); a name goes in as its code; an airline OMuse has no
+# code for leaves every airline in and says so
+r = act("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": DATE, "airlines": ["Star Alliance"], "currency": "SGD"})
+kl = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
+res = (r.get("result") or {}).get("content") or {}
+sel = str(kl.get("select_airlines") or "").split(",")
+K.check("Star Alliance: Kiwi.com is asked for its 25 member airlines by code (SQ, NH, UA … not CX)",
+        len(sel) == 25 and {"SQ", "NH", "UA", "LH"} <= set(sel) and "CX" not in sel, kl)
+K.check("Star Alliance: only Star Alliance flights come back, marked preferred, and the result says what was searched",
+        res.get("count") == 1 and all(o.get("preferred") for o in res.get("offers", [])) and "SQ" in json.dumps(res.get("offers"))
+        and "only these airlines were searched" in str((res.get("searched") or {}).get("airline_filter")), (res.get("count"), res.get("searched")))
+r = act("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": DATE, "airlines": "Cathay Pacific", "currency": "SGD"})
+kl = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
+res = (r.get("result") or {}).get("content") or {}
+K.check("an airline by name goes in as its code (Cathay Pacific → CX)", kl.get("select_airlines") == "CX" and res.get("count") == 1, (kl, res.get("count")))
+r = act("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": DATE, "airlines": ["Air Nowhere"], "currency": "SGD"})
+kl = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
+res = (r.get("result") or {}).get("content") or {}
+K.check("an airline with no known code: all airlines searched, and the result says why", "select_airlines" not in kl and res.get("count") == 2
+        and "all airlines were searched" in str((res.get("searched") or {}).get("airline_filter")), (kl, res.get("searched")))
 r = act("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": DATE, "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"})
 env = r.get("result") or {}
 res = env.get("content") or {}
@@ -87,9 +109,11 @@ K.check("…and the result says so: business, nonstop only, with the rule not to
         and res2["searched"]["stops"] == "nonstop only" and res2["searched"]["origin"] == "Tokyo" and "business fare with nonstop only" in res2["searched"]["rule"], res2.get("searched"))
 r3 = act("flights_search", {"origin": "SIN", "destination": "NRT", "date": DATE, "cabin": "economy", "airlines": ["Singapore Airlines", "NH"], "currency": "SGD"})
 res3 = ((r3.get("result") or {}).get("content") or {})
-K.check("preferred airlines flag the matching offers and drop nothing: SQ preferred, the CX pair kept", res3.get("count") == 2 and res3["offers"][0].get("preferred") is True
-        and "preferred" not in res3["offers"][1] and res3["searched"]["airlines"] == ["Singapore Airlines", "NH"] and res3["searched"]["preferred_found"] == 1
-        and "preferred airlines" in res3["searched"]["rule"], (res3.get("searched"), [o.get("preferred") for o in res3.get("offers", [])]))
+kl3 = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
+K.check("preferred airlines narrow the search itself (select_airlines SQ,NH): the SQ flight, marked preferred; the CX pair not asked for",
+        kl3.get("select_airlines") == "SQ,NH" and res3.get("count") == 1 and res3["offers"][0].get("preferred") is True
+        and res3["searched"]["airlines"] == ["Singapore Airlines", "NH"] and res3["searched"]["preferred_found"] == 1
+        and "preferred airlines" in res3["searched"]["rule"], (kl3.get("select_airlines"), res3.get("searched"), [o.get("preferred") for o in res3.get("offers", [])]))
 K.check("the result's rule makes the preferred search the only one and says to ask before searching all airlines",
         "do not search again without them" in res3["searched"]["rule"] and "ask whether to search all airlines" in res3["searched"]["rule"], res3["searched"]["rule"])
 c.post(FAKE + "/kiwi-mcp/_down", json={"on": True})
@@ -170,6 +194,10 @@ np_ = K.names(tp)
 fsp = [x["args"] for x in K.calls(tp) if x.get("name") == "flights_search"]
 K.check("a preferred airline with no offer: ONE flights_search carrying the preference, no second search without it",
         np_ == ["load_skill", "flights_search"] and len(fsp) == 1 and fsp[0].get("airlines") == ["Emirates"], (np_, fsp))
+rp = [e["data"] for e in tp.get("events", []) if e["type"] == "tool_result" and e["data"].get("name") == "flights_search"]
+K.check("Emirates flies nothing here: the narrowed search's empty result is the answer (Kiwi.com, preferred_found 0), not a web search",
+        rp and "Kiwi.com flights" in str(rp[0].get("preview")) and "web search" not in str(rp[0].get("preview")).lower() and "web_search" not in np_,
+        [str(x.get("preview"))[:300] for x in rp])
 K.check("the search reports no preferred offer and the answer says so and asks whether to search all airlines",
         tp["status"] == "COMPLETED" and "no Emirates flight" in (tp.get("result") or "") and (tp.get("result") or "").endswith("Shall I search all airlines?"),
         (tp["status"], (tp.get("result") or "")[:300]))

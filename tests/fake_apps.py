@@ -957,7 +957,11 @@ def serp_search(request: Request):
                                          "rooms": [{"name": "Deluxe Twin", "rate_per_night": {"extracted_lowest": 199}, "total_rate": {"extracted_lowest": 597}, "link": "https://ginzagrand.example/book?r=twin"}]}],
                     "prices": [{"source": "Booking.com", "rate_per_night": {"extracted_lowest": 210}, "total_rate": {"extracted_lowest": 630}, "free_cancellation": True, "link": "https://booking.example/ginza"}],
                     "amenities": ["Free Wi-Fi", "Breakfast", "Gym"]}
-        return {"search_metadata": {"google_hotels_url": "https://www.google.com/travel/search?q=tokyo"},
+        if q.get("brands"):   # Google's brand filter: a group's id takes all its brands (as the real API does)
+            want = {int(x) for x in str(q["brands"]).split(",") if x.strip().isdigit()}
+            return {"search_metadata": {"google_hotels_url": "https://www.google.com/travel/search?q=tokyo"}, "brands": _HOTEL_BRANDS,
+                    "properties": [dict(h, property_token=_HT_TOKEN + h["name"][:3].lower()) for h, ids in _BRANDED_HOTELS if ids & want]}
+        return {"search_metadata": {"google_hotels_url": "https://www.google.com/travel/search?q=tokyo"}, "brands": _HOTEL_BRANDS,
                 "properties": [{"type": "hotel", "name": "Hotel Ginza Grand", "property_token": _HT_TOKEN, "extracted_hotel_class": 4, "overall_rating": 4.4, "reviews": 2100,
                                 "rate_per_night": {"lowest": "S$210", "extracted_lowest": 210}, "total_rate": {"lowest": "S$630", "extracted_lowest": 630},
                                 "prices": [{"source": "Booking.com", "free_cancellation": True}], "nearby_places": [{"name": "Ginza Station", "transportations": [{"type": "Walking", "duration": "4 min"}]}],
@@ -968,6 +972,21 @@ def serp_search(request: Request):
                                 "rate_per_night": {"extracted_lowest": 150}, "total_rate": {"extracted_lowest": 450}, "prices": [{"source": "Agoda", "free_cancellation": False}],
                                 "nearby_places": [{"name": "Shinjuku Station", "transportations": [{"type": "Walking", "duration": "9 min"}]}], "amenities": ["Free Wi-Fi", "Bar"]}]}
     return JSONResponse({"error": f"unknown engine {eng}"}, status_code=400)
+
+
+# Google Hotels' brand list for the stand-in area (ids as Google gave them on 2026-10-29: Hilton 28, Marriott 46, IHG 17) and
+# the branded hotels its `brands` filter returns (a hotel matches its group's id and its brand's id)
+_HOTEL_BRANDS = [{"id": 28, "name": "Hilton Honors", "children": [{"id": 7, "name": "Conrad"}]},
+                 {"id": 46, "name": "Marriott Bonvoy", "children": [{"id": 70, "name": "Westin Hotels & Resorts"}, {"id": 71, "name": "Sheraton Hotels and Resorts"}]},
+                 {"id": 17, "name": "IHG Hotels & Resorts", "children": [{"id": 2, "name": "Holiday Inn"}]}]
+_BRANDED_HOTELS = [({"type": "hotel", "name": "Conrad Tokyo", "extracted_hotel_class": 5, "overall_rating": 4.6, "reviews": 3200,
+                     "rate_per_night": {"extracted_lowest": 520}, "total_rate": {"extracted_lowest": 1040}, "prices": [], "amenities": ["Free Wi-Fi", "Pool"]}, {28, 7}),
+                   ({"type": "hotel", "name": "The Westin Tokyo", "extracted_hotel_class": 5, "overall_rating": 4.4, "reviews": 2800,
+                     "rate_per_night": {"extracted_lowest": 410}, "total_rate": {"extracted_lowest": 820}, "prices": [], "amenities": ["Free Wi-Fi", "Gym"]}, {46, 70}),
+                   ({"type": "hotel", "name": "Sheraton Grande Tokyo Bay", "extracted_hotel_class": 4, "overall_rating": 4.2, "reviews": 5100,
+                     "rate_per_night": {"extracted_lowest": 300}, "total_rate": {"extracted_lowest": 600}, "prices": [], "amenities": ["Free Wi-Fi"]}, {46, 71}),
+                   ({"type": "hotel", "name": "Holiday Inn Tokyo Ginza", "extracted_hotel_class": 3, "overall_rating": 4.0, "reviews": 900,
+                     "rate_per_night": {"extracted_lowest": 180}, "total_rate": {"extracted_lowest": 360}, "prices": [], "amenities": ["Free Wi-Fi"]}, {17, 2})]
 
 
 # ---------------------------------------------------------------- Brave Search and Tavily stand-ins (the Web search connection)
@@ -1138,6 +1157,9 @@ async def kiwi_mcp(request: Request):
                                                   {"from": "HND", "to": to, "departureTime": f"{d}T11:00:00", "arrivalTime": f"{d}T19:00:00", "durationSeconds": 28800, "carrier": "NH", "carrierName": "ANA", "flightNumber": "NH841", "cabinClass": "Business"}]}, "inbound": None})
         if args.get("max_sector_stopovers") == 0:
             its = [x for x in its if x["outbound"]["stops"] == 0]
+        if args.get("select_airlines"):   # like the real server: only itineraries flown by these carriers (IATA codes)
+            sel = {c.strip().upper() for c in str(args["select_airlines"]).split(",")}
+            its = [x for x in its if all(sg["carrier"] in sel for sg in x["outbound"]["segments"])]
         data = {"query": f"{args.get('flyFrom')} → {args.get('flyTo')} on {d}", "currency": cur, "passengers": {"adults": args.get("adults", 1)}, "resultsCount": len(its), "itineraries": its,
                 "searchTimeMs": 1200, "error": None}
         body = {"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": json.dumps(data)}], "isError": False}}

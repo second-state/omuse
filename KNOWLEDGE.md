@@ -126,13 +126,24 @@ return date with each departure, and returns one result with each offer's `date`
 — the prompt and the skills say never to plan or call per day (`tests/kiwi_flights_e2e.py`,
 `tests/travel_search_e2e.py`; the skills tell the executor to read date, cabin, stops and passengers from the request
 first, and that a cheapest-fare question is one search with no plan). Preferences: `flights_search` takes `airlines`
-(names or 2-letter codes) and `hotels_search` takes `brands`; the clients never drop anything for them — matching
-offers or hotels come back with `preferred: true` (`mark_preferred`), `searched.preferred_found` counts them, 2-letter
-airline codes also narrow Google's search (`include_airlines`) and one or two brands go into the Google Hotels query
-("Hilton hotels near Ginza Tokyo"). An alliance (Star Alliance, oneworld, SkyTeam) or a hotel group / programme
-(IHG One Rewards, Marriott Bonvoy, Hilton Honors, World of Hyatt, Accor…) stands for all its members
-(`omuse_apps::loyalty`: `ALLIANCES`, `HOTEL_GROUPS`, `expand`): an alliance also becomes Google's
-`include_airlines=STAR_ALLIANCE`, a group goes into the hotel query by its first word ("IHG hotels near …"). The
+(names, 2-letter codes or alliances) and `hotels_search` takes `brands` (brands or groups); both **narrow the search
+itself**, in code, and matching offers or hotels come back with `preferred: true` (`mark_preferred`),
+`searched.preferred_found` counting them:
+- Flights (`omuse_apps::loyalty::airline_codes`): each preference becomes IATA codes — a code as given, an airline by
+  name from `AIRLINE_CODES` (every airline in the Profile dropdown; a unit test checks), an alliance as all its members
+  (`ALLIANCES`' fourth column: Star Alliance 25, oneworld 15, SkyTeam 17). Kiwi.com gets them as `select_airlines` (it
+  knows no alliances — added 2026-10-29 after a Star Alliance user got no Star flights); Google Flights gets
+  `include_airlines` with its own alliance values (`STAR_ALLIANCE`) and the codes. A preference with no known code
+  leaves every airline in. `searched.airline_filter` says which happened. A narrowed Kiwi search that finds nothing is
+  the answer (no preferred flight → ask before searching all airlines): Google Flights is tried with the same filter
+  when there is a key, never the web search.
+- Hotels: Google Hotels' own `brands` filter, where a group's id takes all its brands (46 Marriott Bonvoy → Sheraton,
+  Westin, Aloft, AC, Moxy, EDITION …). Known groups at once (`GOOGLE_HOTEL_GROUP_IDS`: Marriott 46, Hilton 28, Hyatt
+  37, IHG 17, Accor 33, Wyndham 53, Shangri-La 315); any other brand or group by name from the `brands` list of a
+  first, unfiltered search of the same place (`google_brand_ids`, exact name first, then prefix), then the filtered
+  search; one Google lists no filter for there goes into the query words as before ("Aman hotels near Ginza Tokyo").
+  `searched.brand_filter` says which happened.
+An alliance or a hotel group also stands for all its members when flagging (`HOTEL_GROUPS`, `expand`). The
 preferences come from the request, else from the profile: two standard fields, `preferred_airline` (an airline or an
 alliance) and `preferred_hotel_brand` (a brand or a group), dropdowns on Memory → Profile in two groups each
 (`ALLIANCES` / `AIRLINES`, `HOTEL_GROUPS` / `HOTEL_BRANDS` in `web/app.js`; a unit test keeps the alliance and group

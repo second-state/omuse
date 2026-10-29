@@ -5,7 +5,7 @@
 //! responses; [`ReqwestTransport`] is the real one. Request bodies, retry rules and every error text the agent
 //! surfaces to the user are the Python ones.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -608,23 +608,6 @@ impl SseAssembler {
         }
     }
 
-    /// Whether a tool call came with no arguments at all although its tool (in `tools`, the request's list) has
-    /// required parameters: a stream that lost them (see `Llm::no_stream`).
-    pub fn lost_arguments(&self, tools: &[Value]) -> bool {
-        self.calls.iter().any(|(_, _, name, args)| {
-            args.trim().is_empty()
-                && tools.iter().any(|t| {
-                    t.get("function").is_some_and(|f| {
-                        get_str(f, "name") == *name
-                            && f.get("parameters")
-                                .and_then(|p| p.get("required"))
-                                .and_then(Value::as_array)
-                                .is_some_and(|r| !r.is_empty())
-                    })
-                })
-        })
-    }
-
     /// The live step for [`ChatOpts::stream_to`].
     pub fn delta(&self) -> StreamDelta {
         StreamDelta {
@@ -705,10 +688,6 @@ pub struct Llm {
     /// restarts, the configured model is briefly "missing"; a permanent fallback kept every task on whatever model
     /// was listed first — on 2026-10-05 that was a text-to-speech model, and every chat failed with HTTP 422 for a day.
     fallback: parking_lot::Mutex<HashMap<String, (String, f64)>>,
-    /// `<base url> <model>` pairs whose streamed tool calls lost their arguments: asked without streaming from then on.
-    /// (2026-10-29: a gateway streamed openai-codex/gpt-6-luna's parallel tool calls with names but no arguments, and
-    /// the agent ran browser_type {} and flight_offer {}; the same request unstreamed was complete.)
-    no_stream: parking_lot::Mutex<HashSet<String>>,
     transport: Arc<dyn LlmTransport>,
     /// Tests: called with the delay instead of sleeping.
     pub sleep_hook: Option<Arc<dyn Fn(f64) + Send + Sync>>,
@@ -760,7 +739,6 @@ impl Llm {
             sem: parking_lot::Mutex::new((n, Arc::new(Semaphore::new(n)))),
             stt_sem: Semaphore::new(1),
             fallback: parking_lot::Mutex::new(HashMap::new()),
-            no_stream: parking_lot::Mutex::new(HashSet::new()),
             transport,
             sleep_hook: None,
         }
@@ -1055,8 +1033,7 @@ impl Llm {
         body.insert("temperature".into(), json!(temperature));
         body.insert("max_tokens".into(), json!(max_tokens));
         // the answer streams to `stream_to` while the model writes it; the reply is put together from the chunks
-        let stream_key = format!("{base} {want}");
-        let mut streaming = o.stream_to.is_some() && !self.no_stream.lock().contains(&stream_key);
+        let mut streaming = o.stream_to.is_some();
         body.insert("stream".into(), json!(streaming));
         if streaming {
             body.insert("stream_options".into(), json!({"include_usage": true}));
@@ -1180,16 +1157,6 @@ impl Llm {
                     }
                     let asm = assembler.lock();
                     if asm.saw_data() {
-                        if asm.lost_arguments(tools.unwrap_or(&[])) {
-                            // the stream dropped tool-call arguments: the same request unstreamed, and no more
-                            // streaming for this model here
-                            tracing::warn!(model = %want, "streamed tool calls without arguments; asking again unstreamed");
-                            self.no_stream.lock().insert(stream_key.clone());
-                            streaming = false;
-                            body.insert("stream".into(), json!(false));
-                            body.remove("stream_options");
-                            continue;
-                        }
                         break asm.message();
                     }
                 }
@@ -1928,71 +1895,6 @@ data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n
         assert!(j(0).get("stream_options").is_some());
         assert!(j(1).get("stream_options").is_none() && j(1)["stream"] == true);
         assert!(j(2)["stream"] == false && j(2).get("stream_options").is_none());
-    }
-
-    #[tokio::test]
-    async fn streamed_tool_calls_without_arguments_are_asked_again_unstreamed() {
-        let settings: SettingsFn =
-            Arc::new(|| json!({"model_base_url": "http://x/v1", "model_name": "m"}));
-        // the gateway's stream: two parallel calls, names only (arguments ""), as openai-codex/gpt-6-luna came back
-        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"web_search\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n\
-data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"vault_list\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n\
-data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n";
-        let plain = json!({"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
-            {"id": "c1", "type": "function", "function": {"name": "web_search", "arguments": "{\"query\": \"Tokyo weather\"}"}},
-            {"id": "c2", "type": "function", "function": {"name": "vault_list", "arguments": "{}"}}]}}], "usage": {}});
-        let stream = |t: &str| {
-            Ok(HttpResponse {
-                status: 200,
-                retry_after: None,
-                text: t.to_string(),
-            })
-        };
-        let tr = Arc::new(Scripted {
-            responses: Mutex::new(vec![
-                stream(sse),
-                resp(200, plain.clone(), None),
-                resp(200, plain, None),
-            ]),
-            requests: Mutex::new(vec![]),
-        });
-        let llm = Llm::with_transport(settings, None, None, tr.clone());
-        // web_search needs a query; vault_list has no parameters (an empty argument text is fine for it)
-        let tools = [
-            json!({"type": "function", "function": {"name": "web_search", "parameters": {"type": "object",
-                   "properties": {"query": {"type": "string"}}, "required": ["query"]}}}),
-            json!({"type": "function", "function": {"name": "vault_list", "parameters": {"type": "object", "properties": {}}}}),
-        ];
-        let ask = || async {
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            let o = ChatOpts {
-                stream_to: Some(tx),
-                ..ChatOpts::default()
-            };
-            llm.chat(
-                &[json!({"role": "user", "content": "hi"})],
-                Some(&tools),
-                &o,
-            )
-            .await
-            .unwrap()
-        };
-        let r = ask().await;
-        assert_eq!(r.tool_calls[0].args, json!({"query": "Tokyo weather"}));
-        assert_eq!(r.tool_calls[1].name, "vault_list");
-        // the next request of this model is not streamed at all
-        ask().await;
-        let reqs = tr.requests.lock();
-        let streamed: Vec<bool> = reqs
-            .iter()
-            .map(|q| q.json.as_ref().unwrap()["stream"] == true)
-            .collect();
-        assert_eq!(streamed, [true, false, false]);
-        // a no-parameter tool with an empty argument text alone is not a lost stream
-        let a = SseAssembler::parse_all(
-            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"vault_list\",\"arguments\":\"\"}}]}}]}\n\n",
-        );
-        assert!(!a.lost_arguments(&tools));
     }
 
     #[tokio::test]
