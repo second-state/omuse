@@ -5,6 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests import skills_common as K  # noqa: E402
+K.BOT = "travel"   # the Travel booking bot has this suite's skills (crate::bots)
 
 MAIL = [
     ("Singapore Airlines <noreply@singaporeair.example>", "Your e-ticket: SQ 638 SIN-NRT 20 Nov 2026",

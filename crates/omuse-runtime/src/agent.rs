@@ -10,6 +10,7 @@
 //! * [`tools`] — the local tool schema (`LOCAL_TOOLS`) and the tool-name sets.
 //! * [`lang`] — the agent's language (`agent_lang`) with the per-task overrides the Python kept in contextvars.
 //! * [`runtime`] — the [`Runtime`] itself: Sentinel client, events, task lifecycle and the planner/executor loop.
+//! * [`bots`] — the bot of a task (its skills and prompt) and the hand-off from the main bot (`ask_bot`).
 //! * [`exec`] — one tool call: guards, Sentinel `/internal/act`, result formatting, vision helpers, evidence.
 //! * [`local`] — the local tools (files, documents, data, memory, schedules, goals, choices, …).
 //! * [`images`] — `make_image` / `edit_image` / `vary_image` / `caption_image` / `upscale_image`.
@@ -21,6 +22,7 @@
 //! Every user-facing and model-facing string is byte-identical to the Python source: the scripted model of the
 //! end-to-end suites (`tests/fake_llm.py`) matches on them.
 
+pub mod bots;
 pub mod exec;
 pub mod ext;
 pub mod guards;

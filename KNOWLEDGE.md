@@ -491,8 +491,9 @@ issuer's page and reported as "can be added to the catalog".
 
 ## Web UI navigation
 
-`web/app.js` `VIEWS` lists every view the router knows; `NAV` is what the sidebar shows, in three groups: Chat, Browser,
-Connections, Memory · Trust, Audit · Skills, Settings. Two views are routable but unlisted since 2026-10-28:
+`web/app.js` `VIEWS` lists every view the router knows; `NAV` is what the sidebar shows: Chat (shown as
+the bots, Main first — see "Bots") · Browser, Connections, Memory · Trust, Audit · Skills, Settings — four sections.
+Two views are routable but unlisted:
 
 - **Tasks** (`#tasks`, `#tasks/<id>`): the task list and detail. Audit's task links, the chat's task cards and the
   Trust page still open it; the waiting-approval badge that used to sit on the tab now sits on Chat, where approvals
@@ -503,6 +504,34 @@ Connections, Memory · Trust, Audit · Skills, Settings. Two views are routable 
   arrival-card reminders), and a finished schedule still shows its toast.
 
 `tests/nav_ui.py` checks the order, the separators and that `#tasks/<id>` still renders.
+
+## Bots (`bots/*.md`, `crates/omuse-runtime/src/bots.rs`)
+
+The chat is split into bots. A bot is a set of skills and a short prompt of its own; every bot shares the memory, the
+profile, the Vault, the connectors and the approval rules. The bots are built in (`bots/<id>.md`, compiled into the
+binary like the skills): front matter with `name`, `name_zh`, `icon`, `order` (the menu), `description` /
+`description_zh` (what the main bot routes by) and `skills` (comma list); the body is the bot's prompt, added to the
+executor prompt.
+
+- **Main** (`main`) is the entrance: it has every skill no specialised bot lists (imported skills included) plus the
+  ones its own file names (`pdf-forms`). The specialised bots: Travel booking (`travel`), City guides (`cities`),
+  Arrival & entry (`arrival`), Travel insurance & claims (`insurance`), Credit cards (`cards`), Photos & videos
+  (`photos`). Bots may share skills (`pdf-forms`, `michelin-dining`, `restaurant-booking`, `credit-card-picker`,
+  `csr-trip-claim`).
+- **A conversation belongs to one bot**: `conversations.bot_id` (`main` for older ones) and `parent_conv` (the main
+  conversation that handed it over). `GET /api/bots`, `GET /api/conversations?bot=<id>`, `POST /api/chat` with `bot`
+  for a new conversation. The executor's skill list and `load_skill` are the bot's; another bot's skill is refused
+  with the bot that has it.
+- **Hand-over** (`ask_bot(bot, question, conversation_id?)`, main bot only, alone in its turn): a new conversation in
+  that bot (or the one given, for a follow-up) gets the question; the main task waits in `WAITING_BOT` (the bot's task
+  starts only once the main task is suspended); when the bot's task ends, the main task ends at once with the bot's
+  answer word for word, stored with `meta.handoff` (the UI's "Continue in …" link). The history shows the main model
+  `[answered by the <bot> bot in conversation <id>]`, so a follow-up goes back to the same conversation. An approval
+  or a takeover the bot asks for is also posted in the main conversation; cancelling the main task cancels the bot's.
+- **UI**: the menu lists the bots in place of Chat, Main first; Main is `#chat/<conv>`, another bot
+  `#bot/<id>/<conv>`.
+- Tests: `tests/bots_e2e.py`, `tests/bots_ui.py`; suites of one bot's skills set `K.BOT` (`tests/skills_common.py`) or
+  use `travel_common.BOT`.
 
 ## Skill front matter
 

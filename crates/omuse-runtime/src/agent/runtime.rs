@@ -627,6 +627,10 @@ work around it; write the final answer saying what you would do and how far you 
         )
         .await;
         if is_terminal(status) {
+            // a main-bot task may be waiting for this one (crate::bots)
+            let me = self.arc();
+            let tid = task_id.to_string();
+            tokio::spawn(async move { me.handoff_done(&tid).await });
             if let Err(e) = self.health().on_task_finished(&t).await {
                 println!("[health] {:?}", e);
             }
@@ -888,6 +892,10 @@ work around it; write the final answer saying what you would do and how far you 
             json!({"finished_at": now_ts(), "error": reason})
         };
         self.set_status(task_id, "CANCELLED", kw).await;
+        if status == super::bots::WAITING_BOT {
+            self.cancel_handoff(&t.get("waiting").cloned().unwrap_or(Value::Null), reason)
+                .await;
+        }
         self.event(
             task_id,
             "cancelled",
@@ -1229,6 +1237,14 @@ work around it; write the final answer saying what you would do and how far you 
                         ))
                         .collect::<Vec<_>>()
                         .join(", ")
+                );
+            }
+            if let Some(h) = m.get("meta").and_then(|x| x.get("handoff")) {
+                // a bot's answer shown in the main conversation: say where it came from, for a follow-up
+                c += &format!(
+                    "\n[answered by the {} bot in conversation {}]",
+                    sget(h, "bot"),
+                    sget(h, "conv_id")
                 );
             }
             hist.push(json!({"role": role, "content": c}));
@@ -1810,6 +1826,8 @@ short, use one delegate call for the rest (it doesn't use these steps). Internal
         }
 
         let mut transcript: Vec<Value> = arr(&t, "transcript").to_vec();
+        let bot = self.bot_of(&t);
+        let bot_skills = self.bot_skills(bot);
         let mut extra = String::new();
         let goal = crate::goals::goal_for_task(&self.store, &t)?;
         let schedule_id = get_str(&t, "schedule_id");
@@ -1888,6 +1906,7 @@ call notify_user only if something the user cares about happened.",
                 lines.join("\n")
             );
         }
+        extra += &super::bots::bot_prompt(bot, lg0 == "en");
         if lg0 == "en" && prompts::wants_cjk_output(&goal_text) {
             // 2026-10-02 R8: the app is in English but this request asks for text to use in Chinese (a post, a story …)
             extra += "\n## Output language for this request\nThe user asked, in Chinese, for text they will use as written: write \
@@ -1915,6 +1934,18 @@ Your own notes and the short explanation around it stay in English.";
                 .iter()
                 .filter_map(|c| serde_json::from_value(strip_private(c)).ok())
                 .collect();
+            if calls.first().is_some_and(|c| c.name == "ask_bot") {
+                let waiting = self
+                    .store
+                    .events(task_id, 0)?
+                    .iter()
+                    .rev()
+                    .find(|e| get_str(e, "type") == "handoff")
+                    .and_then(|e| e.get("data").cloned())
+                    .unwrap_or(Value::Null);
+                let result = resolved.get("result").cloned().unwrap_or(Value::Null);
+                return self.finish_handoff(&t, &waiting, &result).await;
+            }
             if let Some(first) = calls.first() {
                 let result = resolved
                     .get("result")
@@ -2007,7 +2038,7 @@ Your own notes and the short explanation around it stay in English.";
                 plan: None,
                 facts: facts.clone(),
                 prefs: self.standing_prefs(),
-                skills: self.skills(),
+                skills: bot_skills.clone(),
                 extra: extra.clone(),
                 language: lg.to_string(),
                 reply_lang: Self::reply_lang(&s).to_string(),
@@ -2073,6 +2104,11 @@ unverified. This is an internal efficiency control — never mention a 'budget' 
                     goal.is_some(),
                 );
                 let tl = self.without_browser_if_off(task_id, tl);
+                // ask_bot is the main bot's
+                let tl: Vec<Value> = tl
+                    .into_iter()
+                    .filter(|x| bot.is_main() || tool_name(x) != "ask_bot")
+                    .collect();
                 let tl = Self::budget(&mut transcript, tl, max_steps - steps, lg);
                 tools = Some(if lg == "en" {
                     prompts::strip_tools_en(&tl)
@@ -2943,23 +2979,17 @@ try a clearly different query or source, or say in the answer that it wasn't fou
                 .get("summary")
                 .map(|s| sget(s, "title"))
                 .unwrap_or_default();
-            self.store.add_msg(
-                &cid,
-                "system",
-                &pyjson::dumps(&json!({"type": "approval", "approval_id": waiting.get("approval_id"), "title": title, "task_id": task_id})),
-                task_id,
-                None,
-            )?;
+            let card = json!({"type": "approval", "approval_id": waiting.get("approval_id"), "title": title, "task_id": task_id});
+            self.store
+                .add_msg(&cid, "system", &pyjson::dumps(&card), task_id, None)?;
+            self.mirror_to_parent(&cid, &card, task_id).await;
             notify.push(json!({"kind": "approval_requested", "task_id": task_id, "approval_id": waiting.get("approval_id")}));
         } else if sget(&waiting, "type") == "takeover_requested" {
             let reason = sget(&waiting, "reason");
-            self.store.add_msg(
-                &cid,
-                "system",
-                &pyjson::dumps(&json!({"type": "takeover", "reason": reason, "task_id": task_id})),
-                task_id,
-                None,
-            )?;
+            let card = json!({"type": "takeover", "reason": reason, "task_id": task_id});
+            self.store
+                .add_msg(&cid, "system", &pyjson::dumps(&card), task_id, None)?;
+            self.mirror_to_parent(&cid, &card, task_id).await;
             // said in the agent's own words too, with a direct link to this task's browser tab: it travels with the
             // message (Telegram, notifications, copied text), unlike the card's button
             let link = self.browser_link(task_id).await;
@@ -2977,6 +3007,10 @@ try a clearly different query or source, or say in the answer that it wasn't fou
         }
         self.set_status(task_id, &sp.status, json!({"waiting": waiting}))
             .await;
+        if sp.status == super::bots::WAITING_BOT {
+            // the bot's task starts only now, so it cannot end before this task waits for it
+            self.start(&sget(&waiting, "task_id"));
+        }
         self.event(task_id, "waiting", waiting).await;
         for ev in notify {
             self.publish(ev).await;

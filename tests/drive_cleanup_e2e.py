@@ -7,6 +7,7 @@ import json
 
 from tests import drive_common as D
 from tests import skills_common as K
+K.BOT = "photos"   # the Photos & videos bot has this suite's skills (crate::bots)
 from tests.skills_common import check, finish
 
 D.disconnect_all()

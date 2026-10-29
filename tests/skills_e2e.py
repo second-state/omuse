@@ -17,8 +17,8 @@ def check(name, cond, info=""):
         fails.append(name)
 
 
-def run(msg):
-    r = c.post(B + "/api/chat", json={"message": msg}, headers=H).json()
+def run(msg, bot="main"):
+    r = c.post(B + "/api/chat", json={"message": msg, "bot": bot}, headers=H).json()
     t0 = time.time()
     while time.time() - t0 < 60:
         t = c.get(f"{B}/api/tasks/{r['task_id']}").json()
@@ -32,8 +32,13 @@ sk = c.get(B + "/api/skills").json()
 names = [s["name"] for s in sk["skills"]]
 check("built-in skills listed, all enabled by default", len(names) >= 9 and all(s["enabled"] and s["source"] == "builtin" for s in sk["skills"]), sk)
 check("no OMUSE_SKILLS in the test stack", sk["env"] == "")
+# each bot's instructions list the enabled skills of that bot (crate::bots); together the bots cover every skill
+bots = {b["id"]: set(b["skills"]) for b in c.get(B + "/api/bots", headers=H).json()["bots"]}
+check("together the bots have every enabled skill", set().union(*bots.values()) == set(names), sorted(set(names) - set().union(*bots.values())))
 listed = run("SKILLCHECK")
-check("the agent's instructions list every enabled skill", listed.startswith("SKILLS=") and set(listed[7:].split(",")) == set(names), (listed, names))
+check("Main's instructions list Main's enabled skills", listed.startswith("SKILLS=") and set(listed[7:].split(",")) == bots["main"], (listed, sorted(bots["main"])))
+listed = run("SKILLCHECK", bot="travel")
+check("the Travel booking bot's instructions list its own", listed.startswith("SKILLS=") and set(listed[7:].split(",")) == bots["travel"], (listed, sorted(bots["travel"])))
 
 # turn two off
 off = ["online-shopping", "phone-call"]

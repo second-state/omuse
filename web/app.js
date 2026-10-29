@@ -146,7 +146,7 @@ function md(text) {
 function mdEl(text) { const d = h('div', { class: 'md' }); d.innerHTML = md(text); d.querySelectorAll('a').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; }); return d; }
 const fmtTime = ts => { if (!ts) return ''; const d = new Date(ts * 1000); return d.toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); };
 const fmtClock = ts => ts ? new Date(ts * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '';
-const STATUS_ZH = { CREATED: T('已创建'), PLANNING: T('规划中'), RUNNING: T('执行中'), WAITING_APPROVAL: T('等待审批'), WAITING_EXTERNAL: T('等待外部'),
+const STATUS_ZH = { CREATED: T('已创建'), PLANNING: T('规划中'), RUNNING: T('执行中'), WAITING_APPROVAL: T('等待审批'), WAITING_EXTERNAL: T('等待外部'), WAITING_BOT: T('等待助手'),
   PAUSED: T('已暂停'), FAILED: T('失败'), COMPLETED: T('已完成'), CANCELLED: T('已取消') };
 const pill = st => h('span', { class: 'pill st-' + st, title: st }, STATUS_ZH[st] || st);
 const riskPill = r => r ? h('span', { class: 'pill risk-' + r }, { low: T('低 low'), medium: T('中 medium'), high: T('高 high'), critical: T('极高 critical') }[r] || r) : '';
@@ -180,9 +180,20 @@ const safe = fn => async (...a) => { try { return await fn(...a); } catch (e) { 
 const S = {
   view: 'chat', conv: null, convs: [], convData: null, tasks: {}, events: {}, approvals: [], selTask: null, name: 'OMuse',
   settings: null, browserTimer: null, taskFilter: '', auditTask: '', seenApprovals: new Set(), sending: false,
+  bots: [], bot: 'main',
 };
 
-// Every view the router knows. The navigation shows them in NAV order, in three groups; `tasks` (the task list and
+// Bots (GET /api/bots): the main bot and the specialised ones, each a chat of its own in the menu. Main is #chat/<conv>,
+// another bot #bot/<id>/<conv>. The main bot hands a request to another bot and shows its answer with a link back.
+const botOf = id => S.bots.find(b => b.id === id);
+const botName = b => !b ? '' : (LANG === 'en' ? b.name : ZH(b.name_zh || b.name));
+const botDesc = b => !b ? '' : (LANG === 'en' ? b.description : ZH(b.description_zh || b.description));
+const convHash = (bot, id) => (bot === 'main' ? '#chat' : '#bot/' + bot) + (id ? '/' + id : '');
+async function loadBots() {
+  try { S.bots = (await api('bots')).bots || []; } catch (e) { S.bots = []; }
+}
+
+// Every view the router knows. The navigation shows them in NAV order, in four groups (the bots first); `tasks` (the task list and
 // detail, reached from Audit's task links, chat cards and #tasks/<id>) and `schedules` (the Automations page, kept
 // reachable at #schedules while timer tasks are rethought — see KNOWLEDGE.md) are not listed.
 const VIEWS = [
@@ -191,13 +202,23 @@ const VIEWS = [
   ['skills', '🎓', T('技能'), 'Skills'], ['settings', '⚙️', T('设置'), 'Settings'],
   ['tasks', '🗂', T('任务'), 'Tasks'], ['schedules', '⚡', T('自动化'), 'Automations'],
 ];
-const NAV = [['chat', 'browser', 'connections', 'memory'], ['trust', 'activity'], ['skills', 'settings']];
+const NAV = [['chat'], ['browser', 'connections', 'memory'], ['trust', 'activity'], ['skills', 'settings']];   // 'chat' = the bots
 
 function renderNav() {
   const nav = $('#navlinks'); nav.innerHTML = '';
   NAV.forEach((group, gi) => {
     if (gi) nav.append(h('div', { class: 'navsep', role: 'separator' }));
     for (const id of group) {
+      if (id === 'chat' && S.bots.length) {
+        // the bots in place of Chat: Main first (the entrance), then the specialised ones
+        for (const b of S.bots) {
+          const on = S.view === 'chat' && S.bot === b.id;
+          nav.append(h('a', { href: convHash(b.id), class: 'botlink' + (on ? ' active' : ''), title: botDesc(b), 'data-bot': b.id },
+            h('span', { class: 'ic' }, b.icon), botName(b),
+            b.id === 'main' && waitingCount() ? h('span', { class: 'badge' }, waitingCount()) : null));
+        }
+        continue;
+      }
       const [, ic, zh, en] = VIEWS.find(x => x[0] === id);
       // approvals and takeovers are answered in the chat: the waiting count sits on Chat
       nav.append(h('a', { href: '#' + id, class: S.view === id ? 'active' : '' }, h('span', { class: 'ic' }, ic), LANG === 'en' ? en : ZH(zh),
@@ -208,16 +229,20 @@ function renderNav() {
 const waitingCount = () => Object.values(S.tasks).filter(t => t.status === 'WAITING_APPROVAL' || t.status === 'WAITING_EXTERNAL').length;
 
 function route() {
-  const v = (location.hash || '#chat').slice(1).split('/')[0];
+  let v = (location.hash || '#chat').slice(1).split('/')[0];
+  let arg = (location.hash || '').split('/')[1];
+  // #bot/<id>/<conv> is the chat view of that bot; #chat/<conv> the main bot's
+  let bot = 'main';
+  if (v === 'bot') { bot = botOf(arg) ? arg : 'main'; arg = (location.hash || '').split('/')[2]; v = 'chat'; }
+  if (bot !== S.bot) { S.bot = bot; S.conv = null; S.convData = null; S.draft = ''; }
   S.view = VIEWS.some(x => x[0] === v) ? v : 'chat';
-  const arg = (location.hash || '').split('/')[1];
   if (S.view === 'tasks' && arg) S.selTask = arg;
   if (S.view === 'browser') S.browserSel = arg || S.browserSel || null;
   if (S.view === 'chat') { const c = arg || null; if (c !== S.conv) { S.conv = c; S.convData = null; } }
   if (S.browserTimer) { clearInterval(S.browserTimer); S.browserTimer = null; }
   $('#nav').classList.remove('open'); if ($('#navBack')) $('#navBack').hidden = true;
   const meta = VIEWS.find(x => x[0] === S.view);
-  $('#viewTitle').textContent = LANG === 'en' ? meta[3] : ZH(meta[2]);
+  $('#viewTitle').textContent = S.view === 'chat' && botOf(S.bot) ? botName(botOf(S.bot)) : LANG === 'en' ? meta[3] : ZH(meta[2]);
   renderNav();
   const view = $('#view'); view.innerHTML = '';
   ({ chat: viewChat, tasks: viewTasks, browser: viewBrowser, schedules: viewSchedules, connections: viewConnections,
@@ -241,7 +266,14 @@ async function viewChat(root) {
   passwordReminder();
   await profileReminder();
   await loadConvs();
-  if (S.conv && !S.convs.some(c => c.id === S.conv)) { S.conv = null; S.convData = null; }
+  if (S.conv && !S.convs.some(c => c.id === S.conv)) {
+    // a link to another bot's conversation (#chat/<id> from a notification, Telegram or an older page): open it there
+    let other = null;
+    try { other = (await api('conversations/' + S.conv)).conversation; } catch (e) {}
+    const b = other && (other.bot_id || 'main');
+    if (b && b !== S.bot && botOf(b)) { location.replace(convHash(b, other.id)); return; }
+    S.conv = null; S.convData = null;
+  }
   renderConvList(list);
   if (S.conv && !S.convData) await openConv(S.conv);
   else renderThread(thread);
@@ -291,7 +323,7 @@ function convResizer(wrap) {
 function newChat() {
   S.conv = null; S.convData = null; S.draft = '';
   closeHistory();
-  if (location.hash !== '#chat') { history.replaceState(null, '', '#chat'); }
+  if (location.hash !== convHash(S.bot)) { history.replaceState(null, '', convHash(S.bot)); }
   renderConvList(); renderThread();
   const ta = $('#chatInput'); if (ta) { ta.value = ''; ta.dispatchEvent(new Event('input')); if (!isTouch()) ta.focus(); }
 }
@@ -320,7 +352,7 @@ function toggleHistory() {
 function closeHistory() { const p = $('#histPop'); if (p) p.remove(); }
 
 async function loadConvs() {
-  const r = await api('conversations');
+  const r = await api('conversations?bot=' + encodeURIComponent(S.bot || 'main'));
   S.convs = r.conversations;
 }
 
@@ -346,7 +378,7 @@ function renderConvList(list) {
 async function openConv(id) {
   if (id !== S.conv) S.draft = '';
   S.conv = id;
-  if (location.hash !== '#chat/' + id) history.replaceState(null, '', '#chat/' + id);
+  if (location.hash !== convHash(S.bot, id)) history.replaceState(null, '', convHash(S.bot, id));
   let r;
   try { r = await api('conversations/' + id); }
   catch (e) { toast(T('对话不存在或已删除'), true); newChat(); return; }
@@ -404,6 +436,7 @@ function renderThread(thread) {
   const head = h('div', { class: 'thread-head' },
     h('button', { class: 'btn small hist-btn', onclick: toggleHistory, title: T('历史对话 History') }, T('☰ 历史')),
     h('div', { class: 'th-title', title: cur ? cur.title : '' }, cur ? (cur.kind === 'schedule' ? cur.title : cur.title || T('(无标题)')) : T('新对话 New chat')),
+    cur && cur.parent_conv ? h('a', { class: 'small from-main', href: convHash('main', cur.parent_conv), title: T('这段对话由主助手转来 Handed over from Main') }, T('← 来自主助手 From Main')) : null,
     d && d.messages.length ? h('span', { class: 'small faint th-meta' }, Tf("{0} 个任务 tasks", (Object.keys(d.tasks || {}).length))) : null,
     h('button', { class: 'btn small primary', onclick: newChat, title: T('开始新对话（新的上下文）') }, T('＋ 新对话')),
     S.conv ? h('button', { class: 'btn small', onclick: () => safe(deleteConv)(S.conv), title: T('删除当前对话') }, '🗑') : null);
@@ -411,7 +444,14 @@ function renderThread(thread) {
   if (S.profileNudge) thread.insertBefore(profileBanner(), oldComp || null);
   thread.insertBefore(head, oldComp || null);
   const msgs = h('div', { class: 'msgs', 'aria-live': 'polite' });
-  if (!d || !d.messages.length) {
+  const myBot = botOf(S.bot);
+  if ((!d || !d.messages.length) && myBot && myBot.id !== 'main') {
+    // an empty chat of a specialised bot: what it does and which skills it has
+    msgs.append(h('div', { class: 'msg' }, h('div', { class: 'card bot-intro' },
+      h('h3', null, myBot.icon + ' ' + botName(myBot)),
+      h('p', { class: 'sub' }, botDesc(myBot)),
+      h('p', { class: 'small muted' }, T('技能 Skills') + ': ' + (myBot.skills || []).join(', ')))));
+  } else if (!d || !d.messages.length) {
     msgs.append(h('div', { class: 'msg' }, h('div', { class: 'card' },
       h('h3', null, T('你好，我是 OMuse 👋')),
       h('p', { class: 'sub' }, T('我是只为你服务的私人 Agent，运行在一台专属于你的计算机上：上下文、工具和凭据都只属于你。我可以读写邮件、操作浏览器、管理文件、记住你的偏好、定时执行任务。')
@@ -425,17 +465,22 @@ function renderThread(thread) {
         const atts = (m.meta && m.meta.attachments) || [];
         if (atts.length) msgs.append(h('div', { class: 'msg user' }, attachStrip(atts)));
         msgs.append(h('div', { class: 'msg user' }, h('div', { class: 'bubble' }, m.content)));
+        if (m.meta && m.meta.from) msgs.append(h('div', { class: 'msg user' }, h('a', { class: 'small faint from-main', href: convHash('main', m.meta.from.conv_id) }, T('由主助手转来 From Main'))));
         if (m.task_id && S.tasks[m.task_id]) { appendCard(msgs, S.tasks[m.task_id]); shown.add(m.task_id); }
       } else if (m.role === 'assistant') {
         if (m.task_id && !shown.has(m.task_id) && S.tasks[m.task_id]) { appendCard(msgs, S.tasks[m.task_id]); shown.add(m.task_id); }
-        msgs.append(h('div', { class: 'msg assistant' }, h('div', { class: 'bubble' }, mdEl(m.content))));
+        const ho = m.meta && m.meta.handoff;
+        const hb = ho && botOf(ho.bot);
+        msgs.append(h('div', { class: 'msg assistant' }, h('div', { class: 'bubble' }, mdEl(m.content),
+          ho ? h('a', { class: 'handoff-link small', href: convHash(ho.bot, ho.conv_id) },
+            Tf("在「{0}」中继续 →", (hb ? hb.icon + ' ' + botName(hb) : ho.bot))) : null)));
       } else if (m.role === 'system') {
         let j = {}; try { j = JSON.parse(m.content); } catch (e) {}
         const t = S.tasks[j.task_id];
         if (j.type === 'approval') {
           const pending = S.approvals.some(a => a.id === j.approval_id);
           msgs.append(h('div', { class: 'msg' }, h('div', { class: 'sys-card' }, '🛡',
-            h('span', null, Tf("Sentinel 请求审批：{0}", B(j.title || ''))),
+            h('span', null, Tf("Sentinel 请求审批：{0}", B(j.title || '')), j.from_bot && botOf(j.from_bot) ? ' · ' + botOf(j.from_bot).icon + ' ' + botName(botOf(j.from_bot)) : ''),
             pending ? h('button', { class: 'btn approve small', onclick: () => openApproval(j.approval_id) }, T('去审批 Review')) :
               h('span', { class: 'small muted' }, T('已处理 resolved')))));
         } else if (j.type === 'approval_auto') {   // Settings → auto-approve browser actions: shown like a manual approval
@@ -466,7 +511,7 @@ function renderThread(thread) {
   }
   if (oldComp) oldComp.remove();
   const comp = h('div', { class: 'composer' }); comp.dataset.key = compKey;
-  if (!d || !d.messages.length) comp.append(h('div', { class: 'suggest' }, SUGGESTIONS.map(s => h('button', { onclick: () => { ta.value = s; S.draft = s; grow(); ta.focus(); } }, s))));
+  if ((!d || !d.messages.length) && S.bot === 'main') comp.append(h('div', { class: 'suggest' }, SUGGESTIONS.map(s => h('button', { onclick: () => { ta.value = s; S.draft = s; grow(); ta.focus(); } }, s))));
   const hadFocus = document.activeElement && document.activeElement.id === 'chatInput';
   const narrow = isNarrow();
   const ph = S.conv ? (narrow ? T('继续这个对话…') : T('继续这个对话… (Enter 发送，Shift+Enter 换行)'))
@@ -521,7 +566,7 @@ function renderThread(thread) {
     try {
       const infos = (await Promise.all(S.attach.map(a => a.promise))).filter(Boolean);
       if (S.attach.length && infos.length < S.attach.length) throw new Error(T('有附件没有上传成功，请移除后再发送 Some files failed to upload'));
-      const r = await api('chat', { method: 'POST', body: { message: text, conversation_id: S.conv, attachments: infos.map(i => i.path) } });
+      const r = await api('chat', { method: 'POST', body: { message: text, conversation_id: S.conv, bot: S.bot, attachments: infos.map(i => i.path) } });
       S.attach.forEach(a => a.thumb && URL.revokeObjectURL(a.thumb)); S.attach = []; drawChips();
       ta.value = ''; S.draft = ''; grow();
       S.conv = r.conversation_id;
@@ -695,6 +740,19 @@ setInterval(() => {
   });
 }, 1000);
 
+// the main bot waits for another bot: who is working on it, its state, and a link to its conversation
+function handoffRow(w) {
+  const b = botOf(w.bot);
+  const child = S.tasks[w.task_id];
+  const st = child ? child.status : 'RUNNING';
+  const what = st === 'WAITING_APPROVAL' ? T('在等你审批') : st === 'WAITING_EXTERNAL' ? T('在等你接管浏览器') : T('正在处理…');
+  return h('div', { class: 'row handoff', style: 'margin-top:8px;gap:8px;align-items:center' },
+    h('span', null, (b ? b.icon + ' ' + botName(b) : w.bot) + ' ' + what),
+    st === 'WAITING_APPROVAL' && child && child.waiting ? h('button', { class: 'btn approve small', onclick: () => openApproval(child.waiting.approval_id) }, T('去审批 Review')) : null,
+    st === 'WAITING_EXTERNAL' && child ? h('a', { class: 'btn small', href: '#browser/' + child.id }, T('打开浏览器 Open browser')) : null,
+    h('a', { class: 'btn small', href: convHash(w.bot, w.conv_id) }, T('打开对话 Open')));
+}
+
 function taskCard(t) {
   const active = !['COMPLETED', 'FAILED', 'CANCELLED'].includes(t.status);
   const steps = t.plan && t.plan.steps ? t.plan.steps.length : 0;
@@ -710,6 +768,7 @@ function taskCard(t) {
       : null,
     t.status === 'WAITING_EXTERNAL' ? h('div', { class: 'row', style: 'margin-top:8px' },
       h('a', { class: 'btn small', href: '#browser/' + t.id }, T('🖐 去浏览器接管 Take over'))) : null,
+    t.status === 'WAITING_BOT' && t.waiting ? handoffRow(t.waiting) : null,
     t.status === 'FAILED' && t.error ? h('p', { class: 'small', style: 'color:var(--danger);margin:8px 0 0' }, t.error) : null,
     traceBox(t)];
   if (active) return h('div', { class: 'msg' }, h('div', { class: 'taskcard', id: 'tc-' + t.id }, head, ...body));
@@ -2981,6 +3040,7 @@ try { applyName(localStorage.getItem('omuse_name')); } catch (e) { S.name = 'OMu
   try { const hs = await sapi('health'); $('#navfoot').textContent = Tf("v{0} · 专属计算机 · 私有上下文", (hs.version)); } catch (e) {}
   // seed "seen" so old pending approvals don't all pop at once; open the newest one
   try { const r = await sapi('approvals?status=pending'); S.approvals = r.approvals; } catch (e) {}
+  await loadBots();
   route();
   connectStream();
   loadApprovals();

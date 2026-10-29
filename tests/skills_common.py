@@ -119,11 +119,17 @@ PNG = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages", "li
 
 
 # ------------------------------------------------------------------ running a task
+# the bot a new conversation of run() belongs to (crate::bots): a suite of one bot's skills sets it once, e.g.
+# K.BOT = "travel"; "main" is the main bot, which hands specialised requests over with ask_bot
+BOT = "main"
+
+
 def run(message: str, *, conv: str | None = None, attachments: list | None = None, approve: bool = True,
-        stop_on_external: bool = True, timeout: float = 150) -> dict:
-    """Send `message`; approve approvals as they come (recording them); return the finished task with `_approvals`
-    and `_seen` (every status seen)."""
-    r = c.post(B + "/api/chat", json={"message": message, "conversation_id": conv, "attachments": attachments or []}, headers=H).json()
+        stop_on_external: bool = True, timeout: float = 150, bot: str | None = None) -> dict:
+    """Send `message` (a new conversation goes to `bot`, else BOT); approve approvals as they come (recording them);
+    return the finished task with `_approvals` and `_seen` (every status seen)."""
+    r = c.post(B + "/api/chat", json={"message": message, "conversation_id": conv, "attachments": attachments or [],
+                                      "bot": bot or BOT}, headers=H).json()
     tid = r["task_id"]
     seen, approvals, t0, t = set(), [], time.time(), {}
     while time.time() - t0 < timeout:

@@ -7,6 +7,7 @@ use omuse_common::Config;
 
 pub mod agent;
 pub mod attachments;
+pub mod bots;
 pub mod context;
 pub mod goals;
 pub mod golden;

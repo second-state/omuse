@@ -152,13 +152,17 @@ def task(tid: str) -> dict:
     return t.get("task") or t
 
 
+# the travel suites talk to the Travel booking bot (crate::bots), which has the flight, hotel and restaurant skills
+BOT = "travel"
+
+
 def run(message: str, *, follow_up: str | None = None, timeout: float = 120) -> dict:
     """Send `message`, approve every approval the task raises (purchase_confirm, vault fills, the booking click) and wait
     for the end. In real mode, a task that stops after showing choices gets one follow-up in the same conversation.
     Returns {tasks, approvals, t0, t1, excluded, conv_id}."""
     approvals, excluded, tasks = [], [], []
     t0 = time.monotonic()
-    r = c.post(B + "/api/chat", json={"message": message}, headers=H).json()
+    r = c.post(B + "/api/chat", json={"message": message, "bot": BOT}, headers=H).json()
     conv, tid = r.get("conversation_id"), r["task_id"]
     tasks.append(tid)
     sent_follow = False

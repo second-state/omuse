@@ -759,6 +759,19 @@ impl Store {
                 params![],
             )?;
         }
+        // bots (crate::bots): the bot a conversation belongs to, and the main-bot conversation that handed it over
+        let ccols = cols("conversations")?;
+        for (col, ddl) in [
+            ("bot_id", "TEXT DEFAULT 'main'"),
+            ("parent_conv", "TEXT DEFAULT ''"),
+        ] {
+            if !ccols.contains(col) {
+                db.execute(
+                    &format!("ALTER TABLE conversations ADD COLUMN {} {}", col, ddl),
+                    params![],
+                )?;
+            }
+        }
         let fcols = cols("facts")?;
         for (col, ddl) in [
             ("tier", "TEXT DEFAULT 'long'"),
@@ -897,6 +910,25 @@ impl Store {
             "SELECT * FROM conversations ORDER BY updated_at DESC LIMIT ?",
             params![limit],
         )
+    }
+
+    /// Put a conversation in a bot (`crate::bots`); `parent_conv` is the main-bot conversation that handed it over.
+    pub fn set_conv_bot(&self, cid: &str, bot_id: &str, parent_conv: &str) -> Result<()> {
+        self.db.execute(
+            "UPDATE conversations SET bot_id=?, parent_conv=? WHERE id=?",
+            params![bot_id, parent_conv, cid],
+        )?;
+        Ok(())
+    }
+
+    /// The bot a conversation belongs to (`main` for an unknown one or one saved before bots existed).
+    pub fn conv_bot(&self, cid: &str) -> String {
+        self.conv(cid)
+            .ok()
+            .flatten()
+            .map(|c| get_str(&c, "bot_id"))
+            .filter(|b| !b.is_empty())
+            .unwrap_or_else(|| crate::bots::MAIN.to_string())
     }
 
     pub fn conv(&self, cid: &str) -> Result<Option<Value>> {

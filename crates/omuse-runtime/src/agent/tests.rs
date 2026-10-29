@@ -6,8 +6,10 @@ use omuse_common::Config;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 
+use super::util::sget;
 use super::*;
 use crate::llm::ToolCall;
+use omuse_common::util::get_str;
 
 fn tools(names: &[&str]) -> Vec<Value> {
     names
@@ -1006,6 +1008,7 @@ async fn delegate_runs_sub_agents_side_by_side_and_marks_their_steps() {
 async fn an_ordinary_skill_is_followed_from_its_sheet_without_a_planner_call() {
     let (rt, _d) = rt();
     let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    rt.store.set_conv_bot(&conv, "travel", "").unwrap();
     let t = rt
         .store
         .create_task("g", &conv, "chat", "", "", None)
@@ -1124,6 +1127,7 @@ fn built_in_skills_spell_the_plan_flag_as_on_and_only_the_long_ones_carry_it() {
 async fn load_skill_reads_a_reference_file_inside_the_skill_folder_only() {
     let (rt, _d) = rt();
     let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    rt.store.set_conv_bot(&conv, "cards", "").unwrap();
     let t = rt
         .store
         .create_task("g", &conv, "chat", "", "", None)
@@ -1190,6 +1194,8 @@ async fn load_skill_reads_a_reference_file_inside_the_skill_folder_only() {
 async fn a_browser_off_skill_hides_the_browser_until_another_skill_is_loaded() {
     let (rt, _d) = rt();
     let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    // the City guides bot has both: tokyo (browser off) and restaurant-booking
+    rt.store.set_conv_bot(&conv, "cities", "").unwrap();
     let t = rt
         .store
         .create_task("g", &conv, "chat", "", "", None)
@@ -1240,4 +1246,173 @@ async fn a_browser_off_skill_hides_the_browser_until_another_skill_is_loaded() {
         .unwrap();
     assert!(!md.contains("browser tools and sub-agents"));
     assert_eq!(rt.without_browser_if_off(&tid, tools).len(), 4);
+}
+
+// ---------------------------------------------------------------- bots: the main bot hands a request over
+#[tokio::test]
+async fn ask_bot_opens_a_bot_conversation_and_the_answer_comes_back_to_main() {
+    let (rt, _d) = rt();
+    let main_cid = rt.store.create_conv("trip", "chat", None).unwrap();
+    let parent = rt
+        .store
+        .create_task("book a flight to Tokyo", &main_cid, "chat", "", "", None)
+        .unwrap();
+    rt.store
+        .add_msg(
+            &main_cid,
+            "user",
+            "book a flight to Tokyo",
+            &get_str(&parent, "id"),
+            None,
+        )
+        .unwrap();
+    let c = call("a1", "ask_bot", json!({}));
+    // refusals: an unknown bot, the main bot itself, an empty question, another bot's conversation
+    for (args, want) in [
+        (json!({"bot": "nope", "question": "q"}), "unknown bot"),
+        (json!({"bot": "main", "question": "q"}), "unknown bot"),
+        (
+            json!({"bot": "travel", "question": " "}),
+            "question is empty",
+        ),
+        (
+            json!({"bot": "travel", "question": "q", "conversation_id": main_cid}),
+            "is not a conversation of the Travel booking bot",
+        ),
+    ] {
+        let e = rt.ask_bot(&parent, &args, &c, &[]).await.err().unwrap();
+        assert!(e.contains(want), "{e}");
+    }
+    let sp = rt
+        .ask_bot(
+            &parent,
+            &json!({"bot": "travel", "question": "Cheapest flight SIN to Tokyo on 20 Nov"}),
+            &c,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(sp.status, "WAITING_BOT");
+    let w = sp.waiting.clone();
+    assert_eq!(
+        (sget(&w, "type"), sget(&w, "bot")),
+        ("bot".to_string(), "travel".to_string())
+    );
+    let (bot_cid, child_tid) = (sget(&w, "conv_id"), sget(&w, "task_id"));
+    let conv = rt.store.conv(&bot_cid).unwrap().unwrap();
+    assert_eq!(
+        (get_str(&conv, "bot_id"), get_str(&conv, "parent_conv")),
+        ("travel".to_string(), main_cid.clone())
+    );
+    assert_eq!(rt.store.conv_bot(&bot_cid), "travel");
+    let msgs = rt.store.msgs(&bot_cid, 10).unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(get_str(&msgs[0], "task_id"), child_tid);
+    assert_eq!(sget(&msgs[0]["meta"]["from"], "conv_id"), main_cid);
+    // a specialised bot cannot hand over
+    let child = rt.store.task(&child_tid).unwrap().unwrap();
+    let e = rt
+        .ask_bot(&child, &json!({"bot": "cities", "question": "q"}), &c, &[])
+        .await
+        .err()
+        .unwrap();
+    assert!(e.contains("only the main bot"), "{e}");
+    assert_eq!(rt.bot_of(&child).id, "travel");
+    assert!(rt
+        .bot_skills(rt.bot_of(&child))
+        .iter()
+        .all(|s| crate::bots::has_skill(rt.bot_of(&child), &get_str(s, "name"))));
+
+    // the main task waits; the bot's task ends with an answer; the main task resumes and ends with it, linked
+    let mut waiting = w.clone();
+    let pending = waiting.as_object_mut().unwrap().remove("_pending").unwrap();
+    rt.store
+        .update_task(
+            &get_str(&parent, "id"),
+            &json!({"status": "WAITING_BOT", "waiting": waiting, "pending": pending}),
+        )
+        .unwrap();
+    rt.event(
+        &get_str(&parent, "id"),
+        "handoff",
+        json!({"bot": "travel", "conv_id": bot_cid, "task_id": child_tid}),
+    )
+    .await;
+    rt.store
+        .update_task(
+            &child_tid,
+            &json!({"status": "COMPLETED", "result": "SQ638 SGD 620, direct."}),
+        )
+        .unwrap();
+    rt.handoff_done(&child_tid).await;
+    let ptid = get_str(&parent, "id");
+    let mut st = String::new();
+    for _ in 0..100 {
+        st = get_str(&rt.store.task(&ptid).unwrap().unwrap(), "status");
+        if st == "COMPLETED" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(st, "COMPLETED");
+    let main_msgs = rt.store.msgs(&main_cid, 10).unwrap();
+    let last = main_msgs.last().unwrap();
+    assert_eq!(get_str(last, "content"), "SQ638 SGD 620, direct.");
+    assert_eq!(sget(&last["meta"]["handoff"], "conv_id"), bot_cid);
+    assert_eq!(sget(&last["meta"]["handoff"], "bot"), "travel");
+    // the follow-up knows where the answer came from
+    let (hist, _) = rt.history(&main_cid, "other");
+    assert!(hist.iter().any(|h| get_str(h, "content").contains(&format!(
+        "[answered by the travel bot in conversation {bot_cid}]"
+    ))));
+    // and may continue that conversation
+    let p2 = rt
+        .store
+        .create_task("and the return?", &main_cid, "chat", "", "", None)
+        .unwrap();
+    let sp2 = rt
+        .ask_bot(&p2, &json!({"bot": "travel", "question": "Return flight on 27 Nov", "conversation_id": bot_cid}), &c, &[])
+        .await
+        .unwrap();
+    assert_eq!(sget(&sp2.waiting, "conv_id"), bot_cid);
+    assert_eq!(rt.store.msgs(&bot_cid, 10).unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn load_skill_stays_inside_the_bot() {
+    let (rt, _d) = rt();
+    let main_cid = rt.store.create_conv("x", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("x", &main_cid, "chat", "", "", None)
+        .unwrap();
+    let r = rt
+        .local(&t, "load_skill", &json!({"name": "flight-booking"}))
+        .await
+        .unwrap();
+    assert!(
+        r.starts_with("ERROR: the skill flight-booking belongs to") && r.contains("ask_bot"),
+        "{r}"
+    );
+    let r = rt
+        .local(&t, "load_skill", &json!({"name": "news-search"}))
+        .await
+        .unwrap();
+    assert!(!r.starts_with("ERROR"), "{}", &r[..r.len().min(200)]);
+    let cid = rt.store.create_conv("y", "chat", None).unwrap();
+    rt.store.set_conv_bot(&cid, "photos", "").unwrap();
+    let t2 = rt
+        .store
+        .create_task("y", &cid, "chat", "", "", None)
+        .unwrap();
+    let r = rt
+        .local(&t2, "load_skill", &json!({"name": "news-search"}))
+        .await
+        .unwrap();
+    assert!(r.contains("is not one of the Photos & videos bot's"), "{r}");
+    let r = rt
+        .local(&t2, "load_skill", &json!({"name": "drive-video-edit"}))
+        .await
+        .unwrap();
+    assert!(!r.starts_with("ERROR"));
 }

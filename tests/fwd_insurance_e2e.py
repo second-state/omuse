@@ -17,6 +17,7 @@ from pypdf import PdfReader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests import skills_common as K  # noqa: E402
+K.BOT = "insurance"   # the Travel insurance & claims bot has this suite's skills (crate::bots)
 
 WS = "/tmp/claude-0/persona-test/workspace"
 PAGES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages")

@@ -209,6 +209,7 @@ pub fn router(state: Arc<State>) -> Router {
         .route("/api/upload", put(chat::upload))
         .route("/api/chat", post(chat::chat))
         .route("/api/conversations", get(chat::conversations))
+        .route("/api/bots", get(chat::bots))
         .route(
             "/api/conversations/{cid}",
             get(chat::conversation).delete(chat::del_conv),

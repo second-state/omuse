@@ -1172,7 +1172,22 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
             }
             "load_skill" => {
                 let want = sget(a, "name").trim().to_string();
-                let skills = self.skills();
+                let bot = self.bot_of(t);
+                if !crate::bots::has_skill(bot, &want)
+                    && self.skills().iter().any(|s| get_str(s, "name") == want)
+                {
+                    // another bot's skill: the main bot hands the request over, a specialised one points to it
+                    let owners: Vec<String> = crate::bots::owners(&want)
+                        .iter()
+                        .map(|b| format!("{} ({})", b.id, b.name))
+                        .collect();
+                    return Ok(if bot.is_main() {
+                        format!("ERROR: the skill {want} belongs to the bot(s) {}: hand the request over with ask_bot instead of answering yourself.", owners.join(", "))
+                    } else {
+                        format!("ERROR: the skill {want} is not one of the {} bot's: it belongs to {}. Tell the user in one line which bot handles it.", bot.name, owners.join(", "))
+                    });
+                }
+                let skills = self.bot_skills(bot);
                 if let Some(sk) = skills.iter().find(|s| get_str(s, "name") == want) {
                     let file = sget(a, "file").trim().trim_start_matches('/').to_string();
                     if file.is_empty() {

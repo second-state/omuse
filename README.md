@@ -16,6 +16,11 @@ other knowledge files — is in [KNOWLEDGE.md](KNOWLEDGE.md). Repository rules, 
 ## Features
 
 - **Chat → plan → act** – every step and tool call is visible; independent steps run in parallel as sub-agents.
+- **Bots** – the chat is split into bots, listed in the menu with **Main** at the top: Travel booking, City guides,
+  Arrival & entry, Travel insurance & claims, Credit cards, Photos & videos. Each has its own skills and conversations; all share
+  your memory, profile, Vault and connections. Ask Main anything: it answers everyday requests itself and hands a
+  specialised one to the right bot, then shows that bot's answer with a link to continue in the bot's conversation.
+  An approval the bot needs shows in Main too.
 - **Email** – several mailboxes (Gmail, Outlook / Hotmail, Yahoo, iCloud, QQ Mail, NetEase 163 / 126, Zoho, AOL, any
   IMAP / SMTP server): search, read, draft, reply, send, one-click unsubscribe. Sign-in codes and reset links are
   hidden from the model.

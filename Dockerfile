@@ -18,6 +18,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY web ./web
 COPY skills ./skills
+COPY bots ./bots
 # Release builds pass the git tag (e.g. locius-v0.3.1); the app shows it as v0.3.1. Empty = version from the source.
 ARG OMUSE_VERSION=
 ENV OMUSE_VERSION=$OMUSE_VERSION
