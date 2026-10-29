@@ -6,7 +6,7 @@ use regex::Regex;
 use serde_json::Value;
 
 /// The version literal of this source tree (`VERSION` in `app/common/util.py`).
-pub const SOURCE_VERSION: &str = "0.4.16";
+pub const SOURCE_VERSION: &str = "0.5.0";
 
 /// Version string shown in the app for a release tag: `omuse-v0.4.0`, `locius-v0.3.1` or `v0.3.1` → the version.
 /// Anything that is not a `<product>-v<version>` style tag is returned trimmed, so plain versions pass through.

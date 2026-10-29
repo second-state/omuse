@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/omuse-common", "crates/omuse-docs", "crates/omuse-web", "crates/omuse-sentinel-core", "crates/omuse-mail", "crates/omuse-apps", "crates/omuse-mcp", "crates/omuse-phone", "crates/omuse-sentinel", "crates/omuse-runtime", "crates/omuse-browser", "crates/omuse"]
 
 [workspace.package]
-version = "0.4.16"
+version = "0.5.0"
 edition = "2021"
 license = "GPL-3.0-only"
 rust-version = "1.85"
