@@ -839,6 +839,8 @@ pub async fn execute(
         let checked = checked_travel_args(tool, args)?;
         let res = if tool == "news_search" {
             news_search_sync(st, &checked.args, task_id).await?
+        } else if tool == "browser_news_search" {
+            browser_news_sync(st, &checked.args, task_id).await?
         } else {
             web_search_sync(st, &checked.args, task_id).await?
         };
@@ -957,7 +959,7 @@ pub async fn workspace_files(st: &AppState, paths: Option<&Value>) -> ActResult<
     let mut total = 0usize;
     let list: Vec<String> = py_iter_strs(paths.filter(|p| truthy(p)))
         .into_iter()
-        .map(|x| x.trim().to_string())
+        .map(|x| artifact_path(x.trim()))
         .filter(|x| !x.is_empty())
         .take(10)
         .collect();
@@ -2117,6 +2119,16 @@ pub async fn web_search_sync(st: &AppState, args: &Value, task_id: &str) -> ActR
             take_chars(&e.to_string(), 160)
         ),
     };
+    // `browser_only` (a news research run): the browser's answer stands, no search API
+    if args.get("browser_only").and_then(Value::as_bool) == Some(true) {
+        return search_envelope(
+            &st.store,
+            task_id,
+            &query,
+            &json!({"results": [], "error": browser_why}),
+            &browser_why,
+        );
+    }
     let (api, failed) = search_via_api(st, &query, n).await;
     match api {
         Some(r) => {
@@ -2210,6 +2222,53 @@ pub async fn news_search_sync(st: &AppState, args: &Value, task_id: &str) -> Act
         json!(format!("{why} — these are web search results: check each article's date and keep to the {period}")),
     );
     Ok(web)
+}
+
+/// A published file's link as an attachment path: `/artifacts/…` or `https://host/artifacts/…` (what the chat shows) is
+/// the workspace file `artifacts/…`; anything else as given.
+pub fn artifact_path(p: &str) -> String {
+    match p.find("/artifacts/") {
+        Some(i) if i == 0 || p.starts_with("http") => p[i + 1..].to_string(),
+        _ => p.to_string(),
+    }
+}
+
+/// `browser_news_search`: the engines' news pages in the browser for the last `days` days — never a search API (the
+/// news research skill: the user asked for news found the way a person finds it). An empty result says why.
+pub async fn browser_news_sync(st: &AppState, args: &Value, task_id: &str) -> ActResult {
+    let query = fstr(args, "query");
+    if query.trim().is_empty() {
+        return Err(act("query is required"));
+    }
+    let days = args
+        .get("days")
+        .and_then(Value::as_u64)
+        .filter(|d| *d > 0)
+        .unwrap_or(7);
+    let n = args.get("max_results").and_then(Value::as_u64).unwrap_or(8);
+    let payload = json!({"query": query, "max_results": n, "news_days": days, "task_id": task_id});
+    let r = broker(st, "POST", "/agent/search", Some(&payload), 90.0)
+        .await
+        .map_err(|e| {
+            act(format!(
+                "the browser's news search failed: {}",
+                take_chars(&e.to_string(), 160)
+            ))
+        })?;
+    let note = if opt_val(&r, "results")
+        .and_then(Value::as_array)
+        .is_some_and(|a| !a.is_empty())
+    {
+        String::new()
+    } else {
+        format!(
+            "the browser's news search found nothing{} — try other words or a longer period",
+            opt_val(&r, "error")
+                .map(|e| format!(" ({})", take_chars(&py_str(e), 120)))
+                .unwrap_or_default()
+        )
+    };
+    search_envelope(&st.store, task_id, &query, &r, &note)
 }
 
 /// Remember the provider that answered, so it is tried first next time.
@@ -3727,5 +3786,22 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(e, ExecError::Internal(_)));
+    }
+
+    #[test]
+    fn an_artifact_link_is_its_workspace_file() {
+        assert_eq!(
+            super::artifact_path("/artifacts/news/x/a.pdf"),
+            "artifacts/news/x/a.pdf"
+        );
+        assert_eq!(
+            super::artifact_path("https://omuse.example/artifacts/news/x/a.pdf"),
+            "artifacts/news/x/a.pdf"
+        );
+        assert_eq!(
+            super::artifact_path("artifacts/news/x/a.pdf"),
+            "artifacts/news/x/a.pdf"
+        );
+        assert_eq!(super::artifact_path("reports/b.pdf"), "reports/b.pdf");
     }
 }

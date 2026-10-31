@@ -215,7 +215,7 @@ impl Runtime {
     ) -> BoxFuture<'a, Result<CallOutcome, Suspend>> {
         Box::pin(async move {
             let task_id = get_str(t, "id");
-            let name = call.name.as_str();
+            let mut name = call.name.as_str();
             let sub = mode.sub;
             let mut args = if truthy(&call.args) {
                 call.args.clone()
@@ -241,6 +241,32 @@ impl Runtime {
                 };
                 if let (false, Some(o)) = (kind.is_empty(), args.as_object_mut()) {
                     o.insert("user_submits".into(), json!(kind));
+                }
+            }
+            // "tomorrow" in the user's words is the user's tomorrow: a call's purpose naming another date gets it fixed
+            if name == "phone_call" {
+                let tz = get_str(&self.settings(), "timezone");
+                let today = tz
+                    .parse::<chrono_tz::Tz>()
+                    .map(|z| chrono::Utc::now().with_timezone(&z).date_naive())
+                    .unwrap_or_else(|_| chrono::Local::now().date_naive());
+                let purpose = sget(&args, "purpose");
+                if let Some(fixed) =
+                    super::guards::fix_relative_day(&get_str(t, "goal"), &purpose, today)
+                {
+                    args["purpose"] = json!(fixed);
+                }
+            }
+            // a news research run searches in the browser only (the user's rule for the skill): a web search there skips
+            // the search APIs, and a news search is the browser's news search (news_demo 2026-11-01: a site: query
+            // went to web_search)
+            if super::guards::news_research_run(transcript) {
+                if name == "web_search" {
+                    if let Some(o) = args.as_object_mut() {
+                        o.insert("browser_only".into(), json!(true));
+                    }
+                } else if name == "news_search" {
+                    name = "browser_news_search";
                 }
             }
             // an arrival card's hand-over: the unanswered Yes / No questions get the user's default, No, in code first

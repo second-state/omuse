@@ -362,6 +362,7 @@ request — keep it short and leave out what the request does not need. The skil
                            self.rel(&p), std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0), size))
             }
             "send_file" => self.send_file(t, a).await,
+            "news_report" => self.news_report(t, a).await,
             "file_look" => Ok(self
                 .file_look(&tid, &sget(a, "path"), &sget(a, "question"))
                 .await),
@@ -2311,6 +2312,95 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
 
     /// Post workspace files into the conversation (images inline, video/audio players, other files as downloads)
     /// and to Telegram when the chat came from there.
+    /// `news_report`: the stories and insights the model researched, laid out in code in the news-research skill's
+    /// newspaper template — the HTML and its PDF under `artifacts/news/<subject>/`, given to the user as file cards and
+    /// served at `/artifacts/…` (Sentinel, signed in). A scheduled run also notifies the user of the new edition.
+    pub(crate) async fn news_report(&self, t: &Value, a: &Value) -> R {
+        use crate::newsreport::{paths, render, Report};
+        let r = match Report::from_args(a) {
+            Ok(r) => r,
+            Err(e) => return Ok(format!("ERROR: {e}")),
+        };
+        let template = self
+            .skills()
+            .iter()
+            .find(|s| get_str(s, "name") == "news-research")
+            .and_then(|s| {
+                std::fs::read_to_string(
+                    std::path::Path::new(&get_str(s, "path")).with_file_name("template.html"),
+                )
+                .ok()
+            })
+            .or_else(|| {
+                crate::skills::BUILTIN
+                    .get_file("news-research/template.html")
+                    .and_then(|f| f.contents_utf8())
+                    .map(str::to_string)
+            })
+            .ok_or_else(|| LocalErr::value("the news-research skill's template.html is missing"))?;
+        let now = chrono::Local::now();
+        let (mut html_rel, mut pdf_rel) = paths(&r.subject, now);
+        // a second edition in the same minute gets its own files (-2, -3 …), never overwriting the first
+        let mut n = 2;
+        while self.path(&html_rel)?.exists() {
+            let (h, p) = paths(&r.subject, now);
+            html_rel = h.replace(".html", &format!("-{n}.html"));
+            pdf_rel = p.replace(".pdf", &format!("-{n}.pdf"));
+            n += 1;
+        }
+        let html_abs = self.path(&html_rel)?;
+        if let Some(dir) = html_abs.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&html_abs, render(&template, &r, now))?;
+        let pdf = self
+            .sentinel(
+                "POST",
+                "/internal/render_pdf",
+                Some(json!({"task_id": get_str(t, "id"), "source": html_rel, "output": pdf_rel, "title": r.title})),
+                180.0,
+            )
+            .await;
+        let pdf_ok = pdf.as_ref().is_ok_and(|v| {
+            !truthy(v.get("error").unwrap_or(&Value::Null))
+                && truthy(v.get("path").unwrap_or(&Value::Null))
+        });
+        let files: Vec<&str> = if pdf_ok {
+            vec![pdf_rel.as_str(), html_rel.as_str()]
+        } else {
+            vec![html_rel.as_str()]
+        };
+        self.send_file(t, &json!({"paths": files, "note": r.title}))
+            .await?;
+        if get_str(t, "source") == "schedule" {
+            let _ = self
+                .local(
+                    t,
+                    "notify_user",
+                    &json!({"title": format!("📰 {}", r.title),
+                            "message": format!("A new edition is ready: {} stories. /{html_rel}", r.stories.len())}),
+                )
+                .await;
+        }
+        let mut out = json!({
+            "published": true, "title": r.title, "stories": r.stories.len(),
+            "html_url": format!("/{html_rel}"), "html_path": html_rel,
+        });
+        if pdf_ok {
+            out["pdf_url"] = json!(format!("/{pdf_rel}"));
+            out["pdf_path"] = json!(pdf_rel);
+        } else {
+            out["pdf_error"] = json!(match &pdf {
+                Ok(v) => err_or_repr(v),
+                Err(e) => e.to_string(),
+            });
+        }
+        Ok(format!(
+            "{}\nThe files are in the chat as cards. In the answer, give both links as they are (html_url, pdf_url) and a short summary of the edition.",
+            omuse_common::pyjson::dumps(&out)
+        ))
+    }
+
     pub(crate) async fn send_file(&self, t: &Value, a: &Value) -> R {
         let tid = get_str(t, "id");
         let raw: Vec<Value> = match a.get("paths") {

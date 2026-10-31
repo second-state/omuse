@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use crate::prompts;
 
 /// Tools a read-only sub-agent may use.
-pub const SUBAGENT_TOOLS: [&str; 30] = [
+pub const SUBAGENT_TOOLS: [&str; 31] = [
     "gmail_search",
     "gmail_get_message",
     "gmail_get_thread",
@@ -17,6 +17,7 @@ pub const SUBAGENT_TOOLS: [&str; 30] = [
     "browser_snapshot",
     "web_search",
     "news_search",
+    "browser_news_search",
     "browser_read",
     "browser_click",
     "browser_type",
@@ -46,7 +47,7 @@ pub const SUBAGENT_TOOLS: [&str; 30] = [
 /// A concurrent batch is sent to Sentinel with `no_ask`: a read that would need an approval (`browser_read` of a URL
 /// carrying data in a tainted task) comes back as an error telling the model to call it alone next turn, so no
 /// approval dialog is ever left behind for a call the task is not waiting on.
-pub const PARALLEL_TOOLS: [&str; 36] = [
+pub const PARALLEL_TOOLS: [&str; 37] = [
     "delegate",
     "calculate",
     "data_query",
@@ -82,6 +83,7 @@ pub const PARALLEL_TOOLS: [&str; 36] = [
     "slack_search",
     "web_search",
     "news_search",
+    "browser_news_search",
     "browser_read",
 ];
 
@@ -582,6 +584,20 @@ check_kind: interval (check_spec = minutes, >= 5) | cron (e.g. '0 9 * * *') | ev
 at the end of every goal run). status: active (still working) | blocked (need the user's help/decision) | \
 achieved (success criteria met) | failed (cannot be achieved). progress = what you found/did, concise.",
             json!({"status": {"type": "string", "enum": ["active", "blocked", "achieved", "failed"]}, "progress": s}), &["status", "progress"]),
+        fn_("news_report", "发布新闻研究报告：把你研究好的新闻（每条有标题、你自己写的摘要、来源和文章链接）和洞见交给代码，排成报纸版式的 HTML 和 PDF，\
+放在 /artifacts/ 下并以文件卡片发给用户 Publish a news research report: the stories you researched (each with a headline, your own summary, \
+the source and the article's url) and your insights; code lays them out in the newspaper template as HTML and PDF under \
+/artifacts/ and gives both to the user. The first story is the lead.",
+            json!({"subject": {"type": "string", "description": "what the report is about, as the user put it"},
+                   "title": {"type": "string", "description": "the paper's name, e.g. 'The Battery Weekly' (optional)"},
+                   "period": {"type": "string", "description": "e.g. 'Week of 2 November 2026' (optional)"},
+                   "stories": {"type": "array", "items": {"type": "object", "properties": {
+                       "headline": {"type": "string"}, "summary": {"type": "string", "description": "2-5 sentences, your words"},
+                       "source": {"type": "string", "description": "the publication"},
+                       "url": {"type": "string", "description": "the article you read"},
+                       "date": {"type": "string", "description": "the article's date"}}, "required": ["headline", "summary", "url"]}},
+                   "insights": {"type": "array", "items": {"type": "string"}, "description": "3-6 insights across the stories"}}),
+            &["subject", "stories"]),
         fn_("schedule_list", "列出定时任务 List schedules.", json!({}), &[]),
         fn_("schedule_delete", "删除定时任务 Delete a schedule by id.", json!({"id": s}), &["id"]),
         fn_("goal_delete", "删除长期目标（连同它的定期检查）Delete a long-running goal by id (goal_list shows ids), together with \

@@ -1222,8 +1222,19 @@ fn user_edits(transcript: &[Value]) -> Vec<(String, String, String)> {
     for m in transcript.iter().filter(|m| get_str(m, "role") == "tool") {
         let text = content_of(m);
         let Some(i) = text.find('{') else { continue };
-        let Ok(v) = serde_json::from_str::<Value>(&text[i..]) else {
-            continue;
+        // a result cut by the transcript's compression is no longer JSON: its `user_edited` object (Sentinel puts it
+        // first) is read on its own
+        static EDITED: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#""user_edited":\s*(\{[^{}]*\})"#).unwrap());
+        let v = match serde_json::from_str::<Value>(&text[i..]) {
+            Ok(v) => v,
+            Err(_) => match EDITED
+                .captures(&text)
+                .and_then(|c| serde_json::from_str::<Value>(&c[1]).ok())
+            {
+                Some(e) => json!({"user_edited": e}),
+                None => continue,
+            },
         };
         let Some(edited) = v.get("user_edited").and_then(Value::as_object) else {
             continue;
@@ -1570,6 +1581,210 @@ pub fn takeover_before_fill_guard(transcript: &[Value], call: &ToolCall) -> Opti
 form, its steps and the passport from the Vault, and names any step that is the user's (a photo, a sign-in, a code); \
 then hand the page over with browser_request_takeover."
     ))
+}
+
+/// Whether the run loaded the news research skill (its searches stay in the browser).
+pub fn news_research_run(transcript: &[Value]) -> bool {
+    transcript.iter().flat_map(tool_calls).any(|tc| {
+        let (name, args) = stored_call(tc);
+        name == "load_skill" && sget(&args, "name") == "news-research"
+    })
+}
+
+/// "email it" after a news report: the note that says which edition and which files, read from the chat's own file
+/// cards (news_report_real 2026-11-01: "email it" got "What would you like me to email, and to whom?").
+pub fn report_followup_note(goal: &str, msgs: &[Value]) -> Option<String> {
+    static ASK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)^\W*(please\W+)?(e-?mail|mail|send)\b[^\n]{0,40}$|^\W*(发|寄)(个|到)?(邮件|邮箱)",
+        )
+        .unwrap()
+    });
+    if !ASK.is_match(goal.trim()) {
+        return None;
+    }
+    let mut paths: Vec<String> = Vec::new();
+    for m in msgs.iter().rev().filter(|m| get_str(m, "role") == "system") {
+        let Ok(card) = serde_json::from_str::<Value>(&get_str(m, "content")) else {
+            continue;
+        };
+        let mut found: Vec<String> = match get_str(&card, "type").as_str() {
+            "file" => vec![get_str(&card, "path")],
+            "files" => arr(&card, "items")
+                .iter()
+                .map(|i| get_str(i, "path"))
+                .collect(),
+            _ => continue,
+        };
+        found.retain(|p| p.starts_with("artifacts/news/"));
+        if !found.is_empty() {
+            found.sort_by_key(|p| !p.ends_with(".pdf")); // the PDF first
+            paths = found;
+            break;
+        }
+    }
+    if paths.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "\n\n(System) This refers to the latest news report in this chat: send it with gmail_send to the user's own \
+address (the first connected mailbox), subject the report's title, two or three lines of its highlights as the body, \
+attachments = {paths:?}."
+    ))
+}
+
+/// The last news report this run published (`news_report`'s result): `{title, html_url, html_path, pdf_url?, pdf_path?}`.
+pub fn published_report(transcript: &[Value]) -> Option<Value> {
+    let ids: Vec<String> = transcript
+        .iter()
+        .flat_map(tool_calls)
+        .filter(|tc| stored_call(tc).0 == "news_report")
+        .map(|tc| get_str(tc, "id"))
+        .collect();
+    transcript.iter().rev().find_map(|m| {
+        if get_str(m, "role") != "tool" || !ids.contains(&get_str(m, "tool_call_id")) {
+            return None;
+        }
+        let c = content_of(m);
+        let v: Value = serde_json::from_str(c.lines().next().unwrap_or("")).ok()?;
+        get_truthy(&v, "published").then_some(v)
+    })
+}
+
+fn ran_ok(transcript: &[Value], tools: &[&str]) -> bool {
+    let ids: Vec<String> = transcript
+        .iter()
+        .flat_map(tool_calls)
+        .filter(|tc| tools.contains(&stored_call(tc).0.as_str()))
+        .map(|tc| get_str(tc, "id"))
+        .collect();
+    transcript.iter().any(|m| {
+        get_str(m, "role") == "tool"
+            && ids.contains(&get_str(m, "tool_call_id"))
+            && !content_of(m).starts_with("ERROR")
+            && !content_of(m).starts_with("DENIED")
+    })
+}
+
+static REPORT_EMAIL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(e-?mail|gmail|mail (it|them|each|every))\b|\bsend (it|them|each|every)[^.\n]{0,40}\bto me\b|邮件|邮箱|发到我的?邮")
+        .unwrap()
+});
+static REPORT_FREQ: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(daily|weekly|monthly|fortnightly|every (day|week|month|morning|evening|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|each (day|week|month|morning))\b|每天|每日|每周|每星期|每月|每个?(早上|星期)")
+        .unwrap()
+});
+
+/// A news report published, and what the request asked for around it is not done yet (one-time hint): a scheduled
+/// edition whose schedule asks to email it, with a mailbox connected and nothing sent → send it now; a request that
+/// asks for the report regularly ("weekly", "every morning") with no schedule made → make it now.
+pub fn news_report_hint(
+    transcript: &[Value],
+    goal: &str,
+    scheduled: bool,
+    mail_ready: bool,
+    zh: bool,
+) -> Option<String> {
+    let rep = published_report(transcript)?;
+    let mut atts = vec![get_str(&rep, "pdf_path"), get_str(&rep, "html_path")];
+    atts.retain(|a| !a.is_empty());
+    if scheduled
+        && mail_ready
+        && REPORT_EMAIL.is_match(goal)
+        && !ran_ok(transcript, &["gmail_send"])
+    {
+        return Some(if zh {
+            format!("（系统）这个定时任务要求把每一期报告发到用户邮箱：现在用 gmail_send 发给用户自己（第一个已连接的邮箱），主题「{}」，正文写两三句本期要点，attachments = {:?}；然后再回答。", get_str(&rep, "title"), atts)
+        } else {
+            format!("(System) This schedule asks for each edition by email: send it now with gmail_send to the user's own \
+address (the first connected mailbox), subject \"{}\", two or three lines of this edition's highlights as the body, \
+attachments = {:?}; then answer.", get_str(&rep, "title"), atts)
+        });
+    }
+    if !scheduled
+        && REPORT_FREQ.is_match(goal)
+        && !ran_ok(transcript, &["schedule_create", "goal_create"])
+    {
+        let email = if REPORT_EMAIL.is_match(goal) {
+            " and email it to me"
+        } else {
+            ""
+        };
+        return Some(if zh {
+            format!("（系统）用户要定期收到这份报告：现在用 schedule_create 创建定时任务（kind=cron；每天 '0 8 * * *'，每周 '0 8 * * 1'，或用户说的时间），goal 写 \"News report on <主题>: research the latest news with the news-research skill and publish the newspaper report{email}\"；然后再回答。")
+        } else {
+            format!("(System) The user asked for this report regularly: create the schedule now with schedule_create \
+(kind=cron; daily '0 8 * * *', weekly '0 8 * * 1', or the time they named), goal \"News report on <subject>: research \
+the latest news with the news-research skill and publish the newspaper report{email}\"; then answer.")
+        });
+    }
+    None
+}
+
+/// A run that published a news report: its two links are in the answer (added when the model left one out), and with a
+/// mailbox connected and nothing sent, the answer offers to email the edition.
+pub fn with_report_links(transcript: &[Value], answer: &str, mail_ready: bool, zh: bool) -> String {
+    let Some(rep) = published_report(transcript) else {
+        return answer.to_string();
+    };
+    let mut out = answer.trim_end().to_string();
+    let (html, pdf) = (get_str(&rep, "html_url"), get_str(&rep, "pdf_url"));
+    if (!html.is_empty() && !out.contains(&html)) || (!pdf.is_empty() && !out.contains(&pdf)) {
+        let mut links = vec![format!("[HTML]({html})")];
+        if !pdf.is_empty() {
+            links.push(format!("[PDF]({pdf})"));
+        }
+        out.push_str(&format!(
+            "\n\n📰 {} {}",
+            if zh { "报告：" } else { "The report:" },
+            links.join(" · ")
+        ));
+    }
+    if mail_ready && !ran_ok(transcript, &["gmail_send"]) {
+        out.push_str(if zh {
+            "\n\n📧 想把这一期发到你的 Gmail 吗？回复「发邮件」，我会把 PDF 作为附件发给你。"
+        } else {
+            "\n\n📧 Want this edition in your Gmail? Reply **email it** and I'll send it to you with the PDF attached."
+        });
+    }
+    out
+}
+
+/// An entry-requirements answer that mentions a visa exemption without its length gets one hint to state the number
+/// of days for the user's passport, read from an official source (travel_info_real 2026-11-01: Thailand's exemption
+/// with "verify the visa length", no days). The days come from the page read, never from memory.
+pub fn visa_days_hint(transcript: &[Value], answer: &str, zh: bool) -> Option<String> {
+    static VISA: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)visa[- ]?(free|exempt|exemption|waiver)|免签|免簽").unwrap()
+    });
+    static DAYS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b\d{1,3}[- ]?(days?|nights?)\b|\d{1,3}\s?天").unwrap());
+    let loaded = transcript.iter().flat_map(tool_calls).any(|tc| {
+        let (name, args) = stored_call(tc);
+        name == "load_skill" && sget(&args, "name") == "entry-requirements"
+    });
+    if !loaded || !VISA.is_match(answer) {
+        return None;
+    }
+    // a day count within the sentence that names the exemption: fine
+    let stated = VISA.find_iter(answer).all(|m| {
+        let from = answer[..m.start()].rfind(['.', '\n']).map_or(0, |i| i + 1);
+        let to = answer[m.end()..]
+            .find(['.', '\n'])
+            .map_or(answer.len(), |i| m.end() + i);
+        DAYS.is_match(&answer[from..to])
+    });
+    if stated {
+        return None;
+    }
+    Some(if zh {
+        "（系统）回答提到了免签但没有说能停留几天：按用户的护照，从官方来源（该国外交部或移民局的页面，先 browser_read）查到免签停留天数；来源说法不一时以官方页面为准并注明日期。然后把完整的回答重写一遍（原来的每一项，包括入境卡、链接和提醒），加上天数。".to_string()
+    } else {
+        "(System) The answer mentions a visa exemption but not how long it allows: for the user's passport, find the \
+visa-free stay in days on an official source (the country's foreign ministry or immigration page — browser_read it); \
+when sources disagree, give the official one with its date. Then write the WHOLE answer again — every part of it \
+(each country, the arrival cards with their links, the reminders) — with the days added.".to_string()
+    })
 }
 
 /// Whether an answer asks the user for something: a question, or request wording without one ("I still need your
@@ -2584,6 +2799,107 @@ pub fn with_choices_listing(transcript: &[Value], answer: &str, zh: bool) -> Str
     }
     let head = if zh { "选项" } else { "The options" };
     format!("{}\n\n{head}:\n{}", answer.trim_end(), lines.join("\n"))
+}
+
+/// The day "today" / "tomorrow" in the user's request means, in the user's own time zone: a phone call's purpose that
+/// names one other date gets this one instead (phone_real 2026-11-01: "tomorrow, Sunday, November 1" when tomorrow
+/// was Monday 2 November for the user, and a second call to put it right). `None`: nothing to fix.
+pub fn fix_relative_day(goal: &str, purpose: &str, today: chrono::NaiveDate) -> Option<String> {
+    use chrono::{Datelike, NaiveDate};
+    static REL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b(tomorrow|today|tonight)\b|明天|今天|今晚").unwrap());
+    static DATE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)(?:\b(?:mon|tues|wednes|thurs|fri|satur|sun)day,?\s+)?\b(?:(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})|(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december))\b(?:,?\s+(\d{4}))?")
+            .unwrap()
+    });
+    let rel = REL.find(goal)?.as_str().to_lowercase();
+    let want = if rel == "tomorrow" || rel == "明天" {
+        today.succ_opt()?
+    } else {
+        today
+    };
+    let months = [
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ];
+    let mut found: Vec<(std::ops::Range<usize>, NaiveDate)> = Vec::new();
+    for c in DATE.captures_iter(purpose) {
+        let (mon, day) = match (c.get(1), c.get(2), c.get(3), c.get(4)) {
+            (Some(m), Some(d), _, _) | (_, _, Some(d), Some(m)) => {
+                (m.as_str().to_lowercase(), d.as_str())
+            }
+            _ => continue,
+        };
+        let m = months.iter().position(|x| *x == mon)? as u32 + 1;
+        let y = c
+            .get(5)
+            .and_then(|y| y.as_str().parse().ok())
+            .unwrap_or(want.year());
+        let d = NaiveDate::from_ymd_opt(y, m, day.parse().ok()?)?;
+        found.push((c.get(0)?.range(), d));
+    }
+    // one date named, and it is not the day the user meant
+    let first = found.first()?.1;
+    if found.iter().any(|(_, d)| *d != first) || first == want {
+        return None;
+    }
+    let mut out = purpose.to_string();
+    for (r, _) in found.iter().rev() {
+        out.replace_range(r.clone(), &want.format("%A, %B %-d, %Y").to_string());
+    }
+    Some(out)
+}
+
+/// A flight answer gives the day it is for: the date of the run's flight search, when the answer does not show it in
+/// any usual writing, goes in front (travel_kiwi_real 2026-11-01: "The cheapest result is SGD 304 …", no day).
+pub fn with_flight_date(transcript: &[Value], answer: &str, zh: bool) -> String {
+    let date = transcript
+        .iter()
+        .flat_map(tool_calls)
+        .filter_map(|tc| {
+            let (name, args) = stored_call(tc);
+            (name == "flights_search").then(|| sget(&args, "date"))
+        })
+        .filter_map(|d| chrono::NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok())
+        .next_back();
+    let Some(d) = date else {
+        return answer.to_string();
+    };
+    let forms = [
+        d.format("%Y-%m-%d").to_string(),
+        d.format("%-d %B").to_string(),
+        d.format("%-d %b").to_string(),
+        d.format("%B %-d").to_string(),
+        d.format("%b %-d").to_string(),
+        d.format("%-m月%-d日").to_string(),
+        d.format("%-d/%-m").to_string(),
+    ];
+    if forms.iter().any(|f| answer.contains(f.as_str())) || answer.trim().is_empty() {
+        return answer.to_string();
+    }
+    if zh {
+        format!(
+            "**{}**\n\n{}",
+            d.format("%Y年%-m月%-d日"),
+            answer.trim_start()
+        )
+    } else {
+        format!(
+            "**{}**\n\n{}",
+            d.format("%A, %-d %B %Y"),
+            answer.trim_start()
+        )
+    }
 }
 
 /// The answer with the times of each flight leg it names without them: a flight search result gives every leg its

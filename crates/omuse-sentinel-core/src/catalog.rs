@@ -488,6 +488,14 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
         obj(json!({"query": {"type": S, "description": "搜索词 search words"},
                    "days": {"type": "integer", "minimum": 1, "maximum": 365, "description": "how many days back, default 7"},
                    "max_results": {"type": "integer", "description": "1-20, default 8"}}), &["query"])));
+    add("browser_news_search", tool("search", "search", "search", "low", "PUBLIC",
+        "浏览器新闻搜索：在浏览器里打开搜索引擎的新闻结果（DuckDuckGo、Bing News，按日期过滤），不用任何搜索 API Browser news search: \
+         the search engines' own news results opened in the browser (DuckDuckGo with its date filter, then Bing News), \
+         never a search API — titles, URLs, snippets and, when the engine shows them, the source and age. days = how far \
+         back (default 7). Then browser_read the articles you use.",
+        obj(json!({"query": {"type": S, "description": "搜索词 search words"},
+                   "days": {"type": "integer", "minimum": 1, "maximum": 365, "description": "how many days back, default 7"},
+                   "max_results": {"type": "integer", "description": "1-10, default 8"}}), &["query"])));
     // ------------------------------------------------------------------ Flights & hotels (Google Flights / Google Hotels through SerpApi)
     add("flights_search", tool("travel", "search", "search", "low", "PUBLIC",
         "搜索航班（Google Flights 或 Kiwi.com 数据）：出发地和目的地用机场三字码、城市码（TYO = 东京全部机场）或城市名，一次搜索覆盖全城；日期是出发地的当地日期；\
@@ -690,7 +698,7 @@ mod tests {
     #[test]
     fn table_shape() {
         let t = builtin_tools();
-        assert_eq!(t.len(), 73); // 55 before the eight Drive tools, 63 before the travel tools (now seven); browser_search became web_search; 70 with news_search, 71 with cars_search, 73 with form_fill and browser_fill_form
+        assert_eq!(t.len(), 74); // 55 before the eight Drive tools, 63 before the travel tools (now seven); browser_search became web_search; 70 with news_search, 71 with cars_search, 73 with form_fill and browser_fill_form, 74 with browser_news_search
         let keys: Vec<&String> = t.keys().collect();
         assert_eq!(keys[0], "gmail_search");
         assert_eq!(keys[keys.len() - 1], "phone_hangup");

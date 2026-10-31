@@ -562,10 +562,54 @@ async def ddg_down(request: Request):
     return DDG_DOWN
 
 
+# ------------------------------------------------------------------ the news world of news_report_real.py: a made-up subject
+# (Lumora, a tidal-power company) so every fact in a report must come from these articles; dated relative to today
+NEWS = [
+    ("lumora-orkney-array", 1, "Reuters", "Lumora switches on 40 MW tidal array off Orkney",
+     "Lumora Energy switched on its first commercial tidal array, 40 megawatts across 16 turbines in the Pentland Firth, "
+     "on Monday. The company said the array will power about 30,000 homes and that output in the first 48 hours was 12% "
+     "above forecast. Chief executive Ines Kalder called it 'the end of tidal power as a pilot technology'."),
+    ("lumora-eu-grant", 2, "Financial Times", "EU awards Lumora €120m to build second tidal site in Brittany",
+     "The European Commission awarded Lumora a €120 million Innovation Fund grant for a 60 MW array near Paimpol in "
+     "Brittany. Construction is due to start in March 2027. The grant covers about 40% of the project's cost."),
+    ("lumora-kestrel-deal", 3, "Bloomberg", "Turbine maker Kestrel signs 200-unit supply deal with Lumora",
+     "Kestrel Marine will supply 200 of its K4 tidal turbines to Lumora over five years, the largest tidal turbine order "
+     "to date. Kestrel shares rose 9% on the news. Deliveries start in the second half of 2027."),
+    ("lumora-grid-link", 4, "BBC News", "Regulator approves Lumora's Orkney grid link",
+     "Ofgem approved a £310 million subsea cable linking Orkney's tidal arrays to the mainland grid, ending years of "
+     "curtailment. Lumora will pay a quarter of the cost; the link is due in 2029."),
+    ("lumora-fishermen", 5, "The Guardian", "Orkney fishermen raise concerns over Lumora turbines",
+     "The Orkney Fisheries Association said the new array closes a crab ground used by eleven boats and asked for "
+     "compensation. Lumora said it is funding a two-year study of the turbines' effect on shellfish."),
+    ("lumora-shares", 6, "CNBC", "Lumora shares jump 14% after first output figures",
+     "Lumora's shares rose 14% in London after it published its first output figures. Analysts at Jefferies raised their "
+     "price target to 480 pence, citing the Kestrel deal and the EU grant."),
+]
+
+
+def news_day(days_ago: int) -> str:
+    import datetime as _dt
+    return (_dt.date.today() - _dt.timedelta(days=days_ago)).strftime("%-d %B %Y")
+
+
+@app.get("/news/{slug}")
+async def news_article(slug: str):
+    for sl, ago, src, title, body in NEWS:
+        if sl == slug:
+            return HTMLResponse(f"<html><head><title>{title} | {src}</title></head><body><article><h1>{title}</h1>"
+                                f"<p class=\"byline\">{src} · {news_day(ago)}</p><p>{body}</p></article></body></html>")
+    return HTMLResponse("not found", status_code=404)
+
+
 @app.get("/ddg")
-async def fake_ddg(q: str = ""):
-    """DuckDuckGo-html-like results page (web_search)."""
-    DDG_HITS.append(q)
+async def fake_ddg(q: str = "", df: str = ""):
+    """DuckDuckGo-html-like results page (web_search; with `df`, the engine's date filter: browser_news_search)."""
+    DDG_HITS.append(q + (f" [df={df}]" if df else ""))
+    if df and "lumora" in q.lower():
+        rows = "".join(f'<div class="result"><a class="result__a" href="/l/?uddg=http%3A%2F%2Fshop.test%3A8094%2Fnews%2F{sl}">{title}</a>'
+                       f'<a class="result__snippet">{src} · {news_day(ago)} — {body[:140]}…</a></div>'
+                       for sl, ago, src, title, body in NEWS)
+        return HTMLResponse(f"<html><body>{rows}</body></html>")
     if DDG_DOWN["on"]:
         return HTMLResponse("<html><body>Please complete the challenge</body></html>")
     from urllib.parse import quote as _q

@@ -459,6 +459,10 @@ impl Broker {
                     .filter(|v| truthy(v))
                     .and_then(as_i64)
                     .unwrap_or(8);
+                // `news_days`: the engines' news, dated within that many days (browser_news_search)
+                if let Some(d) = body.get("news_days").and_then(as_i64).filter(|d| *d > 0) {
+                    return self.news_search(&q, n, d).await;
+                }
                 return self.web_search(&q, n).await;
             }
             "read" => {

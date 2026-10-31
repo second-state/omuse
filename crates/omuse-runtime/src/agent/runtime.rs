@@ -2076,6 +2076,13 @@ Your own notes and the short explanation around it stay in English.";
         let route_history = if routing { history.clone() } else { Vec::new() };
         if transcript.is_empty() {
             let mut first = goal_text.clone();
+            // "email it" right after a news report: which edition, which files (the chat's own file cards)
+            if let Some(note) = super::guards::report_followup_note(
+                &goal_text,
+                &self.store.msgs(&conv_id, 60).unwrap_or_default(),
+            ) {
+                first += &note;
+            }
             if !arr(&t, "attachments").is_empty() {
                 first += &self.attachment_context(&t).await;
                 self.mark_confidential(task_id, "attachment").await;
@@ -2506,7 +2513,10 @@ answer you can from what you have — what is done, the findings and what is mis
                         }
                         typed_this_turn = call.id.clone();
                     }
-                    if call.name == "web_search" || call.name == "news_search" {
+                    if call.name == "web_search"
+                        || call.name == "news_search"
+                        || call.name == "browser_news_search"
+                    {
                         // per tool: the same words may be a news search and a web search
                         let raw = search_key(call.args.get("query").unwrap_or(&Value::Null));
                         let qk = if raw.is_empty() {
@@ -2884,7 +2894,16 @@ straight with the content: don't mention this check or say \"here is the complet
                     )
                 })
                 .or_else(|| super::guards::missing_format_hint(&transcript, &goal_text, lg != "en"))
-                {
+                .or_else(|| super::guards::visa_days_hint(&transcript, &final_, lg != "en"))
+                .or_else(|| {
+                    super::guards::news_report_hint(
+                        &transcript,
+                        &goal_text,
+                        get_str(&t, "source") == "schedule",
+                        truthy(&catalog["connections"]["gmail"]["ready"]),
+                        lg != "en",
+                    )
+                }) {
                     self.event(task_id, "arrival_check", json!({"handed_over": false}))
                         .await;
                     transcript.push(json!({"role": "assistant", "content": final_}));
@@ -2954,11 +2973,18 @@ straight with the content: don't mention this check or say \"here is the complet
             final_ = super::guards::with_apdt_link(&transcript, &final_, lg != "en");
             final_ = super::guards::with_arrival_windows(&transcript, &final_);
             final_ = super::guards::with_flight_times(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_flight_date(&transcript, &final_, lg != "en");
             final_ = super::guards::with_etias_status(&transcript, &final_, lg != "en");
             final_ = super::guards::with_grounded_numbers(&transcript, &final_, lg != "en");
             final_ = super::guards::with_claim_deadlines(&transcript, &final_, lg != "en");
             final_ = super::guards::with_hours(&final_);
             final_ = super::guards::with_user_edits(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_report_links(
+                &transcript,
+                &final_,
+                truthy(&catalog["connections"]["gmail"]["ready"]),
+                lg != "en",
+            );
             final_ = super::guards::with_mailbox_hint(
                 &transcript,
                 &final_,

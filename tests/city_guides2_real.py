@@ -28,7 +28,7 @@ CASES = [   # (city, question, facts — one must be there, more facts — one m
                      "Alam opened?",
      [r"LRT ?3|Shah Alam line|Johan Setia"], [r"Touch ?'?n ?Go"]),
     ("taipei", "Can I drink water or chew gum on the Taipei MRT, and how should I pay for rides and the public bikes?",
-     [r"no eating|not even water|no (food|drink)|eat(ing)? (or|and) drink(ing)? (is|are) (banned|prohibited|not allowed)|fine"],
+     [r"no eating|not even water|no (food|drink)|eat(ing)? (or|and) drink(ing)? (is|are) (banned|prohibited|not allowed)|neither eating nor drinking|don['’]t eat or drink|do not eat or drink|fine"],
      [r"EasyCard"]),
     ("hong-kong", "First trip to Hong Kong: how do I get around, and can I tap my Visa card on the MTR?",
      [r"Octopus"], [r"Star Ferry", r"minibus", r"ding ding|tram"]),

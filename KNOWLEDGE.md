@@ -723,6 +723,44 @@ notes).
 - **Passport fields**: typing into a passport / travel-document number or expiry box is refused — those come only from
   the Vault with `browser_fill_secret` (`policy::passport_field`).
 
+- **The flight's day** (`guards::with_flight_date`): a flight answer that does not show the searched date in any usual
+  writing gets it in front.
+- **Visa-free days** (`guards::visa_days_hint`): an entry-requirements answer naming a visa exemption with no number of
+  days in that sentence is sent back once to state the days from an official page it reads (never from memory).
+- **"Tomorrow" is the user's** (`guards::fix_relative_day`): a phone call's purpose naming one other date than the
+  user's "today" / "tomorrow" (in the Settings time zone) gets the right one.
+- **The user's edit survives compression**: Sentinel puts `user_edited` and its note first in an approved result, and
+  `guards::user_edits` also reads them from a result the transcript compression cut.
+- **Request wording asks** (`guards::requests_info`): "I still need your flight…", "please send…" count as asking (the
+  mailbox hint), not only a question mark.
+
+## News research reports (`skills/news-research/`, 2026-11-01)
+
+Main's `news-research` skill turns "research the news on X" into a newspaper-style edition:
+
+- **Search in the browser only.** `browser_news_search(query, days)` (Sentinel, connector `search`) opens the engines'
+  own news results in the browser: DuckDuckGo html with its date filter (`df` = d / w / m / y), then Bing News with its
+  interval (`Broker::news_engines`); the test engines get `&df=…`. It never falls back to a search API. In a run that
+  loaded the skill, a `web_search` call is marked `browser_only` (Sentinel skips the APIs) and a `news_search` call is
+  run as `browser_news_search` (`exec_call`, `guards::news_research_run`).
+- **Layout in code.** The model hands `news_report` its stories (headline, its own summary, source, the article's url,
+  date) and insights; `crate::newsreport` drops stories without an http(s) link, keeps each article once, escapes every
+  value and fills the skill's `template.html` (masthead, lead = the first story, insights, stories in columns,
+  sources). The HTML goes to `<workspace>/artifacts/news/<subject slug>/<YYYY-MM-DD-HHMM>.html` (a second edition in the
+  same minute gets `-2`), the PDF beside it through Chromium's print (`/internal/render_pdf`); both are file cards in
+  the chat. A scheduled run also notifies the user ("📰 <title>").
+- **`/artifacts/`** (Sentinel `routes/artifacts.rs`, behind the login gate): `/artifacts/` lists the files newest first,
+  `/artifacts/<path>` shows one; paths stay inside the folder; HTML is served with a policy that runs no script and
+  loads nothing from elsewhere (`HTML_CSP`, sandboxed). A link `/artifacts/…` given as a mail attachment is the
+  workspace file `artifacts/…` (`actions::artifact_path`).
+- **Guarantees.** The answer carries both links and, with a mailbox connected and nothing sent, offers "Reply **email
+  it**" (`guards::with_report_links`). One-time hint (`guards::news_report_hint`): a request for the report "weekly",
+  "every morning" … with no schedule made → `schedule_create` now; a scheduled edition whose schedule asks to email it
+  → `gmail_send` to the user's own address with the PDF and HTML attached.
+- Tests: `tests/news_report_real.py` (a made-up subject, Lumora, in `tests/fake_apps.py NEWS`, so every fact comes from
+  the articles read: the report, its links, "email it" landing in the SMTP sink with the PDF, a scheduled edition);
+  `tests/news_demo_real.py` is a one-off demo on the real web (not in the gate).
+
 ## Sentinel policy
 
 **The purchase's site comes from the open page.** When earlier versions showed the model links as stand-ins

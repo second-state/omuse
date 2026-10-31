@@ -21,6 +21,7 @@ pub mod listings;
 pub mod llm;
 pub mod memory_tidy;
 pub mod metrics;
+pub mod newsreport;
 pub mod outcome;
 pub mod pdfforms;
 pub mod prompts;

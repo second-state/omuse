@@ -1759,13 +1759,20 @@ async fn resolve_inner(ctx: &App, aid: &str, b: &Value, via: &str) -> Result<Val
             .iter()
             .map(|(k, v)| format!("{k} = {}", py_str(v)))
             .collect();
-        result["user_edited"] = Value::Object(changed);
-        result["note"] = json!(format!(
+        // first in the result: a long result is cut when the transcript is compressed, and these must survive it
+        // (gcal_real 2026-11-01: the calendar's long result lost them, and the answer called 15:30 the calendar's)
+        let note = format!(
             "用户在审批时改了：{}。这是用户自己的选择，照此执行，不要改回去，也不要说是错误。 (The user changed this in the approval \
              dialog: {} — it is the user's choice: keep it, don't change it back and don't call it a mistake.)",
             what.join("；"),
             what.join("; ")
-        ));
+        );
+        if let Some(obj) = result.as_object_mut() {
+            let rest = std::mem::take(obj);
+            obj.insert("user_edited".into(), Value::Object(changed));
+            obj.insert("note".into(), json!(note));
+            obj.extend(rest);
+        }
     }
     store
         .resolve_approval(aid, "approved", &scope, Some(&result), Some(&args), "user")

@@ -703,3 +703,72 @@ async fn a_card_fill_before_the_purchase_was_confirmed_confirms_it_from_the_page
         .expect("a confirmed purchase");
     assert!(p.to_string().contains("28000"), "{p}");
 }
+
+#[tokio::test]
+async fn artifacts_are_served_to_the_signed_in_user_only() {
+    let rt = fake_runtime().await;
+    let (ctx, _d) = ctx_with(&rt, true);
+    let dir = ctx.cfg.workspace().join("artifacts/news/batteries");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("2026-11-02-0800.html"),
+        "<h1>The Battery Weekly</h1>",
+    )
+    .unwrap();
+    std::fs::write(dir.join("2026-11-02-0800.pdf"), b"%PDF-1.7 x").unwrap();
+    let r = router(ctx.clone());
+    let get = |uri: &str| req("GET", uri).body(Body::empty()).unwrap();
+    let resp = r
+        .clone()
+        .oneshot(get("/artifacts/news/batteries/2026-11-02-0800.html"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["content-type"], "text/html; charset=utf-8");
+    assert!(resp.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .contains("sandbox"));
+    let resp = r
+        .clone()
+        .oneshot(get("/artifacts/news/batteries/2026-11-02-0800.pdf"))
+        .await
+        .unwrap();
+    assert_eq!(resp.headers()["content-type"], "application/pdf");
+    let resp = r.clone().oneshot(get("/artifacts/")).await.unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        String::from_utf8_lossy(&body).contains("/artifacts/news/batteries/2026-11-02-0800.html")
+    );
+    let resp = r
+        .clone()
+        .oneshot(get("/artifacts/../config.toml"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // behind the login gate: without a session or Basic credentials nothing is served
+    let gated = app(ctx.clone()).unwrap();
+    let resp = gated
+        .clone()
+        .oneshot(get("/artifacts/news/batteries/2026-11-02-0800.html"))
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), StatusCode::OK);
+    let basic = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "omuse:secret-pass"
+        )
+    );
+    let resp = gated
+        .oneshot(
+            req("GET", "/artifacts/news/batteries/2026-11-02-0800.html")
+                .header("authorization", basic)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}

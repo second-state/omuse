@@ -39,6 +39,7 @@ use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 
 mod act;
+mod artifacts;
 mod connections;
 pub mod deps;
 mod internal;
@@ -682,6 +683,9 @@ pub fn router(ctx: App) -> Router {
         .route("/sentinel/api/health", get(user::health))
         .route("/api/{*path}", any(proxy::proxy))
         .route("/run_pending_tasks", get(proxy::run_pending_tasks))
+        .route("/artifacts", get(artifacts::artifacts_index))
+        .route("/artifacts/", get(artifacts::artifacts_index))
+        .route("/artifacts/{*path}", get(artifacts::artifact))
         .route("/", get(proxy::index))
         .route("/static/{*name}", get(proxy::static_file));
 

@@ -3888,5 +3888,200 @@ fn an_answer_asking_without_a_question_mark_still_asks() {
     assert!(requests_info("I still need your **arrival flight number and date** and your **hotel name and address** in Thailand. You can send those details or upload your e-ticket."));
     assert!(requests_info("Which hotel are you staying at?"));
     assert!(requests_info("请告诉我你的航班号。"));
-    assert!(!requests_info("Your TDAC was submitted successfully. The confirmation page shows TDAC No. TH7D3K9Q2."));
+    assert!(!requests_info(
+        "Your TDAC was submitted successfully. The confirmation page shows TDAC No. TH7D3K9Q2."
+    ));
+}
+
+fn tool_step(id: &str, name: &str, args: Value, result: &str) -> Vec<Value> {
+    vec![
+        json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
+               "function": {"name": name, "arguments": args.to_string()}}]}),
+        json!({"role": "tool", "tool_call_id": id, "content": result}),
+    ]
+}
+
+fn report_run(extra: &[(&str, &str, &str)]) -> Vec<Value> {
+    let mut t = tool_step(
+        "r1",
+        "news_report",
+        json!({"subject": "solid-state batteries"}),
+        "{\"published\": true, \"title\": \"The Battery Weekly\", \"stories\": 5, \"html_url\": \"/artifacts/news/solid-state-batteries/2026-11-02-0800.html\", \"html_path\": \"artifacts/news/solid-state-batteries/2026-11-02-0800.html\", \"pdf_url\": \"/artifacts/news/solid-state-batteries/2026-11-02-0800.pdf\", \"pdf_path\": \"artifacts/news/solid-state-batteries/2026-11-02-0800.pdf\"}\nThe files are in the chat as cards.",
+    );
+    for (id, name, result) in extra {
+        t.extend(tool_step(id, name, json!({}), result));
+    }
+    t
+}
+
+#[test]
+fn a_published_report_gets_its_links_and_the_email_offer() {
+    use super::guards::{published_report, with_report_links};
+    let t = report_run(&[]);
+    assert_eq!(published_report(&t).unwrap()["title"], "The Battery Weekly");
+    let a = with_report_links(&t, "Here is this week's edition.", true, false);
+    assert!(a.contains("[HTML](/artifacts/news/solid-state-batteries/2026-11-02-0800.html)"));
+    assert!(a.contains("[PDF](/artifacts/news/solid-state-batteries/2026-11-02-0800.pdf)"));
+    assert!(a.contains("Reply **email it**"));
+    // links already there and no mailbox: nothing added
+    let given = "Read it: /artifacts/news/solid-state-batteries/2026-11-02-0800.html and /artifacts/news/solid-state-batteries/2026-11-02-0800.pdf";
+    assert_eq!(with_report_links(&t, given, false, false), given);
+    // emailed already: no offer
+    let sent = report_run(&[("g1", "gmail_send", "{\"ok\": true}")]);
+    assert!(!with_report_links(&sent, given, true, false).contains("email it"));
+    // no report: untouched
+    assert_eq!(with_report_links(&[], "hi", true, false), "hi");
+}
+
+#[test]
+fn a_report_asked_for_weekly_or_by_email_gets_its_schedule_or_its_mail() {
+    use super::guards::news_report_hint;
+    let t = report_run(&[]);
+    let weekly = "Research the news on solid-state batteries and send me a weekly report";
+    assert!(news_report_hint(&t, weekly, false, true, false)
+        .is_some_and(|h| h.contains("schedule_create") && h.contains("0 8 * * 1")));
+    let made = report_run(&[("s1", "schedule_create", "已创建 created: id=sch_1")]);
+    assert_eq!(news_report_hint(&made, weekly, false, true, false), None);
+    assert_eq!(
+        news_report_hint(&t, "Research the news on batteries", false, true, false),
+        None
+    );
+    // a scheduled edition whose schedule asks for email
+    let goal = "News report on solid-state batteries: research the latest news with the news-research skill and publish the newspaper report and email it to me";
+    let h = news_report_hint(&t, goal, true, true, false).unwrap_or_default();
+    assert!(
+        h.contains("gmail_send")
+            && h.contains("artifacts/news/solid-state-batteries/2026-11-02-0800.pdf"),
+        "{h}"
+    );
+    assert_eq!(news_report_hint(&t, goal, true, false, false), None); // no mailbox
+    let sent = report_run(&[("g1", "gmail_send", "{\"ok\": true}")]);
+    assert_eq!(news_report_hint(&sent, goal, true, true, false), None);
+    // nothing published: no hint
+    assert_eq!(news_report_hint(&[], weekly, false, true, false), None);
+}
+
+#[test]
+fn a_news_research_run_is_known_by_its_skill() {
+    use super::guards::news_research_run;
+    let t = tool_step(
+        "k1",
+        "load_skill",
+        json!({"name": "news-research"}),
+        "---\nname: news-research\n---",
+    );
+    assert!(news_research_run(&t));
+    assert!(!news_research_run(&tool_step(
+        "k1",
+        "load_skill",
+        json!({"name": "news-search"}),
+        "---"
+    )));
+}
+
+#[test]
+fn the_users_edit_survives_a_result_cut_by_compression() {
+    use super::guards::with_user_edits;
+    // the compressed transcript keeps the first 500 characters: no longer JSON, `user_edited` first
+    let cut = "{\"user_edited\": {\"start\": \"2026-11-03 15:30\"}, \"note\": \"The user changed this in the approval dialog\", \"created\": true, \"event\": {\"id\": \"evc2084d\", \"title\": \"Catch-up with Eva\", \"lin";
+    let t = tool_step(
+        "c1",
+        "calendar_create_event",
+        json!({"start": "2026-11-03 15:00"}),
+        cut,
+    );
+    let a = with_user_edits(&t, "Created the catch-up with Eva at 3:30 pm.", false);
+    assert!(
+        a.contains("You changed this in the approval: start = 2026-11-03 15:30"),
+        "{a}"
+    );
+}
+
+#[test]
+fn a_visa_exemption_without_its_days_gets_one_hint() {
+    use super::guards::visa_days_hint;
+    let t = tool_step(
+        "k1",
+        "load_skill",
+        json!({"name": "entry-requirements"}),
+        "---",
+    );
+    let vague = "Thailand: TDAC within 3 days. The current visa-exemption rules may have changed recently; please verify the visa length.";
+    assert!(visa_days_hint(&t, vague, false).is_some_and(|h| h.contains("in days")));
+    let ok = "Thailand: Australians get a 60-day visa-free stay (Thai MFA, July 2024).";
+    assert_eq!(visa_days_hint(&t, ok, false), None);
+    assert_eq!(visa_days_hint(&[], vague, false), None); // another skill
+}
+
+#[test]
+fn a_flight_answer_gives_the_day_it_is_for() {
+    use super::guards::with_flight_date;
+    let t = tool_step(
+        "f1",
+        "flights_search",
+        json!({"origin": "SIN", "destination": "TYO", "date": "2026-12-01"}),
+        "{}",
+    );
+    let a = with_flight_date(
+        &t,
+        "The cheapest result is SGD 304 one-way on China Southern.",
+        false,
+    );
+    assert!(a.starts_with("**Tuesday, 1 December 2026**"), "{a}");
+    let dated = "On 1 December the cheapest is SGD 304.";
+    assert_eq!(with_flight_date(&t, dated, false), dated);
+    assert_eq!(
+        with_flight_date(&t, "Dec 1: SGD 304.", false),
+        "Dec 1: SGD 304."
+    );
+    assert_eq!(with_flight_date(&[], "SGD 304.", false), "SGD 304.");
+}
+
+#[test]
+fn tomorrow_in_a_call_is_the_users_tomorrow() {
+    use super::guards::fix_relative_day;
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+    let goal =
+        "Call Zuni Cafe at +1 415 643 2200 and book a table for 2 tomorrow at 7:30 pm under Lucas.";
+    let p = "Request a table for 2 for tomorrow, Sunday, November 1, 2026, at 7:30 pm under the name Lucas.";
+    assert_eq!(
+        fix_relative_day(goal, p, today).as_deref(),
+        Some("Request a table for 2 for tomorrow, Monday, November 2, 2026, at 7:30 pm under the name Lucas.")
+    );
+    // already right, no date, two different dates, or no relative day: unchanged
+    assert_eq!(
+        fix_relative_day(goal, "Book Monday, November 2, 2026 at 7:30 pm.", today),
+        None
+    );
+    assert_eq!(
+        fix_relative_day(goal, "Book for tomorrow at 7:30 pm.", today),
+        None
+    );
+    assert_eq!(
+        fix_relative_day(goal, "Move 5 November to 6 November.", today),
+        None
+    );
+    assert_eq!(
+        fix_relative_day("Call Zuni on 9 November", "Book 1 November.", today),
+        None
+    );
+}
+
+#[test]
+fn email_it_after_a_report_names_the_edition() {
+    use super::guards::report_followup_note;
+    let card = json!({"role": "system", "content": "{\"type\": \"files\", \"items\": [{\"path\": \"artifacts/news/lumora/2026-11-01-0240.html\"}, {\"path\": \"artifacts/news/lumora/2026-11-01-0240.pdf\"}]}"});
+    let msgs = vec![
+        card,
+        json!({"role": "assistant", "content": "Here is the edition. Reply email it …"}),
+    ];
+    let n = report_followup_note("email it", &msgs).unwrap_or_default();
+    assert!(n.contains("gmail_send") && n.contains("[\"artifacts/news/lumora/2026-11-01-0240.pdf\", \"artifacts/news/lumora/2026-11-01-0240.html\"]"), "{n}");
+    assert!(report_followup_note("Please email it to me", &msgs).is_some());
+    // another request, or no report in the chat: no note
+    assert_eq!(
+        report_followup_note("What is the weather tomorrow?", &msgs),
+        None
+    );
+    assert_eq!(report_followup_note("email it", &[]), None);
 }

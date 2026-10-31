@@ -11,7 +11,7 @@
 # docker_browser_e2e.py is not part of this: it needs a real model (see its docstring).
 set -u
 # the real-model suites: plain requests to Main (tests/real_common.py) and the older real ones; each needs OMUSE_E2E_REAL
-REAL_SUITES="bots_real arrival_real arrival_cards_real arrival_cards2_real arrival_cards3_real arrival_cards4_real arrival_address_real arrival_address2_real insurance_real cards_real photos_real mail_real calendar_real research_real docs_real \
+REAL_SUITES="bots_real news_report_real arrival_real arrival_cards_real arrival_cards2_real arrival_cards3_real arrival_cards4_real arrival_address_real arrival_address2_real insurance_real cards_real photos_real mail_real calendar_real research_real docs_real \
 travel_ask_real travel_flight_real travel_hotel_real travel_michelin_real city_guides_real browser_auto_real stream_real travel_nomail_real \
 travel_user_real travel_kiwi_real travel_brave_real travel_connect_real media_real web_search_real \
 insurance_hk_real claims_real emergency_real refunds_real tax_refund_real \

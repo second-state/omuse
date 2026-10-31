@@ -79,7 +79,7 @@ async def hotel(u: U.User) -> None:
     print(f"INFO hotel drafts: {[(d['to'], d['subject'], ' '.join(d['body'].split())[:300]) for d in drafts]}")
     check("hotel: a draft to the hotel's own address (reservations@ginzagrand.example) asks for an early check-in with 88812345",
           any("reservations@ginzagrand.example" in d["to"] and "88812345" in d["subject"] + d["body"]
-              and re.search(r"earl(y|ier|iest) check.?in|check.?in early|check in earl", d["subject"] + d["body"], re.I) for d in drafts),
+              and re.search(r"earl(y|ier|iest)\b[^.]{0,25}check.?in|check.?in early|check in earl", d["subject"] + d["body"], re.I) for d in drafts),
           [(d["to"], d["subject"]) for d in drafts])
     sent = U.mailbox("Sent")
     check("hotel: nothing new in the user's Sent folder", len(sent) == s0, [(m["to"], m["subject"]) for m in sent[s0:]])

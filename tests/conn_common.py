@@ -479,7 +479,7 @@ async def answers_in(u: U.User, words: str, button: str = "Results") -> int:
     from tests import shop_common as SC
     await SC.press_on_card(u, words, button)
     await u.page.wait_for_timeout(2000)
-    n = await u.page.locator(".msg.assistant:not(.live) .bubble").count()
+    n = await u.page.locator(".msg.assistant:not(.live) .bubble:not(.filecard)").count()
     await u.page.goto(U.APP + "#schedules")
     await u.page.wait_for_timeout(1500)
     return n
@@ -508,11 +508,11 @@ async def run_results(u: U.User, words: str, button: str = "Results", prev: int 
             await review.first.click()
             await pg.wait_for_timeout(800)
             continue
-        n = await pg.locator(".msg.assistant:not(.live) .bubble").count()
+        n = await pg.locator(".msg.assistant:not(.live) .bubble:not(.filecard)").count()
         live = await pg.locator(".msg.assistant.live").count()
         busy = await pg.locator(".taskcard:not(.folded)").count()
         if n > prev and not live and not busy:
-            return await pg.locator(".msg.assistant:not(.live) .bubble").last.inner_text(), denied
+            return await pg.locator(".msg.assistant:not(.live) .bubble:not(.filecard)").last.inner_text(), denied
         await pg.wait_for_timeout(3000)
         seen += 1
         if n <= prev and seen % 5 == 0:   # the conversation fills in when the run writes to it: look again
