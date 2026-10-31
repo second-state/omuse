@@ -33,7 +33,7 @@ other knowledge files — is in [KNOWLEDGE.md](KNOWLEDGE.md). Repository rules, 
 - **Telegram remote control** – give tasks and approve actions from your phone.
 - **Research library** – in-depth Markdown reports you refine and refresh later.
 - **News research reports** – ask Main to research the news on any subject: it searches and reads the latest articles in its own browser (no search API), and publishes a newspaper-style edition as HTML and PDF at `/artifacts/` (only for the signed-in user). Ask for it "every week" or "every morning" and new editions arrive on a timer; each one can be emailed to your own Gmail, attached as a PDF — reply "email it", or ask for it in the schedule.
-- **Travel skills for Asia** – see [Travel use cases](#travel-use-cases) below.
+- **Travel skills for Asia** – see [Travel use cases](#travel-use-cases) below. The arrival cards with a known form (Singapore, Malaysia, Thailand, Korea, Indonesia, Taiwan, China) are filled by code from your booking emails, profile and Vault — the model only understands the request; you review the filled form and press Submit yourself.
 - **Trip photos and videos** – the clips and photos of a trip in your Google Drive become a highlights video (join,
   cut, vertical for phones, title, music) or a photo story book PDF, edited on your own machine and put back in
   Drive; Drive clean-up before the next trip. One Google sign-in connects Calendar and Drive.

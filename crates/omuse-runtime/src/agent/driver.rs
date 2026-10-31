@@ -588,6 +588,25 @@ pub fn next(card: &CardSpec, transcript: &[Value], w: &World) -> Step {
         })
         .collect();
     let mut trip = extract(&texts, w.user_texts, w.today);
+    // the facts an earlier form_fill of this run was given (its arguments survive the transcript's compression, the
+    // mail bodies do not — arrival_cards2_real 2026-11-01: Taiwan asked for the flight again after the email step)
+    if let Some((args, _)) = results_of(transcript, "form_fill").last() {
+        let keep = |cur: &mut String, k: &str| {
+            if cur.is_empty() {
+                *cur = sget(args, k).trim().to_string();
+            }
+        };
+        keep(&mut trip.flight_no, "flight_no");
+        keep(&mut trip.arrival_date, "arrival_date");
+        keep(&mut trip.origin_city, "origin_city");
+        keep(&mut trip.origin_country, "origin_country");
+        keep(&mut trip.arrival_airport, "arrival_airport");
+        keep(&mut trip.airline, "airline");
+        keep(&mut trip.stay_name, "stay_name");
+        keep(&mut trip.stay_address, "stay_address");
+        keep(&mut trip.stay_kind, "stay_kind");
+        keep(&mut trip.purpose, "purpose");
+    }
     if let Some((_, m)) = results_of(transcript, "extract_facts").last() {
         let v = json_of(m);
         let fill = |cur: &mut String, k: &str| {
@@ -767,12 +786,39 @@ I've set a reminder for that morning and will fill it in then. Nothing is filed 
     let fill_json = json_of(fill);
     let fill_pos = last_fill.unwrap();
     let take_after_fill = last_take.is_some_and(|t| t > fill_pos);
+    // the same user's step handed over twice and still not done: the run ends with where it stands (never a loop)
+    let user_steps_back = takeovers
+        .iter()
+        .filter(|(a, m)| sget(a, "reason").starts_with("This step is yours") && handed_back(m))
+        .count();
+    if !take_after_fill && stopped(fill).is_some() && user_steps_back >= 2 {
+        let step = stopped(fill).unwrap_or_default();
+        let step = step
+            .split(" is the user's")
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_start_matches("the ")
+            .to_string();
+        return Step::Final(if w.zh {
+            format!("你的{}还停在需要你本人完成的一步：{step}。请到浏览器标签页完成它，再让我继续；目前什么都没有提交。", card.name)
+        } else {
+            format!(
+                "Your {} is waiting on a step only you can do: {step}. Finish it in the browser tab, then ask me to continue; nothing has been submitted.",
+                card.name
+            )
+        });
+    }
     if !take_after_fill {
         let reason = match stopped(fill) {
-            Some(why) => format!(
-                "Please {}; hand the browser back when it is done and I will fill in the rest.",
-                why.trim_end_matches('.')
-            ),
+            Some(why) => {
+                // "the email verification (…) is the user's: hand the page over for it, then call form_fill again"
+                let step = why.split(" is the user's").next().unwrap_or(&why).trim();
+                let step = step.strip_prefix("the ").unwrap_or(step);
+                format!(
+                    "This step is yours: {step}. Do it on the page, then hand the browser back and I will fill in the rest of the form."
+                )
+            }
             None => {
                 let left: Vec<String> = fill_json
                     .get("skipped")
@@ -1139,6 +1185,34 @@ mod tests {
             panic!()
         };
         assert_eq!(c[0].name, "form_fill"); // again, after the user's step
+                                            // the hand-over named the step as the user's, in plain words
+        let args: Value = serde_json::from_str(
+            t[t.len() - 2]["tool_calls"][0]["function"]["arguments"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            sget(&args, "reason").starts_with("This step is yours: passport photo upload"),
+            "{}",
+            sget(&args, "reason")
+        );
+        // the facts come from the earlier form_fill's arguments when the user's words are gone (compression)
+        let none: Vec<String> = vec![];
+        let w2 = World {
+            user_texts: &none,
+            profile: &profile,
+            today,
+            mail_ready: false,
+            zh: false,
+        };
+        let Step::Calls(c) = next(card, &t, &w2) else {
+            panic!()
+        };
+        assert_eq!(
+            (c[0].name.as_str(), sget(&c[0].args, "flight_no").as_str()),
+            ("form_fill", "MU 562")
+        );
     }
 
     #[test]
@@ -1229,5 +1303,62 @@ mod tests {
             a.contains("17 December 2026") && a.contains("Nothing is filed yet"),
             "{a}"
         );
+    }
+
+    #[test]
+    fn a_users_step_undone_twice_ends_the_run() {
+        let card = CARDS.iter().find(|c| c.skill == "cn-arrival-card").unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let user = vec!["Fill in my China arrival card: MU 562 arriving Shanghai (PVG) 2026-11-02 from Sydney (SYD), staying at Bund Riverside Hotel, 99 Zhongshan East 1st Road. Holiday.".to_string()];
+        let profile = json!({});
+        let w = World {
+            user_texts: &user,
+            profile: &profile,
+            today,
+            mail_ready: false,
+            zh: false,
+        };
+        let stop = "{\"url\": \"https://s.nia.gov.cn/x\", \"filled\": [{\"op\": \"require\", \"field\": \"photo\", \"ok\": false, \"stop\": true, \"why\": \"the passport photo upload (step 1) is the user's: hand the page over for it, then call form_fill again\"}]}";
+        let back = "\"Takeover finished: the user handed browser control back.\"";
+        let mut t = step(
+            "k1",
+            "load_skill",
+            json!({"name": "cn-arrival-card"}),
+            "---",
+        );
+        t.extend(step("drv_1", "browser_navigate", json!({"url": card.start_url}), "<untrusted_content source=\"web page https://s.nia.gov.cn/ArrivalCardFillingPC/\">{}</untrusted_content>"));
+        let mut n = 2;
+        for round in 0..3 {
+            let Step::Calls(c) = next(card, &t, &w) else {
+                panic!("round {round}")
+            };
+            assert_eq!(c[0].name, "form_fill", "round {round}");
+            t.extend(step(
+                &format!("drv_{n}"),
+                "form_fill",
+                c[0].args.clone(),
+                stop,
+            ));
+            n += 1;
+            match next(card, &t, &w) {
+                Step::Calls(c) if round < 2 => {
+                    assert_eq!(c[0].name, "browser_request_takeover");
+                    t.extend(step(
+                        &format!("drv_{n}"),
+                        "browser_request_takeover",
+                        c[0].args.clone(),
+                        back,
+                    ));
+                    n += 1;
+                }
+                Step::Final(a) if round == 2 => {
+                    assert!(
+                        a.contains("waiting on a step only you can do: passport photo upload"),
+                        "{a}"
+                    );
+                }
+                other => panic!("round {round}: {other:?}"),
+            }
+        }
     }
 }

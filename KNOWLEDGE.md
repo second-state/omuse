@@ -474,7 +474,7 @@ suite's model calls are saved as `models-<suite>.json` in `OMUSE_E2E_OUT`.
 Still on the generic path: Thailand TDAC (behind a Cloudflare check; mapped only from its public code), Cambodia
 (a profile photo; its health questions not captured), Visit Japan Web, eTravel and the UK ETA (behind accounts and
 emailed codes: their fields come from official guides, not live pages). The operations added for these forms: `require`
-(stop for the user's step), `option` / text fallbacks that click the deepest visible element with the text, visible
+(stop for the user's step — the field must be *visible*, not merely in the page: Taiwan's traveller form is in the DOM, hidden, before the email step; 2026-11-01), `option` / text fallbacks that click the deepest visible element with the text, visible
 matches first, and a guard against setting a value on a non-text element. A field-by-field fill on a page a function knows gets a note to call form_fill
 (`guards::form_fill_note`); a hand-over on such a page before any form_fill is refused once, so code fills it first and names the user's step (`guards::takeover_before_fill_guard`). `browser_fill_form`'s ops (`FILL_ONE_JS` in omuse-browser): text, select (value, text,
 starts-with, contains), radio, click / button / check by selector or by text inside a headed section, `date`

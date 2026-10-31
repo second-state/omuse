@@ -1602,13 +1602,19 @@ pub fn with_loan_payment(goal: &str, answer: &str, zh: bool) -> String {
     static ASK: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i)\b(monthly (payment|repayment|instal?lment)|mortgage|home loan|car loan)\b|月供|房贷|按揭").unwrap()
     });
-    static AMOUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{1,3}(?:,\d{3})+|\d{4,})(?:\.\d+)?").unwrap());
+    static AMOUNT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(\d{1,3}(?:,\d{3})+|\d{4,})(?:\.\d+)?").unwrap());
     static RATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+(?:\.\d+)?)\s?%").unwrap());
-    static YEARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(\d{1,2})[- ]?(?:years?|yrs?)\b|(\d{1,2})\s?年").unwrap());
+    static YEARS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)(\d{1,2})[- ]?(?:years?|yrs?)\b|(\d{1,2})\s?年").unwrap()
+    });
     if !ASK.is_match(goal) {
         return answer.to_string();
     }
-    let principal: f64 = match AMOUNT.captures(goal).and_then(|c| c[1].replace(',', "").parse().ok()) {
+    let principal: f64 = match AMOUNT
+        .captures(goal)
+        .and_then(|c| c[1].replace(',', "").parse().ok())
+    {
         Some(p) => p,
         None => return answer.to_string(),
     };

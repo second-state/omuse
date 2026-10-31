@@ -114,7 +114,8 @@ n0 = len(vcalls())
 r, t = run("VIDEOGEN another boat")
 vc = vcalls()[n0:]
 check("now the videos go to the model endpoint with the model key", t["status"] == "COMPLETED" and vc
-      and all(x["prefix"] == "/v1" and x["auth"] == "Bearer own-key" for x in vc), [(x["prefix"], x["auth"]) for x in vc])
+      and all(x["prefix"] == "/v1" and x["auth"] == "Bearer own-key" for x in vc),
+      ([(x["prefix"], x["auth"]) for x in vc], t["status"], str(t.get("error") or "")[:200], str(t.get("result") or "")[:300]))
 
 # ---- a declined prompt: explained once, no retry
 n0 = len(vcalls())

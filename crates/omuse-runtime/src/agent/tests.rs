@@ -4242,9 +4242,16 @@ fn a_buy_request_with_a_held_pick_is_not_asked_to_proceed() {
 fn a_fully_specified_loan_payment_is_computed_by_code() {
     use super::guards::with_loan_payment;
     let goal = "What is the monthly payment on a 3,000,000 mortgage over 25 years at 3.5% a year?";
-    let a = with_loan_payment(goal, "The monthly payment is approximately 3,000,000 in the same currency.", false);
+    let a = with_loan_payment(
+        goal,
+        "The monthly payment is approximately 3,000,000 in the same currency.",
+        false,
+    );
     assert!(a.contains("**15,018.71**"), "{a}");
     let right = "About 15,018.71 a month.";
     assert_eq!(with_loan_payment(goal, right, false), right);
-    assert_eq!(with_loan_payment("What is the weather?", "Sunny.", false), "Sunny.");
+    assert_eq!(
+        with_loan_payment("What is the weather?", "Sunny.", false),
+        "Sunny."
+    );
 }

@@ -1272,7 +1272,16 @@ fn tw_arrival_card(i: &Inputs) -> Vec<Op> {
             .to_string()
     };
     vec![
-        // step 1 (email + Cloudflare + emailed code) is the user's: nothing to fill until the traveller's form shows
+        // step 1: the user's email goes in and the code is requested (code's part; not there once past this step),
+        // then the Cloudflare check and the emailed code are the user's: nothing to fill until the traveller's form shows
+        // the landing page: Submit Arrival Card → START → /submit (not there once on the form: skipped)
+        choose("submit_card", "", "Submit Arrival Card"),
+        wait(800),
+        click_sel("start", "#start"),
+        wait(1200),
+        text("verify_email", "#emailVerify", &i.email()),
+        click_sel("send_code", "#send"),
+        wait(800),
         require("traveler_form", "#traveler1_englishName",
                 "the email verification (Cloudflare check and the code Taiwan emails) is the user's: hand the page over for it, then call form_fill again"),
         // --- Traveler Information
@@ -2124,5 +2133,41 @@ mod tests {
         }
         assert!(form_for("https://tdac.immigration.go.th/")
             .is_some_and(|(n, _)| n == "th-arrival-card"));
+    }
+
+    #[test]
+    fn the_twac_plan_reaches_the_users_step_before_stopping() {
+        let facts = Facts {
+            flight_no: "CI 52".into(),
+            arrival_date: "2026-11-03".into(),
+            origin_city: "Sydney".into(),
+            stay_name: "Xinyi Park Hotel".into(),
+            stay_kind: "hotel".into(),
+            purpose: "holiday".into(),
+            ..Facts::default()
+        };
+        let p = serde_json::json!({"name_en": "JORDAN LU", "gender": "Female", "birthday": "1985-04-12",
+            "nationality": "Australia", "email_personal": "jordan@example.com", "phone": "+61 400 000 000"});
+        let i = Inputs {
+            facts: &facts,
+            profile: &p,
+        };
+        let ops: Vec<Value> = tw_arrival_card(&i).iter().filter_map(Op::to_json).collect();
+        let at = |field: &str| {
+            ops.iter()
+                .position(|o| o["field"] == field)
+                .unwrap_or(usize::MAX)
+        };
+        // the email typed and the code requested (code's part of step 1) before the stop for the user's part
+        assert!(
+            at("submit_card") < at("start") && at("start") < at("verify_email"),
+            "{ops:?}"
+        );
+        assert!(
+            at("verify_email") < at("send_code") && at("send_code") < at("traveler_form"),
+            "{ops:?}"
+        );
+        assert_eq!(ops[at("verify_email")]["value"], "jordan@example.com");
+        assert_eq!(ops[at("traveler_form")]["op"], "require");
     }
 }

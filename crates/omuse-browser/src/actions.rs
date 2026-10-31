@@ -1089,7 +1089,7 @@ const FILL_ONE_JS: &str = r#"(f) => {
     return {ok: true};
   }
   const el = find();
-  if (f.op === 'exists') return {ok: !!el};
+  if (f.op === 'exists') return {ok: !!el && vis(el)};   // a required field counts only when the user can see it
   if (!el) return {ok: false, why: 'not on the page'};
   el.scrollIntoView({block: 'center'});
   if (f.op === 'click' || f.op === 'button') {
