@@ -1,6 +1,7 @@
 ---
 name: arrival-cards
 description: 各国电子入境卡/行前授权总览与代填：新加坡 SGAC、泰国 TDAC、马来西亚 MDAC、韩国 e-Arrival、日本 Visit Japan Web、中国在线入境卡、台湾入境卡、印尼 All Indonesia、菲律宾 eTravel、柬埔寨 e-Arrival、英国 ETA、欧盟 ETIAS/EES；按行程判断需要哪些、什么时候填，并按每个国家的技能代填 Which electronic arrival cards and travel authorisations a trip needs (Singapore SGAC, Thailand TDAC, Malaysia MDAC, Korea e-Arrival, Japan Visit Japan Web, China online arrival card, Taiwan arrival card, Indonesia All Indonesia, Philippines eTravel, Cambodia e-Arrival, UK ETA, EU ETIAS / EES), when each opens, and the per-country skill that fills it.
+profile: nationality
 ---
 # Arrival cards and travel authorisations / 电子入境卡
 

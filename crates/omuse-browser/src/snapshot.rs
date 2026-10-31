@@ -230,6 +230,40 @@ impl Broker {
         )
     }
 
+    /// Hide (`on`) or show again the vault values typed into this task's page, in every frame, around a picture for a
+    /// vision model: an input holding one shows discs (`-webkit-text-security`), a text node holding one shows "••••"
+    /// until it is put back. With this the agent may look at a page after filling a passport from the Vault (the policy
+    /// used to refuse it: the SG Arrival Card could not be checked after the fill, 2026-10-30).
+    async fn masked(&self, page: &crate::pages::TaskPage, task_id: &str, on: bool) {
+        let secrets = self
+            .st
+            .lock()
+            .secrets
+            .get(task_id)
+            .cloned()
+            .unwrap_or_default();
+        if secrets.is_empty() {
+            return;
+        }
+        let frames = page.frames().await.unwrap_or_default();
+        let mut ids: Vec<Option<chromiumoxide::cdp::browser_protocol::page::FrameId>> = vec![None];
+        ids.extend(
+            frames
+                .into_iter()
+                .filter(|f| f.id.inner() != page.id())
+                .map(|f| Some(f.id)),
+        );
+        for fr in &ids {
+            let _ = page
+                .eval(
+                    fr.as_ref(),
+                    MASK_JS,
+                    vec![json!(if on { "hide" } else { "show" }), json!(secrets)],
+                )
+                .await;
+        }
+    }
+
     /// Screenshot of the viewport with every visible element labelled by its ref (set-of-marks) for a vision model.
     pub async fn look(&self, task_id: &str) -> Result<Value, ApiError> {
         let page = self.page(task_id).await?;
@@ -264,6 +298,7 @@ impl Broker {
         }
         let mut marks: Vec<Value> = vec![];
         let mut text = String::new();
+        self.masked(&page, task_id, true).await;
         let shot = async {
             for fr in &frames {
                 let Ok(got) = page.eval(fr.as_ref(), MARKS_JS, vec![json!("draw")]).await else {
@@ -287,6 +322,7 @@ impl Broker {
         for fr in &frames {
             let _ = page.eval(fr.as_ref(), MARKS_JS, vec![json!("clear")]).await;
         }
+        self.masked(&page, task_id, false).await;
         let img = shot.map_err(cdp_err)?;
         let text = take_chars(&text, 3000).to_string();
         let title = page.title().await;
@@ -358,6 +394,7 @@ impl Broker {
         };
         let opts = json!({"mode": "draw", "region": region, "cols": cols, "rows": rows, "labels": labels,
             "mark": mark_xy.map(|(x, y)| json!([x, y]))});
+        self.masked(&page, task_id, true).await;
         let shot = async {
             page.eval(None, GRID_JS, vec![opts.clone()]).await?;
             let clip = region.as_ref().map(|r| Clip {
@@ -374,6 +411,7 @@ impl Broker {
         let _ = page
             .eval(None, GRID_JS, vec![json!({"mode": "clear"})])
             .await;
+        self.masked(&page, task_id, false).await;
         let img = shot.map_err(cdp_err)?;
         let mut out = json!({"url": page.url(), "title": page.title().await,
             "image_b64": base64::engine::general_purpose::STANDARD.encode(&img), "image_type": "image/jpeg",
@@ -462,3 +500,31 @@ impl Broker {
         Ok(json!({"tag": "", "name": "", "frames": frames}))
     }
 }
+
+/// Hides / shows the vault values typed into a page (`Broker::masked`). `hide`: an input or textarea whose value holds
+/// one (spaces and dashes aside) gets `-webkit-text-security: disc`; a text node holding one is replaced by "••••", its
+/// text kept to put back. `show`: undoes both.
+const MASK_JS: &str = r#"(mode, secrets) => {
+  const norm = s => (s || '').replace(/[\s-]/g, '').toLowerCase();
+  const keys = secrets.map(norm).filter(k => k.length >= 3);
+  const holds = s => { const n = norm(s); return keys.some(k => n.includes(k)); };
+  if (mode === 'show') {
+    for (const el of document.querySelectorAll('[data-omuse-masked]')) {
+      el.style.webkitTextSecurity = el.dataset.omuseMasked === '-' ? '' : el.dataset.omuseMasked;
+      delete el.dataset.omuseMasked;
+    }
+    for (const [node, text] of (window.__omuseMaskedText || [])) node.nodeValue = text;
+    window.__omuseMaskedText = [];
+    return true;
+  }
+  for (const el of document.querySelectorAll('input, textarea')) {
+    if (holds(el.value)) { el.dataset.omuseMasked = el.style.webkitTextSecurity || '-'; el.style.webkitTextSecurity = 'disc'; }
+  }
+  const saved = [];
+  const walk = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    if (holds(n.nodeValue)) { saved.push([n, n.nodeValue]); n.nodeValue = '••••'; }
+  }
+  window.__omuseMaskedText = saved;
+  return true;
+}"#;

@@ -1,6 +1,8 @@
-"""0.2.23: market_data gives quotes and history without a browser (falls back to the second host when one is
-rate-limited, looks names up, reports unknown tickers), and make_chart can plot tickers directly."""
-import json
+"""market_data / stock_fundamentals when Yahoo Finance's first host is rate-limited: the fake Yahoo of tests/fake_apps.py
+answers 429 on host 1 for every request, so quotes, history and valuations must come from host 2 (valuations through its
+crumb flow). Scripted because a real run cannot produce or see this: the outage is injected, and which host answered is
+invisible to the user. Everything a user can see — quotes, a year's moves, a chart, an unknown ticker, fundamentals, the
+mortgage maths, a survey's NPS — is tests/market_real.py's (real model, from the user's side)."""
 import sys
 import time
 
@@ -18,70 +20,29 @@ def check(name, cond, info=""):
         fails.append(name)
 
 
-r = c.post(B + "/api/chat", json={"message": "MARKETTEST 腾讯和汇丰的走势"}, headers=H).json()
-tid = r["task_id"]
-t0 = time.time()
-while time.time() - t0 < 120:
-    t = c.get(f"{B}/api/tasks/{tid}").json()
-    if t["status"] in ("COMPLETED", "FAILED", "CANCELLED"):
-        break
-    time.sleep(0.5)
-res = [e["data"] for e in t["events"] if e["type"] == "tool_result"]
+def run(msg, timeout=120):
+    r = c.post(B + "/api/chat", json={"message": msg}, headers=H).json()
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        t = c.get(f"{B}/api/tasks/{r['task_id']}").json()
+        if t["status"] in ("COMPLETED", "FAILED", "CANCELLED"):
+            return t
+        time.sleep(0.5)
+    return t
+
+
+t = run("MARKETTEST 腾讯和汇丰的走势")
 out = t.get("result") or ""
-check("task completes", t["status"] == "COMPLETED", (t["status"], t.get("error")))
-check("quote for a ticker, with range change and dated high/low",
-      "0700.HK · Tencent Holdings Limited" in out and "涨跌 change" in out and "区间最高 high" in out and "(20" in out, out[:600])
-check("a company name is looked up", "0005.HK · HSBC Holdings plc" in out, out[:900])
-check("unknown ticker reported, others still returned", "NOPE.XX" in out and "failed" in out, out[:1500])
-check("series is in the result for charting", "closes:" in out and out.count(", 20") > 20, out[:300])
-check("prices rounded for display", "400.0," not in out or True)
-check("comparison chart drawn from tickers", len(res) > 1 and res[1].get("ok") and "shown in the chat" in res[1]["preview"], res[1:2])
-msgs = c.get(f"{B}/api/conversations/{r['conversation_id']}").json()["messages"]
-cards = [json.loads(m["content"]) for m in msgs if m["role"] == "system"]
-pics = [x for x in cards if x.get("type") == "file" and x.get("mime") == "image/png"]
-check("chart card in the chat", len(pics) == 1, cards)
-log = c.get(B + "/sentinel/api/audit", params={"limit": 50}, headers=H)
-check("market lookups are audited", log.status_code != 200 or "market.data" in log.text, log.status_code)
-# ---------------------------------------------------------------- stock_fundamentals (valuations + financials)
-r = c.post(B + "/api/chat", json={"message": "FUNDTEST 特斯拉和比亚迪的估值和财报"}, headers=H).json()
-t0 = time.time()
-while time.time() - t0 < 120:
-    t = c.get(f"{B}/api/tasks/{r['task_id']}").json()
-    if t["status"] in ("COMPLETED", "FAILED", "CANCELLED"):
-        break
-    time.sleep(0.5)
+check("quotes task completes with host 1 rate-limited", t["status"] == "COMPLETED", (t["status"], t.get("error")))
+check("quote and history served by host 2 (host 1 answers 429)", "0700.HK · Tencent Holdings Limited" in out and "closes:" in out
+      and out.count(", 20") > 20, out[:600])
+check("name lookup served by host 2", "0005.HK · HSBC Holdings plc" in out, out[:900])
+
+t = run("FUNDTEST 特斯拉和比亚迪的估值和财报")
 out = t.get("result") or ""
-check("fundamentals task completes", t["status"] == "COMPLETED", (t["status"], t.get("error")))
-check("valuations via the crumb flow (host 1 busy, host 2 answers)", "TSLA · Tesla, Inc." in out and "市盈率 P/E (TTM) 334.07" in out
-      and "股息率 dividend yield 0.54%" in out and "市值 market cap 1.40T USD" in out, out[:900])
-check("quarterly and annual financials with margins", "季度财报 quarterly" in out and "2026-06-30" in out and "毛利率 gross margin 19.0%" in out
-      and "年度财报 annual" in out, out[:2500])
-check("unknown ticker reported", "NOPE.XX" in out, out[-500:])
-# ---------------------------------------------------------------- calculate (exact arithmetic)
-r = c.post(B + "/api/chat", json={"message": "CALCTEST 300 万房贷 25 年 3.5% 月供多少"}, headers=H).json()
-t0 = time.time()
-while time.time() - t0 < 60:
-    t = c.get(f"{B}/api/tasks/{r['task_id']}").json()
-    if t["status"] in ("COMPLETED", "FAILED", "CANCELLED"):
-        break
-    time.sleep(0.5)
-out = t.get("result") or ""
-check("calculate gives the exact payment and schedule", "payment 15,018.71" in out and "| 1 | 15,018.71 | 6,268.71 | 8,750.00 |" in out
-      and "pmt(r, 300, 3e6) = 15,018.707108" in out, out[:800])
-check("a bad expression is reported, the rest still computed", "1/0 = ERROR: ZeroDivisionError" in out, out[-300:])
-# ---------------------------------------------------------------- data_query (exact table maths)
-r = c.post(B + "/api/chat", json={"message": "DATAQTEST 分析问卷"}, headers=H).json()
-t0 = time.time()
-while time.time() - t0 < 60:
-    t = c.get(f"{B}/api/tasks/{r['task_id']}").json()
-    if t["status"] in ("COMPLETED", "FAILED", "CANCELLED"):
-        break
-    time.sleep(0.5)
-out = t.get("result") or ""
-check("data_query describes the table", "40 rows × 3 columns" in out and "- nps: number" in out, out[:900])
-check("segments counted exactly", "| det | 14 | 35 |" in out and "| pas | 14 | 35 |" in out and "| pro | 12 | 30 |" in out, out[:2500])
-check("filter + mean + save", "10 of 40 source rows matched" in out and "Saved: data/out.csv" in out, out[:2500])
-check("unknown column explained, other queries still run", "## Query 3: ERROR: no column 'nope'" in out, out[:2500])
-check("log parsed with a pattern", "| /api/b | 2 | 490 |" in out, out[-1500:])
+check("fundamentals task completes with host 1 rate-limited", t["status"] == "COMPLETED", (t["status"], t.get("error")))
+check("valuations via host 2's crumb flow", "TSLA · Tesla, Inc." in out and "市盈率 P/E (TTM) 334.07" in out
+      and "市值 market cap 1.40T USD" in out, out[:900])
+check("financials via host 2", "季度财报 quarterly" in out and "2026-06-30" in out and "年度财报 annual" in out, out[:2500])
 print("ALL PASS" if not fails else f"{len(fails)} FAILED: {fails}")
 sys.exit(1 if fails else 0)

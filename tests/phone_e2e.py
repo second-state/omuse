@@ -1,5 +1,16 @@
-"""Phone calls end to end: setup checks, number rules, approval, dialling, the Telnyx<->Realtime bridge, DTMF,
-hang-up, transcript to the agent, and the public entrance's security (one-time tokens, signed webhooks)."""
+"""Phone calls on the Telnyx line: the bridge and the guarantees a real-model run cannot produce or see (local stack +
+tests/fake_voice.py, scripted model). The use case — the user asks for a call, the dialog shows the number before
+dialling, the answer gives the booking and its reference, only that number rings, a denied call rings nothing, an
+emergency number is never called, Connections → Phone lists the call — is tested from the user's side by
+tests/phone_real.py. What stays here, and why it cannot be e2e:
+  * the setup checks and keys never shown back (exact API / security);
+  * the number rules — emergency, countries outside the list, premium rate, a call without a real purpose, the daily
+    limit — as forced refusals (a real model may refuse before asking);
+  * the approval's exact fields and editable brief;
+  * the Telnyx dial (from/to, PCMU stream to a one-time URL, the hard time limit), the Realtime session (u-law, the
+    brief, the owner's name, the AI disclosure, only end_call/press_keys), audio both ways, barge-in, DTMF, hang-up,
+    the call status reaching the agent as untrusted content (the bridge's internals);
+  * the public entrance: one-time stream tokens, nothing but /voice/*, signed webhooks, replays refused (security)."""
 import asyncio
 import base64
 import json
@@ -73,7 +84,7 @@ for _ in range(120):
     if task["status"] in ("COMPLETED", "FAILED"):
         break
     time.sleep(0.5)
-check("task completes with the call's outcome", task["status"] == "COMPLETED" and "CALL DONE" in (task.get("result") or ""),
+check("(setup) the task completes with the call's outcome", task["status"] == "COMPLETED" and "CALL DONE" in (task.get("result") or ""),
       (task["status"], task.get("result")))
 st = c.get(F + "/state").json()
 d = st["dials"][-1] if st["dials"] else {}
@@ -93,8 +104,6 @@ check("the model's voice was played into the call", st["played"] >= 3, st["playe
 check("barge-in clears queued audio when they start talking", st["clears"] >= 1, st["clears"])
 check("menu navigation pressed 1 through Telnyx", st["dtmf"] == ["1"] and st["tool_outputs"] and "pressed 1" in st["tool_outputs"][0], st)
 check("OMuse hung up after the goodbye", st["hangups"], st)
-res = task.get("result") or ""
-check("the agent got the transcript and summary (reference A12)", "A12" in res and "Aurora Restaurant" in res and "Them:" in res, res)
 calls = c.get(S + "/phone/calls", headers=H).json()["calls"]
 check("the call is listed as ended with outcome done", calls and calls[0]["status"] == "ended" and calls[0]["outcome"] == "done", calls[:1])
 check("the other side's 'IGNORE YOUR TASK' only shows up as transcript data (no second call was dialled)",

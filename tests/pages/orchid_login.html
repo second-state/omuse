@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Sign in — Orchid Rewards</title>
+<style>body{margin:0;font:16px Arial,sans-serif;background:#f6f1fa;color:#2a1838} header{background:#6b2d8f;color:#fff;padding:14px 32px;font-size:20px}
+.box{position:absolute;left:80px;top:110px;width:420px;height:420px;background:#fff;border-radius:12px;box-shadow:0 2px 12px #0002}
+h1{position:absolute;left:110px;top:120px;font-size:24px;margin:0} label{position:absolute;left:110px;font-size:14px}
+input{position:absolute;left:110px;width:340px;height:36px;font-size:16px;padding:0 8px;border:1px solid #999;border-radius:6px}
+#em{top:210px} #pw{top:300px} #go{position:absolute;left:110px;top:370px;width:360px;height:44px;background:#6b2d8f;color:#fff;border:0;border-radius:22px;font-size:16px;cursor:pointer}
+#err{position:absolute;left:110px;top:430px;color:#b00020;font-size:14px}</style></head>
+<body><header>Orchid Rewards</header><div class="box"></div><h1>Member sign in</h1>
+<label style="top:186px" for="em">Email</label><input id="em" type="email" autocomplete="username">
+<label style="top:276px" for="pw">Password</label><input id="pw" type="password" autocomplete="current-password">
+<button id="go">Sign in</button><div id="err" role="alert"></div>
+<script>
+document.getElementById('go').onclick = () => {
+  const em = document.getElementById('em').value.trim().toLowerCase(), pw = document.getElementById('pw').value;
+  if (em === 'lucas@example.com' && pw === 'Orchid#2026') { localStorage.setItem('orchid_member', 'Lucas Lu'); location.href = '/orchid_account.html'; }
+  else document.getElementById('err').textContent = 'The email or password is not right. Please try again.';
+};
+</script></body></html>

@@ -1,0 +1,39 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Plans & pricing — Lumen Notes</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font-family:Helvetica,Arial,sans-serif;margin:0;color:#1d2433} header{padding:18px 40px;border-bottom:1px solid #eee;display:flex;gap:24px}
+main{padding:24px 40px;max-width:900px} .plans{display:flex;gap:20px} .plan{border:1px solid #dde;border-radius:10px;padding:18px;flex:1}
+.plan b{font-size:22px} footer{padding:20px 40px;color:#777;font-size:12px}</style></head>
+<body><header><b>Lumen Notes</b><span>Product</span><span>Pricing</span><span>Blog</span><span>Sign in</span></header>
+<main><h1>Plans for every team</h1><p>Notes, docs and AI summaries in one place. Prices per user, billed yearly, before GST.</p>
+<div class="plans"><div class="plan"><h2>Team</h2><b>S$12 / user / month</b><p>Unlimited notebooks, shared spaces, 500 AI summaries a month.</p></div>
+<div class="plan"><h2>Business</h2><b>S$24 / user / month</b><p>Everything in Team, SSO, audit log, unlimited AI summaries.</p></div></div>
+<p>Questions about other plans, students or non-profits? Ask Lyra, our assistant — the chat button is in the corner.</p></main>
+<footer>Lumen Notes Pte. Ltd. · Singapore · Terms · Privacy</footer>
+<div id="lyra"></div>
+<script>
+// the chat widget lives in an open shadow root (no iframe), like Tidio's
+const host = document.getElementById('lyra'), root = host.attachShadow({ mode: 'open' });
+root.innerHTML = `<style>
+  .launch{position:fixed;right:24px;bottom:24px;width:60px;height:60px;border-radius:30px;background:#5b4dff;border:0;color:#fff;font-size:26px;cursor:pointer}
+  .panel{position:fixed;right:24px;bottom:96px;width:340px;height:420px;background:#fff;border:1px solid #ccc;border-radius:12px;display:none;flex-direction:column;font:14px Helvetica,Arial,sans-serif}
+  .panel.open{display:flex} .log{flex:1;overflow:auto;padding:10px} .msg{margin:6px 0} .me{text-align:right;color:#264}
+  .row{display:flex;border-top:1px solid #eee} textarea{flex:1;height:48px;border:0;padding:8px;font:inherit} .send{width:70px}
+  .quick button{margin:3px;font-size:12px}</style>
+  <button class="launch" aria-label="Open chat">&#128172;</button>
+  <div class="panel" role="dialog" aria-label="Chat with Lyra">
+    <div class="log"><div class="msg">Hi! I'm Lyra from Lumen Notes. How can I help?</div>
+      <div class="quick"><button>Pricing</button><button>Talk to a person</button></div></div>
+    <div class="row"><textarea aria-label="Type your message" placeholder="Type your message"></textarea><button class="send" aria-label="Send message">Send</button></div>
+  </div>`;
+const panel = root.querySelector('.panel'), log = root.querySelector('.log'), ta = root.querySelector('textarea');
+root.querySelector('.launch').onclick = () => panel.classList.toggle('open');
+const add = (who, text) => { const d = document.createElement('div'); d.className = 'msg ' + who; d.textContent = text; log.appendChild(d); log.scrollTop = 1e6; };
+const answer = q => /free|no cost|without pay|starter|\$0|trial/i.test(q)
+  ? 'Yes! Our Starter plan is free forever: up to 3 notebooks, 50 AI summaries a month and sync on 2 devices. No credit card needed.'
+  : /person|human|agent/i.test(q) ? 'Our team replies by email within 4 hours on weekdays.'
+  : /pric|plan|cost/i.test(q) ? 'Team is S$12 and Business S$24 per user per month. We also have a free Starter plan — ask me about it!'
+  : 'Sorry, could you tell me a bit more?';
+const send = () => { const q = ta.value.trim(); if (!q) return; add('me', q); ta.value = ''; setTimeout(() => add('bot', 'Lyra: ' + answer(q)), 1500); };
+root.querySelector('.send').onclick = send;
+ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+</script></body></html>

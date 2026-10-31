@@ -1,4 +1,4 @@
-"""Shared driver for the travel-skill suites (trip_today_e2e.py, sgac_e2e.py, …): the scripted model (tests/fake_llm.py)
+"""Shared driver for the travel-skill suites (approval_lang_ui.py, …): the scripted model (tests/fake_llm.py)
 plays the agent, the stack's own services play the world — mail in the local IMAP server (Dovecot on 1143, as
 mail_generic_e2e.py), an iCal calendar and the travel data connector from tests/fake_apps.py / fake_travel.py, pages
 under tests/pages (http://shop.test:8099/…), uploads through /api/upload. Each suite checks which tools the skill made
@@ -101,11 +101,11 @@ def set_profile(**fields) -> None:
         c.put(B + "/api/profile", json={"key": k, "value": v}, headers=H)
 
 
-def vault_item(label: str, kind: str, values: dict, domains: str = "") -> str:
+def vault_item(label: str, kind: str, values: dict, domains: str = "", country: str = "") -> str:
     have = {i["label"]: i["id"] for i in c.get(S + "/vault", headers=H).json().get("items", [])}
     if label in have:
         return have[label]
-    r = c.post(S + "/vault", headers=H, json={"label": label, "kind": kind, "values": values, "domains": domains})
+    r = c.post(S + "/vault", headers=H, json={"label": label, "kind": kind, "values": values, "domains": domains, "country": country})
     return (r.json().get("item") or r.json()).get("id")
 
 

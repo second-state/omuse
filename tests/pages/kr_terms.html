@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- The terms page, after the real site (2026-10-31): the consents, the representative email twice, Confirm. The real
+     site posts to /portal/apply/individual.do; this copy opens it with the email in the address. -->
+<html lang="en"><head><meta charset="utf-8"><title>Consent to terms and conditions | e-Arrival card</title><style>
+body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#f4f6fa}header{background:#003478;color:#fff;padding:14px 32px;font-weight:bold}
+main{max-width:860px;margin:24px auto;background:#fff;border:1px solid #d7d9dd;padding:24px 32px}label{display:block;margin:8px 0}
+input[type=text]{height:32px;border:1px solid #9aa0a6;border-radius:3px;padding:4px 8px;width:320px}
+button{height:40px;padding:0 26px;background:#003478;color:#fff;border:0;border-radius:4px;font-size:15px}.err{color:#c00;min-height:18px}
+</style></head><body><header>Official Korea e-Arrival card</header><main>
+<h1>Consent to terms and conditions</h1>
+<label><input type="checkbox" id="chkAgreementAll"> Agree to all</label>
+<label><input type="checkbox" id="chkAgreement1" class="agree"> I agree to collection and use of personal information.</label>
+<label><input type="checkbox" id="chkAgreement3" class="agree"> I agree to terms and conditions of use of e-Arrival card</label>
+<label><input type="checkbox" id="chkAgreement4" class="agree"> You must be 14 years old or older</label>
+<h2>Representative email</h2>
+<label>Email <input type="text" id="emlAddr1"></label><label>Confirm email <input type="text" id="emlAddr2"></label>
+<div class="err" id="err"></div><button type="button" id="btnOk">Confirm</button>
+</main><script>
+document.getElementById('chkAgreementAll').addEventListener('change', e => document.querySelectorAll('.agree').forEach(c => c.checked = e.target.checked));
+document.getElementById('btnOk').addEventListener('click', () => {
+  const a = document.getElementById('emlAddr1').value.trim(), b = document.getElementById('emlAddr2').value.trim();
+  const all = [...document.querySelectorAll('.agree')].every(c => c.checked);
+  if (!all) { document.getElementById('err').textContent = 'Please agree to the required terms.'; return; }
+  if (!a || a !== b) { document.getElementById('err').textContent = 'Please check the email address.'; return; }
+  location.href = '/portal/apply/individual.do?email=' + encodeURIComponent(a);
+});
+</script></body></html>

@@ -1,7 +1,12 @@
-"""No Flights & hotels key: flights_search still works, with Kiwi.com's public MCP (tests/fake_apps.py's stand-in) behind
-it — the flight data only (airlines, flight numbers, local times, stops, price, baggage), no booking link anywhere — and the
-flight-booking skill calls it together with web_search in ONE turn; the answer sends the user to the airline's site or an
-agency, never to Kiwi. Without the key hotels and places come from web search and the detail tools say they need the key (travel_search_e2e has the keyed paths)."""
+"""No Flights & hotels key, kept as a scripted suite for what a real run cannot force or count: flights_search on Kiwi.com's
+public MCP (tests/fake_apps.py's stand-in) asked exactly once per search (a range of dates too, no MCP handshake) with the
+exact arguments (invalid numbers replaced, city codes, cabins, stops, alliances and airline codes, self-transfer only when
+asked), Kiwi.com down (the search fails, nothing else is searched), the compact result fields (booking_url, book_at,
+compare_url), ONE travel search per turn and per request when the model tries more, the executor's instructions and
+standing preferences, hotels and places falling back to web search (the detail tools saying they need the key), and
+"book it" filling the booking page from the vault. What the user sees without a key — real
+flights with the airline, times, price and a Kiwi.com booking link that opens, one date and a range — is
+tests/travel_kiwi_real.py (real model, real Kiwi.com)."""
 import datetime as dt
 import json
 import os
@@ -37,6 +42,7 @@ K.check("the connection view says flights come from Kiwi.com", cv.get("flights_s
 r = act("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": DATE, "adults": 0, "max_price": 0, "currency": "SGD"})
 kl0 = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
 s0 = ((r.get("result") or {}).get("content") or {}).get("searched") or {}
+cars0 = len(c.get(FAKE + "/cars/_log").json())
 K.check("max_price 0 and adults 0: Kiwi.com is asked with no price limit and 1 adult, and the result says so", "price_to" not in kl0 and kl0.get("adults") == 1
         and s0.get("max_price") == "no limit (every price)" and s0.get("adults") == 1 and ((r.get("result") or {}).get("content") or {}).get("count") == 2, (kl0, s0))
 r = act("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": DATE, "adults": "-3", "max_price": -50, "currency": "SGD"})
@@ -73,9 +79,13 @@ txt = str(r)
 K.check("flights_search answers from Kiwi.com data: compact offers with airlines, flight numbers, times, stops, price, baggage", r.get("status") == "ok"
         and "Kiwi.com" in env.get("source", "") and res.get("count") == 2 and res["offers"][0]["airlines"] == "Singapore Airlines" and res["offers"][0]["legs"][0]["flight_number"] == "SQ638"
         and res["offers"][0]["price"] == 620 and res["offers"][0]["stops"] == 0 and res["offers"][1]["layovers"] == ["HKG"] and res["offers"][0]["baggage"]["checkedBag"] == 1, txt[:500])
-K.check("no Kiwi booking link anywhere in the result, and the booking guidance names the airline or an agency", "kiwi.com/u/" not in txt.lower() and "bookingUrl" not in txt
-        and "never through Kiwi" in res["offers"][0]["book"] and "airline's own site" in res["book"], txt[:300])
+K.check("each offer has its Kiwi.com booking link (booking_url) and the airline's own site (book_at); the guidance names both",
+        res["offers"][0].get("booking_url") == "https://kiwi.com/u/abc123" and res["offers"][1].get("booking_url") == "https://kiwi.com/u/def456"
+        and res["offers"][0].get("book_at") == ["singaporeair.com"] and "booking_url" in res["book"] and "airline's own site" in res["book"], txt[:500])
+K.check("connections on one booking only: Kiwi.com was asked without self-transfer, and each offer says so",
+        c.get(FAKE + "/kiwi-mcp/_log").json()[-1].get("allow_self_transfer") is False and "no self-transfer" in res["offers"][0].get("ticket", ""), res["offers"][0].get("ticket"))
 kl = c.get(FAKE + "/kiwi-mcp/_log").json()
+K.check("ONE request to Kiwi.com per search (tools/call, no MCP handshake)", c.get(FAKE + "/kiwi-mcp/_requests").json().get("initialize", 0) == 0, c.get(FAKE + "/kiwi-mcp/_requests").json())
 K.check("Kiwi was asked with the route, date, cabin and currency", kl and kl[-1]["flyFrom"] == "Singapore" and kl[-1]["flyTo"] == "Tokyo" and kl[-1]["departureDate"] == DATE
         and kl[-1]["cabinClass"] == "ECONOMY" and kl[-1]["currency"] == "SGD" and kl[-1]["sort"] == "price", kl[-1:])
 K.check("the result repeats what was searched: economy, any stops, the date, one way", res.get("searched", {}).get("cabin") == "economy"
@@ -94,11 +104,17 @@ d1 = (dt.date.fromisoformat(DATE) + dt.timedelta(days=1)).isoformat(); d3 = (dt.
 rr = act("flights_search", {"origin": "SIN", "destination": "NRT", "date": d1, "date_to": d3, "return_date": (dt.date.fromisoformat(d1) + dt.timedelta(days=5)).isoformat(), "currency": "SGD"})
 rg = ((rr.get("result") or {}).get("content") or {})
 kl = c.get(FAKE + "/kiwi-mcp/_log").json()[n0:]
-K.check("a date range is ONE flights_search: three days asked of Kiwi, the return moving with each day, one merged result",
-        len(kl) == 3 and sorted(x["departureDate"] for x in kl) == [d1, (dt.date.fromisoformat(d1) + dt.timedelta(days=1)).isoformat(), d3]
-        and all(x["returnDate"] == (dt.date.fromisoformat(x["departureDate"]) + dt.timedelta(days=5)).isoformat() for x in kl)
-        and [b["date"] for b in rg.get("by_date", [])] == sorted(x["departureDate"] for x in kl) and all(o.get("date") for o in rg.get("offers", []))
+days = [d1, (dt.date.fromisoformat(d1) + dt.timedelta(days=1)).isoformat(), d3]
+K.check("a date range is ONE Kiwi.com search (departureDate … departureDateTo, a 5-night stay), split per day in one result",
+        len(kl) == 1 and kl[0]["departureDate"] == d1 and kl[0].get("departureDateTo") == d3 and kl[0].get("nights_in_dst_from") == 5 and kl[0].get("nights_in_dst_to") == 5
+        and "returnDate" not in kl[0] and [b["date"] for b in rg.get("by_date", [])] == days and all(o.get("date") for o in rg.get("offers", []))
         and rg["offers"][0]["price"] <= rg["offers"][-1]["price"] and rg["searched"]["dates"].endswith("(3 days)"), (kl, rg.get("by_date"), rg.get("searched")))
+K.check("a range's Kayak link is its cheapest day, the return keeping the 5-night stay",
+        rg.get("compare_url") == f"{FAKE}/kayak/flights/SIN-NRT/{d1}/{(dt.date.fromisoformat(d1) + dt.timedelta(days=5)).isoformat()}?sort=price_a", rg.get("compare_url"))
+rs = act("flights_search", {"origin": "SIN", "destination": "NRT", "date": DATE, "self_transfer": "yes", "currency": "SGD"})
+ks = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
+K.check("self_transfer asked for explicitly goes to Kiwi.com as allow_self_transfer, and the offers say they may be separate tickets",
+        ks.get("allow_self_transfer") is True and "self-transfer" in str((((rs.get("result") or {}).get("content") or {}).get("offers") or [{}])[0].get("ticket")), (ks, str(rs)[:300]))
 r4 = act("flights_search", {"origin": "Osaka", "destination": "SIN", "date": DATE, "cabin": "business", "currency": "SGD"})
 o4 = ((r4.get("result") or {}).get("content") or {}).get("offers") or []
 mixed = [o for o in o4 if o.get("cabin_mix")]
@@ -114,30 +130,44 @@ K.check("preferred airlines narrow the search itself (select_airlines SQ,NH): th
         kl3.get("select_airlines") == "SQ,NH" and res3.get("count") == 1 and res3["offers"][0].get("preferred") is True
         and res3["searched"]["airlines"] == ["Singapore Airlines", "NH"] and res3["searched"]["preferred_found"] == 1
         and "preferred airlines" in res3["searched"]["rule"], (kl3.get("select_airlines"), res3.get("searched"), [o.get("preferred") for o in res3.get("offers", [])]))
+K.check("the result has Kayak's page for the same search (compare_url), the preferred airlines as its filter — built, not fetched",
+        res3.get("compare_url") == f"{FAKE}/kayak/flights/SIN-NRT/{DATE}?sort=price_a&fs=airlines=SQ,NH", res3.get("compare_url"))
 K.check("the result's rule makes the preferred search the only one and says to ask before searching all airlines",
         "do not search again without them" in res3["searched"]["rule"] and "ask whether to search all airlines" in res3["searched"]["rule"], res3["searched"]["rule"])
 c.post(FAKE + "/kiwi-mcp/_down", json={"on": True})
 rw = act("flights_search", {"origin": "SIN", "destination": "TYO", "date": DATE, "cabin": "business", "stops": "nonstop", "currency": "SGD"})
 c.post(FAKE + "/kiwi-mcp/_down", json={"on": False})
 w = (rw.get("result") or {})
-K.check("no key and Kiwi.com down: the flight search falls back to the web search chain, with the request spelled out and a note that these are not flight data",
-        rw.get("status") == "ok" and "web search" in str(w.get("source", "")) and "business class nonstop flights SIN to TYO" in str(w.get("source", ""))
-        and w.get("results") and "Kiwi.com failed" in w.get("flights_fallback", "") and "not flights data" in w.get("flights_fallback", ""), str(rw)[:500])
+K.check("no key and Kiwi.com down: the one search fails and says so — nothing else is searched (no web search)",
+        rw.get("status") != "ok" and "Kiwi.com failed" in str(rw) and "web search" not in str(w.get("source", "")), str(rw)[:500])
 oid = res["offers"][0]["offer_id"]
 r = act("flight_offer", {"offer_id": oid})
 d = (r.get("result") or {}).get("content") or {}
-K.check("flight_offer brings the offer's details back without a link", r.get("status") == "ok" and d.get("offer_id") == oid and d["airlines"] == "Singapore Airlines"
-        and d["booking_options"][0]["link"] == "" and "information only" in d["booking_options"][0]["note"], str(r)[:300])
+K.check("flight_offer brings the offer's details back: Kiwi.com with its booking link first, then the airline's own site", r.get("status") == "ok" and d.get("offer_id") == oid
+        and d["airlines"] == "Singapore Airlines" and d["booking_options"][0]["book_with"] == "Kiwi.com" and d["booking_options"][0]["link"] == "https://kiwi.com/u/abc123"
+        and d["booking_options"][1]["book_with"] == "singaporeair.com", str(r)[:300])
 out_d = (dt.date.fromisoformat(DATE) + dt.timedelta(days=3)).isoformat()
 r = act("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": DATE, "check_out": out_d, "guests": 2, "min_stars": 4, "brands": ["Hilton"]})
 w = r.get("result") or {}
+K.check("…and still carries Kayak's page for the same stay", w.get("compare_url") == f"{FAKE}/kayak/hotels/Ginza%2CTokyo/{DATE}/{out_d}/2adults?sort=price_a", w.get("compare_url"))
 K.check("hotels_search without the key falls back to web search with the request spelled out (brand, stars, area, city, dates)", r.get("status") == "ok"
         and "web search" in str(w.get("source", "")) and f"Hilton 4 star hotels near Ginza Tokyo {DATE} to {out_d}" in str(w.get("source", ""))
         and w.get("results") and "no SerpApi key" in w.get("hotels_fallback", "") and "not hotels data" in w.get("hotels_fallback", ""), str(r)[:400])
+K.check("the compare links cost no call: Kayak was never asked during the flight and hotel searches", len(c.get(FAKE + "/cars/_log").json()) == cars0,
+        c.get(FAKE + "/cars/_log").json()[cars0:])
 r = act("places_search", {"query": "ramen", "area": "Shinjuku", "city": "Tokyo", "open_now": True})
 w = r.get("result") or {}
-K.check("places_search without the key falls back to web search too", r.get("status") == "ok" and "best ramen near Shinjuku Tokyo open now" in str(w.get("source", ""))
-        and w.get("results") and "places_fallback" in w, str(r)[:300])
+cont = w.get("content") or w   # the browser step's result is wrapped as untrusted content
+fb = w.get("places_fallback", "") or cont.get("places_fallback", "")
+maps = cont.get("source") == "Google Maps in the browser"
+K.check("places_search without the key: the chain in code — no SerpApi key, then the Google Maps page in the browser, else a web search",
+        r.get("status") == "ok" and "no SerpApi key" in fb
+        and ((maps and "google.com/maps" in cont.get("map_url", "") and len(cont.get("text", "")) >= 200)
+             or ("best ramen near Shinjuku, Tokyo open now" in str(w.get("source", "")) and w.get("results")
+                 and "Google Maps in the browser" in fb and fb.index("no SerpApi key") < fb.index("Google Maps in the browser"))),
+        str(r)[:400])
+K.check("…and nothing is left for the model to fetch: the Maps page's text, or the web search's top pages read in code",
+        maps or ("pages" in w and "most relevant" not in fb), str(w)[:300])
 r = act("hotel_rooms", {"hotel_id": "ht_x", "check_in": DATE, "check_out": out_d})
 K.check("hotel_rooms (Google ids) still needs the key, and the refusal says the searches come from web search without it", r.get("status") in ("denied", "error")
         and "SerpApi" in str(r) and "web search" in str(r), str(r)[:300])
@@ -145,15 +175,15 @@ K.check("hotel_rooms (Google ids) still needs the key, and the refusal says the 
 t = K.run(f"KIWIFLIGHTS cheapest flight Singapore to Tokyo on {DATE} DATE={DATE}")
 K.trace(t)
 names = K.names(t)
-K.check("the task completed and sends the user to the airline's own site from the offer's book_at, with no Kiwi link", t["status"] == "COMPLETED" and "Book it on singaporeair.com" in (t.get("result") or "")
-        and "kiwi.com/u" not in (t.get("result") or "").lower() and "information only" in (t.get("result") or ""), (t["status"], (t.get("result") or "")[:300]))
+K.check("the task completed and gives the offer's Kiwi.com booking link and the airline's own site", t["status"] == "COMPLETED"
+        and "Book it at https://kiwi.com/u/abc123" in (t.get("result") or "") and "on singaporeair.com" in (t.get("result") or ""), (t["status"], (t.get("result") or "")[:300]))
 K.check("skill, then flights_search ONLY — no web_search beside it, no browser", names == ["load_skill", "flights_search"], names)
 K.check("an ordinary skill is followed from its sheet: no plan, no planner call, never PLANNING", not any(e["type"] == "plan" for e in t["events"])
         and not (t.get("plan") or {}).get("steps") and "PLANNING" not in t["_seen"], ([e["type"] for e in t["events"]], t["_seen"]))
 sysp = [x["system"] for x in c.get(LLM + "/calls_for", params={"marker": "KIWIFLIGHTS"}).json()]
-K.check("the agent's instructions carry the rule: Kiwi.com data for information only, never through Kiwi, flights_search is the only call a flight question needs",
-        sysp and "Kiwi.com data" in sysp[0] and "INFORMATION ONLY" in sysp[0] and "never book through Kiwi" in sysp[0] and "the only call a flight question needs" in sysp[0]
-        and "never add a web_search call beside it" in sysp[0], sysp[0][:200] if sysp else None)
+K.check("the agent's instructions carry the rules: Kiwi.com data with each offer's booking_url, ONE flights_search per turn and request, no web_search beside it",
+        sysp and "Kiwi.com data" in sysp[0] and "booking_url" in sysp[0] and "ONE travel search per turn and per request" in sysp[0]
+        and "the only call a flight question needs" in sysp[0] and "Never add a web_search call beside them" in sysp[0], sysp[0][:200] if sysp else None)
 
 # a business-class, direct request from a city with two airports: one search, the cabin and the stop limit as asked;
 # the profile's preferred airline rides with the skill sheet and goes into the search
@@ -176,7 +206,7 @@ K.check("the executor's instructions carry the standing preferences (the allianc
         and "Shoe size" not in sysp[0], (sysp[0][sysp[0].find("Standing"):][:300] if sysp else None))
 K.check("the standing preferences say: ONE search with the preference (flights, hotels, car rental), none without it, all only when asked or after asking",
         sysp and "never a second search without it to compare" in sysp[0] and "ONE flights_search with the airline in airlines=[…]" in sysp[0]
-        and "ONE hotels_search with the brand" in sysp[0] and "ONE web_search with the rental company" in sysp[0]
+        and "ONE hotels_search with the brand" in sysp[0] and "ONE cars_search with the rental company in companies=[…]" in sysp[0]
         and "When the user asks for all airlines, hotels or rental companies" in sysp[0] and "ask whether to search all airlines / hotels / companies" in sysp[0], (sysp[0][sysp[0].find("Standing"):][:700] if sysp else None))
 
 # the model sends max_price 0 and adults 0: the call that runs (and the timeline) has no cap and 1 adult
@@ -199,7 +229,7 @@ K.check("Emirates flies nothing here: the narrowed search's empty result is the 
         rp and "Kiwi.com flights" in str(rp[0].get("preview")) and "web search" not in str(rp[0].get("preview")).lower() and "web_search" not in np_,
         [str(x.get("preview"))[:300] for x in rp])
 K.check("the search reports no preferred offer and the answer says so and asks whether to search all airlines",
-        tp["status"] == "COMPLETED" and "no Emirates flight" in (tp.get("result") or "") and (tp.get("result") or "").endswith("Shall I search all airlines?"),
+        tp["status"] == "COMPLETED" and "no Emirates flight" in (tp.get("result") or "") and "Shall I search all airlines?" in (tp.get("result") or ""),
         (tp["status"], (tp.get("result") or "")[:300]))
 
 # a range of dates from the chat: one flights_search with date + date_to, no plan
@@ -210,6 +240,21 @@ fsa = [x["args"] for x in K.calls(tf) if x.get("name") == "flights_search"]
 K.check("a date range from the chat is ONE flights_search with date and date_to, no plan, and the answer covers all five days",
         nf == ["load_skill", "flights_search"] and len(fsa) == 1 and fsa[0].get("date") == f1 and fsa[0].get("date_to") == f2
         and not any(e["type"] == "plan" for e in tf["events"]) and "5 days searched in one call" in (tf.get("result") or ""), (nf, fsa, (tf.get("result") or "")[:200]))
+
+# a model that searches six times in one turn and three more next turn: ONE travel search per request — the first runs, the
+# rest of the turn is skipped, the next turn's are refused, and nothing more reaches Kiwi.com
+n0 = len(c.get(FAKE + "/kiwi-mcp/_log").json())
+tw = K.run(f"TWOSEARCH flights and a hotel in Tokyo DATE={DATE}")
+kw = c.get(FAKE + "/kiwi-mcp/_log").json()[n0:]
+fr = [e["data"] for e in tw.get("events", []) if e["type"] == "tool_result" and e["data"].get("name") in ("flights_search", "hotels_search", "cars_search")]
+ran = [(x["name"], x.get("ok")) for x in fr]
+txt = " ".join(str(x.get("preview") or x.get("error") or "") for x in fr)
+K.check("two flight, two hotel and two car searches in one turn, and one of each next turn: ONE travel search ran (the first flight), Kiwi.com asked once",
+        tw["status"] == "COMPLETED" and len(kw) == 1 and kw[0]["flyTo"] == "NRT" and ran.count(("flights_search", True)) == 1
+        and ("hotels_search", True) not in ran and ("cars_search", True) not in ran, (ran, kw))
+K.check("the rest of the turn is skipped and the next turn's searches refused, naming the search that ran",
+        txt.count("this turn already ran its one travel search") == 7 and txt.count("this request already ran its one travel search") == 1,
+        (txt.count("this turn already ran its one travel search"), txt.count("this request already ran its one travel search")))
 
 # "book it" in the same conversation: no plan, no second search — the airline's booking page with the traveller, passport and card
 # filled from the vault, then the page is handed over for the user to check and pay (tests/fake_travel.py's booking page stands in)

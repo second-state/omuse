@@ -24,6 +24,7 @@ url.workspace = true
 percent-encoding.workspace = true
 mime_guess.workspace = true
 html-escape.workspace = true
+lopdf.workspace = true
 chromiumoxide.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

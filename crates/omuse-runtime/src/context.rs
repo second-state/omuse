@@ -172,6 +172,18 @@ fn domain_for(f: &Value) -> String {
 
 /// The facts that matter for this request, best first. Each returned fact gets `score` and `why`.
 /// `context` = the recent conversation (a follow-up like "好，就买那双" carries little on its own).
+/// A family or work relation the request and the fact both name ("my wife" … "the user's wife"), else `None`.
+fn shared_relation(request: &str, fact: &str) -> Option<String> {
+    static REL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(wife|husband|spouse|partner|son|daughter|kids?|children|mother|mom|mum|father|dad|parents|brother|sister|boss|manager|assistant|grandmother|grandfather|girlfriend|boyfriend)\b|(妻子|老婆|太太|丈夫|老公|先生|儿子|女儿|孩子|妈妈|母亲|爸爸|父亲|父母|哥哥|弟弟|姐姐|妹妹|老板|上司|助理|奶奶|爷爷|外婆|外公|女朋友|男朋友)").unwrap()
+    });
+    let norm = |w: &str| w.to_lowercase().trim_end_matches('s').to_string();
+    let in_fact: Vec<String> = REL.find_iter(fact).map(|m| norm(m.as_str())).collect();
+    REL.find_iter(request)
+        .map(|m| norm(m.as_str()))
+        .find(|w| in_fact.contains(w))
+}
+
 pub fn select(
     request: &str,
     facts: &[Value],
@@ -221,6 +233,11 @@ pub fn select(
         if !g.is_empty() {
             s += 6.0;
             why.push(format!("提到 {}", g[0][0]));
+        } else if let Some(r) = shared_relation(req, &text) {
+            // "a present for my wife" and "The user's wife, Mei, collects jazz vinyl": the same person by relation
+            // (2026-10-30, memory_real: Try it found nothing)
+            s += 6.0;
+            why.push(format!("关系：{r}"));
         }
         let hits: Vec<&str> = its
             .iter()
@@ -341,6 +358,61 @@ pub fn site_facts(url: &str, facts: &[Value]) -> Vec<Value> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn food_and_drink_preferences_are_found() {
+        // assistant_real 2026-10-31: "What do you know about my food and drink preferences?" selected nothing
+        let facts = vec![
+            json!({"id": "f1", "fact": "The user is vegetarian and does not drink alcohol.", "entity": "user", "domain": "preference"}),
+            json!({"id": "f2", "fact": "The user wears size 42 running shoes.", "entity": "", "category": "preference"}),
+        ];
+        let got = select(
+            "What do you know about my food and drink preferences?",
+            &facts,
+            None,
+            12,
+            "",
+        );
+        assert!(got.iter().any(|f| f["id"] == "f1"), "{got:?}");
+        assert!(!got.iter().any(|f| f["id"] == "f2"));
+    }
+
+    #[test]
+    fn a_relation_finds_the_person() {
+        let facts = vec![
+            json!({"id": "f1", "fact": "The user's wife, Mei, collects jazz vinyl records.", "entity": "Mei", "category": "person"}),
+            json!({"id": "f2", "fact": "The user wears size 42 running shoes.", "entity": "", "category": "preference"}),
+        ];
+        let got = select(
+            "Suggest a birthday present for my wife",
+            &facts,
+            None,
+            12,
+            "",
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["id"], "f1");
+        assert!(
+            select(
+                "给我老婆挑个生日礼物",
+                &[json!({"id": "z", "fact": "用户的老婆喜欢黑胶唱片。", "entity": ""})],
+                None,
+                12,
+                ""
+            )
+            .len()
+                == 1
+        );
+        assert!(select(
+            "Suggest a birthday present for my boss",
+            &facts,
+            None,
+            12,
+            ""
+        )
+        .is_empty());
+    }
+
     use super::*;
     use serde_json::json;
 

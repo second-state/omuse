@@ -1,4 +1,12 @@
-"""Parallel plan steps. The planner labels independent steps with one `parallel` group, the status note tells the
+"""Parallel plan steps: the exact lane and concurrency guarantees a real-model run cannot see (scripted model). The use
+case — several sites compared in one request, read side by side, so the answer comes sooner than reading them one after
+another would allow — is tested from the user's side by tests/chat_real.py (four slow hotel sites). What stays here,
+and why it cannot be e2e: the plan's parallel group, the status note that names it, one sub-agent per step started
+before any finished, each in its own lane and browser page, overlapping page loads, the steps marked done by their
+sub-agents with ok and a duration, the one parallel batch per turn (all internal events and the scripted model's
+requests).
+
+The planner labels independent steps with one `parallel` group, the status note tells the
 executor to do that stage in one turn, and the executor runs the turn's delegate calls at the same time: one sub-agent
 per step, each with its own browser tab (lane), marking its step done. The batch form delegate(tasks=[…]) does the same
 in one call. Scripted model: PARALLEL / PARALLELBATCH goals in tests/fake_llm.py; the pages are tests/fake_apps.py's
@@ -75,8 +83,6 @@ for label, goal in (("three delegate calls in one turn", "PARALLEL compare three
     pages = [x.get("task_id") for x in c.get(BR + "/state", headers=HB).json().get("tasks", [])]
     check(f"{label}: the browser opened one page per lane (no shared tab)",
           all(f"{t['id']}~sub{i}" in pages for i in (1, 2, 3)), pages)
-    res = t.get("result") or ""
-    check(f"{label}: the answer has all three reports", all(f"Hotel{x}" in res for x in "ABC"), res[:800])
     steps = {s["id"]: s["status"] for s in (t.get("plan") or {}).get("steps", [])}
     check(f"{label}: the steps were marked done by their sub-agents",
           steps == {"s1": "done", "s2": "done", "s3": "done", "s4": "done"}, steps)

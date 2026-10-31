@@ -701,16 +701,20 @@ fn derive(cols: &mut Vec<String>, rows: &mut [Row], specs: &Value) -> Result<()>
             if labels.len() + 1 != edges.len() {
                 return Err(DataError::new("bins: labels must be one fewer than edges"));
             }
-            let right = s.get("right").map(truthy).unwrap_or(false); // default: [low, high) ; right=true: (low, high]
+            // default (low, high] as pandas.cut, which is what models write (market_real 2026-10-31: NPS bins
+            // [-1, 6, 8, 10] read as [low, high) put 8 with the promoters and dropped the 10s); right=false: [low, high).
+            // A value on the outer edge is never dropped: the first bin includes its low edge, the last its high one.
+            let right = s.get("right").map(truthy).unwrap_or(true);
+            let last = edges.len().saturating_sub(2);
             for r in rows.iter_mut() {
                 let mut lab = json!("");
                 if let Some(x) = to_num(cell(r, &src)) {
                     for i in 0..edges.len().saturating_sub(1) {
                         let (lo, hi) = (edges[i], edges[i + 1]);
                         if if right {
-                            lo < x && x <= hi
+                            (lo < x || (i == 0 && x == lo)) && x <= hi
                         } else {
-                            lo <= x && x < hi
+                            lo <= x && (x < hi || (i == last && x == hi))
                         } {
                             lab = labels[i].clone();
                             break;
@@ -1577,7 +1581,7 @@ mod tests {
         );
         let (_c, rows, _i) = run(
             &p,
-            &json!({"derive": [{"as": "g", "from": "年龄", "bins": [0, 30, 50, 200], "labels": ["<30", "30-49", "50+"]}],
+            &json!({"derive": [{"as": "g", "from": "年龄", "bins": [0, 30, 50, 200], "labels": ["<30", "30-49", "50+"], "right": false}],
                     "group_by": ["g"], "agg": [{"fn": "count"}], "sort": ["g"]}),
         )
         .unwrap();
@@ -1672,7 +1676,7 @@ mod tests {
         );
         let (cols, rows, info) = run(
             &p,
-            &json!({"derive": [{"as": "seg", "from": "nps", "bins": [0, 7, 9, 11], "labels": ["det", "pas", "pro"]}],
+            &json!({"derive": [{"as": "seg", "from": "nps", "bins": [0, 7, 9, 11], "labels": ["det", "pas", "pro"], "right": false}],
                     "group_by": ["seg"], "agg": [{"fn": "count"}, {"fn": "count_share", "as": "pct"}], "sort": ["seg"]}),
         )
         .unwrap();

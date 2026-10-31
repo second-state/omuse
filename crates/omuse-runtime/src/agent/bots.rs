@@ -170,7 +170,8 @@ impl Runtime {
             .collect();
         let user = format!(
             "Today: {}\n\nConversation so far:\n{}\n\nThe user's new request:\n{}",
-            chrono::Utc::now().format("%Y-%m-%d"),
+            // the user's own date and time (Settings → Timezone), never UTC's: late in the UTC day they differ
+            crate::prompts::now_str(&sget(&self.settings(), "timezone"), "en"),
             if recent.is_empty() {
                 "(none)".to_string()
             } else {
@@ -446,6 +447,24 @@ skills, or say which bot the user should ask.",
         self.set_status(&tid, final_status, kw).await;
         self.event(&tid, "final", json!({"text": truncate(&text, 4000)}))
             .await;
+        // the files the bot handed over (a PDF, a picture, a video) show in Main too, above its answer
+        let (bot_conv, bot_task) = (sget(waiting, "conv_id"), sget(waiting, "task_id"));
+        let files: Vec<Value> = self
+            .store
+            .msgs(&bot_conv, 200)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| get_str(m, "role") == "system" && get_str(m, "task_id") == bot_task)
+            .filter_map(|m| serde_json::from_str::<Value>(&get_str(&m, "content")).ok())
+            .filter(|c| matches!(get_str(c, "type").as_str(), "file" | "files"))
+            .collect();
+        for mut card in files {
+            card["from_bot"] = json!(bot.id);
+            card["bot_conv"] = json!(bot_conv);
+            let _ = self
+                .store
+                .add_msg(&conv_id, "system", &pyjson::dumps(&card), &tid, None);
+        }
         self.store
             .add_msg(&conv_id, "assistant", &text, &tid, Some(&meta))?;
         self.publish(json!({"kind": "conv_update", "conv_id": conv_id}))

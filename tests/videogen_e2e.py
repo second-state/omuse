@@ -1,4 +1,11 @@
-"""Video generation (make_video) through the OpenAI-style Videos API: the job is started, polled and downloaded, the
+"""Video generation: the exact Videos API requests and the forced cases a real-model run cannot produce or see (scripted
+model). The use case — a short clip made in the chat, shown with a player, downloadable as an MP4 that plays, and the
+image / video models listed by Settings → Test models — is tested from the user's side by tests/media_real.py. What
+stays here: the job, poll and download requests and which key each carries, the chat options kept out of the Videos
+API, the per-task budget, a prompt the provider declines, Test models without generating, the system model without a
+video model, and keys never in the API or the audit (exact requests, forced outcomes, security).
+
+Video generation (make_video) through the OpenAI-style Videos API: the job is started, polled and downloaded, the
 clip lands in videos/<title>.mp4 and is shown in the chat with a player. The video endpoint and its key are OPTIONAL
 and separate from the model's: here the user's own model set points the videos at a second provider
 (/vid/v1 on the fake server) with its own key, so the request, the polls and the download must carry THAT key while
@@ -81,9 +88,6 @@ ev = events(t, "video")
 check("a video event names the clip, model, size and length",
       len(ev) == 1 and ev[0]["paths"] == ["videos/paper_boat.mp4"] and ev[0]["model"] == "sora-2" and ev[0]["size"] == "1280x720"
       and ev[0]["seconds"] == 4, ev)
-raw = c.get(B + "/api/files/raw", params={"path": "videos/paper_boat.mp4"}, headers=H)
-check("the clip is in the workspace as an MP4", raw.status_code == 200 and raw.content[4:8] == b"ftyp"
-      and raw.headers.get("content-type", "").startswith("video/"), (raw.status_code, raw.headers.get("content-type"), raw.content[:16]))
 conv = c.get(f"{B}/api/conversations/{r['conversation_id']}", headers=H).json()
 cards = [m["content"] for m in conv["messages"] if m["role"] == "system" and '"type": "file"' in m["content"]]
 check("the chat got one file card with the video (mime video/mp4 → a player)",

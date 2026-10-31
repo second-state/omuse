@@ -73,10 +73,17 @@ static NEGATED: LazyLock<Regex> = LazyLock::new(|| {
     rx(r"(?i)(没有|未|尚未|还没|无法|不能|并未|没能|失败|not|n't|unable|couldn't|failed)")
 });
 
+/// A modal or infinitive right before the verb: "can be booked", "need to be reserved", "get booked up".
+static MODAL: LazyLock<Regex> = LazyLock::new(|| {
+    rx(
+        r"(?i)\b(can|could|should|must|may|might|will|would|need to|needs to|have to|has to|to|usually|often)\s+(also\s+)?(be|get)\s+(\w+\s+)?$|\b(get|gets|getting)\s+$|(可以|能|需要|要)$",
+    )
+});
+
 /// An order / booking / confirmation number as people write it next to its label.
 static REF: LazyLock<Regex> = LazyLock::new(|| {
     rx(
-        r"(?i)(?:订单号|订单编号|订单|预订号|确认号|确认码|预约号|参考号|order\s*(?:no\.?|number|#|id)?|booking\s*(?:ref(?:erence)?|no\.?|number|id|code)?|confirmation\s*(?:no\.?|number|code|#)?|reference\s*(?:no\.?|number)?|ref\.?)[\s*]*[:：#]?[\s*]*([A-Z0-9][A-Z0-9\-]{4,24})",
+        r"(?i)(?:订单号|订单编号|订单|预订号|确认号|确认码|预约号|参考号|order\s*(?:ref(?:erence)?|no\.?|number|#|id)?|booking\s*(?:ref(?:erence)?|no\.?|number|id|code)?|confirmation\s*(?:no\.?|number|code|#)?|reference\s*(?:no\.?|number)?|ref\.?)[\s*]*[:：#]?[\s*]*([A-Z0-9][A-Z0-9\-]{4,24})",
     )
 });
 
@@ -108,11 +115,23 @@ static INTENT: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
     ]
 });
 
+/// A question about how to do it ("how do I book as a foreigner", "怎么订票") asks for advice, not for the act
+/// (city_guides2_real 2026-10-31: a Beijing train question read as a booking, the advice rewritten as "I haven't booked").
+static HOW_TO: LazyLock<Regex> = LazyLock::new(|| {
+    rx(
+        r"(?i)\b(how|where|when)\s+(do|can|should|would|could|to)\b(\s+(i|we|you|one|foreigners?|visitors?|tourists?))?(\s+(best|easily|actually))?\s+|(怎么|怎样|如何|在哪(里|儿)?|哪里可以)(才能|可以|能)?",
+    )
+});
+
 /// The consequential things a request asks for.
 pub fn intents(goal: &str) -> BTreeSet<String> {
+    // the verb right after a how-to question is dropped: what is left is what the user wants done
+    let goal = HOW_TO.replace_all(goal, " _ ");
+    static VERB: LazyLock<Regex> = LazyLock::new(|| rx(r"(?i)\s_\s+\S+"));
+    let goal = VERB.replace_all(&goal, " ");
     INTENT
         .iter()
-        .filter(|(_, r)| r.is_match(goal))
+        .filter(|(_, r)| r.is_match(&goal))
         .map(|(k, _)| k.to_string())
         .collect()
 }
@@ -123,7 +142,10 @@ fn claims(final_: &str) -> BTreeSet<String> {
     for line in SENT.split(final_) {
         for (kind, r) in CLAIM.iter() {
             if let Some(m) = r.find(line) {
-                if !NEGATED.is_match(last_chars(&line[..m.start()], 12)) {
+                // "can be booked", "should be reserved": how it is done, not that it was
+                let before = last_chars(&line[..m.start()], 24);
+                if !NEGATED.is_match(last_chars(&line[..m.start()], 12)) && !MODAL.is_match(before)
+                {
                     out.insert(kind.to_string());
                 }
             }
@@ -143,6 +165,28 @@ pub fn refs_in(text: &str) -> Vec<String> {
             out.push(r);
         }
     }
+    out
+}
+
+/// The reference numbers an answer gives that the pages showed: the labelled ones ([`refs_in`]) first, then any
+/// token shaped like one — letters and digits, 5+ characters, e.g. `KM-50731` — so the model need not write a label
+/// ("Your order is confirmed as KM-50731", shopping_real 2026-10-31). The page is the proof; dates and amounts have no
+/// letters and never count.
+fn confirmed_refs(final_: &str, seen_upper: &str) -> Vec<String> {
+    static TOKEN: LazyLock<Regex> =
+        LazyLock::new(|| rx(r"\b[A-Za-z0-9][A-Za-z0-9-]{3,}[A-Za-z0-9]\b"));
+    static LETTER: LazyLock<Regex> = LazyLock::new(|| rx(r"[A-Za-z]"));
+    static DIGIT: LazyLock<Regex> = LazyLock::new(|| rx(r"\d"));
+    let mut out: Vec<String> = refs_in(final_);
+    for t in TOKEN.find_iter(final_).map(|m| m.as_str().to_string()) {
+        if LETTER.is_match(&t)
+            && DIGIT.is_match(&t)
+            && !out.iter().any(|x| x.eq_ignore_ascii_case(&t))
+        {
+            out.push(t);
+        }
+    }
+    out.retain(|r| seen_upper.contains(&r.to_uppercase()));
     out
 }
 
@@ -218,8 +262,14 @@ pub fn actions_done(events: &[Value]) -> Vec<Value> {
             push(&mut out, "call");
         } else if name == "purchase_confirm" && prev.contains("approved") {
             purchase_at = Some(i);
-        } else if (name == "browser_click" || name == "browser_click_at") && purchase_at.is_some() {
-            // a click after the user confirmed the purchase: the place-order / pay click (recorded once)
+        } else if (name == "browser_click"
+            || name == "browser_click_at"
+            || name == "browser_request_takeover")
+            && purchase_at.is_some()
+        {
+            // after the purchase was confirmed: the place-order / pay click — the agent's, or since that click is
+            // always the user's, the takeover in which they press it (recorded once; the order number comes from the
+            // pages read after the hand-back)
             if !out.iter().any(|a| get_str(a, "kind") == "purchase") {
                 push(&mut out, "purchase");
             }
@@ -268,11 +318,7 @@ pub fn assess(
         match kind.as_str() {
             "purchase" => {
                 // proof = an order number the answer gives that a page after the order click actually shows
-                let seen = texts.join("\n").to_uppercase();
-                let nums: Vec<String> = refs_in(final_)
-                    .into_iter()
-                    .filter(|r| seen.contains(&r.to_uppercase()))
-                    .collect();
+                let nums = confirmed_refs(final_, &texts.join("\n").to_uppercase());
                 if let Some(n) = nums.first() {
                     evidence.push(json!({"kind": "purchase", "order_number": n}));
                 } else {
@@ -291,12 +337,15 @@ pub fn assess(
     // a booking is done through an approved click on the booking site: accept it when the answer carries a reference
     // number that a page showed
     if claims.contains("booking") && !done_kinds.contains("booking") {
-        let seen = texts.join("\n").to_uppercase();
-        let nums: Vec<String> = refs_in(final_)
-            .into_iter()
-            .filter(|r| seen.contains(&r.to_uppercase()))
-            .collect();
-        if !nums.is_empty() && approved(events, "browser_click") {
+        let nums = confirmed_refs(final_, &texts.join("\n").to_uppercase());
+        // the agent's approved click, or (the final click being the user's) a takeover the user handed back
+        let handed_back = events.iter().any(|e| {
+            let d = data_of(e);
+            get_str(e, "type") == "tool_result"
+                && get_str(&d, "name") == "browser_request_takeover"
+                && (get_truthy(&d, "ok") || get_str(&d, "status") == "ok")
+        });
+        if !nums.is_empty() && (approved(events, "browser_click") || handed_back) {
             evidence.push(json!({"kind": "booking", "reference": nums[0]}));
             done_kinds.insert("booking".to_string());
         }
@@ -416,6 +465,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_how_to_question_and_how_to_advice_are_not_a_booking() {
+        let goal = "I'm taking the fast train from Beijing to Shanghai. Which station does it leave from, how long does \
+it take, and how do I book as a foreigner?";
+        assert!(!intents(goal).contains("booking"));
+        assert!(!intents("怎么订高铁票？").contains("booking"));
+        assert!(intents("Book me the 9am train to Shanghai").contains("booking"));
+        assert!(intents("How long is the train? Please book it for me").contains("booking"));
+        assert!(claims("Seats can be booked on 12306 with your passport.").is_empty());
+        assert!(claims("Trains often get booked up on holidays.").is_empty());
+        assert!(claims("I booked the 9am train.").contains("booking"));
+        assert!(claims("Your table has been booked.").contains("booking"));
+    }
+
+    #[test]
     fn refs_with_markdown_bold_on_label_and_number() {
         for t in [
             "- **Booking reference / order number:** **TRV-FBB71D4**",
@@ -481,6 +544,16 @@ mod tests {
         assert_eq!(r["status"], json!("verified"));
         assert_eq!(r["evidence"][0]["order_number"], json!("SG5X42VMKCAG"));
         assert_eq!(notice(&r, true), "");
+        // the final click is the user's: they press Place order in a takeover; the confirmation read after the
+        // hand-back is the proof, and the order is recorded the same way
+        let mut handed = buy[..6].to_vec();
+        handed.push(ev(
+            "tool_result",
+            json!({"call_id": "c4", "name": "browser_request_takeover", "ok": true, "preview": "the user handed the browser back"}),
+        ));
+        let r = assess(&handed, good, Some(&texts(&[page])), None);
+        assert_eq!(r["status"], json!("verified"));
+        assert_eq!(r["evidence"][0]["order_number"], json!("SG5X42VMKCAG"));
         let made_up = "下单成功！订单号：SG77777777"; // a number no page showed
         let r = assess(&buy, made_up, Some(&texts(&[page])), None);
         assert_eq!(r["status"], json!("unverified"));
@@ -590,5 +663,30 @@ mod tests {
         assert_eq!(r["status"], json!("verified"));
         assert_eq!(r["evidence"][0]["reference"], json!("CHOPE8821"));
         assert_eq!(r["claims"], json!(["booking"]));
+    }
+
+    #[test]
+    fn a_reference_the_page_shows_counts_without_a_label() {
+        // shopping_real 2026-10-31: "Your order is confirmed as KM-50731" left the ledger entry unconfirmed
+        let page = "THANK YOU! YOUR ORDER KM-50731 HAS BEEN PLACED. DELIVERY 2026-11-03, S$24.90";
+        assert_eq!(
+            confirmed_refs(
+                "Your order is confirmed as KM-50731. Total S$24.90, arriving 2026-11-03.",
+                page
+            ),
+            ["KM-50731"]
+        );
+        // a code the page never showed, a date or an amount: nothing
+        assert!(confirmed_refs("Order KM-99999 placed on 2026-11-03 for 24.90", page).is_empty());
+    }
+
+    #[test]
+    fn an_order_reference_is_an_order_number() {
+        // shopping_real 2026-10-31: "Order reference: KM-50731" left the ledger entry unconfirmed
+        assert_eq!(
+            refs_in("Order reference: KM-50731. Item: Slim Leather"),
+            vec!["KM-50731"]
+        );
+        assert_eq!(refs_in("Order number: SG5X42VMKCAG"), vec!["SG5X42VMKCAG"]);
     }
 }

@@ -2,6 +2,7 @@
 //! login password, subscription.
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
@@ -140,13 +141,45 @@ pub async fn internal_vault(State(ctx): State<App>) -> JsonResult {
         .map_err(ierr)?
         .iter()
         .map(|it| {
-            obj(["id", "label", "kind", "masked", "fields", "domains"]
-                .iter()
-                .map(|k| (*k, g(it, k)))
-                .collect())
+            obj([
+                "id", "label", "country", "kind", "masked", "fields", "missing", "domains",
+            ]
+            .iter()
+            .map(|k| (*k, g(it, k)))
+            .collect())
         })
         .collect();
     Ok(Json(json!({"items": items})))
+}
+
+/// `POST /internal/vault/card {name, country, task_id}`: a credit card the user named (in chat, or to the card bot) goes
+/// into the Vault by its name ("Citi Prestige") with its issuing country when known ("USA", optional), its number,
+/// expiry and CVC `UNKNOWN` until the user adds them (`vault::add_card`; the same card is not added twice). Only a
+/// name: a number is refused.
+pub async fn internal_vault_card(State(ctx): State<App>, body: Bytes) -> JsonResult {
+    let b = body_obj(&body)?;
+    let (it, added) =
+        match vault::add_card(&ctx.store, &get_str(&b, "name"), &get_str(&b, "country")) {
+            Ok(x) => x,
+            Err(VaultError::Value(e)) => return Err(ApiError::new(400, e)),
+            Err(VaultError::Key(e)) => return Err(ApiError::new(404, e)),
+            Err(VaultError::Other(e)) => return Err(ierr(e)),
+        };
+    if added {
+        ctx.audit(
+            "agent",
+            "vault.add",
+            Audit {
+                task_id: get_str(&b, "task_id"),
+                ..audit_user(
+                    &get_str(&it, "id"),
+                    "success",
+                    Some(json!({"label": it["label"], "country": it["country"], "kind": "card", "missing": it["missing"]})),
+                )
+            },
+        );
+    }
+    Ok(Json(json!({"item": it, "added": added})))
 }
 
 /// `GET /sentinel/api/vault`.
@@ -322,6 +355,50 @@ pub async fn b_takeover(State(ctx): State<App>, body: Bytes) -> JsonResult {
     Ok(Json(st))
 }
 
+/// The page the user hands back on, after pressing an order-change button the agent handed over: a "cancellation /
+/// return requested" page marks the ledger orders that page was about (`Ctx::order_changes`), as the user's own act.
+async fn record_order_change(ctx: &App, page: &str) {
+    static DONE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)cancell?ation (has been |was |is )?(requested|submitted|received|confirmed)|(order|booking) (has been |was |is )?cancell?ed|cancell?ed successfully|refund (has been |was |is )?(requested|initiated|issued|processed|on its way)|return (has been |was |is )?(requested|submitted|accepted|approved)|已取消|已申请取消|取消申请已提交|退款(申请)?已提交|退货申请已提交").unwrap()
+    });
+    let Some((ids, button)) = ctx.order_changes.lock().remove(page) else {
+        return;
+    };
+    let text = match deps::broker(
+        ctx,
+        "POST",
+        "/agent/page_text",
+        Some(&json!({"task_id": page})),
+        15.0,
+    )
+    .await
+    {
+        Ok(o) => super::s_opt(&o.json(), "text"),
+        Err(_) => String::new(),
+    };
+    if !DONE.is_match(&text) {
+        return;
+    }
+    static RETURN: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?i)return|退货|返品").unwrap());
+    let st = if RETURN.is_match(&button) {
+        "return_requested"
+    } else {
+        "cancel_requested"
+    };
+    for id in ids {
+        let _ = ledger::set_status(
+            &ctx.store,
+            &id,
+            st,
+            "user",
+            &format!("用户在接管中点了「{button}」 the user pressed \"{button}\" in a takeover"),
+            Some(&json!({"kind": "takeover", "page": page})),
+            false,
+        );
+    }
+}
+
 /// `POST /sentinel/api/browser/release`.
 pub async fn b_release(State(ctx): State<App>) -> JsonResult {
     let r = deps::broker(&ctx, "POST", "/user/release", Some(&json!({})), 20.0)
@@ -333,6 +410,7 @@ pub async fn b_release(State(ctx): State<App>) -> JsonResult {
         _ => json!({}),
     };
     let tid = super::s_opt(&rel, "task_id");
+    record_order_change(&ctx, &tid).await;
     ctx.audit(
         "user",
         "browser.release",

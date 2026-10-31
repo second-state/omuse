@@ -14,6 +14,7 @@ proxy_headers = true       # trust X-Forwarded-* from the proxy in front (uvicor
 timezone = "UTC"           # TZ: default for Settings → Timezone
 app_id = "omuse"           # APP_ID (Olares): shown in file paths
 loop_stall_seconds = 3     # LOOP_STALL_SECONDS: stall watchdog threshold
+scheduler_loop = true      # run due scheduled tasks every 20 s (keep on: safe with GET /run_pending_tasks); false = only that URL runs them
 
 [data]
 dir = "/omuse"             # OMUSE_DATA: all state lives here (sentinel/, runtime/, workspace/, browser-profile/)
@@ -60,9 +61,10 @@ headless = ""              # BROWSER_HEADLESS: "" auto, "1" headless, "0" headed
 display = ":99"            # BROWSER_DISPLAY: Xvfb display to start
 user_agent = ""            # BROWSER_UA
 pace_gap = 1.3             # BROWSER_PACE_GAP: min seconds between hits to one site
-auto_approve = true        # default of Settings → Agent → "auto-approve browser actions" (page loads, clicks, typing, submits run
-                           # without the approval dialog; vault fills, uploads, payments, order changes, logins and anything after a
-                           # suspected prompt injection still ask). The user's choice in Settings overrides this.
+auto_approve = true        # default of Settings → Agent → "auto-approve actions": nothing asks — browser actions (page loads,
+                           # clicks, typing, uploads, vault fills), sending mail, calendar, Drive, calls, the purchase
+                           # confirmation; each is still recorded as approved by "auto". Only the final submit / pay click is
+                           # the user's (the page is handed over), like a sign-in. The user's choice in Settings overrides this.
 idle_shutdown = 600        # BROWSER_IDLE_SHUTDOWN: close Chromium after this many idle seconds (0 = never)
 search_engines = ""        # SEARCH_ENGINES (tests): "name=url-prefix,name=url-prefix"
 executable = ""            # Chromium binary ("" = auto-detect)
@@ -106,6 +108,8 @@ tavily = "https://api.tavily.com"        # Tavily
 exa = "https://api.exa.ai"               # Exa
 exa_mcp = "https://mcp.exa.ai/mcp"       # Exa's public MCP server (the keyless first choice of web search)
 kiwi_mcp = "https://mcp.kiwi.com/"       # Kiwi.com's public MCP server (flight data behind flights_search without a SerpApi key)
+kayak = "https://www.kayak.com"          # cars_search links to Kayak's results page for the rental
+rentalcars = "https://www.rentalcars.com" # … or to Rentalcars.com's when Kayak's page does not answer
 
 slack = "https://slack.com/api"          # SLACK_API
 ms_login = "https://login.microsoftonline.com"   # MS_LOGIN_URL
@@ -114,6 +118,8 @@ market_data_hosts = []     # MARKET_DATA_HOSTS ([] = Yahoo Finance query1/query2
 ical_allow_http = false    # ICAL_ALLOW_HTTP
 outlook_imap = ""          # tests: Outlook's IMAP server as "host:port:security" ("" = outlook.office365.com)
 outlook_smtp = ""          # tests: Outlook's SMTP server as "host:port:security" ("" = smtp-mail.outlook.com)
+shopify_auth = "https://api.shopify.com"          # Shopify's token endpoint (/auth/access_token)
+shopify_catalog = "https://catalog.shopify.com"   # Shopify's Global Catalog (/api/ucp/mcp, search_catalog)
 
 [search]                   # the server's default keys for web search (web_search) and Flights & hotels; a key the
                            # user enters in Settings → Connections wins per provider. Web search tries Exa's free MCP,
@@ -123,6 +129,12 @@ tavily_key = ""            # OMUSE_TAVILY_KEY
 exa_key = ""               # OMUSE_EXA_KEY
 free_exa = true            # Exa's public MCP server (no key, rate-limited) as the first choice of the chain
 serpapi_key = ""           # OMUSE_SERPAPI_KEY — flights, hotels and restaurants only (Google Flights / Hotels / Maps), never web search
+
+[shopping]                 # the server's default Shopify credentials (Dev Dashboard → your app); the ones the user
+                           # enters in Settings → Connections win. Product search uses Shopify's Global Catalog with a token
+                           # these are exchanged for (60 minutes); checkout is the merchant's page, the final click the user's.
+shopify_client_id = ""     # OMUSE_SHOPIFY_CLIENT_ID
+shopify_client_secret = "" # OMUSE_SHOPIFY_CLIENT_SECRET — never shown in Settings
 
 [internal]                 # how the services reach each other; blank = derived from [server] / random per start
 sentinel_url = ""          # SENTINEL_URL

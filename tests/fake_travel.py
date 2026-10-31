@@ -9,6 +9,8 @@
   GET  /book/hotel/<room_offer_id|hotel_id> guest form (+ card when prepaid), "Confirm booking"
   GET  /book/restaurant/<slot_id|restaurant_id> guest form (+ card for a deposit), "Confirm booking"
   POST the same URL -> confirmation page with a booking reference (or the form again with what is missing).
+  GET  /trips?email=<email>               "My trips": the traveller's bookings as the site shows them to the user
+                                          (tests/travel_book_user.py checks the booking here, the user's point of view)
 * /_log: tool calls, page views and bookings. POST /_reset clears them.
 
 Only FastAPI (no python-multipart): form bodies are parsed with urllib.
@@ -823,6 +825,27 @@ def _picker(kind: str, info: dict) -> str:
                     for t in _slots(r, d1, 2))
     return (f"<h1>{html.escape(r['name'])}</h1><p>{html.escape(r['distinction'])} - {html.escape(r['cuisine'])}</p>"
             f"<p>Tables for 2 on {d1}:</p><ul>{items}</ul>")
+
+
+@app.get("/trips")
+async def my_trips(email: str = ""):
+    """The traveller's "My trips" page on the booking site (what a user checks after paying): every booking made with
+    this email, as the site shows it — reference, what was booked, the traveller, the card and passport endings."""
+    mine = [b for b in LOG["bookings"] if email and b["email"].lower() == email.strip().lower()]
+    if not mine:
+        return _page("My trips", f"<h1>My trips</h1><p>No bookings for {html.escape(email or 'this email')}.</p>")
+    rows = []
+    for b in mine:
+        info = _resolve(b["kind"], b["id"])
+        amount = _money(b["amount"], b["currency"]) if b["amount"] else "nothing charged"
+        rows.append(f"<div class='sum trip'><p><b>Booking reference: {b['ref']}</b> (confirmed)</p>"
+                    + "".join(f"<p>{html.escape(x)}</p>" for x in info["lines"])
+                    + f"<p>Booked for: {html.escape(b['name'])}, {html.escape(b['email'])}, {html.escape(b['phone'])}</p>"
+                    + (f"<p>Passport: ending {html.escape(b['passport_last4'])}</p>" if b["passport_last4"] else "")
+                    + f"<p>{html.escape(info.get('due_label') or 'Total')}: {html.escape(amount)}</p>"
+                    + (f"<p>Card: ending {html.escape(b['card_last4'])}</p>" if b["card_last4"] else "<p>Card: none</p>")
+                    + "</div>")
+    return _page("My trips", "<h1>My trips</h1>" + "".join(rows))
 
 
 @app.get("/book/{kind}/{bid}")

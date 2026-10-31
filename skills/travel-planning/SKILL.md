@@ -8,12 +8,18 @@ plan: on
 # Travel planning / 旅行规划
 
 Flights, hotels and cars — one data tool each, and nothing beside it:
-- **Flights:** `flights_search` only (Kiwi.com data, then Google Flights with the Flights & hotels key, then web search,
-  all by itself). Kiwi.com data is information only: never book through Kiwi or give a Kiwi link; each offer's
-  `book_at` is the airline's own website, where the booking happens (or with an agency the user chooses).
-- **Hotels:** `hotels_search` only (Google Hotels with the key, else web search by itself); `hotel_rooms` needs the key.
-- **Cars:** no data tool exists — `web_search` with a focused query (pick-up place, dates, car class), compiling
-  companies, prices and links from the snippets.
+**ONE travel search per request** — flights_search, hotels_search, cars_search and places_search together (a second one
+is not run). A trip that needs several ("a flight, a hotel and a car"): search the first part the user named, answer it,
+and offer the next ("Shall I search the hotel now?"); each later message runs the next search. No plan for this.
+- **Flights:** `flights_search` only — ONE search per call (Google Flights with the
+  Flights & hotels key for one date; Kiwi.com for a range of dates, self-transfer, without the key or when Google fails).
+  Every offer has its `booking_url` (Google Flights' page for that itinerary, or Kiwi.com's booking page; `book_at` is
+  the airline's own website): give it with the offer.
+- **Hotels:** `hotels_search` only — ONE search per call (Google Hotels with the key,
+  else web search by itself); each hotel's `booking_url` is Google's page for it and the dates (every seller); `hotel_rooms` needs the key.
+- **Cars:** `cars_search` only — ONE search per call: the pickup airport, dates, times,
+  car class and the preferred companies. It returns web results (companies and "from" prices) and the `booking_url`:
+  Kayak's page for exactly this rental with the live offers (Rentalcars.com's when Kayak's page does not answer).
 Never open Google Flights, Kayak, Skyscanner, Booking, Agoda, Rentalcars or the companies' search pages in the browser
 to search; the browser is for the final booking page only.
 
@@ -24,19 +30,16 @@ to search; the browser is for the final booking page only.
   user's *own* booked trip ("my flight", "我订的酒店", "从邮件里找行程").
 - Do not assume group size, companions or a business purpose. Use what the request says; otherwise plan for the
   number of people stated, or say "按 1 人计".
-- The user lives in Singapore unless told otherwise: currency SGD, plugs Type G (UK 3-pin) → Japan uses Type A/B
-  (100 V), so an adapter is needed; Singapore passport holders' rules, not China's.
+- The user's home, currency and passport come from the profile (nationality, home address) and the time zone line of
+  your instructions — never assume a country: plug adapters, visa rules and prices follow from them.
 - Never repeat passport numbers, expiry dates or birth dates in an answer unless a form needs them.
-- Independent lookups run at the same time: flights and hotels, several hotels or areas, weather + visa + transport.
+- Independent lookups run at the same time: weather + visa + transport, several pages to read (never two travel
+  searches: a request gets one — flights, hotels, cars and places together).
   Give them one `parallel` label in the plan and start them in ONE turn — one delegate(role="researcher", task=…,
   step=<its step id>) per lookup, or several browser_read calls in the same turn. Only work that drives one browser
-  session step by step (filling the Google Flights form, clicking through a site) stays with you, in sequence.
+  session step by step (clicking through a site) stays with you, in sequence.
 
 ## 1. Flights
-- Google Flights: `https://www.google.com/travel/flights?hl=en&curr=SGD&q=Flights%20from%20SIN%20to%20NRT%20on%202026-11-20%20one%20way%20nonstop`
-  If the form is not prefilled, fill it: click the "Where from?" box, then type into the **inner text input** of the
-  dialog that opens (not the dialog itself), wait for the suggestion list and click the airport; same for "Where to?";
-  pick the date in the calendar and press "Done", then "Search". Turn on "Nonstop only" under Stops.
 - `flights_search` first, ONE call per route — a range of dates is `date` + `date_to` in that same call, never a call or
   a plan step per day: take the **date, cabin and stop limit from the user's words**
   (business class asked → `cabin=business`, never economy instead; "direct" → `stops="nonstop"`, nothing said → `stops="any"`), and give a city with
@@ -75,25 +78,21 @@ to search; the browser is for the final booking page only.
   short economy connection (`cabin_mix`) still counts as business — keep it and name the economy leg.
 - Standing preferences are in your instructions (the "Standing preferences" block: the profile's preferred airline or
   alliance, hotel brand or group, car rental company, loyalty status) — pass them as `airlines=[…]` / `brands=[…]` (an
-  alliance or group stands for its members) and put the rental company in the car web_search; a wish in the request
+  alliance or group stands for its members) and `companies=[…]` for the car; a wish in the request
   wins; show the preferred option next to the best value with the price difference.
 - **One search, with the preference in it** — flights, hotels and cars alike: never a second search without the
   preference to compare. The user asks for all airlines / hotels / companies ("any", "search everything") → leave the
   preference out of that one search. No good preferred result → answer with what was found and ask whether to search
   all airlines / hotels / rental companies; search again only after the user says yes.
-- In the browser (fallback only) use IATA codes (SIN, NRT, HND, KIX, ICN, HKG, YVR); "Tokyo" = `TYO` there too.
-- Fallback when Google Flights fails twice: the airline sites (singaporeair.com, jal.co.jp, ana.co.jp, flyscoot.com)
-  or Skyscanner `https://www.skyscanner.com.sg/transport/flights/sin/tyoa/261120/?adultsv2=1&cabinclass=economy&preferdirects=true`.
+- flights_search takes IATA codes (SIN, NRT, HND, KIX, ICN, HKG, YVR); "Tokyo" = `TYO` covers both airports.
+- When flights_search finds nothing usable, say so and name the airlines' own sites; never search flight sites in the
+  browser.
 - Do not spend more than ~6 steps on one site; switch source instead.
 
 ## 2. Hotels
-- Booking.com search URL (fills everything at once):
-  `https://www.booking.com/searchresults.html?ss=Ginza%2C+Tokyo&checkin=2026-11-20&checkout=2026-11-23&group_adults=2&no_rooms=1&selected_currency=SGD&nflt=review_score%3D80`
-  (`review_score=80` = 8.0+, `90` = 9.0+; add `%3Bprice%3DSGD-min-400-1` for a nightly cap).
-- After the search page opens, read the hotel cards with **browser_read on the same search URL** (full text: names,
-  scores, prices) or browser_find "per night" / "Show prices" — do not re-open the search with small URL changes; after
-  two loads that show no hotel cards, change source (Agoda `https://www.agoda.com/search?city=5085&checkIn=2026-11-20&los=3&adults=2&currency=SGD`,
-  Google Hotels `https://www.google.com/travel/hotels/Ginza?hl=en&curr=SGD`). Hotels.com and Trip.com often show robot checks.
+- `hotels_search` first, ONE call for the stay (the area, dates, guests and budget from the user's words); read a
+  hotel's own page only for what the search does not give (a policy, a room detail). Never search hotel sites in the
+  browser.
 - Report per hotel: total and per-night price (taxes in or out), review score, nearest station + walk minutes,
   free cancellation yes/no and until when, link.
 - If nothing fits the budget, widen before giving up: nearby areas (Ginza → Tsukiji, Higashi-Ginza, Kyobashi,
@@ -129,12 +128,17 @@ to search; the browser is for the final booking page only.
   only in peak periods — check JR Central's notice for the dates in question).
 
 ## 7. Car rental
-- Any destination: ONE `web_search` with the pick-up city or airport, dates, car class and "rental" — and the
-  preferred rental company from the Standing preferences (the profile's Preferred car rental, e.g. "Hertz car rental
-  Narita Airport 20–23 Nov compact") unless the user asked for all companies (then plus `site:rentalcars.com` /
-  `site:kayak.com/cars` / the local brands) — and compile companies, classes, prices and links from the snippets;
-  otherwise the browser, reading result pages only. No good offer from the preferred company → say so and ask whether
-  to search all rental companies. Book on the company's own site at the end, after the user picks.
+- Any destination: ONE `cars_search` — `pickup` = the pickup airport's code (a city code is its main airport; `dropoff`
+  only for a one-way rental), `pickup_date` / `dropoff_date`, the times when the user gave them, `car_class` (small,
+  medium, large, suv, van, luxury, convertible) from the user's words, and `companies` = the preferred rental company
+  from the Standing preferences (the profile's Preferred car rental, e.g. Hertz) unless the user asked for all
+  companies. Never `web_search` for it, never a second cars_search in the same request. The pickup airport and the
+  dates are enough: search right away — never ask for the driver's age (default 30), times (default 10:00) or a class
+  first; mention that the price on the page can depend on the driver's age.
+- Answer with the companies and "from" prices the web results show (say they are "from" prices) and the `booking_url`:
+  the live offers for these dates and this car are there (Kayak's results page, or Rentalcars.com's). No good offer from
+  the preferred company → say so and ask whether to search all rental companies. Book on the page the user picks
+  (the company's own site or the aggregator), at the end.
 
 ### Japan
 - Compare on one aggregator plus one company site: ToCoo! (`https://www2.tocoo.jp/en/`), Tabirai (`https://www.tabirai.net/car/`),

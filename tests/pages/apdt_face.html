@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Face matching - Air Passenger Departure Tax Refund Platform</title>
+<link rel="stylesheet" href="apdt.css"><script src="apdt.js"></script>
+<style>.cam{width:270px;height:270px;border-radius:50%;margin:16px auto;background:#1d2433;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#cfe3f5;font-size:13px;text-align:center;padding:20px}
+.cam video{width:100%;height:100%;object-fit:cover}</style></head>
+<body>
+<main>
+<div id="stepbar"></div>
+<h1>Face matching</h1>
+<p id="tip">Please keep your face centered in the screen and remain still, and blink</p>
+<div class="cam" id="cam">Undergoing face verification<br>Please wait...</div>
+<p class="err" id="camErr" style="text-align:center"></p>
+<p class="muted" style="text-align:center">For inquiries, please use this reference number: <b id="ref"></b></p>
+<div class="actions" style="justify-content:center"><button type="button" class="sec" id="cancel">Cancel</button></div>
+</main>
+<script>
+APDT.header();
+(function () {
+  var $ = function (id) { return document.getElementById(id); }, s = APDT.load();
+  $('stepbar').innerHTML = APDT.steps(2); $('ref').textContent = s.ref || APDT.q('bizId');
+  if (s.ref) { s.face = (s.face || 0) + 1; APDT.save(s); history.replaceState(null, '', location.pathname + location.search.replace(/&t=[^&]*/, '') + '&t=' + APDT.token(s)); }
+  $('cancel').onclick = function () { APDT.go('apdt_submit.html', '&bizId=' + (s.ref || '') + '&type=1'); };
+  function fail(t) { $('cam').textContent = ''; $('camErr').textContent = t; }
+  var md = navigator.mediaDevices;
+  if (!md || !md.getUserMedia) { fail('Camera access failed. Please try again on another device.'); return; }
+  md.getUserMedia({ video: { width: { ideal: 480 }, height: { ideal: 480 }, facingMode: { exact: 'user' } }, audio: false }).then(function (st) {
+    var v = document.createElement('video'); v.autoplay = true; v.muted = true; v.playsInline = true; v.srcObject = st; $('cam').textContent = ''; $('cam').appendChild(v);
+    setTimeout(function () { st.getTracks().forEach(function (t) { t.stop(); }); fail('No face detected, please adjust camera'); }, 8000);
+  }).catch(function (e) {
+    fail(e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') ? 'Camera access failed. Please enable it in your system settings and try again'
+      : 'Camera access failed. Please try again on another device.');
+  });
+})();
+</script>
+</body></html>

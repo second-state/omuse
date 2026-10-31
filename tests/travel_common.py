@@ -1,10 +1,10 @@
-"""Shared driver for the travel e2e suites (travel_flight_e2e.py, travel_hotel_e2e.py, travel_michelin_e2e.py).
+"""Shared driver for the travel booking suites (the real-model travel_*_real.py through travel_book_user.py).
 
 Two modes:
 * default: the scripted fake model (tests/fake_llm.py, magic words FLIGHTBOOK / HOTELBOOK / MICHELINBOOK) — deterministic.
 * OMUSE_E2E_REAL=1: a real model through Settings → Models → "use my own model" (endpoint OMUSE_E2E_MODEL_URL, key
-  OMUSE_E2E_MODEL_KEY, executor OMUSE_E2E_EXECUTOR, planner OMUSE_E2E_PLANNER; OMUSE_E2E_MODELS=alt picks
-  OMUSE_E2E_ALT_EXECUTOR / OMUSE_E2E_ALT_PLANNER) with a natural-language request and looser checks.
+  OMUSE_E2E_MODEL_KEY, executor OMUSE_E2E_EXECUTOR, planner OMUSE_E2E_PLANNER;
+  OMUSE_E2E_MODELS=alt picks OMUSE_E2E_ALT_EXECUTOR / OMUSE_E2E_ALT_PLANNER) with a natural-language request and looser checks.
 
 In both modes the app talks to the model through tests/model_proxy.py (port 8098; started here when it is not running)
 so model time can be taken out of the wall time (tests/exec_time.py). Each suite prints PASS/FAIL lines, a TIMING line
@@ -22,6 +22,11 @@ import sys
 import time
 
 import httpx
+
+# "today" in the suites is the app's today: the test stack runs on Asia/Singapore (tests/run_local.sh), so a date taken
+# in UTC is yesterday's from 16:00 UTC on (claims_real 2026-10-30: an e-ticket "today" that the app read as yesterday)
+os.environ["TZ"] = "Asia/Singapore"
+time.tzset()
 
 B = "http://127.0.0.1:8080"
 TRAVEL = "http://127.0.0.1:8097"
@@ -166,8 +171,8 @@ def run(message: str, *, follow_up: str | None = None, timeout: float = 120) -> 
     conv, tid = r.get("conversation_id"), r["task_id"]
     tasks.append(tid)
     sent_follow = False
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         t = task(tid)
         st = t.get("status")
         # a main-bot task waiting for a bot (WAITING_BOT): the bot's task raises the approvals

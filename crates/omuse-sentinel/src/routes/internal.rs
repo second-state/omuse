@@ -86,9 +86,9 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
             let keyed = store.has_secret("cred_travel_1").unwrap_or(false)
                 || !ctx.cfg.search.serpapi_key.trim().is_empty();
             workspace = json!(if keyed {
-                "google flights + google hotels + google maps places (key)"
+                "google flights (kiwi.com for date ranges and as the fallback) + google hotels + google maps places (key)"
             } else {
-                "flights: kiwi.com data (free, information only); hotels and restaurants: need the key"
+                "flights: kiwi.com data (free, with kiwi.com booking links); hotels and restaurants: need the key"
             });
         }
         let accounts: Value = if name == "gmail" {
@@ -186,6 +186,12 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
     if vault::list_items(store).map_err(ierr)?.is_empty() {
         schemas.retain(|s| get_str(&s["function"], "name") != "browser_fill_secret");
     }
+    // Google Flights / Hotels on hand (a SerpApi key): the built-in travel searches come first, before a connector's
+    let google = store.has_secret("cred_travel_1").unwrap_or(false)
+        || !ctx.cfg.search.serpapi_key.trim().is_empty();
+    if let Some(Value::Object(t)) = status.get_mut("travel") {
+        t.insert("google".into(), json!(google));
+    }
     let mut risk = Map::new();
     for (k, v) in tools.iter() {
         risk.insert(k.clone(), v["risk"].clone());
@@ -271,10 +277,18 @@ async fn render(ctx: &App, path: &str, body: &Value, timeout: f64) -> Result<Val
 /// `POST /internal/render_pdf`: print a workspace document to PDF on this machine — no online converters.
 pub async fn render_pdf(State(ctx): State<App>, body: Bytes) -> JsonResult {
     let b = body_obj(&body)?;
-    let req = obj(["source", "markdown", "output", "title"]
+    let mut req = obj(["source", "markdown", "output", "title"]
         .iter()
         .map(|k| (*k, json!(s_opt(&b, k))))
         .collect());
+    // the most pages the user asked for: the browser fits the document to it
+    if let Some(n) = b
+        .get("pages")
+        .and_then(Value::as_u64)
+        .filter(|n| (1..=50).contains(n))
+    {
+        req["pages"] = json!(n);
+    }
     let source = get_str(&req, "source");
     let tid = s_or(&b, "task_id", "");
     match render(&ctx, "/pdf", &req, 150.0).await {

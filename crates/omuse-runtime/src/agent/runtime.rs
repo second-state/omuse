@@ -45,6 +45,8 @@ struct Skip {
     first: String,
     search: bool,
     typed: bool,
+    /// a second travel search in the turn: what the first one searched (one travel search per turn)
+    one_search: Option<(&'static str, &'static str)>,
 }
 
 /// A tool call that must wait for the user (approval / takeover): the loop stops and the task is parked.
@@ -93,10 +95,20 @@ pub(crate) struct Inner {
     /// browser tools are hidden from that task and its sub-agents, and refused if called anyway, until a skill
     /// without that policy is loaded
     pub no_browser: HashMap<String, String>,
+    /// task_id -> a loaded skill that needs the browser (no `browser: off`): while one is loaded, a city guide loaded
+    /// after it does not turn the browser off (2026-10-30, travel_info_real: getting-around-asia then tokyo)
+    pub browser_skill: HashMap<String, String>,
+    /// task_id -> the step budget a loaded skill asks for (`steps: N` in its front matter), when above the setting's
+    /// (arrival_cards2_real 2026-10-30: Visit Japan Web — a login hand-over and a 20-field form — ran out at 40)
+    pub skill_steps: HashMap<String, i64>,
     /// sites whose bot wall was learned as a habit
     pub block_noted: HashSet<String>,
     /// task_id -> product pages that already got the cart hint
     pub product_hinted: HashMap<String, HashSet<String>>,
+    /// tasks already sent back once for a listings comparison without `ranking` criteria
+    pub ranking_asked: HashSet<String>,
+    /// tasks whose known page already got its fixed ticks (`guards::apdt_fixed_ticks`)
+    pub fixed_ticks: HashSet<String>,
 }
 
 /// The agent runtime. Always used behind `Arc` ([`Runtime::new`] returns one).
@@ -269,7 +281,123 @@ impl Runtime {
     /// `llm.chat(...)` for a task, abandoned as soon as the task is cancelled (`None`). Python let a cancelled task
     /// finish its model call (and every Retry-After sleep in it) before noticing the flag; here the call future is
     /// dropped, which also hands its concurrency slot back.
+    /// Whether a recurring check the user asked for ends once something happens ("until my landlord replies"), read by
+    /// one small classification call: the condition, or `None` (a plain schedule; any failure). Code then makes it a
+    /// goal, which stops when achieved (automations_real 2026-10-31: "until my landlord replies" became a schedule).
+    pub async fn until_condition(
+        &self,
+        task_id: &str,
+        request: &str,
+        instruction: &str,
+    ) -> Option<String> {
+        let system = "You read a user's request for a recurring background check. Answer with JSON only: \
+{\"until\": bool, \"success\": string}. until: the user wants the checking to stop once something happens or is \
+achieved (\"until X\", \"till X\", \"keep an eye on … until\", \"tell me when X, then stop\"); false for a plain \
+recurring job (\"every morning send me …\"). success: that condition in a few words, else \"\".";
+        let o = ChatOpts {
+            max_tokens: Some(80),
+            temperature: Some(0.0),
+            no_think: true,
+            ..opts("classify", task_id)
+        };
+        let msgs = [
+            json!({"role": "system", "content": system}),
+            user_msg(format!(
+                "The user's request:\n{}\n\nThe check as written:\n{}",
+                take_chars(request, 2000),
+                take_chars(instruction, 2000)
+            )),
+        ];
+        let r = self.llm.chat(&msgs, None, &o).await.ok()?;
+        let v = crate::llm::extract_json(&r.content)?;
+        let success = get_str(&v, "success").trim().to_string();
+        (v.get("until").and_then(Value::as_bool) == Some(true) && !success.is_empty())
+            .then_some(success)
+    }
+
+    /// What a final answer means, from one small classification call: three yes / no questions the guards act on
+    /// (`guards::AnswerTraits`). The model only reads the text; code decides what to do. Any failure → all false.
+    pub async fn answer_traits(
+        &self,
+        task_id: &str,
+        request: &str,
+        answer: &str,
+    ) -> super::guards::AnswerTraits {
+        let system = "You classify an assistant's reply to a user. Answer with JSON only, exactly these keys: \
+{\"asks_defaults\": bool, \"asks_stay\": bool, \"tells_user_to_act\": bool, \"reconfirms\": bool, \"asks_option\": bool, \"asks_profile\": bool}.\n\
+asks_defaults: the reply asks the user for a departure date, the next city or port, onward travel, or the visa / entry basis.\n\
+asks_stay: the reply asks where the user will stay (a hotel, an address, or which of their addresses).\n\
+tells_user_to_act: the reply tells the user to press, click, submit, pay or complete something themselves on a web page or form.\n\
+reconfirms: the reply asks the user to confirm (or say yes to) an action that the user's request already asked for explicitly, instead of doing it.\n\
+asks_option: the reply asks the user to choose a product option (colour, size, variant) that the user's request did not name, instead of adding or ordering the product.\n\
+asks_profile: the reply says it does not know, or asks the user for, their nationality (passport country), date of birth or home address.\n\
+Judge the meaning, not the wording; a statement that something is NOT needed is false.";
+        let o = ChatOpts {
+            max_tokens: Some(120),
+            temperature: Some(0.0),
+            no_think: true,
+            ..opts("classify", task_id)
+        };
+        let msgs = [
+            json!({"role": "system", "content": system}),
+            user_msg(format!(
+                "The user's request:\n{}\n\nThe assistant's reply:\n{}",
+                take_chars(request, 2000),
+                take_chars(answer, 4000)
+            )),
+        ];
+        let Ok(r) = self.llm.chat(&msgs, None, &o).await else {
+            return super::guards::AnswerTraits::default();
+        };
+        let v = crate::llm::extract_json(&r.content).unwrap_or(Value::Null);
+        let b = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+        let traits = super::guards::AnswerTraits {
+            asks_defaults: b("asks_defaults"),
+            asks_stay: b("asks_stay"),
+            tells_user_to_act: b("tells_user_to_act"),
+            reconfirms: b("reconfirms"),
+            asks_option: b("asks_option"),
+            asks_profile: b("asks_profile"),
+        };
+        self.event(
+            task_id,
+            "answer_traits",
+            json!({"asks_defaults": traits.asks_defaults, "asks_stay": traits.asks_stay,
+                   "tells_user_to_act": traits.tells_user_to_act, "reconfirms": traits.reconfirms, "asks_option": traits.asks_option, "asks_profile": traits.asks_profile}),
+        )
+        .await;
+        traits
+    }
+
     pub async fn chat_or_cancel(
+        &self,
+        task_id: &str,
+        msgs: &[Value],
+        tools: Option<&[Value]>,
+        o: &ChatOpts,
+    ) -> Option<Result<ChatReply, LlmError>> {
+        let r = self.chat_cancellable(task_id, msgs, tools, o).await?;
+        // an optional model (the form-filling or planner model) that stays unavailable after its retries: the call goes
+        // to the LLM instead of failing the task (2026-10-30: xAI "at capacity" ended form tasks running on grok-4.7)
+        if let (Err(e), Some(model)) = (&r, o.model.as_ref()) {
+            if !e.is_context() && unavailable(e) {
+                self.event(
+                    task_id,
+                    "model_fallback",
+                    json!({"model": model, "error": take_chars(&e.to_string(), 200)}),
+                )
+                .await;
+                let fallback = ChatOpts {
+                    model: None,
+                    ..o.clone()
+                };
+                return self.chat_cancellable(task_id, msgs, tools, &fallback).await;
+            }
+        }
+        Some(r)
+    }
+
+    async fn chat_cancellable(
         &self,
         task_id: &str,
         msgs: &[Value],
@@ -824,6 +952,8 @@ work around it; write the final answer saying what you would do and how far you 
             inner.evidence.remove(&task_id);
             inner.tool_texts.remove(&task_id);
             inner.no_browser.remove(&task_id);
+            inner.browser_skill.remove(&task_id);
+            inner.skill_steps.remove(&task_id);
         }
     }
 
@@ -1011,14 +1141,19 @@ work around it; write the final answer saying what you would do and how far you 
                     .cloned()
                     .unwrap_or_else(|| json!({}));
                 let lg = agent_lang(&self.settings());
+                // the answer after a hand-back covers the whole request, not only the page (cards_claim_real
+                // 2026-10-31: "the form is still open" — the benefit, amount and deadlines worked out before were gone)
                 let text = prompts::l(
                     lg,
-                    "用户已完成接管并交还浏览器控制权。请先调用 browser_snapshot 查看当前页面状态再继续。",
+                    "用户已完成接管并交还浏览器控制权。请先调用 browser_snapshot 查看当前页面状态再继续。最后的回答要覆盖整个请求——\
+你查到和算出的一切（金额、日期、期限、编号），不只是页面现在的样子。",
                     "",
                 );
                 let text = if lg == "en" {
                     format!(
-                        "{}: the user handed browser control back. Take a browser_snapshot first to see the current page, then continue.",
+                        "{}: the user handed browser control back. Take a browser_snapshot first to see the current page, then continue. \
+Your final answer covers the whole request — everything you found and worked out (amounts, dates, deadlines, references) — \
+not only what the page shows now.",
                         TAKEOVER_DONE_EN
                     )
                 } else {
@@ -1628,9 +1763,10 @@ work around it; write the final answer saying what you would do and how far you 
                     d = newer; // only the newest text matters
                 }
                 if last.as_ref() != Some(&d) {
+                    let text = crate::links::decode_answer(&d.text);
                     rt.publish(
                         json!({"kind": "answer_delta", "task_id": tid, "conv_id": cid,
-                                      "text": d.text, "calls": d.tool_calls}),
+                                      "text": text, "calls": d.tool_calls}),
                     )
                     .await;
                     last = Some(d);
@@ -1691,7 +1827,11 @@ work around it; write the final answer saying what you would do and how far you 
             .collect()
     }
 
-    /// The tool list for this run: Sentinel's catalog + the local tools, minus the schedule/goal-only ones.
+    /// The tool list for this run: Sentinel's catalog + the local tools, minus the schedule/goal-only ones. Google
+    /// first: with a SerpApi key (the catalog's `connections.travel.google`) the built-in travel searches stay. Without
+    /// one they would fall back (flights to Kiwi.com, hotels to a web search), so a travel search the user's own
+    /// connector also offers (`mcp_<id>__hotels_search` beside `hotels_search`) is then the connector's alone: with one
+    /// travel search a turn, the model must not spend it on the weaker built-in one.
     pub fn tools_for(
         catalog: &Value,
         allow: Option<&[&str]>,
@@ -1700,14 +1840,28 @@ work around it; write the final answer saying what you would do and how far you 
     ) -> Vec<Value> {
         let mut tools: Vec<Value> = arr(catalog, "tools").to_vec();
         tools.extend(LOCAL_TOOLS.iter().cloned());
-        tools
+        let tools: Vec<Value> = tools
             .into_iter()
             .filter(|t| {
                 let n = tool_name(t);
                 (schedule || (n != "schedule_state_get" && n != "schedule_state_set"))
                     && (goal || n != "goal_update")
+                    // run by the form functions (crate::forms) with a plan computed in code, never by the model
+                    && n != "browser_fill_form"
                     && allow.is_none_or(|a| a.contains(&n))
             })
+            .collect();
+        let connected: HashSet<&str> = tools
+            .iter()
+            .filter_map(|t| tool_name(t).strip_prefix("mcp_")?.split_once("__"))
+            .map(|(_, base)| base)
+            .collect();
+        let google = truthy(&catalog["connections"]["travel"]["google"]);
+        let shadowed = |n: &str| !google && travel_search(n).is_some() && connected.contains(n);
+        tools
+            .iter()
+            .filter(|t| !shadowed(tool_name(t)))
+            .cloned()
             .collect()
     }
 
@@ -2035,7 +2189,7 @@ yourself; ask_bot is not available for it."
             .get("steps")
             .and_then(omuse_common::util::as_i64)
             .unwrap_or(0);
-        let max_steps = s
+        let mut max_steps = s
             .get("max_steps")
             .and_then(omuse_common::util::as_i64)
             .filter(|n| *n != 0)
@@ -2059,6 +2213,9 @@ yourself; ask_bot is not available for it."
         let mut searched: HashMap<String, String> = HashMap::new(); // normalised web_search query -> first call id
         let (mut nudged, mut cut_nudged, mut numbers_checked, mut outcome_checked) =
             (false, false, false, false);
+        let mut cards_compared = false;
+        let mut arrival_checked = false;
+        let mut auto_handed = false;
         let mut ctx_retries = 0;
         loop {
             if self.cancel_flags.lock().contains(task_id) {
@@ -2140,6 +2297,9 @@ unverified. This is an internal efficiency control — never mention a 'budget' 
                 transcript.push(user_msg(txt));
             }
             let timed_out = minutes >= max_minutes;
+            if let Some(n) = self.inner.lock().skill_steps.get(task_id) {
+                max_steps = max_steps.max(*n);
+            }
             let force_final = steps >= max_steps || gave_up || timed_out;
             let mut tools: Option<Vec<Value>> = None;
             if !force_final {
@@ -2195,14 +2355,26 @@ answer you can from what you have — what is done, the findings and what is mis
             let mut msgs = transcript.clone();
             if !force_final {
                 // live state at the end (not stored), see prompts::status_note
+                // only when it carries a plan or failed sources: a bare "(System) Status — now 5:30 pm" as the last
+                // user message got answered ("Noted — it's 5:30 pm") instead of the user's follow-up (2026-10-30,
+                // memory_real / telegram_real); the time is in the system prompt
                 let dead = dead_ends_text(&source_failures(&self.store.events(task_id, 0)?), lg);
-                msgs.push(user_msg(prompts::status_note(
-                    t.get("plan"),
-                    &tz,
-                    lg,
-                    minutes,
-                    &dead,
-                )));
+                let has_plan = t
+                    .get("plan")
+                    .and_then(|p| p.get("steps"))
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| !a.is_empty());
+                if has_plan || !dead.is_empty() {
+                    let note = prompts::status_note(t.get("plan"), &tz, lg, minutes, &dead);
+                    msgs.push(user_msg(format!(
+                        "{note}\n{}",
+                        prompts::l(
+                            lg,
+                            "（这是系统状态，不是用户说的话；不用回复它，接着完成用户的请求。）",
+                            "(This is system state, not the user's words: don't reply to it; carry on with the user's request.)"
+                        )
+                    )));
+                }
             }
             let (exec_opts, live) = self.executor_opts(task_id, &conv_id, &s);
             let called = self
@@ -2287,6 +2459,7 @@ answer you can from what you have — what is done, the findings and what is mis
                 let mut seen_sigs: HashMap<String, String> = HashMap::new();
                 let mut progress = false;
                 let mut typed_this_turn = String::new();
+                let mut travel_this_turn: Option<(String, (&'static str, &'static str))> = None;
                 let mut skips: Vec<Option<Skip>> = Vec::with_capacity(calls.len());
                 for call in &calls {
                     let sig = call_sig(&call.name, &call.args);
@@ -2300,10 +2473,25 @@ answer you can from what you have — what is done, the findings and what is mis
                             first: first.clone(),
                             search: false,
                             typed: false,
+                            one_search: None,
                         }));
                         continue;
                     }
                     seen_sigs.insert(sig, call.id.clone());
+                    if let Some(kind) = super::guards::travel_search(&call.name) {
+                        // ONE travel search per turn — flights, hotels, cars and places together: a range of dates,
+                        // several airports, airlines or brands all go in that one call; the rest are not run
+                        if let Some((first, what)) = &travel_this_turn {
+                            skips.push(Some(Skip {
+                                first: first.clone(),
+                                search: false,
+                                typed: false,
+                                one_search: Some(*what),
+                            }));
+                            continue;
+                        }
+                        travel_this_turn = Some((call.id.clone(), kind));
+                    }
                     if call.name == "browser_type" && get_truthy(&call.args, "submit") {
                         if !typed_this_turn.is_empty() {
                             // 2026-10-04 V3-03: 12 searches typed into one shop's search box in a single turn — only the
@@ -2312,6 +2500,7 @@ answer you can from what you have — what is done, the findings and what is mis
                                 first: typed_this_turn.clone(),
                                 search: false,
                                 typed: true,
+                                one_search: None,
                             }));
                             continue;
                         }
@@ -2331,6 +2520,7 @@ answer you can from what you have — what is done, the findings and what is mis
                                 first: first.clone(),
                                 search: true,
                                 typed: false,
+                                one_search: None,
                             }));
                             continue;
                         }
@@ -2401,15 +2591,8 @@ answer you can from what you have — what is done, the findings and what is mis
                     }
                     let call = &calls[i];
                     if let Some(sk) = &skips[i] {
-                        self.skip_duplicate(
-                            task_id,
-                            call,
-                            &sk.first,
-                            &mut transcript,
-                            sk.search,
-                            sk.typed,
-                        )
-                        .await;
+                        self.skip_duplicate(task_id, call, sk, &mut transcript)
+                            .await;
                         i += 1;
                         continue;
                     }
@@ -2637,7 +2820,175 @@ straight with the content: don't mention this check or say \"here is the complet
                     continue;
                 }
             }
+            if !final_.is_empty()
+                && !cards_compared
+                && !force_final
+                && !timed_out
+                && steps < max_steps - 1
+            {
+                cards_compared = true;
+                if let Some(hint) =
+                    super::guards::card_comparison_hint(&transcript, &final_, lg != "en")
+                {
+                    self.event(task_id, "card_check", json!({"compared": false}))
+                        .await;
+                    transcript.push(json!({"role": "assistant", "content": final_}));
+                    transcript.push(user_msg(hint));
+                    continue;
+                }
+            }
+            // what the answer means, read by a small classification call — only when a guard acts on it (a browser
+            // run or an arrival card); the guards decide from these answers, not from the wording
+            // (and a reply that asks something: it may re-ask for what the user already asked to have done)
+            let traits = if !final_.is_empty()
+                && (super::guards::arrival_run(&transcript)
+                    || super::guards::browser_used(&transcript)
+                    || final_.contains('?')
+                    || final_.contains('？'))
+            {
+                self.answer_traits(task_id, &goal_text, &final_).await
+            } else {
+                super::guards::AnswerTraits::default()
+            };
+            if !final_.is_empty()
+                && !arrival_checked
+                && !force_final
+                && !timed_out
+                && steps < max_steps - 1
+            {
+                arrival_checked = true;
+                if let Some(hint) = super::guards::arrival_default_hint(
+                    &transcript,
+                    traits.asks_defaults,
+                    lg != "en",
+                )
+                .or_else(|| {
+                    super::guards::self_press_hint(
+                        &transcript,
+                        traits.tells_user_to_act,
+                        lg != "en",
+                    )
+                })
+                .or_else(|| {
+                    super::guards::short_after_handback_hint(&transcript, &final_, lg != "en")
+                })
+                .or_else(|| super::guards::reconfirm_hint(traits.reconfirms, lg != "en"))
+                .or_else(|| {
+                    super::guards::page_option_hint(&transcript, traits.asks_option, lg != "en")
+                })
+                .or_else(|| {
+                    super::guards::known_profile_hint(
+                        traits.asks_profile,
+                        &self.store.profile().unwrap_or_else(|_| json!({})),
+                        lg != "en",
+                    )
+                })
+                .or_else(|| super::guards::missing_format_hint(&transcript, &goal_text, lg != "en"))
+                {
+                    self.event(task_id, "arrival_check", json!({"handed_over": false}))
+                        .await;
+                    transcript.push(json!({"role": "assistant", "content": final_}));
+                    transcript.push(user_msg(hint));
+                    continue;
+                }
+            }
+            // the hint was given (or there was no step or minute left to give it) and the form is still not handed
+            // over: the runtime hands it over itself — a runtime step, so no budget stops it (cards_interruption_real
+            // 2026-10-31: the claim's last field took the last step, the hint was skipped and nothing was handed over)
+            if !final_.is_empty()
+                && (arrival_checked || force_final || timed_out || steps >= max_steps - 1)
+                && !auto_handed
+                && super::guards::needs_handover(&transcript, traits)
+            {
+                auto_handed = true;
+                self.event(task_id, "auto_handover", json!({})).await;
+                let tc = crate::llm::ToolCall {
+                    id: format!("{}{steps}", super::guards::AUTO_HANDOVER),
+                    name: "browser_request_takeover".into(),
+                    args: json!({"reason": super::guards::handover_reason(&transcript, super::exec::HANDOVER_REASON)}),
+                };
+                // the answer the agent was about to give rides on the hand-over call: after the hand-back it opens the
+                // final answer (`with_handover_answer`), so the user still gets it
+                transcript.push(json!({"role": "assistant", "content": final_, "tool_calls": [{"id": tc.id, "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+                match self
+                    .exec_call(
+                        &t,
+                        &tc,
+                        &mut transcript,
+                        &catalog,
+                        &[],
+                        None,
+                        CallMode::MAIN,
+                    )
+                    .await
+                {
+                    Ok(_) => continue,
+                    Err(sp) => return self.suspend(task_id, sp, transcript).await,
+                }
+            }
+            // a file the user asked for that the run wrote but never sent: sent now, in code
+            for path in super::guards::unsent_files(&transcript, &get_str(&t, "goal")) {
+                let r = self.send_file(&t, &json!({"path": path})).await;
+                self.event(
+                    task_id,
+                    "auto_send_file",
+                    json!({"path": path, "ok": r.as_ref().is_ok_and(|x| !x.starts_with("ERROR"))}),
+                )
+                .await;
+            }
             final_ = merge_stranded_answer(&transcript, &final_);
+            final_ = super::guards::with_handover_answer(&transcript, &final_);
+            final_ = super::guards::with_hotel_links(&transcript, &final_);
+            final_ = super::guards::with_flight_links(&transcript, &final_);
+            final_ = super::guards::with_leg_times(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_fallback_pages(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_choices_listing(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_compare_links(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_catalog_date(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_unverified_rows(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_fx_fees(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_uncatalogued_cards(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_purchase_total(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_confirmation_ref(&transcript, &final_);
+            final_ = super::guards::with_apdt_link(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_arrival_windows(&transcript, &final_);
+            final_ = super::guards::with_flight_times(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_etias_status(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_grounded_numbers(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_claim_deadlines(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_hours(&final_);
+            final_ = super::guards::with_user_edits(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_mailbox_hint(
+                &transcript,
+                &final_,
+                truthy(&catalog["connections"]["gmail"]["ready"]),
+                traits.asks_defaults || traits.asks_stay || super::guards::requests_info(&final_),
+                lg != "en",
+            );
+            let profile = self.store.profile().unwrap_or_else(|_| json!({}));
+            final_ = super::guards::with_own_addresses(
+                &transcript,
+                &final_,
+                traits.asks_stay,
+                &profile,
+                lg != "en",
+            );
+            final_ = super::guards::with_injection_notice(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_masked_cards(&final_);
+            if get_str(&t, "source") == "schedule" {
+                final_ = super::guards::with_notifications(&transcript, &final_, lg != "en");
+            }
+            let airline: Vec<String> = self
+                .standing_prefs()
+                .into_iter()
+                .filter(|(label, _)| label == "Preferred airline")
+                .map(|(_, v)| v)
+                .collect();
+            final_ =
+                super::guards::with_preferred_airline(&transcript, &final_, &airline, lg != "en");
+            // the answer's links, repaired against the links the run's results showed (crate::links)
+            final_ = crate::links::repair_answer(&final_, &crate::links::seen(&transcript));
             if lg == "en"
                 && prompts::cjk_share(&final_) > 0.5
                 && !prompts::wants_cjk_output(&goal_text)
@@ -2978,19 +3329,24 @@ user can do next. Answer in the user's language.");
         &self,
         task_id: &str,
         call: &ToolCall,
-        first_id: &str,
+        sk: &Skip,
         transcript: &mut Vec<Value>,
-        whole_task: bool,
-        one_page: bool,
     ) {
-        let msg = if one_page {
+        let first_id = &sk.first;
+        let msg = if let Some((what, zh)) = sk.one_search {
+            format!("已跳过 — 这一轮已经做过唯一的一次旅行搜索（调用 {first_id}，{zh}），一轮只搜一次。一次搜索就能覆盖日期范围、\
+整个城市、偏好的航空公司或酒店品牌和往返；先用那次的结果回答，其余的（酒店、租车或别的条件）在回答里问用户，下一轮再搜。\
+ Skipped: this turn already ran its one travel search (call {first_id}: {what}); ONE travel search per turn. One \
+search covers a date range, a whole city, the preferred airlines or brands and a round trip; answer from that result \
+and offer the rest (the hotel or car, other conditions) — the next turn can search again.")
+        } else if sk.typed {
             format!("已跳过 — 这一轮已经在网页搜索框里搜过一次（调用 {first_id}），同一个浏览器页面一次只能显示一个结果页，\
 后面的搜索会把前面的结果冲掉。先读完这次的结果并记下（update_plan 的 note），下一轮再搜下一个；\
 要一次查多个，用 browser_read 读多个搜索网址（每次最多 4 个）。\
  Skipped: this turn already searched the site (call {first_id}); one page shows one result page, so later \
 searches would replace it unread. Read and note these results, then search the next item in the next turn — \
 or browser_read several search URLs (up to 4) at once.")
-        } else if whole_task {
+        } else if sk.search {
             format!("已跳过 — 这个任务里已经搜索过几乎相同的内容（调用 {first_id}）。请使用那次的结果：读其中的网址，\
 或换一个明显不同的关键词 / 来源；如果确实找不到，就在回答里说明“未找到”。\
  Skipped: you already ran this search in this task (call {first_id}). Use those results (read their URLs), \
@@ -3125,6 +3481,7 @@ try a clearly different query or source, or say in the answer that it wasn't fou
         };
         let (mut added, mut recent, mut suggested): (Vec<String>, Vec<String>, Vec<String>) =
             (vec![], vec![], vec![]);
+        let mut cards: Vec<String> = vec![];
         for f in items.iter().take(8) {
             if !f.is_object() {
                 continue;
@@ -3138,6 +3495,27 @@ try a clearly different query or source, or say in the answer that it wasn't fou
             }
             let kind = kind.to_lowercase();
             let fact = sget(f, "fact").trim().to_string();
+            if kind == "card" {
+                // a card the user holds goes into the Vault by its name (its number, expiry and CVC UNKNOWN until the
+                // user adds them); Sentinel refuses a number and keeps one entry per card
+                let name = sget(f, "value").trim().to_string();
+                if !name.is_empty() && !crate::store::looks_sensitive(&name) {
+                    if let Ok(r) = self
+                        .sentinel(
+                            "POST",
+                            "/internal/vault/card",
+                            Some(json!({"name": name, "country": sget(f, "country").trim(), "task_id": task_id})),
+                            20.0,
+                        )
+                        .await
+                    {
+                        if get_truthy(&r, "added") {
+                            cards.push(get_str(&r["item"], "label"));
+                        }
+                    }
+                }
+                continue;
+            }
             if kind == "profile" {
                 let val = sget(f, "value").trim().to_string();
                 if let Ok(Some(r)) = self.store.suggest_profile(
@@ -3197,8 +3575,8 @@ try a clearly different query or source, or say in the answer that it wasn't fou
                 }
             }
         }
-        let out = json!({"facts": added, "recent": recent, "profile_suggestions": suggested});
-        if !added.is_empty() || !recent.is_empty() || !suggested.is_empty() {
+        let out = json!({"facts": added, "recent": recent, "profile_suggestions": suggested, "vault_cards": cards});
+        if !added.is_empty() || !recent.is_empty() || !suggested.is_empty() || !cards.is_empty() {
             self.event(task_id, "memory_saved", out.clone()).await;
             self.audit(
                 "memory",
@@ -3434,4 +3812,9 @@ impl crate::memory_tidy::TidyRuntime for Runtime {
 /// Whether a tool stays available while a skill has turned the browser off: no `browser_*`, no `delegate`.
 pub fn browser_policy_allows(name: &str) -> bool {
     !name.starts_with("browser_") && name != "delegate"
+}
+
+/// The model service gave up after its retries (overloaded, unavailable): another model may still answer.
+fn unavailable(e: &LlmError) -> bool {
+    e.to_string().contains("model unavailable after retries")
 }

@@ -26,17 +26,17 @@ other knowledge files — is in [KNOWLEDGE.md](KNOWLEDGE.md). Repository rules, 
   hidden from the model.
 - **Calendar, Notion & Slack** – look things up, write reports, update boards, read and post messages.
 - **Web browser** – its own Chromium with a live view; you take over for logins and CAPTCHAs.
-- **Flights, hotels & restaurants** – `flights_search` works out of the box with Kiwi.com's flight data (free, information only: the booking happens on the airline's own site or with an agency you choose, never through Kiwi) and runs beside `web_search` for fares; a SerpApi key switches flights to Google Flights data and adds Google Hotels (`hotels_search`, `hotel_rooms`) and Google Maps places (`places_search`, `place_details`) for restaurants. That key serves these tools only, never web search. The travel skills search and compare there and open the browser only to book, on the provider's own site or the platform you name.
+- **Flights, hotels & restaurants** – `flights_search` works out of the box with Kiwi.com's flight data (free); a SerpApi key switches single-date flight searches to Google Flights data (Kiwi.com stays for date ranges and as the fallback) and adds Google Hotels (`hotels_search`, `hotel_rooms`) and Google Maps places (`places_search`, `place_details`) for restaurants. That key serves these tools only, never web search. `cars_search` finds rental cars at an airport (no key) and links to Kayak's live offers for the dates (Rentalcars.com when Kayak doesn't answer). Each call is one search, a request makes at most one flight, one hotel and one car search, and every flight, hotel and car comes with its booking link. The travel skills search and compare there and open the browser only to book, on the provider's own site or the platform you name.
 - **Web search** – one `web_search` tool on every model call: Exa's free MCP first, then Tavily, Brave or Exa keys, and the browser's own search engines as the last resort — one call returns titles, URLs and snippets, no search page and no CAPTCHA. Exa's public MCP server answers first with no key at all (rate-limited), so `web_search` works out of the box; keys are entered in Settings → Connections (several at once: tried in that order, the one that worked last first); a server can also ship default keys in `[search]`. 
 - **MCP connectors** – plug in any MCP (Model Context Protocol) server.
-- **Background work** – multi-day goals, event triggers (new email / Slack message / Notion change) and schedules, created from the chat and by skills (the Automations page is not in the navigation for now).
+- **Background work** – multi-day goals, event triggers (new email / Slack message / Notion change) and schedules, created from the chat and by skills. The Tasks page lists the scheduled tasks (next run, or Pending when the machine slept through it), each with a link to its chat and Delete. `GET /run_pending_tasks` (signed in, e.g. `curl -N -u user:password https://<host>/run_pending_tasks`, from a wake-up hook) runs every pending task and streams their progress as NDJSON until all are done.
 - **Telegram remote control** – give tasks and approve actions from your phone.
 - **Research library** – in-depth Markdown reports you refine and refresh later.
 - **Travel skills for Asia** – see [Travel use cases](#travel-use-cases) below.
 - **Trip photos and videos** – the clips and photos of a trip in your Google Drive become a highlights video (join,
   cut, vertical for phones, title, music) or a photo story book PDF, edited on your own machine and put back in
   Drive; Drive clean-up before the next trip. One Google sign-in connects Calendar and Drive.
-- **Memory, profile & skills** – the profile (name as in the passport, birthday, nationality, any number of addresses) can be filled from a photo of your ID; the number goes to the Vault, the photo is not kept. **English and Chinese UI**.
+- **Memory, profile & skills** – the profile (name as in the passport, birthday, nationality, any number of addresses) can be filled from a photo of your ID; the number goes to the Vault, the photo is not kept. The Vault, beside the profile, also holds your credit cards: name a card ("Citi Prestige", optionally the country that issued it) in chat or on the Vault card and it is saved by name, its number, expiry and CVC UNKNOWN until you add them. **English and Chinese UI**.
 
 ## Safe by design
 
@@ -78,7 +78,7 @@ photo is read once and not kept).
 | **Trip photo story book** | "Make a story book from our Kyoto photos for the kids" | Picks and orders the trip photos from Drive, restyles or captions them where asked, writes the story or captions, lays out a PDF, shows it and uploads it next to the photos. | `drive-photo-storybook` |
 | **Room for the next trip** | "My Drive is full — what can go?" | Lists the large and long-unused files (old backups, raw footage) with size and last-opened date, you pick, and one approved step moves them to the bin — never a permanent delete. | `drive-cleanup` |
 | **Expense report** | "Build the expense report for my Tokyo trip" + receipts | Receipts from mail, uploaded card statements and photographed paper receipts (read by the vision model), de-duplicated, converted at the transaction-date rate, an Excel ledger and a PDF claim. | `travel-expense-report` |
-| **Which card to use** | "Which card for this ¥30,000 dinner?" | Your cards from the profile (names only) against a 160-card terms catalog: value per card, the best pick, caveats and the date the terms were verified. Updating the catalog: [KNOWLEDGE.md](KNOWLEDGE.md). | `credit-card-picker` |
+| **Which card to use** | "Which card for this ¥30,000 dinner?" | Your cards from the Vault (by name; added on Memory → Vault or saved when you name them in chat) against a 160-card terms catalog: value per card, the best pick, caveats and the date the terms were verified. Updating the catalog: [KNOWLEDGE.md](KNOWLEDGE.md). | `credit-card-picker` |
 | **City guides** | "I'm moving to Shanghai for work — where do expats live and what does it cost?" | Briefings for Westerners on Beijing, Shanghai, Shenzhen, Guangzhou, Chengdu, Tokyo, Osaka, Seoul, Singapore, Hong Kong, Taipei, Bangkok, Kuala Lumpur, Ho Chi Minh City and Hanoi: entry and airports, money and apps, getting around, business customs, neighbourhoods and costs, health and schools, food, sights. Answers come from the guide's dated facts and data tools (exchange rates, the travel connector), never the browser. | `beijing`, `shanghai`, `shenzhen`, `guangzhou`, `chengdu`, `tokyo`, `osaka`, `seoul`, `singapore`, `hong-kong`, `taipei`, `bangkok`, `kuala-lumpur`, `ho-chi-minh-city`, `hanoi` |
 | **Plan and book** | "Flights to Tokyo next Friday, a hotel in Ginza, a 3-star dinner" | Flights, hotels, itineraries and restaurant bookings (existing skills). | `travel-planning`, `flight-booking`, `hotel-booking`, `restaurant-booking`, `michelin-dining` |
 
@@ -191,9 +191,9 @@ The end-to-end suites in `tests/` (Python and Playwright) run the binary inside 
 fake third-party services, one fresh stack per suite. You need nothing on the host but Docker:
 
 ```bash
-docker build -f Dockerfile.test -t omuse-test .   # rebuild after changing crates/, web/ or skills/
-bash tests/run_in_docker.sh                        # every suite
-bash tests/run_in_docker.sh sgac_e2e arrival_nomail_e2e   # only these
+bash tests/run_in_docker.sh                        # every scripted suite (the image is rebuilt from the tree first)
+bash tests/run_in_docker.sh -j 4                   # the same, four at a time
+bash tests/run_in_docker.sh pdf_e2e stuck_e2e      # only these
 bash tests/docker_image_smoke.sh omuse             # the production image
 ```
 

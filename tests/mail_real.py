@@ -1,18 +1,17 @@
-"""Mail with a real model (see tests/real_common.py): a plain request sent to the main bot, which keeps it (mail is
-general work, no specialised bot). The landlord's rent-increase mail sits in the local IMAP inbox among other mail; the
-model must find and read it (gmail_* tools), give its facts (the old and the new rent, the date), and write a polite
-reply as a draft (gmail_create_draft, to the landlord, asking to keep the current rent) — saved in Drafts, never sent
-(no gmail_send / gmail_reply: the user asked for a draft). No browser. One TIMING line.
+"""Mail with a real model, from the user's point of view (tests/user_common.py). The landlord's rent-increase mail sits
+in the user's inbox (the local IMAP account) among other mail. In Main's chat the user asks whether the landlord wrote
+about the rent increase and for a polite reply as a draft. What the user sees: the answer gives the mail's facts (the
+old and the new rent); in their mailbox's Drafts folder there is a reply to the landlord asking to keep the current rent;
+nothing new is in Sent (they asked for a draft) and the answer does not say it was sent. One TIMING line.
 
-    OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env OMUSE_E2E_PLANNER=xai/grok-4.7 OMUSE_E2E_EXECUTOR=openai-codex/gpt-6-luna \\
-        tests/run_in_docker.sh mail_real"""
-import imaplib
+    OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh mail_real"""
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tests import real_common as R  # noqa: E402
-from tests import skills_common as K  # noqa: E402
+from tests import user_common as U  # noqa: E402
+from tests.user_common import check  # noqa: E402
 
 LANDLORD = "daniel.tan@hollandprops.example"
 MAIL = [
@@ -26,48 +25,28 @@ MAIL = [
 ]
 
 
-def results(info: dict, name: str) -> list[dict]:
-    return [e["data"] for x in info["tasks"] for e in R.task(x).get("events", []) if e["type"] == "tool_result"
-            and e["data"].get("name") == name]
+async def main():
+    drafts0, sent0 = len(U.mailbox("Drafts")), len(U.mailbox("Sent"))
+    async with U.User() as u:
+        a = await u.ask("Did my landlord email me about the rent increase? Draft a polite reply asking to keep it at the current amount.",
+                        label="rent")
+        check("rent: the answer gives the mail's facts (S$3,800 → S$4,300)", a.mentions("4,300", "4300") and a.mentions("3,800", "3800"), a.text[:800])
+        check("rent: the answer does not say the reply was sent", not re.search(r"\b(I('ve| have)? sent|has been sent|was sent)\b", a.text, re.I),
+              a.text[:600])
+    drafts = U.mailbox("Drafts")
+    new = drafts[drafts0:]
+    print(f"INFO Drafts: {[(d['to'], d['subject'], ' '.join(d['body'].split())[:300]) for d in new]}")
+    mine = [d for d in new if LANDLORD in d["to"].lower()]
+    check("rent: a new draft to the landlord is in the user's Drafts folder", bool(mine), [(d["to"], d["subject"]) for d in drafts])
+    if mine:
+        d = mine[-1]
+        check("rent: the draft is a reply about the rent (its subject)", re.search(r"rent|holland", d["subject"], re.I), d["subject"])
+        check("rent: the draft asks to keep the current rent (S$3,800 or the current amount)",
+              re.search(r"3,?800|current (rent|amount|rate)", d["body"], re.I), d["body"][:600])
+        check("rent: the draft is polite (thanks or regards)", re.search(r"thank|regards|appreciate|grateful", d["body"], re.I), d["body"][:600])
+    sent = U.mailbox("Sent")
+    check("rent: nothing new in the user's Sent folder", len(sent) == sent0, [(m["to"], m["subject"]) for m in sent[sent0:]])
 
 
-def drafts() -> list[str]:
-    """The raw messages in the Drafts folder of the local IMAP mailbox."""
-    m = imaplib.IMAP4("127.0.0.1", 1143)
-    m.login(K.USER, K.PW)
-    out = []
-    try:
-        if m.select("Drafts", readonly=True)[0] == "OK":
-            _, ids = m.search(None, "ALL")
-            for i in (ids[0] or b"").split():
-                _, d = m.fetch(i, "(RFC822)")
-                out.append(d[0][1].decode("utf-8", "replace"))
-    finally:
-        m.logout()
-    return out
-
-
-R.setup(mail=MAIL)
-info = R.ask("Did my landlord email me about the rent increase? Draft a polite reply asking to keep it at the current amount.")
-R.routed("rent", info, "main")
-R.finished("rent", info)
-res = info["result"]
-R.check("rent: the mailbox was searched or read (gmail_* tools)",
-        any(n in info["names"] for n in ("gmail_search", "gmail_get_message", "gmail_get_thread")), info["names"])
-R.check("rent: the answer gives the mail's facts (S$3,800 → S$4,300)",
-        R.mentions(res, "4,300", "4300") and R.mentions(res, "3,800", "3800"), res[:800])
-mk = [x.get("args") or {} for x in info["calls"] if x["name"] == "gmail_create_draft"]
-ok = [r for r in results(info, "gmail_create_draft") if R.T.ok(r)]
-R.check("rent: a draft was created (gmail_create_draft succeeded)", bool(mk) and bool(ok), (mk, results(info, "gmail_create_draft")))
-d = mk[-1] if mk else {}
-R.check("rent: the draft replies to the landlord (to him, or a reply to his mail)",
-        LANDLORD in str(d.get("to", "")).lower() or bool(d.get("reply_to_message_id")), d)
-R.check("rent: the draft asks to keep the current rent (mentions S$3,800 or the current amount)",
-        R.mentions(str(d.get("body", "")), "3,800", "3800", "current"), str(d.get("body", ""))[:600])
-R.check("rent: nothing was sent (no gmail_send / gmail_reply / gmail_forward)",
-        not [n for n in info["names"] if n in ("gmail_send", "gmail_reply", "gmail_forward")], info["names"])
-saved = [m for m in drafts() if LANDLORD in m.lower()]
-R.check("rent: the draft is in the mailbox's Drafts folder", bool(saved), [m[:300] for m in drafts()])
-R.no_browser("rent", info)
-R.timing("rent", info)
-R.finish()
+U.setup(mail=MAIL)
+U.run(main)

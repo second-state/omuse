@@ -1,8 +1,13 @@
 ---
 name: baggage-delayed-lost
 description: 托运行李延误/丢失/损坏：离开机场前先填 PIR、跟踪状态、必需品购买留收据、21 天规则与蒙特利尔公约、向航空公司索赔和保险理赔的邮件草稿与清单 Delayed, lost or damaged checked bags — the PIR before leaving the airport, tracking, essentials receipts, the 21-day rule and Montreal Convention limits, claim letters to the airline and the insurer.
+form: on
 ---
 # Baggage delayed, lost or damaged / 行李延误与丢失
+
+**First turn, in parallel**: gmail_search the flight booking and the hotel (delivery address), and gmail_search
+`insurance (policy OR certificate OR travel)` — always, even when the user only asks about the airline: the answer says
+what the policy pays for a delayed or lost bag and what it needs (section 4), or that no policy was found.
 
 ## 1. Right now (if the user is still at the airport)
 - **File the PIR** (Property Irregularity Report) at the airline's baggage desk before leaving the airport, for every
@@ -17,9 +22,9 @@ description: 托运行李延误/丢失/损坏：离开机场前先填 PIR、跟�
   schedule_create check twice a day and notify_user on change.
 - Delayed bags are usually found within a few days. If nothing after 5 days the airline asks for a detailed
   inventory (contents, values, purchase dates) — help the user write it (make_xlsx if long).
-- **21 days**: a bag not found within 21 days of the date it should have arrived is treated as lost, and the lost-bag
-  claim starts (airline form or email) — many airlines then pay the depreciated value of the contents and the bag
-  against receipts, up to the Montreal Convention limit for international flights (about 1,519 SDR per passenger in
+- **21 days** (every answer about a delayed bag states it, with the date it falls on): a bag not found within 21 days of
+  the date it should have arrived is treated as lost, and the lost-bag claim starts (airline form or email) — many
+  airlines then pay the depreciated value of the contents and the bag against receipts, up to the Montreal Convention limit for international flights (about 1,519 SDR per passenger in
   2026 — verify the current figure and the airline's own policy page, with the date). Carriers in the same country
   may apply national rules instead; check the airline's conditions of carriage.
 

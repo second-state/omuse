@@ -322,51 +322,7 @@ pub fn google_group_id(pref: &str) -> Option<u32> {
         .map(|(_, id)| *id)
 }
 
-/// The ids in a Google Hotels `brands` list (`[{id, name, children: [{id, name}]}]`) that a preference stands for: a
-/// group by its programme's name or the word it goes by ("Hyatt" for World of Hyatt, "IHG" for "IHG Hotels &
-/// Resorts"), a brand by a child whose name starts with it ("Westin" → "Westin Hotels & Resorts"). Empty: none.
-pub fn google_brand_ids(pref: &str, list: &[serde_json::Value]) -> Vec<u64> {
-    let p = pref.trim().to_lowercase();
-    let word = hotel_group(pref).map(|g| group_word(g.0).to_lowercase());
-    // exact names first ("Holiday Inn" is not "Holiday Inn Express"); else the names that start with it
-    let exact = |n: &str, w: &str| n == w;
-    let prefix = |n: &str, w: &str| n.starts_with(&format!("{w} "));
-    let id = |v: &serde_json::Value| v.get("id").and_then(serde_json::Value::as_u64);
-    let name = |v: &serde_json::Value| {
-        v.get("name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_lowercase()
-    };
-    for rule in [exact, prefix] {
-        let named =
-            |n: &str| !p.is_empty() && (rule(n, &p) || word.as_ref().is_some_and(|w| rule(n, w)));
-        let mut out = Vec::new();
-        for parent in list {
-            if named(&name(parent)) {
-                out.extend(id(parent));
-                continue;
-            }
-            for child in parent
-                .get("children")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if named(&name(child)) {
-                    out.extend(id(child));
-                }
-            }
-        }
-        if !out.is_empty() {
-            return out;
-        }
-    }
-    Vec::new()
-}
-
-/// IATA airline code → the airline's own website, where a flight from Kiwi.com data is booked (Kiwi gives no link).
+/// IATA airline code → the airline's own website, where a flight found on Kiwi.com can also be booked.
 pub const AIRLINE_SITES: &[(&str, &str)] = &[
     ("SQ", "singaporeair.com"),
     ("TR", "flyscoot.com"),
@@ -646,27 +602,12 @@ mod tests {
     }
 
     #[test]
-    fn hotel_groups_and_brands_find_their_google_ids() {
+    fn hotel_groups_find_their_google_ids() {
         assert_eq!(google_group_id("Marriott"), Some(46));
         assert_eq!(google_group_id("IHG One Rewards"), Some(17));
         assert_eq!(google_group_id("Hyatt"), Some(37));
         assert_eq!(google_group_id("Westin"), None);
         assert_eq!(google_group_id("Okura Nikko"), None);
-        // as Google listed them for Singapore on 2026-10-29
-        let list: Vec<serde_json::Value> = serde_json::from_str(r#"[
-            {"id": 17, "name": "IHG Hotels & Resorts", "children": [{"id": 1, "name": "Crowne Plaza"}, {"id": 2, "name": "Holiday Inn"},
-                                                                   {"id": 3, "name": "Holiday Inn Express"}]},
-            {"id": 46, "name": "Marriott Bonvoy", "children": [{"id": 70, "name": "Westin Hotels & Resorts"}, {"id": 71, "name": "Sheraton Hotels and Resorts"}]},
-            {"id": 400, "name": "Okura Nikko Hotels", "children": [{"id": 401, "name": "Hotel Okura"}]},
-            {"id": 289, "name": "Four Seasons", "children": []}]"#).unwrap();
-        assert_eq!(google_brand_ids("IHG", &list), [17]);
-        assert_eq!(google_brand_ids("Marriott Bonvoy", &list), [46]);
-        assert_eq!(google_brand_ids("Westin", &list), [70]);
-        assert_eq!(google_brand_ids("Holiday Inn", &list), [2]); // not Holiday Inn Express
-        assert_eq!(google_brand_ids("Okura Nikko", &list), [400]);
-        assert_eq!(google_brand_ids("Four Seasons", &list), [289]);
-        assert!(google_brand_ids("Aman", &list).is_empty());
-        assert!(google_brand_ids("", &list).is_empty());
     }
 
     #[test]

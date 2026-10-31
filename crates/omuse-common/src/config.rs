@@ -25,6 +25,7 @@ pub struct Config {
     pub google: GoogleConfig,
     pub endpoints: EndpointsConfig,
     pub search: SearchConfig,
+    pub shopping: ShoppingConfig,
     pub internal: InternalConfig,
     pub web: WebConfig,
     /// Where the file was loaded from (not a TOML key).
@@ -54,6 +55,9 @@ pub struct ServerConfig {
     pub app_id: String,
     /// Event-loop stall watchdog threshold in seconds (`LOOP_STALL_SECONDS`).
     pub loop_stall_seconds: f64,
+    /// Run due scheduled tasks from the built-in loop (every 20 s). Off: only `GET /run_pending_tasks` runs them
+    /// (an external cron or a wake-up hook calls it).
+    pub scheduler_loop: bool,
 }
 
 impl Default for ServerConfig {
@@ -69,6 +73,7 @@ impl Default for ServerConfig {
             timezone: "UTC".into(),
             app_id: "omuse".into(),
             loop_stall_seconds: 3.0,
+            scheduler_loop: true,
         }
     }
 }
@@ -398,6 +403,25 @@ impl SearchConfig {
     }
 }
 
+/// `[shopping]` — the server's default Shopify credentials (an app in Shopify's Dev Dashboard): product search uses
+/// Shopify's Global Catalog with a token the client id and secret are exchanged for (`[endpoints] shopify_auth`,
+/// `shopify_catalog`); the credentials a user enters in Settings → Connections win.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct ShoppingConfig {
+    /// `OMUSE_SHOPIFY_CLIENT_ID`.
+    pub shopify_client_id: String,
+    /// `OMUSE_SHOPIFY_CLIENT_SECRET` — never shown in Settings.
+    pub shopify_client_secret: String,
+}
+
+impl ShoppingConfig {
+    /// Whether the server has default Shopify credentials (both parts).
+    pub fn has_shopify(&self) -> bool {
+        !self.shopify_client_id.trim().is_empty() && !self.shopify_client_secret.trim().is_empty()
+    }
+}
+
 /// `[endpoints]` — third-party API bases (tests point them at fakes).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -417,6 +441,10 @@ pub struct EndpointsConfig {
     pub exa_mcp: String,
     /// Kiwi.com's public MCP endpoint (flight data behind `flights_search` when there is no SerpApi key).
     pub kiwi_mcp: String,
+    /// Kayak's site: `cars_search` links to its results page for a rental (and checks that it answers).
+    pub kayak: String,
+    /// Rentalcars.com's site: `cars_search`'s link when Kayak's page does not answer.
+    pub rentalcars: String,
     /// `SLACK_API`.
     pub slack: String,
     /// `MS_LOGIN_URL` (Outlook OAuth).
@@ -433,6 +461,10 @@ pub struct EndpointsConfig {
     /// Outlook's SMTP server as `host:port:security` instead of `smtp-mail.outlook.com:587:starttls`; empty =
     /// Microsoft's server.
     pub outlook_smtp: String,
+    /// Shopify's token endpoint base (`/auth/access_token`: the client id and secret → a 60-minute token).
+    pub shopify_auth: String,
+    /// Shopify's Global Catalog base (`/api/ucp/mcp`: `search_catalog` across merchants).
+    pub shopify_catalog: String,
 }
 
 impl Default for EndpointsConfig {
@@ -445,6 +477,8 @@ impl Default for EndpointsConfig {
             exa: "https://api.exa.ai".into(),
             exa_mcp: "https://mcp.exa.ai/mcp".into(),
             kiwi_mcp: "https://mcp.kiwi.com/".into(),
+            kayak: "https://www.kayak.com".into(),
+            rentalcars: "https://www.rentalcars.com".into(),
             slack: "https://slack.com/api".into(),
             ms_login: "https://login.microsoftonline.com".into(),
             github_raw: "https://raw.githubusercontent.com".into(),
@@ -452,6 +486,8 @@ impl Default for EndpointsConfig {
             ical_allow_http: false,
             outlook_imap: String::new(),
             outlook_smtp: String::new(),
+            shopify_auth: "https://api.shopify.com".into(),
+            shopify_catalog: "https://catalog.shopify.com".into(),
         }
     }
 }
@@ -646,6 +682,33 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_example_config_parses_with_shopping_and_without_a_form_model() {
+        let text = include_str!("../../../config.example.toml");
+        let c = Config::parse(text).unwrap();
+        assert!(!c.shopping.has_shopify()); // the example leaves the credentials empty
+        assert_eq!(c.endpoints.shopify_auth, "https://api.shopify.com");
+        assert_eq!(c.endpoints.shopify_catalog, "https://catalog.shopify.com");
+        assert!(
+            text.contains("[shopping]")
+                && text.contains("shopify_client_id")
+                && text.contains("shopify_client_secret")
+        );
+        // the form-filling model setting was removed (2026-10-31): no `form` key under [model]
+        let model = text
+            .split("[model]")
+            .nth(1)
+            .unwrap()
+            .split("\n[")
+            .next()
+            .unwrap();
+        assert!(!model.lines().any(|l| l.trim_start().starts_with("form ") || l.trim_start().starts_with("form=")), "{model}");
+        let shop =
+            Config::parse("[shopping]\nshopify_client_id = \"a\"\nshopify_client_secret = \"b\"\n")
+                .unwrap();
+        assert!(shop.shopping.has_shopify());
+    }
 
     #[test]
     fn defaults_and_paths() {

@@ -1,8 +1,13 @@
-"""City guides for Westerners (skills/<city>/SKILL.md): every guide is installed, has the agreed shape (orientation,
-entry, money, apps, getting around, business, living, food, sights, timeline, sources, the hand-offs to the task
-skills and the "remember" section), never tells the agent to use the browser, and answers from its own sheet plus a
-data tool: the scripted agent loads the guide, takes the exchange rate from market_data and quotes the guide's own
-"Getting around" line — no browser tool is called."""
+"""City guides for Westerners (skills/<city>/SKILL.md), the part a real-model run cannot check. That every installed guide
+answers its own city's questions from its content is checked from the user's side by city_guides_real.py and
+city_guides2_real.py (all 15 cities). What stays scripted, and why:
+- the files' shape (orientation, entry, money, apps, getting around, business, living, food, sights, timeline, sources,
+  the hand-offs to the task skills, the "remember" section, size, dates): a static check of the skill files, not a use case;
+- every guide is installed and enabled: the skills list, which a user never reads as a whole;
+- a model that calls the browser anyway after loading a guide is refused by the runtime and the refusal is audited: a
+  forced security refusal — a real model follows the guide and never makes that call;
+- the browser tools are hidden after a guide and back after a booking skill: an exact internal guarantee (the tools offered
+  to the model), not visible to the user."""
 import os
 import re
 import sys
@@ -54,23 +59,10 @@ for skill, (_sym, arrival) in CITIES.items():
             "2026" in txt and 10_000 <= len(txt.encode()) <= 26_000, len(txt.encode()))
     K.check(f"{skill}: secrets stay in the Vault", "Never store passport, card or ID numbers" in txt)
 
-# ---- installed, and answering without a browser
+# ---- installed; a browser call after a guide is refused
 K.setup()
 installed = {s["name"] for s in K.c.get(K.B + "/api/skills").json().get("skills", [])}
 K.check("every city guide is installed and enabled", set(CITIES) <= installed, sorted(set(CITIES) - installed))
-for skill, (sym, _a) in CITIES.items():
-    t = K.run(f"CITYGUIDE {skill} {sym} I'm a first-time visitor from the US: how do I get around, and what's the exchange rate?")
-    names = K.names(t)
-    res = t.get("result") or ""
-    sheet = open(os.path.join(ROOT, skill, "SKILL.md"), encoding="utf-8").read() if os.path.exists(os.path.join(ROOT, skill, "SKILL.md")) else ""
-    line = re.search(r"Getting around: (.{20,60})", res)
-    md = K.results(t, "market_data")
-    rate = re.search(re.escape(f"{sym[:3]}/{sym[3:6]}") + r"[^0-9]*([0-9][0-9,]*\.[0-9]+)", str(md[0].get("preview")) if md else "")
-    K.check(f"{skill}: guide loaded, rate from market_data, no browser tool",
-            t["status"] == "COMPLETED" and K.loaded(t, skill) and "market_data" in names and not any(n.startswith("browser_") for n in names),
-            (t["status"], names))
-    K.check(f"{skill}: the answer quotes the guide's own sheet and the market_data rate",
-            line and line.group(1)[:30] in sheet and rate and f"FX {sym}: {rate.group(1)}" in res, res[:300])
 # a model that calls the browser anyway after loading a guide: refused by the runtime, audited, the answer still comes
 t = K.run("CITYGUIDE tokyo USDJPY=X TRYBROWSER how do I get around Tokyo?")
 bs = K.results(t, "browser_read")

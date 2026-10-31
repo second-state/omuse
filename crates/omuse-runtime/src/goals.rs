@@ -149,6 +149,18 @@ pub fn create_goal(
         .ok_or_else(|| anyhow::anyhow!("goal vanished"))
 }
 
+/// Keep the user's own request with a goal: each check judges success by these words, so a model's narrower
+/// success criteria ("signed or finalized" for "until John confirms") cannot override what the user asked.
+pub fn set_ask(store: &Store, gid: &str, ask: &str) -> Result<()> {
+    store.db.update(
+        "goals",
+        "id",
+        gid,
+        &json!({"ask": take_chars(ask.trim(), 1000)}),
+    )?;
+    Ok(())
+}
+
 /// The task text of one goal check (`final` = the deadline has passed).
 pub fn goal_prompt(g: &Value, final_: bool, lang: &str) -> String {
     let prog: Vec<Value> = g
@@ -187,6 +199,12 @@ pub fn goal_prompt(g: &Value, final_: bool, lang: &str) -> String {
     let title = get_str(g, "title");
     let objective = get_str(g, "objective");
     let criteria = get_str(g, "criteria");
+    let ask = get_str(g, "ask");
+    let ask_en = if ask.is_empty() {
+        String::new()
+    } else {
+        format!("The user's own words (they decide when the goal is achieved; the criteria only explain them): \"{ask}\"\n")
+    };
     if lang == "en" {
         let task = if final_ {
             "⏰ The deadline has passed. This is the final check: decide whether the goal was achieved, then call goal_update with status achieved or failed."
@@ -194,9 +212,10 @@ pub fn goal_prompt(g: &Value, final_: bool, lang: &str) -> String {
             "This run: check the latest progress, take the next useful step toward the goal (sending/submitting still needs the user's approval as usual), then ALWAYS call goal_update: active / blocked (need the user's help) / achieved / failed."
         };
         return format!(
-            "🎯 Goal: {}\nObjective: {}\nSuccess criteria: {}\nDeadline: {}\nProgress so far (oldest first):\n{}\n\n{}",
+            "🎯 Goal: {}\nObjective: {}\n{}Success criteria: {}\nDeadline: {}\nProgress so far (oldest first):\n{}\n\n{}",
             title,
             objective,
+            ask_en,
             if criteria.is_empty() { "(use your judgement)" } else { criteria.as_str() },
             dl,
             hist,
@@ -209,9 +228,14 @@ pub fn goal_prompt(g: &Value, final_: bool, lang: &str) -> String {
         "本次任务：检查目标的最新进展，做下一步能推进目标的事情（发送/提交等操作照常需要用户审批），最后必须调用 goal_update 记录进展：仍在进行 active / 需要用户帮忙 blocked / 已达成 achieved / 无法达成 failed。\nThis run: check progress, take the next useful step toward the goal, then ALWAYS call goal_update."
     };
     format!(
-        "🎯 长期目标 Goal: {}\n目标描述 Objective: {}\n完成标准 Success criteria: {}\n截止时间 Deadline: {}\n以往进展 Progress so far (oldest first):\n{}\n\n{}",
+        "🎯 长期目标 Goal: {}\n目标描述 Objective: {}\n{}完成标准 Success criteria: {}\n截止时间 Deadline: {}\n以往进展 Progress so far (oldest first):\n{}\n\n{}",
         title,
         objective,
+        if ask.is_empty() {
+            String::new()
+        } else {
+            format!("用户原话 The user's own words（以此判断是否达成，完成标准只是解释 they decide; the criteria only explain them）: \"{ask}\"\n")
+        },
         if criteria.is_empty() { "（由你根据目标判断 use judgement）" } else { criteria.as_str() },
         dl,
         hist,
@@ -371,7 +395,11 @@ pub async fn check_deadlines(rt: &dyn RuntimeApi) -> Result<()> {
                         params![dumps(&Value::Object(st)), sch_id.as_str()],
                     )?;
                     let en = get_str(&store.settings()?, "language") == "en";
+                    // the goal's chat, made again if the user deleted it (as `Scheduler::ensure_conv`)
                     let conv_id = get_str(&g, "conv_id");
+                    if !conv_id.is_empty() && store.conv(&conv_id)?.is_none() {
+                        store.create_conv(&format!("🎯 {title}"), "schedule", Some(&conv_id))?;
+                    }
                     store.add_msg(
                         &conv_id,
                         "user",
@@ -548,6 +576,46 @@ mod tests {
             parse_deadline(&json!(1700000000)).unwrap(),
             Some(1700000000.0)
         );
+    }
+
+    #[tokio::test]
+    async fn a_check_judges_by_the_users_own_words() {
+        // automations_real: the model's criteria said "signed, approved, or finalized" for "until John confirms the
+        // contract", and the check then refused John's "I confirm the contract terms"
+        let rt = FakeRt::new();
+        let g = create_goal(
+            &rt.store,
+            "John's contract",
+            "Watch the inbox for John's confirmation",
+            "John says the contract is signed, approved, or finalized",
+            "interval",
+            &json!("30"),
+            "UTC",
+            &Value::Null,
+        )
+        .unwrap();
+        let ask = "Keep an eye on my inbox until John confirms the contract for the Q4 pilot.";
+        set_ask(&rt.store, &get_str(&g, "id"), ask).unwrap();
+        let g = rt.store.goal(&get_str(&g, "id")).unwrap().unwrap();
+        let p = goal_prompt(&g, false, "en");
+        assert!(
+            p.contains(&format!("The user's own words (they decide when the goal is achieved; the criteria only explain them): \"{ask}\"\nSuccess criteria:")),
+            "{p}"
+        );
+        assert!(goal_prompt(&g, false, "zh").contains(ask));
+        // a goal made in the Automations page has no request: the prompt is as before
+        let bare = create_goal(
+            &rt.store,
+            "x",
+            "y",
+            "z",
+            "interval",
+            &json!("30"),
+            "UTC",
+            &Value::Null,
+        )
+        .unwrap();
+        assert!(!goal_prompt(&bare, false, "en").contains("own words"));
     }
 
     #[tokio::test]

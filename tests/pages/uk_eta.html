@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apply for an electronic travel authorisation (ETA) - GOV.UK</title><style>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#1b1b1b;background:#f3f4f6}
+header{background:#0b0c0c;color:#fff;padding:12px 32px;display:flex;align-items:center;gap:14px}
+header .crest{width:38px;height:38px;border-radius:50%;background:#fff;color:#0b0c0c;font-weight:bold;display:flex;align-items:center;justify-content:center;font-size:13px}
+header .agency{font-size:14px;line-height:1.3}header .agency b{display:block;font-size:17px}
+main{max-width:980px;margin:18px auto;background:#fff;padding:20px 32px 28px;border:1px solid #d7d9dd}
+h1{font-size:24px;margin:4px 0 6px;color:#0b0c0c}.intro{margin:0 0 12px;color:#444}
+.steps{display:flex;gap:8px;margin:0 0 14px;font-size:13px}.steps span{padding:4px 10px;border-radius:12px;background:#e8eaee}.steps span.on{background:#0b0c0c;color:#fff}
+fieldset{border:1px solid #d7d9dd;margin:0 0 14px;padding:10px 16px 6px}legend{font-weight:bold;padding:0 6px;color:#0b0c0c}
+.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px 18px}
+.f{display:flex;flex-direction:column;margin-bottom:6px}.f.wide{grid-column:span 2}.f.full{grid-column:1/-1}
+.f>label,.q>span{font-size:13px;font-weight:bold;margin-bottom:3px}.req{color:#c00}
+input[type=text],input[type=email],input[type=tel],select{height:32px;border:1px solid #9aa0a6;border-radius:3px;padding:4px 8px;font-size:15px;background:#fff}
+input[readonly]{background:#eef0f3}
+.hint{font-size:11px;color:#666;height:14px}.err{font-size:12px;color:#c00;height:15px}
+.radios{display:flex;gap:16px;align-items:center;height:32px}.radios label{font-weight:normal;font-size:14px}
+.q{display:flex;justify-content:space-between;align-items:center;border-bottom:1px dashed #e1e3e6;padding:5px 0}.q>span{font-weight:normal;font-size:14px;max-width:70%}
+.chk{font-size:13px;font-weight:normal;margin-top:3px}
+.captcha{display:flex;gap:14px;align-items:center}.captcha canvas{border:1px solid #9aa0a6;background:#f6f1e7}
+.actions{display:flex;justify-content:flex-end;gap:12px;margin-top:10px}
+button{height:40px;padding:0 26px;border:0;border-radius:4px;font-size:15px;cursor:pointer}
+button.sec{background:#e8eaee;color:#222}button[type=submit]{background:#0b0c0c;color:#fff;font-weight:bold}
+footer{max-width:980px;margin:0 auto 30px;font-size:12px;color:#666}
+</style></head>
+<body>
+<header><div class="crest">UK</div><div class="agency"><b>GOV.UK</b>UK Visas and Immigration</div></header>
+<main>
+<div class="steps"><span class="">1. Before you start</span><span class="on">2. Your details</span><span class="">3. Check answers</span><span class="">4. Pay</span></div>
+<h1>Apply for an electronic travel authorisation (ETA)</h1>
+<p class="intro">You need an ETA to visit the UK if you do not need a visa. It costs £16 and lasts 2 years. You'll need your passport, a photo of your face and a way to pay.</p>
+<form action="/uk_eta_done.html" method="get" autocomplete="off" novalidate>
+<fieldset><legend>Personal information</legend><div class="grid"><div class="f "><label for="family_name">Family name (surname) <span class="req">*</span></label><input type="text" name="family_name" id="family_name" autocomplete="off"><div class="hint"></div><div class="err" id="err-family_name"></div></div><div class="f "><label for="given_name">Given name(s) <span class="req">*</span></label><input type="text" name="given_name" id="given_name" autocomplete="off"><div class="hint"></div><div class="err" id="err-given_name"></div></div><div class="f "><label>Sex <span class="req">*</span></label><div class="radios"><label><input type="radio" name="sex" value="M"> Male</label><label><input type="radio" name="sex" value="F"> Female</label><label><input type="radio" name="sex" value="X"> Unspecified (X)</label></div><div class="hint"></div><div class="err" id="err-sex"></div></div><div class="f "><label for="dob">Date of birth <span class="req">*</span></label><input type="text" class="date" name="dob" id="dob" placeholder="DD/MM/YYYY" maxlength="10" inputmode="numeric" autocomplete="off"><div class="hint">Format: DD/MM/YYYY</div><div class="err" id="err-dob"></div></div><div class="f "><label for="nationality">Nationality / Citizenship <span class="req">*</span></label><select name="nationality" id="nationality"><option value="">-- Please select --</option><option value="AUS">Australia</option><option value="BRA">Brazil</option><option value="CAN">Canada</option><option value="CHN">China</option><option value="FRA">France</option><option value="DEU">Germany</option><option value="HKG">Hong Kong SAR</option><option value="IND">India</option><option value="IDN">Indonesia</option><option value="IRL">Ireland</option><option value="ITA">Italy</option><option value="JPN">Japan</option><option value="KOR">Korea, Republic of</option><option value="MYS">Malaysia</option><option value="NLD">Netherlands</option><option value="NZL">New Zealand</option><option value="PHL">Philippines</option><option value="SGP">Singapore</option><option value="ESP">Spain</option><option value="CHE">Switzerland</option><option value="TWN">Taiwan</option><option value="THA">Thailand</option><option value="GBR">United Kingdom</option><option value="USA">United States of America</option><option value="VNM">Viet Nam</option></select><div class="hint"></div><div class="err" id="err-nationality"></div></div></div></fieldset><fieldset><legend>Passport information</legend><div class="grid"><div class="f "><label for="passport_no">Passport number <span class="req">*</span></label><input type="text" name="passport_no" id="passport_no" autocomplete="off"><div class="hint">As shown on the passport data page</div><div class="err" id="err-passport_no"></div></div><div class="f "><label for="passport_expiry">Date of passport expiry <span class="req">*</span></label><input type="text" class="date" name="passport_expiry" id="passport_expiry" placeholder="DD/MM/YYYY" maxlength="10" inputmode="numeric" autocomplete="off"><div class="hint">Format: DD/MM/YYYY</div><div class="err" id="err-passport_expiry"></div></div><div class="f "><label for="passport_country">Country / place of issue <span class="req">*</span></label><select name="passport_country" id="passport_country"><option value="">-- Please select --</option><option value="AUS">Australia</option><option value="BRA">Brazil</option><option value="CAN">Canada</option><option value="CHN">China</option><option value="FRA">France</option><option value="DEU">Germany</option><option value="HKG">Hong Kong SAR</option><option value="IND">India</option><option value="IDN">Indonesia</option><option value="IRL">Ireland</option><option value="ITA">Italy</option><option value="JPN">Japan</option><option value="KOR">Korea, Republic of</option><option value="MYS">Malaysia</option><option value="NLD">Netherlands</option><option value="NZL">New Zealand</option><option value="PHL">Philippines</option><option value="SGP">Singapore</option><option value="ESP">Spain</option><option value="CHE">Switzerland</option><option value="TWN">Taiwan</option><option value="THA">Thailand</option><option value="GBR">United Kingdom</option><option value="USA">United States of America</option><option value="VNM">Viet Nam</option></select><div class="hint"></div><div class="err" id="err-passport_country"></div></div></div></fieldset><fieldset><legend>Contact details</legend><div class="grid"><div class="f "><label for="email">Email address <span class="req">*</span></label><input type="email" name="email" id="email" autocomplete="off"><div class="hint"></div><div class="err" id="err-email"></div></div><div class="f "><label for="phone">Mobile number (with country code) <span class="req">*</span></label><input type="tel" name="phone" id="phone" autocomplete="off"><div class="hint"></div><div class="err" id="err-phone"></div></div><div class="f full"><label for="home_address">Home address <span class="req">*</span></label><input type="text" name="home_address" id="home_address" autocomplete="off"><div class="hint"></div><div class="err" id="err-home_address"></div></div><div class="f "><label for="occupation">Occupation / job title <span class="req">*</span></label><input type="text" name="occupation" id="occupation" autocomplete="off"><div class="hint"></div><div class="err" id="err-occupation"></div></div></div></fieldset><fieldset><legend>Photos</legend><div class="grid"><div class="f full"><label for="photo">Photo of your face (taken against a plain background) <span class="req">*</span></label><input type="file" name="photo" id="photo" accept="image/jpeg,image/png"><div class="hint">JPG or PNG, at least 600 x 750 pixels</div><div class="err" id="err-photo"></div></div></div></fieldset><fieldset><legend>Criminality and immigration history</legend><div class="q"><span>Have you ever been convicted of a criminal offence in any country?</span><div class="radios"><label><input type="radio" name="d_criminal" value="Yes"> Yes</label><label><input type="radio" name="d_criminal" value="No"> No</label></div></div><div class="q"><span>Have you ever been refused a visa or entry to the UK, or deported from any country?</span><div class="radios"><label><input type="radio" name="d_refused" value="Yes"> Yes</label><label><input type="radio" name="d_refused" value="No"> No</label></div></div><div class="q"><span>Have you ever been involved in, supported or encouraged terrorist activities?</span><div class="radios"><label><input type="radio" name="d_terror" value="Yes"> Yes</label><label><input type="radio" name="d_terror" value="No"> No</label></div></div></fieldset><p class="intro" style="font-size:13px">I declare that the information I have given is true, complete and correct. Giving false or misleading information is an offence.</p><div class="actions"><button type="button" class="sec">Save draft</button><button type="submit">Submit and pay</button></div>
+</form>
+</main>
+<footer>© Crown copyright · UK Visas and Immigration</footer>
+
+<script>
+(function () {
+  // dates: digits only, shown as DD/MM/YYYY while typing
+  document.querySelectorAll('input.date').forEach(function (i) {
+    i.addEventListener('input', function () {
+      var d = i.value.replace(/\D/g, '').slice(0, 8);
+      i.value = d.length > 4 ? d.slice(0, 2) + '/' + d.slice(2, 4) + '/' + d.slice(4) : d.length > 2 ? d.slice(0, 2) + '/' + d.slice(2) : d;
+      var e = document.getElementById('err-' + i.name), m = /^(\d\d)\/(\d\d)\/(\d{4})$/.exec(i.value);
+      if (e) e.textContent = (m && (+m[2] < 1 || +m[2] > 12 || +m[1] < 1 || +m[1] > 31)) ? 'Invalid date (DD/MM/YYYY)' : '';
+    });
+  });
+  // next city: "same as last city"
+  var same = document.getElementById('same_city'), last = document.querySelector('[name=last_city]'), next = document.querySelector('[name=next_city]');
+  function sync() { if (same && same.checked) { next.value = last.value; next.readOnly = true; } else if (next) { next.readOnly = false; } }
+  if (same) { same.addEventListener('change', sync); last.addEventListener('input', sync); }
+  // the security code
+  var cv = document.getElementById('cap');
+  if (cv) {
+    var code = cv.getAttribute('data-k').split('.').map(function (n) { return String.fromCharCode(+n - 7); }).join('');
+    var g = cv.getContext('2d');
+    g.fillStyle = '#f6f1e7'; g.fillRect(0, 0, cv.width, cv.height);
+    for (var l = 0; l < 7; l++) { g.strokeStyle = 'rgba(80,60,40,0.45)'; g.beginPath(); g.moveTo(Math.random() * 160, Math.random() * 46); g.lineTo(Math.random() * 160, Math.random() * 46); g.stroke(); }
+    for (var k = 0; k < code.length; k++) {
+      g.save(); g.translate(18 + k * 27, 32); g.rotate((k % 2 ? 1 : -1) * 0.22);
+      g.font = 'bold 26px Georgia, serif'; g.fillStyle = ['#2b3a67', '#6b2d2d', '#2d5b3a', '#4b2d6b', '#5b4a1d', '#1d4b5b'][k % 6];
+      g.fillText(code[k], 0, 0); g.restore();
+    }
+    document.querySelector('form').addEventListener('submit', function (ev) {
+      var v = (document.querySelector('[name=captcha]').value || '').trim().toUpperCase();
+      if (v !== code) { ev.preventDefault(); document.getElementById('err-captcha').textContent = 'The characters you entered do not match the image. Please try again.'; }
+    });
+  }
+})();
+</script>
+</body></html>

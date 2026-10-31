@@ -1,6 +1,7 @@
 ---
 name: michelin-dining
 description: 米其林餐厅：用旅行数据连接器查米其林星级/必比登餐厅和可订时段，比较后只在最后一步用浏览器订位（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Find MICHELIN-starred and Bib Gourmand restaurants in Asian cities, check real availability and book a table — data connector first, browser only to book.
+form: on
 ---
 # MICHELIN dining / 米其林订位
 
@@ -55,9 +56,13 @@ is for that booking page only.
    No deposit → skip purchase_confirm.
 2. browser_navigate(slot booking_url) → the form with refs; check date, time, party and deposit match.
 3. browser_type name, email, phone, requests (one turn); vault fills for the card.
-   Send each browser_fill_secret as its own turn (one call, nothing else in that turn): every vault fill can wait for the user's approval, and a turn should hold at most one call that may wait.
-4. browser_click "Confirm booking" once (Sentinel handles approval).
-5. Read the confirmation from the click result; one browser_snapshot only if it is missing.
+   Send each browser_fill_secret as its own turn (one call, nothing else in that turn).
+4. **The last click is the user's**: never press "Confirm booking" (Sentinel refuses it). With the page filled as far as
+   you can (a card saved by name only, or no card in the Vault: the card boxes stay empty), call
+   browser_request_takeover with the reason "The booking page is filled in: check it (type the card for the deposit if it is empty), press Confirm booking yourself and
+   hand the browser back". The chat shows the user a link to take over.
+5. After the hand-back, read the confirmation from one browser_snapshot. No confirmation → the booking is not made:
+   say so and that the page stays open for them.
 
 ## 6. Answer
 - Booking reference exactly as shown, restaurant + distinction, date (weekday), time, party size, deposit charged and

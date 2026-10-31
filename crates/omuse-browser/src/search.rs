@@ -36,7 +36,8 @@ const READ_JS: &str = r#"(limit) => {
   let t = (pick ? pick.innerText : '') || '';
   if (t.length < 400 && document.body) t = document.body.innerText || t;
   t = t.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-  return {title: document.title, url: location.href, text: t.slice(0, limit), length: t.length};
+  return {title: document.title, url: location.href, text: t.slice(0, limit), length: t.length,
+          scripts: document.scripts.length};
 }"#;
 
 /// `urllib.parse.quote_plus`.
@@ -111,14 +112,23 @@ impl Broker {
         Ok(json!({"query": query, "engine": "", "results": [], "error": last}))
     }
 
-    /// `web_read(urls, limit)`: up to four pages, read in parallel.
-    pub async fn web_read(&self, urls: &[String], limit: i64) -> Result<Value, ApiError> {
-        let futs = urls.iter().take(4).map(|u| self.read_one(u.clone(), limit));
+    /// `web_read(urls, limit, wait)`: up to four pages, read in parallel, each `wait` after it loads (scripts that draw
+    /// the page, e.g. Google Maps, need longer than the default).
+    pub async fn web_read(
+        &self,
+        urls: &[String],
+        limit: i64,
+        wait: Duration,
+    ) -> Result<Value, ApiError> {
+        let futs = urls
+            .iter()
+            .take(4)
+            .map(|u| self.read_one(u.clone(), limit, wait));
         let pages = futures::future::join_all(futs).await;
         Ok(json!({"pages": pages}))
     }
 
-    async fn read_one(&self, u: String, limit: i64) -> Value {
+    async fn read_one(&self, u: String, limit: i64, wait: Duration) -> Value {
         let (ok, why) = check_url(&u);
         if !ok {
             return json!({"url": u, "error": why});
@@ -135,7 +145,7 @@ impl Broker {
                 .navigate(&u, Duration::from_secs(25))
                 .await
                 .map_err(|e| e.to_string())?;
-            tokio::time::sleep(Duration::from_millis(1200)).await;
+            tokio::time::sleep(wait).await;
             let mut r = p
                 .eval(None, READ_JS, vec![json!(limit)])
                 .await

@@ -231,6 +231,7 @@ pub fn router(state: Arc<State>) -> Router {
         )
         .route("/api/schedules/{sid}/poll", post(auto::poll_schedule))
         .route("/api/schedules/{sid}/run", post(auto::run_schedule))
+        .route("/api/run_pending_tasks", get(auto::run_pending_tasks))
         .route("/api/goals", get(auto::goals).post(auto::add_goal))
         .route(
             "/api/goals/{gid}",
@@ -351,7 +352,7 @@ pub async fn serve(cfg: Arc<Config>) -> anyhow::Result<()> {
         Ok(None) => {}
         Err(e) => println!("[skills] seed failed: {:#}", e),
     }
-    state.sched.start();
+    state.sched.start(cfg.server.scheduler_loop);
     rt.health().start();
     state.golden.start();
     rt.recover().await;

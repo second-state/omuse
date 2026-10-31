@@ -29,6 +29,50 @@ use super::{
 };
 
 /// Fields the user may edit on the approval card, per tool (Python `EDITABLE`).
+/// The end of an event whose start the user moved, keeping its length: `old_start`/`old_end` as the agent gave them,
+/// `new_start` as edited ("2026-11-03 15:30", "2026-11-03T15:30:00+08:00"…), in the new start's own format.
+fn shifted_end(old_start: &str, old_end: &str, new_start: &str) -> Option<String> {
+    use chrono::{DateTime, NaiveDateTime};
+    fn parse(s: &str) -> Option<(NaiveDateTime, Option<String>)> {
+        let s = s.trim();
+        if let Ok(d) = DateTime::parse_from_rfc3339(s) {
+            return Some((d.naive_local(), Some(d.offset().to_string())));
+        }
+        for f in [
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+        ] {
+            if let Ok(d) = NaiveDateTime::parse_from_str(s, f) {
+                return Some((d, None));
+            }
+        }
+        None
+    }
+    let (s0, _) = parse(old_start)?;
+    let (e0, _) = parse(old_end)?;
+    let (s1, off) = parse(new_start)?;
+    let len = e0 - s0;
+    if len <= chrono::Duration::zero() {
+        return None;
+    }
+    let e1 = s1 + len;
+    let t_sep = if new_start.contains('T') { "T" } else { " " };
+    let secs = new_start.trim().matches(':').count() >= 2 && off.is_none()
+        || new_start.contains(":00+")
+        || new_start.contains(":00Z");
+    let base = if secs {
+        e1.format(&format!("%Y-%m-%d{t_sep}%H:%M:%S")).to_string()
+    } else {
+        e1.format(&format!("%Y-%m-%d{t_sep}%H:%M")).to_string()
+    };
+    Some(match off {
+        Some(o) => format!("{base}{o}"),
+        None => base,
+    })
+}
+
 pub fn editable(tool: &str) -> &'static [&'static str] {
     match tool {
         "phone_call" => &["purpose"],
@@ -120,6 +164,42 @@ fn from_account(ctx: &Ctx, tool: &str, args: &Value) -> String {
 
 type Ctxs = (Option<Value>, Option<Value>);
 
+/// The address of the page a task (or a lane) has open in the broker, `""` when none.
+async fn task_page_url(ctx: &Ctx, task_id: &str) -> Result<String, ActionError> {
+    let st = deps::broker(ctx, "GET", "/state", None, 10.0).await?.json();
+    Ok(st["tasks"]
+        .as_array()
+        .and_then(|a| a.iter().find(|x| get_str(x, "task_id") == task_id))
+        .map(|x| get_str(x, "url"))
+        .unwrap_or_else(|| get_str(&st, "url")))
+}
+
+/// The host links reach the model under (`omuse_runtime::links`): the model never sees a page's real address, so a
+/// `site` it writes from a link is this host, not the shop's.
+pub const STAND_IN_HOST: &str = "link.omuse.local";
+
+/// `purchase_confirm`'s site is the site of the page the task has open, where the total is shown and the card is
+/// filled — never the model's copy of it (travel_michelin_e2e 2026-10-30: approved for "omuse.local", then the card
+/// fill on the booking site was refused; a model may also write "amazon.com" for www.amazon.sg). With no page open
+/// the site stays as written and the policy refuses it.
+async fn purchase_site(ctx: &Ctx, args: &mut Value, page_id: &str) {
+    if let Ok(url) = task_page_url(ctx, page_id).await {
+        let host = guard::hostname_of(&url);
+        if !host.is_empty() && !host.ends_with(STAND_IN_HOST) {
+            args["site"] = json!(host);
+        }
+    }
+    // and its total is the one the checkout page shows, not the model's copy: the approval and the 30-minute allowance
+    // are for what the user will pay (audit 2026-10-31: `page_total` had no caller)
+    let body = json!({"task_id": page_id});
+    let Ok(r) = deps::broker(ctx, "POST", "/agent/page_text", Some(&body), 20.0).await else {
+        return;
+    };
+    if let Some(total) = omuse_common::guard::page_total(&get_str(&r.json(), "text")) {
+        args["total"] = json!((total * 100.0).round() / 100.0);
+    }
+}
+
 /// `_context_for`: ask the broker what a ref points to so the policy can judge the click/type.
 pub async fn context_for(
     ctx: &Ctx,
@@ -129,12 +209,7 @@ pub async fn context_for(
 ) -> Result<Ctxs, ActionError> {
     let page_of = |info: &Value| json!({"url": g_or(info, "page_url", json!("")), "title": g_or(info, "page_title", json!(""))});
     if tool == "browser_save_media" && !args.get("ref").is_some_and(truthy) {
-        let st = deps::broker(ctx, "GET", "/state", None, 10.0).await?.json();
-        let url = st["tasks"]
-            .as_array()
-            .and_then(|a| a.iter().find(|x| get_str(x, "task_id") == task_id))
-            .map(|x| g_or(x, "url", json!("")))
-            .unwrap_or_else(|| g_or(&st, "url", json!("")));
+        let url = task_page_url(ctx, task_id).await?;
         return Ok((None, Some(json!({"url": url, "title": ""}))));
     }
     if matches!(
@@ -411,8 +486,8 @@ pub async fn summary(
             field("付款卡 Card", card),
             field(
                 "批准后 After approval",
-                "30 分钟内、仅这个网站：结账、填卡、下单不再逐个审批；页面总价超过上面的金额会再问你 \
-                 (30 min, this site only; asks again if the page total is higher)",
+                "30 分钟内、仅这个网站：结账、填卡、下单不再逐个审批，页面总价超过上面的金额会再问你 \
+                 (for 30 min on this site only, checkout, the card and the order need no further approval — it asks again if the page total is higher)",
             ),
         ];
         s.insert("body".into(), json!(s_or(args, "note", "")));
@@ -857,8 +932,10 @@ fn ledger_after(
             let mut card = String::new();
             let cid = s_opt(args, "card_item_id");
             if !cid.is_empty() {
+                // the card's name and last digits ("Visa Wei Ming · •••• 1111"), no field label: the ledger shows it as
+                // it is, in either UI language
                 card = vault::item(&ctx.store, &cid)?
-                    .map(|it| vault::summary_text(&it, "number"))
+                    .map(|it| format!("{} · {}", get_str(&it, "label"), get_str(&it, "masked")))
                     .unwrap_or_default();
             }
             let mut merchant = s_opt(result, "site");
@@ -1016,13 +1093,47 @@ pub async fn run(
 /// `POST /internal/act`: the policy gate for every tool call the agent makes.
 pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
     let b = body_obj(&body)?;
-    let tool = s_or(&b, "tool", "");
+    let mut tool = s_or(&b, "tool", "");
     let mut args = match b.get("args") {
         Some(Value::Object(m)) => Value::Object(m.clone()),
         _ => json!({}),
     };
+    // places_search without a SerpApi key reads the Google Maps page in the browser: a page load like any other, so
+    // when the egress check would stop that load for approval, the call becomes the page load itself (approved by the
+    // user, or auto-approved by the setting) — browser_auto_real 2026-10-31: the map page loaded with no card
+    if tool == "places_search" && crate::actions::serpapi_key(&ctx.st).is_empty() {
+        let query = crate::actions::places_query(&args);
+        let url = omuse_apps::serpapi::place_map_url(&query, "", "");
+        let probe = json!({"url": url});
+        let task = s_or(&b, "task_id", "");
+        if !query.is_empty()
+            && decide(
+                &ctx.store,
+                "browser_navigate",
+                &probe,
+                &task,
+                None,
+                None,
+                ctx.gmail_ready(),
+            )
+            .is_ok_and(|d| d.decision == ASK)
+        {
+            tool = "browser_navigate".into();
+            args = probe;
+        }
+    }
     // invalid numbers become what the user means: a price cap of 0 = no limit, 0 travellers = 1 (see the function)
     omuse_common::util::sanitize_search_args(&mut args);
+    // a Vault item id or field name the model mistyped becomes the Vault's own (vault::resolve_args)
+    if let Err(e) = vault::resolve_args(&ctx.store, &mut args) {
+        tracing::warn!("vault args: {e}");
+    }
+    // maps are Google Maps: a page the model opens on OpenStreetMap becomes the Google Maps search for the same query
+    if tool.starts_with("browser_") {
+        if let Some(g) = omuse_apps::serpapi::google_maps_instead(&s_or(&args, "url", "")) {
+            args["url"] = json!(g);
+        }
+    }
     let task_id = s_or(&b, "task_id", "");
     let call_id = s_or(&b, "call_id", "");
     // a sub-agent's browser lane: its own page in the broker; policy, taint and audit stay with the task
@@ -1044,6 +1155,9 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
         ));
     };
     let connector = get_str(&t, "connector");
+    if tool == "purchase_confirm" {
+        purchase_site(&ctx, &mut args, &page_id).await;
+    }
     let (mut elem, mut page) = (None, None);
     if connector == "browser" && tool != "browser_request_takeover" && tool != "browser_downloads" {
         match context_for(&ctx, &tool, &args, &page_id).await {
@@ -1128,6 +1242,49 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
         ctx.gmail_ready(),
     )
     .map_err(ierr)?;
+    // an order-change click is the user's (the policy hands it over): remember which ledger orders this page is about,
+    // so the hand-back can record the cancellation / return the user requested
+    if d.decision == DENY {
+        let name = elem.as_ref().map(|e| s_opt(e, "name")).unwrap_or_default();
+        if let Some(hits) = order_hits.as_ref().filter(|h| !h.is_empty()) {
+            if guard::order_change_click(&name) {
+                let ids: Vec<String> = hits.iter().map(|h| get_str(h, "id")).collect();
+                ctx.order_changes
+                    .lock()
+                    .insert(page_id.clone(), (ids, name));
+            }
+        }
+    }
+    // a card fill from the Vault before the purchase was confirmed: the confirmation is made here, in code, from the
+    // page (its site and total) — approved by the user, or auto-approved by the setting — and the fill then runs
+    // (travel_michelin_real 2026-10-31: the deposit's card fills were refused and the model gave up)
+    if d.decision == DENY
+        && tool == "browser_fill_secret"
+        && d.reason.starts_with("填银行卡之前先调用 purchase_confirm")
+        && !b.get("after_purchase").is_some_and(truthy)
+    {
+        let mut pargs = json!({"card_item_id": s_or(&args, "item_id", ""), "shipping": 0});
+        purchase_site(&ctx, &mut pargs, &page_id).await;
+        if let Some(total) = pargs.get("total").and_then(Value::as_f64) {
+            let title = page.as_ref().map(|p| s_opt(p, "title")).unwrap_or_default();
+            let name = if title.trim().is_empty() {
+                "Order".to_string()
+            } else {
+                title
+            };
+            pargs["items"] = json!([{"name": name, "qty": 1, "price": total}]);
+            let mut pb = b.clone();
+            pb["tool"] = json!("purchase_confirm");
+            pb["args"] = pargs;
+            let Json(r) = Box::pin(act(State(ctx.clone()), Bytes::from(pb.to_string()))).await?;
+            if get_str(&r, "status") == "approval_required" || get_str(&r, "status") == "denied" {
+                return Ok(Json(r));
+            }
+            let mut fb = b.clone();
+            fb["after_purchase"] = json!(true);
+            return Box::pin(act(State(ctx.clone()), Bytes::from(fb.to_string()))).await;
+        }
+    }
     let mut detail =
         json!({"args": safe_args(&args), "reason": d.reason, "destination": d.destination});
     if let Some(e) = elem.as_ref().filter(|e| truthy(e)) {
@@ -1426,6 +1583,7 @@ async fn resolve_inner(ctx: &App, aid: &str, b: &Value, via: &str) -> Result<Val
         Some(Value::Object(m)) => m.clone(),
         _ => Map::new(),
     };
+    let before = args.clone();
     for k in editable(&tool) {
         match edited.get(*k) {
             Some(Value::String(v)) => {
@@ -1557,6 +1715,23 @@ async fn resolve_inner(ctx: &App, aid: &str, b: &Value, via: &str) -> Result<Val
             )
             .map_err(ierr)?;
     }
+    // the user moved only the start of an event: the end moves with it (the length stays)
+    if tool.starts_with("calendar_") && edited.contains_key("start") && !edited.contains_key("end")
+    {
+        if let Some(end) = shifted_end(
+            &s_opt(&before, "start"),
+            &s_opt(&before, "end"),
+            &s_opt(&args, "start"),
+        ) {
+            args["end"] = json!(end);
+        }
+    }
+    // what the user changed in the dialog, as applied: the agent is told, so it keeps the user's choice
+    let changed: Map<String, Value> = editable(&tool)
+        .iter()
+        .filter(|k| args.get(**k) != before.get(**k))
+        .map(|k| (k.to_string(), args[*k].clone()))
+        .collect();
     let mut keys: Vec<String> = edited.keys().cloned().collect();
     keys.sort();
     ctx.audit(
@@ -1573,10 +1748,25 @@ async fn resolve_inner(ctx: &App, aid: &str, b: &Value, via: &str) -> Result<Val
     );
     let detail = json!({"args": safe_args(&args), "approval_id": aid});
     // approvals come from the task's own page: a sub-agent lane never asks (no_ask)
-    let result = run(
+    let mut result = run(
         ctx, &tool, &args, &task_id, &task_id, &risk, &detail, "APPROVED",
     )
     .await;
+    if !changed.is_empty() && result.is_object() {
+        // 2026-10-30 gcal_real: the user moved the invite to 15:30 in the dialog; the agent, not told, moved it back
+        // or called it a mistake
+        let what: Vec<String> = changed
+            .iter()
+            .map(|(k, v)| format!("{k} = {}", py_str(v)))
+            .collect();
+        result["user_edited"] = Value::Object(changed);
+        result["note"] = json!(format!(
+            "用户在审批时改了：{}。这是用户自己的选择，照此执行，不要改回去，也不要说是错误。 (The user changed this in the approval \
+             dialog: {} — it is the user's choice: keep it, don't change it back and don't call it a mistake.)",
+            what.join("；"),
+            what.join("; ")
+        ));
+    }
     store
         .resolve_approval(aid, "approved", &scope, Some(&result), Some(&args), "user")
         .map_err(ierr)?;
@@ -1621,4 +1811,30 @@ async fn resolve_inner(ctx: &App, aid: &str, b: &Value, via: &str) -> Result<Val
 
 fn tool_opt(name: &str) -> Option<Value> {
     tool(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_moved_start_keeps_the_events_length() {
+        assert_eq!(
+            shifted_end(
+                "2026-11-03T15:00:00+08:00",
+                "2026-11-03T16:00:00+08:00",
+                "2026-11-03T15:30:00+08:00"
+            )
+            .as_deref(),
+            Some("2026-11-03T16:30:00+08:00")
+        );
+        assert_eq!(
+            shifted_end("2026-11-03 15:00", "2026-11-03 15:45", "2026-11-03 15:30").as_deref(),
+            Some("2026-11-03 16:15")
+        );
+        assert_eq!(
+            shifted_end("x", "2026-11-03 15:45", "2026-11-03 15:30"),
+            None
+        );
+    }
 }

@@ -10,6 +10,7 @@ Behaviour is chosen from the latest user goal text:
  - 'SCHEDULE' goal -> schedule_create then final
  - otherwise -> plain answer
 """
+import base64
 import datetime as _dtm
 import json
 import os
@@ -207,6 +208,17 @@ async def _chat(req: Request, b: dict):
             RETRY[key] = n + 1
             hdr = {"Retry-After": "1"} if m.group(1) == "429" else {}
             return JSONResponse({"error": {"message": f"fake {m.group(1)} #{n + 1}"}}, status_code=int(m.group(1)), headers=hdr)
+    if sys.startswith("You classify an assistant's reply"):   # agent/runtime.rs `answer_traits`: wording stands in for meaning
+        a = str(msgs[-1]["content"]).lower()
+        a = a.split("the assistant's reply:", 1)[-1]   # the request comes first, the reply after it
+        asks = "?" in a or re.search(r"\b(please (send|tell|confirm|let me know)|reply with)\b", a)
+        return reply(json.dumps({
+            "asks_defaults": bool(asks and re.search(r"departure date|next (city|port|destination)|onward|leav(e|ing) .{0,20}on|visa", a)),
+            "asks_stay": bool(asks and re.search(r"where (will|do|are) you (stay|staying)|which (of your )?address|hotel|accommodation", a)),
+            "tells_user_to_act": bool(re.search(r"\b(press|click|tap|submit|pay|complete|confirm)\b[^.]{0,60}\byourself\b|left [^.]{0,60}for you|"
+                                                r"over to you|your turn|you (can|need to|should) (press|click|submit|pay|complete)", a)),
+            "reconfirms": bool(re.search(r"\b(please )?confirm (that )?(you want|whether)|shall i go ahead|do you want me to (go ahead|proceed)", a)),
+        }))
     if sys.startswith("You name conversations"):   # chat titles (agent._retitle)
         last = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
         if "很长很长" in str(last):   # resize_ui.py needs its long first-question title kept: "nothing usable" from the model
@@ -284,6 +296,10 @@ async def _chat(req: Request, b: dict):
         if "PROFILEFACT" in msgs[-1]["content"]:
             items += [{"kind": "profile", "fact": "Lucas's mobile is +65 9000 1111", "field": "phone", "value": "+65 9000 1111"},
                       {"kind": "ephemeral", "fact": "Lucas has a dentist booking on Friday", "entity": ""}]
+        if "CARDFACT" in msgs[-1]["content"]:   # memory_vault_e2e.py: two cards, one with its number typed in the chat
+            items += [{"kind": "card", "fact": "Lucas holds a Citi Prestige card (USA)", "value": "Citi Prestige", "country": "USA"},
+                      {"kind": "card", "fact": "Lucas holds a Chase Sapphire Reserve", "value": "Chase Sapphire Reserve", "country": ""},
+                      {"kind": "card", "fact": "Lucas's card number", "value": "Visa 4111 1111 1111 1111"}]
         return reply(json.dumps({"items": items}))
     if msgs and str(msgs[-1]["content"]).startswith("You are tidying"):
         ids = re.findall(r"^(fact_\w+) \| long \| .*Opened zipair", msgs[-1]["content"], re.M)
@@ -353,7 +369,7 @@ async def _chat(req: Request, b: dict):
         if n == 0:
             return reply("", [tc("load_skill", {"name": goal.split("LOADSKILL")[1].split()[0]})])
         return reply("LOADED=" + last_tool[:120])
-    if "STREAMTEST" in goal or "STREAMSLOW" in goal:   # stream_e2e.py / stream_ui.py: a long answer after hidden reasoning
+    if "STREAMTEST" in goal or "STREAMSLOW" in goal:   # stream_e2e.py: a long answer after hidden reasoning
         if "STREAMCALL" in goal and n == 0:   # a turn with commentary AND a tool call first
             return reply("Let me look at the workspace first.", [tc("files_list", {"path": ""})])
         return reply("<think>the user wants a story; I will keep it short and warm</think>" + STREAM_STORY)
@@ -420,7 +436,7 @@ async def _chat(req: Request, b: dict):
         return reply("CHOICES DONE: " + last_tool[:400])
     if "DIALCALL" in goal:   # a +1 number goes out through DialMCP; poll until the call is over
         if n == 0:
-            return reply("", [tc("phone_call", {"to": "+1 415 555 0123", "callee_name": "Zuni Cafe",
+            return reply("", [tc("phone_call", {"to": "+1 415 643 2200", "callee_name": "Zuni Cafe",
                                                 "purpose": "Book a table for 2 tonight at 19:30; acceptable window 19:00-20:30.",
                                                 "may_share": "Name: Lucas Lu"})])
         ids = re.findall(r"(call_[0-9a-f]{12})", " ".join(str(m["content"]) for m in tools_done))
@@ -622,7 +638,7 @@ async def _chat(req: Request, b: dict):
             return reply("", [tc("data_query", {"path": "data/s.csv"})])
         if n == 3:
             return reply("", [tc("data_query", {"path": "data/s.csv", "queries": json.dumps([
-                {"derive": [{"as": "seg", "from": "nps", "bins": [0, 7, 9, 11], "labels": ["det", "pas", "pro"]}],
+                {"derive": [{"as": "seg", "from": "nps", "bins": [0, 7, 9, 11], "labels": ["det", "pas", "pro"], "right": False}],
                  "group_by": ["seg"], "agg": [{"fn": "count"}, {"fn": "count_share", "as": "pct"}], "sort": ["seg"]},
                 {"where": [{"col": "age", "op": ">=", "value": 50}], "agg": [{"col": "nps", "fn": "mean"}], "save": "data/out.csv"},
                 {"group_by": ["nope"]}])})])
@@ -736,20 +752,6 @@ async def _chat(req: Request, b: dict):
             m = re.search(r"\[(e\d+)\] textbox \\\"Password", last_tool)
             return reply("", [tc("browser_type", {"ref": m.group(1) if m else "e1", "text": "hunter2"})])
         return reply(f"Typed. {last_tool[:300]}")
-    if "MEDIASHOP" in goal:   # save photos + a video from a page and send them into the chat as one gallery
-        if n == 0:
-            return reply("", [tc("browser_navigate", {"url": PAGE.replace("page.html", "gallery.html")})])
-        if n == 1:
-            def ref(pat):
-                m = re.search(r"\[(e\d+)\] " + pat, last_tool)
-                return m.group(1) if m else "e999"
-            return reply("", [tc("browser_save_media", {"ref": ref(r'img \\"Velvet lipstick')}),
-                              tc("browser_save_media", {"ref": ref(r'link \\"Glow serum')}),
-                              tc("browser_save_media", {"ref": ref(r'video ')})])
-        if n == 4:
-            paths = re.findall(r'"saved": "(media/[^"]+)"', "\n".join(m["content"] for m in tools_done[-3:]))
-            return reply("", [tc("send_file", {"paths": paths, "note": "OMG best sellers"})])
-        return reply(f"MEDIADONE {last_tool[:300]}")
     if "ATTACHTEST" in goal:   # files attached to the message: their content arrives with the message
         return reply("ATTACHOK docx=" + str("Quarterly report" in goal) + " img=" + str("VISION-SEEN" in goal)
                      + " md=" + str("hello-markdown" in goal))
@@ -903,7 +905,8 @@ async def calls_for(marker: str):
     for b in CALLS:
         ms = b.get("messages") or []
         if any(marker in str(m.get("content")) for m in ms if m.get("role") == "user") and ms and ms[0].get("role") == "system" \
-                and "planning module" not in str(ms[0].get("content")):
+                and "planning module" not in str(ms[0].get("content")) \
+                and not str(ms[0].get("content")).startswith("You classify an assistant's reply"):   # answer_traits
             out.append({"system": ms[0]["content"], "last": str(ms[-1].get("content")), "n": len(ms),
                         "tools": "\n".join(str(m.get("content")) for m in ms if m.get("role") == "tool"),
                         "stream": b.get("stream"), "stream_options": b.get("stream_options"), "has_tools": bool(b.get("tools"))})
@@ -1057,8 +1060,22 @@ def _vault_id(text, kind):
 
 
 def _book_at(text):
-    """The first airline website in a flights result's book_at (Kiwi.com data has no link)."""
+    """The first airline website in a flights result's book_at."""
     m = re.search(r'book_at\\?"?: ?\[\\?"([a-z0-9.-]+)', text)
+    return m.group(1) if m else "?"
+
+
+def _car_url(text):
+    """The booking_url of a cars_search result (Kayak's or Rentalcars.com's page for the rental)."""
+    for u in re.findall(r'booking_url\\?"?: ?\\?"(https?://[^"\\]+)', text):
+        if "kayak" in u or "rentalcars" in u:
+            return u
+    return "?"
+
+
+def _booking_url(text):
+    """The first booking_url in a flights or hotels result (Kiwi.com's, Google Flights' or the hotel's own page)."""
+    m = re.search(r'booking_url\\?"?: ?\\?"(https?://[^"\\]+)', text)
     return m.group(1) if m else "?"
 
 
@@ -1183,17 +1200,18 @@ def travel_book(kind, goal, msgs, tnames):
         return reply("", [tc("vault_list", {})])
     vl = result("vault_list")
     card_id, passport_id = _vault_id(vl, "card"), _vault_id(vl, "id_document")
-    if amount > 0 and not has("purchase_confirm"):
-        args = {"site": url.split("/")[2].split(":")[0], "items": [{"name": item, "qty": 1, "price": amount}], "shipping": 0,
-                "total": amount, "currency": currency, "delivery": delivery, "note": note}
-        if need_card and card_id:
-            args["card_item_id"] = card_id
-        return reply("", [tc("purchase_confirm", args)])
-
-    # ---- 3. the booking page: one navigate, fill, one click
+    # ---- 3. the booking page: one navigate, the purchase confirmed on it, fill, one click
     if not has("browser_navigate"):
         return reply("", [tc("browser_navigate", {"url": url})])
     page = result("browser_navigate")
+    if amount > 0 and not has("purchase_confirm"):
+        # the site as a model sees it: the host of the link it was given — a stand-in's host, never the shop's
+        # (Sentinel takes the real site from the open page)
+        args = {"site": url.split("/")[2].split(":")[0], "items": [{"name": item, "qty": 1, "price": amount}],
+                "shipping": 0, "total": amount, "currency": currency, "delivery": delivery, "note": note}
+        if need_card and card_id:
+            args["card_item_id"] = card_id
+        return reply("", [tc("purchase_confirm", args)])
     if not has("browser_type"):
         fields = [("Full name", TRAVELLER["name"]), ("Email", TRAVELLER["email"]), ("Phone", TRAVELLER["phone"])]
         typed = [tc("browser_type", {"ref": _snap_ref(page, lbl), "text": v}) for lbl, v in fields if _snap_ref(page, lbl)]
@@ -1256,194 +1274,6 @@ STREAM_STORY = ("Once upon a time, in a small town by the sea, there lived a lig
 SHOW_TRIP = "What's on my Tokyo trip this week? Check my mail and calendar."
 SHOW_CITY = "We're moving to Shanghai for work with two kids. Where do expat families live, and what does rent cost?"
 SHOW_SGAC = "Fill in my Singapore arrival card for Sunday's flight."
-
-
-def fwd_insurance(goal, msgs):
-    """fwd-travel-insurance: FWDBUY (Singapore quote → plan → application → hand-over for Pay), FWDCLAIM (Singapore
-    delay claim on FWD's online form → hand-over for Submit), FWDHKCLAIM (bolttech's PDF claim form → email draft)."""
-    import datetime as _dt
-    calls = _travel_calls(msgs)
-    names = [c[0] for c in calls]
-
-    def has(name):
-        return name in names
-
-    def result(name):
-        return next((r for n, _, r in reversed(calls) if n == name), "")
-
-    def page():   # the newest page text (every browser call returns one)
-        return next((r for n, _, r in reversed(calls) if n.startswith("browser_") and "[e" in r), "")
-
-    inc = (re.search(r"INC=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", goal + " 2026-10-20")).group(1)
-    d30 = (_dt.date.fromisoformat(inc) + _dt.timedelta(days=30)).isoformat()
-    if not has("load_skill"):
-        return reply("", [tc("load_skill", {"name": "fwd-travel-insurance"})])
-
-    if "FWDBUY" in goal:
-        d1, d2 = re.findall(r"(20\d\d-\d\d-\d\d)", goal)[:2]
-        if not has("gmail_search"):
-            return reply("", [tc("gmail_search", {"query": f"(flight OR e-ticket OR hotel OR booking) (Tokyo OR Japan) newer_than:90d"}),
-                              tc("profile_get", {"fields": ["name_en", "birthday", "email_personal", "phone"]})])
-        if not has("browser_navigate"):
-            return reply("", [tc("browser_navigate", {"url": PAGES + "/fwd_sg_quote.html"})])
-        if not has("browser_type"):
-            pg = page()
-            return reply("", [tc("browser_type", {"ref": _snap_ref(pg, lbl) or "e1", "text": v})
-                              for lbl, v in [("Destination", "Japan"), ("Departure date", d1), ("Return date", d2)]])
-        if not has("browser_click"):
-            return reply("", [tc("browser_click", {"ref": _snap_ref(page(), "Get quote", "button") or "e1"})])
-        if not has("present_choices"):
-            quote = result("browser_click")
-            plans = re.findall(r"(Premium|Business|First)\W+SGD (\d+\.\d\d)\W+SGD ([\d,]+)\W+SGD ([\d,]+)", quote)
-            if len(plans) != 3:
-                return reply("FWD FAIL: no plans on the quote page: " + quote[-1200:])
-            return reply("", [tc("present_choices", {"question": "Which FWD plan?", "kind": "comparison", "options": [
-                {"label": p, "details": [f"SGD {pr}", f"Overseas medical SGD {med}", f"Trip cancellation SGD {can}"],
-                 "source_url": PAGES + "/fwd_sg_quote.html",
-                 "note": "Cheapest with at least SGD 10,000 trip cancellation — recommended." if p == "Business" else ""}
-                for p, pr, med, can in plans]})])
-        if not has("vault_list"):
-            return reply("", [tc("vault_list", {})])
-        vl = result("vault_list")
-        card, passport = _vault_id(vl, "card"), _vault_id(vl, "id_document")
-        if not has("purchase_confirm"):
-            return reply("", [tc("purchase_confirm", {"site": "shop.test", "items": [{"name": f"FWD Business travel insurance, Japan, {d1} to {d2}, 1 traveller",
-                                                                                      "qty": 1, "price": 47.0}],
-                                                      "shipping": 0, "total": 47.0, "currency": "SGD", "delivery": "Policy by email",
-                                                      "card_item_id": card, "note": "Single trip, Business plan"})])
-        if sum(n == "browser_navigate" for n in names) < 2:
-            return reply("", [tc("browser_navigate", {"url": PAGES + "/fwd_sg_apply.html?plan=Business&premium=47.00"})])
-        pg = page()
-        if sum(n == "browser_type" for n in names) < 4:
-            return reply("", [tc("browser_type", {"ref": _snap_ref(pg, lbl) or "e1", "text": v}) for lbl, v in
-                              [("Full name", "TAN WEI MING"), ("Date of birth", "1985-04-12"), ("Email", "weiming@example.com"), ("Mobile number", "+65 9123 4567")]])
-        fills = [a for n, a, _ in calls if n == "browser_fill_secret"]
-        todo = [("Passport number", passport, "number"), ("Card number", card, "number"), ("Expiry", card, "expiry"),
-                ("CVC", card, "cvc"), ("Name on card", card, "holder")]
-        if len(fills) < len(todo):
-            lbl, item, field = todo[len(fills)]
-            return reply("", [tc("browser_fill_secret", {"ref": _snap_ref(pg, lbl) or "e1", "item_id": item, "field": field})])
-        if not has("browser_request_takeover"):
-            return reply("", [tc("browser_request_takeover", {"reason": "The FWD application is filled in (Business plan, SGD 47.00) — check it and press Pay now yourself"})])
-        return reply("**FWD Singapore** (FWD Singapore Pte. Ltd. is the insurer) — quote for Japan, "
-                     f"{d1} to {d2}, 1 traveller:\n\n| Plan | Premium | Trip cancellation |\n|---|---|---|\n| Premium | SGD 34.00 | SGD 5,000 |\n"
-                     "| **Business** | **SGD 47.00** | **SGD 10,000** |\n| First | SGD 68.00 | SGD 15,000 |\n\n"
-                     "**Business** is the cheapest plan with at least SGD 10,000 trip cancellation. The application is filled in "
-                     "(name, date of birth, email, mobile; passport and card from your Vault) — check it and press **Pay now**; I did not pay.\n\n"
-                     "Overseas emergencies: **+65 6322 2072**.")
-
-    if "FWDCLAIM" in goal:
-        if not has("gmail_search"):
-            return reply("", [tc("gmail_search", {"query": "(FWD OR bolttech) (policy OR certificate) travel newer_than:365d"}),
-                              tc("gmail_search", {"query": "(Singapore Airlines OR SQ 636) (delay OR delayed OR cancelled OR irregularity OR baggage) newer_than:60d"}),
-                              tc("gmail_search", {"query": "(receipt OR invoice OR clinic OR hospital) newer_than:60d"}),
-                              tc("profile_get", {"fields": ["name_en", "email_personal", "phone", "address_home"]})])
-        if not has("gmail_get_message"):
-            delay = next((r for n, a, r in calls if n == "gmail_search" and "SQ 636" in str(a)), "")
-            return reply("", [tc("gmail_get_message", {"message_id": _msg_id(delay)})])
-        if not has("gmail_save_attachment"):
-            msg = result("gmail_get_message")
-            fn = (re.search(r'"filename": "([^"]+\.pdf)"', msg) or re.search(r"(delay_certificate_SQ636\.pdf)", msg + " delay_certificate_SQ636.pdf")).group(1)
-            return reply("", [tc("gmail_save_attachment", {"message_id": re.search(r'"id": "([^"]+)"', msg).group(1) if '"id"' in msg else "1",
-                                                           "filename": fn})])
-        if not has("calculate"):
-            return reply("", [tc("calculate", {"expression": "(17*60+45 - (10*60+30)) / 60"})])
-        if not has("browser_navigate"):
-            return reply("", [tc("browser_navigate", {"url": PAGES + "/fwd_sg_claim.html"})])
-        if not has("vault_list"):
-            return reply("", [tc("vault_list", {})])
-        pg = page()
-        if not has("browser_type"):
-            vals = [("Policy number", "TI-SG-2026-55123"), ("Full name", "TAN WEI MING"), ("Email", "weiming@example.com"),
-                    ("Mobile number", "+65 9123 4567"), ("Date of incident", inc),
-                    ("What happened", f"Flight SQ 636 SIN-HND on {inc} was scheduled at 10:30 and left at 17:45: a delay of 7 hours 15 minutes (late inbound aircraft)."),
-                    ("Amount claimed", "100.00")]
-            return reply("", [tc("browser_type", {"ref": _snap_ref(pg, lbl) or "e1", "text": v}) for lbl, v in vals])
-        if not has("browser_fill_secret"):
-            return reply("", [tc("browser_fill_secret", {"ref": _snap_ref(pg, "NRIC or passport number") or "e1",
-                                                         "item_id": _vault_id(result("vault_list"), "id_document"), "field": "number"})])
-        if not has("browser_upload"):
-            saved = re.search(r"(attachments/[^\s\"\\]+\.pdf)", result("gmail_save_attachment"))
-            return reply("", [tc("browser_upload", {"ref": _snap_ref(pg, "Supporting documents") or "e1",
-                                                    "path": saved.group(1) if saved else "attachments/delay_certificate_SQ636.pdf"})])
-        if not has("browser_request_takeover"):
-            return reply("", [tc("browser_request_takeover", {"reason": "The FWD travel claim is filled in with the delay certificate attached — check it and press Submit claim yourself"})])
-        if not has("schedule_create"):
-            return reply("", [tc("schedule_create", {"name": f"FWD claim SQ 636 delay — check mail weekly (notify by {d30})", "kind": "cron", "spec": "0 9 * * 1",
-                                                     "goal": "Check Gmail for any email from FWD about the travel delay claim on policy TI-SG-2026-55123; notify me of news"})])
-        if not has("memory_remember"):
-            return reply("", [tc("memory_remember", {"fact": f"FWD Singapore travel delay claim, policy TI-SG-2026-55123 (Business): SQ 636 of {inc}, delayed 7 h 15 min, SGD 100 claimed; tell FWD by {d30}.",
-                                                     "domain": "trip"})])
-        return reply(f"**FWD Singapore's online claim form** — tell FWD by **{d30}** (30 days after the delay on {inc}).\n\n"
-                     "- **Policy:** TI-SG-2026-55123, Business plan.\n"
-                     "- **Delay:** SQ 636 was scheduled at 10:30 and left at 17:45 — **7 hours 15 minutes**. The plan pays SGD 100 for every 6 hours, "
-                     "so **SGD 100** is claimed (calculated: 7.25 hours → one full 6-hour block).\n"
-                     "- **Documents:** the policy email and Singapore Airlines' delay certificate (uploaded to the form). Keep boarding passes.\n"
-                     "- **Filled:** policy number, name, email, mobile, date, what happened, the amount; passport number from your Vault. "
-                     "**You press Submit claim** — I did not.\n- **Reminders:** a weekly mail check for FWD's reply.\n\n"
-                     "Overseas emergencies: +65 6322 2072; in Singapore +65 6820 8888. FWD decides the claim.")
-
-    if "FWDHKCLAIM" in goal:
-        form_url = PAGES + "/travel-insurance-clm-form-fillable.pdf"
-        if not has("gmail_search"):
-            return reply("", [tc("gmail_search", {"query": "(FWD OR bolttech) (policy OR certificate) travel newer_than:365d"}),
-                              tc("gmail_search", {"query": "(Cathay Pacific OR CX 543) (delay OR delayed OR cancelled OR irregularity OR baggage) newer_than:60d"}),
-                              tc("gmail_search", {"query": "(receipt OR invoice OR clinic OR hospital) newer_than:60d"}),
-                              tc("profile_get", {"fields": ["name_en", "email_personal", "phone", "address_home"]})])
-        if not has("gmail_get_message"):
-            delay = next((r for n, a, r in calls if n == "gmail_search" and "CX 543" in str(a)), "")
-            return reply("", [tc("gmail_get_message", {"message_id": _msg_id(delay)})])
-        if not has("gmail_save_attachment"):
-            msg = result("gmail_get_message")
-            fn = (re.search(r'"filename": "([^"]+\.pdf)"', msg) or re.search(r"(delay_letter_CX543\.pdf)", msg + " delay_letter_CX543.pdf")).group(1)
-            return reply("", [tc("gmail_save_attachment", {"message_id": re.search(r'"id": "([^"]+)"', msg).group(1) if '"id"' in msg else "1",
-                                                           "filename": fn})])
-        if not has("calculate"):
-            return reply("", [tc("calculate", {"expression": "floor(((15*60+20) - (9*60+5)) / 60 / 6) * 300"})])
-        if not has("browser_navigate"):
-            return reply("", [tc("browser_navigate", {"url": form_url})])
-        form = re.search(r'"path": "(downloads/[^"]+\.pdf)"', result("browser_navigate").replace('\\"', '"'))
-        if not form:
-            return reply("FWD FAIL: the claim form was not saved: " + result("browser_navigate")[:600])
-        form = form.group(1)
-        if not has("pdf_form_fields"):
-            return reply("", [tc("pdf_form_fields", {"path": form})])
-        if not has("pdf_form_fill"):
-            return reply("", [tc("pdf_form_fill", {"path": form, "values": {
-                "fill_17": "MT-HK-2026-00881", "Full name": "CHAN TAI MAN",
-                "Correspondence address": "Flat 12B, 88 Robinson Road, Mid-Levels, Hong Kong", "Email address": "taiman@example.com",
-                "fill_12": f"{inc} 09:05, Hong Kong International Airport",
-                "fill_11": f"{inc} 09:05", "fill_12_2": "HKG", "fill_13_2": "NRT", "fill_14_2": "CX 543",
-                "fill_15_2": f"{inc} 15:20", "fill_16_2": "HKG", "fill_17_2": "NRT", "fill_18_2": "CX 543",
-                "fill_1": "6 hours 15 minutes", "fill_7": "HKD 300", "fill_8": "Cathay Pacific"}})])
-        filled = re.search(r"(downloads/[^\s\"\\]+-filled\.pdf)", result("pdf_form_fill"))
-        filled = filled.group(1) if filled else form.replace(".pdf", "-filled.pdf")
-        if not has("send_file"):
-            return reply("", [tc("send_file", {"path": filled, "note": "bolttech claim form, filled — add your HKID, bank account and signature"})])
-        if not has("gmail_create_draft"):
-            saved = re.search(r"(attachments/[^\s\"\\]+\.pdf)", result("gmail_save_attachment"))
-            return reply("", [tc("gmail_create_draft", {
-                "to": "claims.hk@bolttechinsurance.com",
-                "subject": f"Travel insurance claim — policy MT-HK-2026-00881 — flight delay CX 543 {inc}",
-                "body": ("Dear bolttech Claims,\n\nPolicyholder: CHAN TAI MAN. Policy: MT-HK-2026-00881 (MyTravel, sold through FWD).\n"
-                         f"Cathay Pacific CX 543 Hong Kong to Tokyo Narita on {inc} was scheduled at 09:05 and departed at 15:20, a delay of 6 hours 15 minutes. "
-                         "I claim the travel delay benefit of HKD 300.\n\nAttached: the claim form and Cathay Pacific's delay confirmation.\n\nKind regards,\nChan Tai Man"),
-                "attachments": [filled, saved.group(1) if saved else "attachments/delay_letter_CX543.pdf"]})])
-        if not has("schedule_create"):
-            return reply("", [tc("schedule_create", {"name": "bolttech claim CX 543 delay — check mail weekly", "kind": "cron", "spec": "0 9 * * 1",
-                                                     "goal": "Check Gmail for any email from bolttech about the travel delay claim on policy MT-HK-2026-00881; notify me of news"})])
-        if not has("memory_remember"):
-            return reply("", [tc("memory_remember", {"fact": f"bolttech (FWD HK MyTravel) travel delay claim, policy MT-HK-2026-00881: CX 543 of {inc}, delayed 6 h 15 min, HKD 300 claimed; draft to claims.hk@bolttechinsurance.com.",
-                                                     "domain": "trip"})])
-        return reply("**bolttech's claim form by email** — your MyTravel plan is sold by FWD but underwritten by **bolttech Insurance (Hong Kong)**, "
-                     "so bolttech handles the claim. The time limit could not be checked: the policy wording is not in your mail, so send it as soon as possible.\n\n"
-                     "- **Delay:** CX 543 was scheduled at 09:05 and left at 15:20 — **6 hours 15 minutes**: one full 6-hour block × HKD 300 = **HKD 300**.\n"
-                     "- **Form:** filled with your policy number, name, address, email, the schedule, the hours and the amount (in the chat). "
-                     "**You add** your HKID number, bank account for the direct credit and your signature.\n"
-                     "- **Email:** a draft to claims.hk@bolttechinsurance.com with the form and Cathay Pacific's delay letter attached — sign the form, "
-                     "replace it in the draft and send it.\n- **Reminders:** a weekly mail check for bolttech's reply.\n\n"
-                     "bolttech claims enquiries: +852 3123 3344. Emergency assistance: +852 2000 0100 (from your policy). bolttech decides the claim.")
-    return None
 
 
 def route_reply(user):
@@ -1610,7 +1440,7 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         if n == 4:
             return reply("", [tc_("vault_list", {})])
         if n == 5:
-            return reply("", [tc_("browser_navigate", {"url": PAGES + "/sgac.html"})])
+            return reply("", [tc_("browser_navigate", {"url": PAGES + "/sgac_classic.html"})])   # the scripted flow keeps the old one-page layout
         if n == 6:
             page = last_tool
             vals = [("Full name", "LUCAS LU"), ("Date of birth", "1985-04-12"), ("Nationality", "Australia"),
@@ -1641,7 +1471,7 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         if n == 1:
             return reply("", [tc_("profile_get", {"fields": ["nationality"]})])
         if n == 2:
-            return reply("", [tc_("browser_read", {"urls": [PAGES + "/tdac.html", PAGES + "/sgac.html"]})])
+            return reply("", [tc_("browser_read", {"urls": [PAGES + "/tdac.html", PAGES + "/sgac_classic.html"]})])
         if n == 3:
             return reply("", [tc_("schedule_create", {"name": "File the Thailand TDAC", "goal": "Remind me to file the TDAC at tdac.immigration.go.th (within 3 days before arrival)",
                                                        "kind": "cron", "spec": "0 9 * * *"})])
@@ -1656,20 +1486,50 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         if n == 1:
             if not api:
                 return reply("NO_SEARCH_API")
-            # one data tool each, in ONE turn: flights_search (Kiwi.com), hotels_search (web search without the key), and
-            # web_search only for the car (no data tool for cars)
+            # ONE travel search per request: the flight first, then the hotel and the car in the next messages
             # the trip date comes from the request (DATE=…), so it never falls in the past
             d1 = _dtm.date.fromisoformat(re.search(r"DATE=(\d{4}-\d\d-\d\d)", goal).group(1))
-            d3 = d1 + _dtm.timedelta(days=3)
-            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": d1.isoformat(), "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"}),
-                              tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": d1.isoformat(), "check_out": d3.isoformat(), "min_stars": 4}),
-                              tc_("web_search", {"query": f"Tokyo Narita airport car rental {d1.day} {d1:%b %Y} compact", "max_results": 5})])
+            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": d1.isoformat(), "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"})])
+        allt = "\n".join(str(m["content"]) for m in tools_done)
+        kiwi = "Kiwi.com" in allt
+        return reply(f"FLIGHTS SIN–NRT — {'Kiwi.com data: SQ638 09:25 → 17:15 SGD 620 direct, CX via HKG SGD 510' if kiwi else 'from search snippets'}. "
+                     f"Book the flight at {_booking_url(allt)} (Kiwi.com) or on {_book_at(allt)} (the airline's own site). Shall I search the hotel near Ginza now?")
+    if "BRAVEHOTEL" in goal or "BRAVECAR" in goal:   # the follow-ups: one travel search each (no key: through the Brave web search)
+        d1 = _dtm.date.fromisoformat(re.search(r"DATE=(\d{4}-\d\d-\d\d)", goal).group(1))
+        d3 = d1 + _dtm.timedelta(days=3)
+        if n == 0:
+            if "BRAVEHOTEL" in goal:
+                return reply("", [tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": d1.isoformat(), "check_out": d3.isoformat(), "min_stars": 4})])
+            return reply("", [tc_("cars_search", {"pickup": "NRT", "pickup_date": d1.isoformat(), "dropoff_date": d3.isoformat(), "car_class": "small"})])
         allt = "\n".join(str(m["content"]) for m in tools_done)
         srcs = re.findall(r"web search \(([^)]+)\)", allt)
-        kiwi = "Kiwi.com" in allt and "kiwi.com/u/" not in allt.lower()
-        return reply(f"SEARCHED VIA {sorted(set(srcs))}: flights SIN–NRT 20 Nov — {'Kiwi.com data (information only): SQ638 09:25 → 17:15 SGD 620 direct, CX via HKG SGD 510' if kiwi else 'from search snippets'}, "
-                     f"hotels near Ginza ({'web search' if 'hotels_fallback' in allt else 'Google Hotels'}); compact car at Narita (Brave result 1). "
-                     f"Book the flight on {_book_at(allt)} (the airline's own site) or with the agency you choose — never through Kiwi.")
+        if "BRAVEHOTEL" in goal:
+            return reply(f"SEARCHED VIA {sorted(set(srcs))}: hotels near Ginza ({'web search' if 'hotels_fallback' in allt else 'Google Hotels'}). Shall I search the car now?")
+        return reply(f"SEARCHED VIA {sorted(set(srcs))}: compact car at Narita (Brave result 1), live prices at {_car_url(allt)}.")
+    if "TWOSEARCH" in goal:   # a model that searches six times: only the first travel search of the request runs
+        date = re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal).group(1)
+        out = (_dtm.date.fromisoformat(date) + _dtm.timedelta(days=2)).isoformat()
+        later = (_dtm.date.fromisoformat(date) + _dtm.timedelta(days=1)).isoformat()
+        if n == 0:
+            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": date, "currency": "SGD"}),
+                              tc_("flights_search", {"origin": "SIN", "destination": "HND", "date": date, "currency": "SGD"}),
+                              tc_("hotels_search", {"city": "Tokyo", "check_in": date, "check_out": out}),
+                              tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": date, "check_out": out}),
+                              tc_("cars_search", {"pickup": "NRT", "pickup_date": date, "dropoff_date": out}),
+                              tc_("cars_search", {"pickup": "HND", "pickup_date": date, "dropoff_date": out})])
+        if n == 6:   # the turn's six results (three of them skipped); next turn: one more of each
+            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": later, "currency": "SGD"}),
+                              tc_("hotels_search", {"city": "Tokyo", "check_in": later, "check_out": out}),
+                              tc_("cars_search", {"pickup": "NRT", "pickup_date": later, "dropoff_date": out})])
+        return reply("TWOSEARCH done: one travel search answered this request; shall I search the hotel and the car next?")
+    if "CARSEARCH" in goal:   # a car question: cars_search alone, and the answer gives the rental page's link
+        d1 = re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal).group(1)
+        d3 = re.search(r"TO=(20\d\d-\d\d-\d\d)", goal).group(1)
+        if n == 0:
+            return reply("", [tc_("cars_search", {"pickup": "NRT", "pickup_date": d1, "dropoff_date": d3, "car_class": "compact"})])
+        allt = "\n".join(str(m["content"]) for m in tools_done)
+        return reply(f"CARS at Narita {d1} to {d3}: compact cars from the companies in the search results (\"from\" prices); "
+                     f"the live prices for your dates are at {_car_url(allt)}.")
     if "KIWIFLIGHTS" in goal:   # flight-booking with no key: flights_search (Kiwi.com data) ONLY; book on the airline's site from book_at
         date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
         if n == 0:
@@ -1677,9 +1537,9 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         if n == 1:
             return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": date, "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"})])
         allt = "\n".join(str(m["content"]) for m in tools_done)
-        kiwi = "Kiwi.com" in allt and "kiwi.com/u/" not in allt.lower()
-        return reply(f"FLIGHTS {date} SIN → NRT (flight data{' from Kiwi.com, information only' if kiwi else ''}): cheapest direct Singapore Airlines SQ638 09:25 → 17:15, SGD 620, 1 checked bag; "
-                     f"cheapest overall Cathay Pacific via HKG SGD 510 (one stop). Book it on {_book_at(allt)} (the airline's own site, from the offer), "
+        kiwi = "Kiwi.com" in allt
+        return reply(f"FLIGHTS {date} SIN → NRT (flight data{' from Kiwi.com' if kiwi else ''}): cheapest direct Singapore Airlines SQ638 09:25 → 17:15, SGD 620, 1 checked bag; "
+                     f"cheapest overall Cathay Pacific via HKG SGD 510 (one stop). Book it at {_booking_url(allt)} (Kiwi.com's booking page) or on {_book_at(allt)} (the airline's own site), "
                      "or tell me the agency you prefer — say the word and I open the booking page.")
     if "BIZFLIGHTS" in goal:   # flight-booking: the request's cabin (business), stop limit (direct) and city code (TYO) go into ONE flights_search
         date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
@@ -1767,108 +1627,21 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         if n == 2:
             m = re.search(r'offer_id\\?"?: \\?"(fl_[0-9a-f]+)', str(last_tool)) or re.search(r"(fl_[0-9a-f]{10})", str(last_tool))
             return reply("", [tc_("flight_offer", {"offer_id": m.group(1) if m else "fl_missing", "currency": "SGD"})])
-        if n == 3:
-            return reply("", [tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": date, "check_out": out, "guests": 2, "min_stars": 4, "currency": "SGD"})])
-        if n == 4:
-            m = re.search(r"(ht_[0-9a-f]{10})", str(last_tool))
-            return reply("", [tc_("hotel_rooms", {"hotel_id": m.group(1) if m else "ht_missing", "check_in": date, "check_out": out, "guests": 2, "currency": "SGD"})])
         allt = "\n".join(str(m["content"]) for m in tools_done)
         seller = re.search(r'book_with\\?"?: \\?"([^"\\]+)', allt)
         return reply(f"FLIGHTS {date} Singapore → Tokyo (Google Flights): cheapest direct SQ 638 09:25 → 17:15, SGD 620, sold by {seller.group(1) if seller else '?'} "
-                     f"(Trip.com has it at SGD 612); cheapest overall Cathay via HKG SGD 510 (one stop, 12 h 35). "
-                     f"HOTELS Ginza (Google Hotels): Hotel Ginza Grand 4★ rating 4.4, SGD 210/night, SGD 630 for 3 nights, free cancellation on Booking.com; "
-                     f"the hotel's own site has a Deluxe Twin at SGD 199/night. Book the flight on singaporeair.com and the room on the hotel site — say the word.")
-    if any(k in goal for k in ("FWDBUY", "FWDCLAIM", "FWDHKCLAIM")):
-        return fwd_insurance(goal, msgs)
-    if "CSRCLAIM" in goal:   # csr-trip-claim: mail in one turn, the arithmetic, the airline letter, the packet, the portal, hand-over
-        import datetime as _dt
-        loss = (re.search(r"LOSS=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-10-20")).group(1)
-        d = _dt.date.fromisoformat(loss)
-        d20, d90 = (d + _dt.timedelta(days=20)).isoformat(), (d + _dt.timedelta(days=90)).isoformat()
-        pdf = f"reports/CSR-claim-UA837-{loss}.pdf"
+                     f"(Trip.com has it at SGD 612); cheapest overall Cathay via HKG SGD 510 (one stop, 12 h 35). Book it at {_booking_url(allt)}. "
+                     "Shall I search the hotel near Ginza now?")
+    if "TRAVELHOTEL" in goal:   # the follow-up of TRAVELSEARCH: the hotel, the one travel search of this request
+        date = re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal).group(1)
+        out = (_dtm.date.fromisoformat(date) + _dtm.timedelta(days=3)).isoformat()
         if n == 0:
-            return reply("", [tc_("load_skill", {"name": "csr-trip-claim"})])
+            return reply("", [tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": date, "check_out": out, "guests": 2, "min_stars": 4, "currency": "SGD"})])
         if n == 1:
-            return reply("", [tc_("gmail_search", {"query": "(e-ticket OR eTicket OR itinerary OR confirmation) (United OR UA 837 OR SFO) newer_than:180d"}),
-                              tc_("gmail_search", {"query": "(Chase OR Sapphire) (transaction OR charged OR statement OR receipt) UNITED"}),
-                              tc_("gmail_search", {"query": "United (refund OR credit OR voucher OR cancellation OR cancelled)"}),
-                              tc_("profile_get", {"fields": ["name_en", "email_personal", "phone", "address_home"]})])
-        if n == 5:
-            return reply("", [tc_("calculate", {"expression": "1840.00 - 86.40"})])
-        if n == 6:
-            return reply("", [tc_("gmail_create_draft", {"to": "refunds@united.example",
-                                                          "subject": f"Refund request — confirmation ABC123, UA 837 of {loss} — unable to travel for medical reasons",
-                                                          "body": f"Dear United Refunds,\n\nI was medically unable to travel on UA 837 (SFO–NRT) on {loss}, confirmation ABC123, passenger LUCAS LU. "
-                                                                  "Thank you for refunding the taxes and fees. Please (1) confirm in writing the non-refundable fare amount and your refund policy for this fare, "
-                                                                  "which my card's trip cancellation insurance requires, and (2) advise whether a travel credit or a medical waiver of the fare is available.\n\nKind regards,\nLucas Lu"})])
-        if n == 7:
-            md = (f"# Trip Cancellation claim — Chase Sapphire Reserve\n\n**Traveller:** LUCAS LU  \n**Trip:** UA 837 SFO → NRT, {loss}, confirmation ABC123  \n"
-                  f"**Date of loss:** {loss}  \n**Notify the administrator by:** {d20}  \n**Documents by:** {d90}  \n"
-                  "**Administrator:** Card Benefit Services — chasecardbenefits.com — 1-800-350-1697\n\n"
-                  "## Amounts\n\n| Booking | Paid | Refunded | Claimed |\n|---|---|---|---|\n| UA 837 Basic Economy (Sapphire Reserve …4321) | USD 1,840.00 | USD 86.40 taxes and fees | **USD 1,753.60** |\n\n"
-                  "## Documents\n\n- [ ] Claim form (from the portal)\n- [ ] Physician statement — your doctor (asked)\n- [x] eTicket receipt ABC123 (mail)\n- [x] Card transaction USD 1,840.00 (Chase alert)\n"
-                  "- [x] United refund confirmation: USD 86.40 taxes and fees, fare non-refundable (mail)\n- [ ] United written refund policy / non-refundable statement (requested)\n- [x] No other travel insurance\n\n"
-                  "## Letters\n\nRefund request to United (draft in Gmail).\n\n## Timeline\n\n- Booking paid; fell ill; missed UA 837 on " + loss + "\n- Today: claim started on the portal, airline asked for the letter\n- Next: doctor's statement, upload documents before " + d90 + "\n")
-            return reply("", [tc_("make_pdf", {"markdown": md, "output": pdf})])
-        if n == 8:
-            return reply("", [tc_("send_file", {"path": pdf, "note": "Your claim packet"})])
-        if n == 9:
-            return reply("", [tc_("browser_navigate", {"url": PAGES + "/eclaims.html"})])
-        if n == 10:
-            page = last_tool
-            vals = [("Cardholder name", "LUCAS LU"), ("Date of loss", loss), ("Amount claimed", "1753.60"), ("Reason", "sickness")]
-            return reply("", [tc_("browser_type", {"ref": _snap_ref(page, lab) or "e1", "text": v}) for lab, v in vals])
-        if n == 14:
-            return reply("", [tc_("browser_request_takeover", {"reason": "Review the claim, sign in with your Chase login if the portal asks, and press Submit yourself; hand the browser back when the claim number shows"})])
-        if n == 15:
-            return reply("", [tc_("schedule_create", {"name": f"CSR claim UA 837 — documents due {d90}", "kind": "cron", "spec": "0 9 * * 1",
-                                                       "goal": f"Check Gmail for any message from Card Benefit Services, eclaimsline or Chase about the trip cancellation claim for UA 837 of {loss}; notify me of news; remind me that the documents are due by {d90}"})])
-        if n == 16:
-            return reply("", [tc_("memory_remember", {"fact": f"Chase Sapphire Reserve trip cancellation claim for UA 837 (ABC123) of {loss}: started with Card Benefit Services; notify by {d20}, documents by {d90}; USD 1,753.60 claimed.", "domain": "trip"})])
-        return reply(f"**Trip Cancellation** is the benefit that applies (you never left home). Notify the administrator by **{d20}**; documents by **{d90}**.\n\n"
-                     "**Amount to claim: USD 1,753.60** — you paid USD 1,840.00 on the Sapphire Reserve (…4321); United refunded USD 86.40 in taxes and fees; the fare is non-refundable.\n\n"
-                     "- **Airline:** a refund request and a request for the written non-refundable statement is drafted to United (confirmation ABC123) — approve it to send.\n"
-                     "- **Doctor:** the physician statement saying you were medically unable to travel on " + loss + " — I can prepare the form once the portal issues it.\n"
-                     "- **Claim:** the form on the administrator's portal (Card Benefit Services, chasecardbenefits.com) is filled with your name, the date of loss and the amount; I handed the browser to you to sign in and press Submit. By phone: 1-800-350-1697.\n"
-                     f"- **Packet:** {pdf} is in the chat — the checklist and the letters.\n- **Reminders:** a weekly check for the administrator's mail and the documents deadline.\n\n"
-                     "The administrator decides; pre-existing conditions (treated in the 60 days before booking) and trips over 60 days are excluded.")
-    if "FLIGHTDELAY" in goal:   # flight-disruption: status page, alternatives from the connector, insurance, a watch
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "flight-disruption"})])
-        if n == 1:
-            return reply("", [tc_("gmail_search", {"query": "(SQ 638 OR Singapore Airlines) (e-ticket OR itinerary) newer_than:60d"}),
-                              tc_("gmail_search", {"query": "insurance (policy OR certificate OR travel) newer_than:365d"})])
-        if n == 3:
-            return reply("", [tc_("browser_read", {"urls": [PAGES + "/flightstatus.html"]})])
-        if n == 4:
-            return reply("", [tc_("watch_create", {"name": "SQ 638 status", "url": PAGES + "/flightstatus.html", "mode": "change", "every_minutes": 15})])
-        if n == 5 and any(t.startswith("mcp_") and t.endswith("flights_search") for t in tnames):
-            tool = next(t for t in tnames if t.startswith("mcp_") and t.endswith("flights_search"))
-            return reply("", [tc_(tool, {"origin": "SIN", "destination": "Tokyo", "date": goal.split("DATE=")[-1][:10] if "DATE=" in goal else "2026-11-20", "adults": 1})])
-        est = re.search(r"Estimated[^0-9]*(\d\d:\d\d)", "\n".join(str(m["content"]) for m in tools_done))
-        alt = re.search(r'\\?"title\\?": \\?"([^"\\]+)', str(tools_done[5]["content"]) if len(tools_done) > 5 else "")
-        pol = re.search(r"TI-\d{4}-\d+", "\n".join(str(m["content"]) for m in tools_done))
-        return reply(f"SQ 638 is delayed: estimated departure {est.group(1) if est else '?'} (scheduled 09:25), late inbound aircraft.\n"
-                     f"Alternatives today (connector): {alt.group(1) if alt else 'none found'}.\n"
-                     f"Insurance: policy {pol.group(0) if pol else 'not found'} pays a delay benefit per 6 hours — ask the airline for a delay "
-                     f"certificate and keep boarding passes and receipts.\nI set a watch on the status page and will notify you on any change.")
-    if "BAGLOST" in goal:   # baggage-delayed-lost
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "baggage-delayed-lost"})])
-        if n == 1:
-            return reply("", [tc_("gmail_search", {"query": "insurance (policy OR certificate OR travel) newer_than:365d"})])
-        if n == 2:
-            return reply("", [tc_("browser_read", {"urls": [PAGES + "/bagtrace.html"]})])
-        if n == 3:
-            return reply("", [tc_("gmail_create_draft", {"to": "baggage@singaporeair.example", "subject": "Delayed baggage SINSQ12345 — expenses claim",
-                                                          "body": "File SINSQ12345, flight SQ 638 of 20 Nov 2026, bag tag SQ 123456. Receipts for essentials attached. Delivery: Hotel Ginza Grand."})])
-        if n == 4:
-            return reply("", [tc_("schedule_create", {"name": "Check baggage file SINSQ12345", "goal": "Read " + PAGES + "/bagtrace.html and notify me if the status changes",
-                                                       "kind": "cron", "spec": "0 9,18 * * *"})])
-        st = re.search(r"Status: (?:<b>)?([^.<]+)", "\n".join(str(m["content"]) for m in tools_done))
-        return reply(f"Bag file SINSQ12345: {st.group(1).strip() if st else 'status unknown'}. Keep receipts for essentials; a bag not found within 21 days "
-                     f"is treated as lost (Montreal Convention limits apply). I drafted the expenses claim to the airline and will check the file twice a day. "
-                     f"Your policy's baggage-delay benefit needs the PIR and receipts.")
+            m = re.search(r"(ht_[0-9a-f]{10})", str(last_tool))
+            return reply("", [tc_("hotel_rooms", {"hotel_id": m.group(1) if m else "ht_missing", "check_in": date, "check_out": out, "guests": 2, "currency": "SGD"})])
+        return reply("HOTELS Ginza (Google Hotels): Hotel Ginza Grand 4★ rating 4.4, SGD 210/night, SGD 630 for 3 nights, free cancellation on Booking.com; "
+                     "the hotel's own site has a Deluxe Twin at SGD 199/night — say the word to book.")
     if "EXPENSES" in goal:   # travel-expense-report: receipt photo (vision), statement CSV, mail receipts, files
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "travel-expense-report"})])
@@ -1926,21 +1699,6 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         return reply("From 1 November 2026 you pay the full price in the shop and get the refund at departure: scan your passport at the tax-free "
                      "terminal before checking in luggage; goods bought within 90 days qualify and every item on a receipt must be present. "
                      "I set a departure-day reminder. (Rule page read today, 2026-10-25.)")
-    if "LOSTPASSPORT" in goal:   # travel-health-emergency
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "travel-health-emergency"})])
-        if n == 1:
-            return reply("", [tc_("gmail_search", {"query": "insurance (policy OR certificate OR travel OR assistance) newer_than:365d"})])
-        if n == 2:
-            return reply("", [tc_("browser_read", {"urls": [PAGES + "/embassy.html"]})])
-        if n == 3:
-            return reply("", [tc_("memory_search", {"query": "passport copy"})])
-        emb = re.search(r"\+81[\d ]+", str(tools_done[2]["content"]))
-        hot = re.search(r"\+65[\d ]+", str(tools_done[1]["content"]))
-        return reply(f"1. Police report at the nearest kōban (needed for the embassy and the insurer).\n2. Embassy consular section, Mon–Fri 09:00–12:00: "
-                     f"bring the police report, two photos, a copy of the passport, your flight booking; emergency line {emb.group(0).strip() if emb else 'see the embassy page'}; "
-                     f"emergency passports take about 2 working days.\n3. Call your insurer's 24-hour assistance line {hot.group(0).strip() if hot else '(not found in mail)'} — "
-                     f"extra nights and the new ticket may be covered.\n4. I found no passport copy in your files; the embassy accepts other ID plus the flight booking.")
     if "HOTELREQ" in goal:   # hotel-requests
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "hotel-requests"})])
@@ -1958,7 +1716,7 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "credit-card-picker"})])
         if n == 1:
-            return reply("", [tc_("profile_get", {"fields": ["custom:credit cards", "custom:card market"]})])
+            return reply("", [tc_("vault_list", {})])
         if n == 2:
             return reply("", [tc_("load_skill", {"name": "credit-card-picker", "file": "cards/us.md"})])
         if n == 3:
@@ -1970,47 +1728,6 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         return reply(f"| Card | Rate | Value | Caveat |\n|---|---|---|---|\n| Chase Sapphire Reserve | dining {rate.group(1) if rate else '?'}x | USD 9.00 | points at 1¢ |\n"
                      f"| Citi Double Cash | 2% cashback | USD 6.00 | — |\n\nUse the **Chase Sapphire Reserve** for the USD 300 dinner: "
                      f"{rate.group(1) if rate else '?'}x on dining beats 2% cash back (9.00 vs 6.00, computed). Catalog verified {ver.group(1) if ver else '?'}; terms change.")
-    if "EUETIAS" in goal:   # eu-etias: nothing to file today, read the official status page
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "eu-etias"})])
-        if n == 1:
-            return reply("", [tc_("browser_read", {"urls": [PAGES + "/etias_status.html"]})])
-        live = "not yet in operation" in last_tool
-        return reply("ETIAS is not in operation today (official page read 2026-10-25): nothing to apply for, and any site selling it is a scam. "
-                     "At the border the EES registers your fingerprints and face automatically. I will fill the application once it opens."
-                     if live else "ETIAS status unclear — check the official page.")
-    if "ARRCARD " in goal:   # one generic flow for every per-country arrival-card skill: gather, fill, stop before Submit
-        skill = re.search(r"ARRCARD (\S+)", goal).group(1)
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": skill})])
-        if n == 1:
-            return reply("", [tc_("gmail_search", {"query": "(flight OR e-ticket OR itinerary) newer_than:60d"}),
-                              tc_("gmail_search", {"query": "(hotel OR booking OR reservation) newer_than:60d"})])
-        if n == 3:
-            return reply("", [tc_("profile_get", {"fields": ["name_en", "birthday", "nationality", "email_personal", "phone"]})])
-        if n == 4:
-            return reply("", [tc_("vault_list", {})])
-        if n == 5:
-            return reply("", [tc_("browser_navigate", {"url": PAGES + "/arrival_form.html"})])
-        if n == 6:
-            page = last_tool
-            vals = [("Full name", "LUCAS LU"), ("Date of birth", "1985-04-12"), ("Nationality", "Australia"),
-                    ("Arrival flight", "SQ 231"), ("Accommodation", "Test Hotel")]
-            return reply("", [tc_("browser_type", {"ref": _snap_ref(page, lab) or "e1", "text": v}) for lab, v in vals])
-        if n == 11:
-            vid = re.search(r"id=(vlt_\w+) · Passport", str(tools_done[4]["content"]))
-            page = tools_done[5]["content"]
-            return reply("", [tc_("browser_fill_secret", {"ref": _snap_ref(page, "Passport number") or "e4", "item_id": vid.group(1) if vid else "x", "field": "number"})])
-        if n == 12:
-            extra = ", take the photo and pay the fee" if skill == "uk-eta" else ""
-            return reply("", [tc_("browser_request_takeover", {"reason": f"Review the form{extra} and press Submit yourself; hand the browser back when the confirmation shows"})])
-        if n == 13:
-            return reply("", [tc_("browser_snapshot", {})])
-        ref = re.search(r"AC-\d{4}-\d{6}", "\n".join(str(m["content"]) for m in tools_done[12:]))
-        if ref:
-            return reply(f"FILED ({skill}). Reference {ref.group(0)}; a confirmation has been emailed.")
-        return reply(f"NOT SUBMITTED ({skill}): the form is still open with every field filled (LUCAS LU · 1985-04-12 · Australia · SQ 231 · Test Hotel · "
-                     "passport from the vault). Press Submit in the browser tab when you are ready, or ask me again.")
     if "CITYLIFT" in goal:   # city_guides_e2e.py: a booking skill loaded after a guide brings the browser back
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "tokyo"})])
@@ -2105,57 +1822,6 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         if n == 1:
             return reply("", [tc_("edit_image", {"prompt": "add a blue scarf to the fox"})])
         return reply("IMAGES DONE: " + str(last_tool)[:200])
-    if "ARRNOMAIL" in goal:   # arrival_nomail_e2e.py: no mailbox — ask once, an uploaded e-ticket, or "I'll fill it in myself"
-        def find(rx):
-            m = re.search(rx, "\n".join(str(x["content"]) for x in tools_done))
-            return m.group(1) if m else None
-        form = next((str(x["content"]) for x in tools_done if "Passport number" in str(x["content"])), "")
-        if any(x.startswith("gmail_") for x in tnames):
-            return reply("ARRNOMAIL FAIL: a mailbox is connected")
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "th-arrival-card"})])
-        ident = [tc_("profile_get", {"fields": ["name_en", "birthday", "nationality", "email_personal", "phone"]}), tc_("vault_list", {})]
-        if "ARRNOMAIL ask" in goal:
-            if n == 1:
-                calls = [tc_("memory_search", {"query": "trip Thailand flight hotel"})] + ident
-                if "calendar_list_events" in tnames:
-                    calls.insert(0, tc_("calendar_list_events", {"time_min": "2026-10-25", "time_max": "2026-12-31"}))
-                return reply("", calls)
-            return reply("WAITING FOR DATA (th-arrival-card): your name, birthday, nationality and passport are ready from your profile and vault. "
-                         "Which flight do you arrive on (number and date)? Where are you staying (hotel name or address)? "
-                         "Or upload the e-ticket / booking confirmation. Connecting a mailbox (Settings → Connections) lets me find bookings myself next time.")
-        myself = "ARRNOMAIL myself" in goal
-        if "ARRNOMAIL eticket" in goal:
-            ident = [tc_("file_look", {"path": _upload_path(sys, goal, "png"), "question": "Read this e-ticket / booking confirmation: flight number, date, origin, onward flight, hotel name and address."})] + ident
-        start = len(ident) + 1   # turn index after the gathering turn
-        flight = find(r"(SQ \d+)[^\n]*Bangkok") or (re.search(r"(SQ \d+)", goal).group(1) if re.search(r"SQ \d+", goal) else None)
-        hotel = find(r"Hotel on the itinerary: ([^,]+)") or (re.search(r"staying at ([^.,]+)", goal).group(1) if "staying at" in goal else None)
-        if n == 1:
-            return reply("", ident)
-        steps = [] if myself else [tc_("memory_remember", {"fact": f"Trip Thailand 2026-11-02: {flight}, staying at {hotel}", "domain": "place"})]
-        steps.append(tc_("browser_navigate", {"url": PAGES + "/arrival_form.html"}))
-        at = start
-        for s in steps:
-            if n == at:
-                return reply("", [s])
-            at += 1
-        vals = [("Full name", "LUCAS LU"), ("Date of birth", "1985-04-12"), ("Nationality", "Australia")]
-        if not myself:
-            vals += [("Arrival flight", flight), ("Accommodation", hotel)]
-        if n == at:
-            return reply("", [tc_("browser_type", {"ref": _snap_ref(form, lab) or "e1", "text": v}) for lab, v in vals])
-        at += len(vals)
-        if n == at:
-            vid = find(r"id=(vlt_\w+) · Passport")
-            return reply("", [tc_("browser_fill_secret", {"ref": _snap_ref(form, "Passport number") or "e4", "item_id": vid or "x", "field": "number"})])
-        if n == at + 1:
-            why = ("Fill in the flight and accommodation, review the form and press Submit yourself; hand the browser back when the confirmation shows"
-                   if myself else "Review the form and press Submit yourself; hand the browser back when the confirmation shows")
-            return reply("", [tc_("browser_request_takeover", {"reason": why})])
-        if n == at + 2:
-            return reply("", [tc_("browser_snapshot", {})])
-        what = "LUCAS LU · 1985-04-12 · Australia · passport from the vault" + ("" if myself else f" · {flight} · {hotel}")
-        return reply(f"NOT SUBMITTED (th-arrival-card): the form is still open with {what}. Press Submit in the browser tab when you are ready, or ask me again.")
     if "DIETARY" in goal:   # dining-dietary-translate
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "dining-dietary-translate"})])

@@ -12,7 +12,10 @@ arrival, group size, luggage, budget vs speed. Times in local zones; say the zon
 General patterns are stable; prices, timetables, strikes, typhoon closures and app availability are not. For a
 specific fare, schedule or service status: a connected data tool first (`mcp_<server>__*` rail / transit tools), else
 browser_read of the operator's official page (JR East / Central, THSR, KTX / Korail, 12306's English site, MTR, SMRT,
-BTS / MRT Bangkok) — 1–3 pages, no clicking around, date checked in the answer.
+BTS / MRT Bangkok) — 1–3 pages, no clicking around, date checked in the answer. A city guide loaded earlier in the task says the
+browser is off; loading this skill turns it back on, so browser_read the operator's page all the same (and if you load
+a guide after this skill, load this skill again before reading). Never answer "check the timetable yourself" when the
+page is one read away.
 - **Airport to city** (first ask: bags, time of day, hotel area): Tokyo Narita — Narita Express / Keisei Skyliner /
   limousine bus (Haneda is much closer); Osaka KIX — Haruka / Nankai Rapi:t; Seoul ICN — AREX express / all-stop /
   limousine bus; Singapore Changi — MRT East-West line, taxis with surcharges at night, Grab; Hong Kong — Airport

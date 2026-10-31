@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Confirm Application - Air Passenger Departure Tax Refund Platform</title>
+<link rel="stylesheet" href="apdt.css"><script src="apdt.js"></script></head>
+<body>
+<main>
+<div id="stepbar"></div>
+<h1>Please confirm your application information</h1>
+<p class="muted">For inquiries, please use this reference number: <b id="ref"></b></p>
+<h2>Uploaded Documents</h2>
+<table class="sum" id="docs"></table>
+<h2>Selected Flight</h2>
+<table class="sum" id="flight"></table>
+<h2>Refund Details</h2>
+<table class="sum" id="refund"></table>
+<label class="chk"><input type="checkbox" id="info_true" name="info_true"> <span>By confirming your submission, you guarantee that the information and documents you provide are true</span></label>
+<div class="err" id="err-info_true"></div>
+<div class="actions"><button type="button" class="sec" id="change">Change Refund Method</button><button type="button" class="sec" id="exit">Exit</button><button type="button" class="pri" id="confirm">Confirm and Next Step</button></div>
+</main>
+<script>
+APDT.header();
+(function () {
+  var $ = function (id) { return document.getElementById(id); }, s = APDT.load(), e = APDT.esc;
+  if (!s.ref || !s.refund) { APDT.go('apdt.html'); return; }
+  $('stepbar').innerHTML = APDT.steps(2); $('ref').textContent = s.ref;
+  history.replaceState(null, '', 'apdt_confirm.html?lang=' + APDT.lang() + '&bizId=' + s.ref + '&t=' + APDT.token(s));
+  var f = s.files || {}, rows = [['Travel documents/Travel document for entry into Hong Kong', f.doc], ['Boarding pass of the relevant arrival flight in Hong Kong', f.inboard],
+    ['Boarding pass of the departure flight from Hong Kong', f.outboard], ['Proof of tax payment', f.paydoc], ['Supplementary Documents', f.payadd]];
+  $('docs').innerHTML = rows.filter(function (r) { return r[1] || r[0] !== 'Supplementary Documents'; })
+    .map(function (r) { return '<tr><td>' + r[0] + '</td><td>' + (r[1] ? '✓ ' + e(r[1]) : 'to be uploaded') + '</td></tr>'; }).join('') +
+    '<tr><td>Travel document</td><td>' + e(s.doctype) + ' · ' + e(s.name) + '</td></tr>';
+  $('flight').innerHTML = '<tr><td>Departure Flight No.</td><td>' + e(s.outflight) + '</td></tr><tr><td>Flight Departure Date</td><td>' + e((s.outdate || '').replace(/-/g, '/')) + '</td></tr>' +
+    (s.inflight ? '<tr><td>Arrival flight</td><td>' + e(s.inflight) + ' · ' + e((s.indate || '').replace(/-/g, '/')) + '</td></tr>' : '');
+  var r = s.refund, NAMES = { bank: 'Credit/Debit Cards', alipay: 'Alipay', wechat: 'WeChat Pay', alipayHK: 'AlipayHK', wechatHK: 'WeChat Pay HK', cash: 'Cash (HKD)' };
+  $('refund').innerHTML = '<tr><td>Refund Amount:</td><td>HK$120</td></tr><tr><td>Refund Method</td><td>' + NAMES[r.type] + '</td></tr>' +
+    (r.type === 'bank' ? '<tr><td>Card Number</td><td>**** **** **** ' + e(r.card4) + '</td></tr><tr><td>Card Holder</td><td>' + e(r.holder) + '</td></tr><tr><td>Expiry Date</td><td>' + e(r.valid) + '</td></tr>' : '') +
+    (r.account ? '<tr><td>Account</td><td>' + e(r.account) + '</td></tr>' : '');
+  $('change').onclick = function () { APDT.go('apdt_refund.html', '&bizId=' + s.ref); };
+  $('exit').onclick = function () { APDT.go('apdt.html'); };
+  $('confirm').onclick = function () {
+    if (!$('info_true').checked) { $('err-info_true').textContent = 'Please read and agree to the agreement first'; return; }
+    s = APDT.load(); s.confirmed = true; APDT.save(s);
+    APDT.go('apdt_submit.html', '&bizId=' + s.ref + '&type=1&tsType=' + s.refund.type + '&t=' + APDT.token(s));
+  };
+})();
+</script>
+</body></html>

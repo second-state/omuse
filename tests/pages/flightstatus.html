@@ -1,6 +1,40 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Flight status SQ 638</title></head>
-<body><h1>SQ 638 Singapore (SIN) → Tokyo Narita (NRT)</h1>
-<table><tr><th>Scheduled</th><td>09:25</td></tr><tr><th>Estimated</th><td><b>12:40</b></td></tr>
-<tr><th>Status</th><td>Delayed 3 h 15 min — late inbound aircraft</td></tr><tr><th>Gate</th><td>B7</td></tr></table>
+<html lang="en"><head><meta charset="utf-8"><title>Flight Status | Singapore Airlines</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{font-family:Arial,sans-serif;margin:0;color:#1d1d1b}
+header{background:#00266b;color:#fff;padding:16px 32px} header b{letter-spacing:2px;color:#f99f1c}
+main{max-width:900px;margin:24px auto;padding:0 24px} table{border-collapse:collapse} th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}
+th{background:#f2f4f8} .delayed{color:#b00020;font-weight:bold} input{padding:6px;border:1px solid #999} button{background:#00266b;color:#fff;border:0;padding:7px 16px}
+footer{margin:40px 0 0;padding:16px 32px;background:#00266b;color:#ccd;font-size:12px}
+</style></head>
+<body>
+<header><b>SINGAPORE AIRLINES</b> &nbsp; Flight status</header>
+<main>
+<form method="get" action="/flightstatus.html"><label>Flight number <input name="flight" id="flight" value="SQ 638" size="8"></label>
+<label>Date <input name="date" id="date" size="10"></label> <button>Search</button></form>
+<h1 id="title">SQ 638 Singapore (SIN) → Tokyo Narita (NRT)</h1>
+<p>Departure date: <span id="day">today</span> · Last updated <span id="upd">a few minutes ago</span></p>
+<table id="res">
+<tr><th></th><th>Departure — Singapore Changi T3</th><th>Arrival — Tokyo Narita T1</th></tr>
+<tr><th>Scheduled</th><td>09:25</td><td>17:15</td></tr>
+<tr><th>Estimated</th><td class="delayed">17:10</td><td class="delayed">01:00 (+1 day)</td></tr>
+<tr><th>Status</th><td colspan="2" class="delayed">Delayed 7 h 45 min — late arrival of the incoming aircraft</td></tr>
+<tr><th>Gate</th><td colspan="2">B7 (boarding from 16:30)</td></tr>
+</table>
+<p>Customers on delayed flights can rebook free of charge or ask for a refund: see <a href="/flight-disruptions.html">Delays and cancellations</a>.
+A flight delay certificate is available on request.</p>
+<script>
+  const q = new URLSearchParams(location.search), d = new Date();
+  const iso = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  document.getElementById('day').textContent = iso; document.getElementById('date').value = q.get('date') || iso;
+  const f = (q.get('flight') || 'SQ 638').toUpperCase().replace(/\s+/g, '');
+  if (f !== 'SQ638') {
+    document.getElementById('flight').value = q.get('flight');
+    document.getElementById('title').textContent = f + ': no disruption reported';
+    document.getElementById('res').innerHTML = '<tr><th>Status</th><td>Scheduled — on time</td></tr>';
+  }
+</script>
+</main>
+<footer>Singapore Airlines Limited · Flight times are local times.</footer>
 </body></html>

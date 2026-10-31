@@ -890,6 +890,10 @@ impl ImageClient {
         let mask = o.mask.as_ref().filter(|m| !m.is_empty());
         let headers = image_auth_headers(Some(settings), &self.cfg);
         let mut last = String::new();
+        // xAI's grok-imagine models take edits as JSON with the picture as a data URL, not the OpenAI multipart form
+        // ("…requires Content-Type: application/json with an image object or images array", 2026-10-30); other
+        // servers too may say so, then the edit is sent again as JSON
+        let mut as_json = mdl.to_lowercase().contains("grok-imagine");
         for sz in &sizes {
             match data.iter_mut().find(|(k, _)| k == "size") {
                 Some(e) => e.1 = sz.clone(),
@@ -921,16 +925,37 @@ impl ImageClient {
                         "image/png".into(),
                     ));
                 }
+                let body = if as_json {
+                    let url = |(name, blob): &(String, Vec<u8>)| {
+                        json!({"url": format!("data:{};base64,{}", guess_mime(name),
+                            base64::engine::general_purpose::STANDARD.encode(blob))})
+                    };
+                    let mut j = serde_json::Map::new();
+                    for (k, v) in &data {
+                        j.insert(k.clone(), if k == "n" { json!(n) } else { json!(v) });
+                    }
+                    if images.len() > 1 {
+                        j.insert(
+                            "images".into(),
+                            json!(images.iter().map(url).collect::<Vec<_>>()),
+                        );
+                    } else {
+                        j.insert("image".into(), url(&images[0]));
+                    }
+                    ImageBody::Json(Value::Object(j))
+                } else {
+                    ImageBody::Multipart {
+                        fields: data.clone(),
+                        files,
+                    }
+                };
                 let r = self
                     .transport
                     .send(self.req(
                         "POST",
                         format!("{}/images/edits", base),
                         headers.clone(),
-                        Some(ImageBody::Multipart {
-                            fields: data.clone(),
-                            files,
-                        }),
+                        Some(body),
                         tmo,
                     ))
                     .await;
@@ -949,6 +974,11 @@ impl ImageClient {
                 let low = txt.to_lowercase();
                 if moderated(r.status, &txt) {
                     return ierr("内容被模型的安全策略拒绝 (the image model's safety policy declined this edit) — 换一个描述；不要重试同样的内容 rephrase; do not retry the same prompt");
+                }
+                if r.status == 400 && !as_json && low.contains("application/json") {
+                    as_json = true;
+                    resp = Some(r);
+                    continue;
                 }
                 if r.status == 400
                     && low.contains("response_format")
@@ -1634,6 +1664,29 @@ mod tests {
         assert!(!res.images.is_empty());
         let last = f.calls.lock().last().unwrap().clone();
         assert!(last.get("background").is_none() && last.get("output_format").is_none());
+    }
+
+    #[tokio::test]
+    async fn grok_imagine_edits_go_as_json_with_a_data_url() {
+        let (c, f) = client(Fake::default());
+        let s = json!({"model_base_url": "http://x/v1", "image_model": "xai/grok-imagine-image"});
+        let res = c
+            .edit(
+                &s,
+                &[("cake.jpg".to_string(), b"JPEG".to_vec())],
+                "watercolour",
+                &EditOpts::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.images.len(), 1);
+        let last = f.calls.lock().last().unwrap().clone();
+        assert_eq!(last["prompt"], "watercolour");
+        assert!(last["image"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/jpeg;base64,"));
+        assert!(last.get("parts").is_none()); // no multipart form
     }
 
     #[tokio::test]

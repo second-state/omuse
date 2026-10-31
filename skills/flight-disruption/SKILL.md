@@ -11,8 +11,8 @@ newer_than:60d` and calendar_list_events for the day: booking reference, passeng
 connecting flights, whether the ticket is one booking or separate tickets (matters for missed connections).
 
 ## 2. Live status (data first, browser second)
-- A connected data tool wins: the built-in `flights_search` (Kiwi.com data, then Google Flights with the key, then web search — information only for
-  information only — rebook on the airline's site, never through Kiwi), or an MCP connector's `flight_status`.
+- A connected data tool wins: the built-in `flights_search` (ONE call: Google Flights with the key, else Kiwi.com — for
+  alternatives; rebook on the airline's own site), or an MCP connector's `flight_status`.
 - Else browser_read (no clicking) the airline's own flight status page, or FlightAware / Flightradar24 for the flight
   number, and the airport's departures page. Quote the new time, gate, and the airline's wording ("delayed",
   "cancelled"); never estimate a new departure time yourself.

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Air Passenger Departure Tax Refund Platform</title>
+<link rel="stylesheet" href="apdt.css"><script src="apdt.js"></script></head>
+<body>
+<main>
+<section id="notice">
+<h1>Notes for Application</h1>
+<p>Under section 12 of the Air Passenger Departure Tax Ordinance (Cap. 140) (“the Ordinance”), a passenger of any description or class mentioned in the Second Schedule to the Ordinance shall be exempted from the Air Passenger Departure Tax (“APDT”). An eligible passenger who has paid the APDT when purchasing the air ticket may apply for the refund of APDT. The following passengers exempted from the APDT may apply for refund via this Refund Application Platform –</p>
+<p>(i) Passengers who arrive at and depart from Hong Kong by air on the same day or the following calendar day; and</p>
+<p>(ii) Passengers arriving by land or sea and departing by aircraft on the same day or on the following day, except those who have left Hong Kong by land or sea on the day or the preceding day of their departure flights.</p>
+<h3>Anytime, Anywhere</h3>
+<p>Eligible passengers should submit a tax refund application via this e-platform within 28 calendar days from the date of their departure flight from Hong Kong.</p>
+<p>Passengers travelling via the SkyPier Terminal by ferry or coach should claim their refund at the “Departure Tax Refund Desk” at the SkyPier Terminal.</p>
+<p>From 03 November 2026, passengers arriving at Hong Kong International Airport by SkyPier Terminal cross-boundary ferry or coach or using Park &amp; Fly service should submit their refund applications via this Refund Application Platform.</p>
+<p>Passengers who have left Hong Kong through immigration controls other than by aircraft on the day of their departure flight or the preceding day are not eligible for the APDT exemption.</p>
+<div class="box">
+<div class="lg">Personal Information Collection Statement (“PICS”)</div>
+<p class="muted">The personal information provided by you as the applicant or on behalf of the applicant (as his/her Relevant Person<sup>[1]</sup> with parental responsibility), as applicable, will be used for the purpose of processing your or the applicant’s application for refund of Air Passenger Departure Tax. It may be disclosed to the relevant departments of the Government of the Hong Kong Special Administrative Region (“HKSARG”), the Airport Authority and its authorized agents and/or contractors who are responsible for handling the refund. The information provided will be destroyed when it is no longer required.</p>
+<p class="muted">Your or the applicant’s application will not be considered if you fail to provide all the requested information or document.</p>
+<p class="muted">You have the right to request access to and correction of personal data provided in accordance with the provisions of the Personal Data (Privacy) Ordinance (Cap. 486). Such request should be made in writing to the Airport Authority.</p>
+<label class="chk"><input type="checkbox" id="pics_agree" name="pics_agree"> <span>I, as the applicant or the Relevant Person of the applicant, have read and agree to the above Personal Information Collection Statement.</span></label>
+<label class="chk"><input type="checkbox" id="pics_declare" name="pics_declare"> <span>I declare that the information provided in this application is true and correct. I understand that, if I knowingly and wilfully make a statement which is false in a material particular in the application for refund of Air Passenger Departure Tax, I shall be guilty of an offence under section 36 of the Crimes Ordinance (Cap. 200) and shall be liable on conviction upon indictment to imprisonment for 2 years and to a fine.</span></label>
+<p class="small muted"><sup>[1]</sup> According to section 2 of the Personal Data (Privacy) Ordinance (Cap. 486), the term “Relevant Person” means a person who has parental responsibility for a minor (i.e. a person who has not attained the age of 18 years).</p>
+<div class="err" id="err-pics"></div>
+</div>
+<div class="actions"><button type="button" class="pri" id="confirmNotice">Confirm</button></div>
+</section>
+
+<section id="home" style="display:none">
+<h1>Passenger Departure Tax Refund</h1>
+<p class="muted">Streamlined Process, Hassle-Free Tax Refund</p>
+<div class="tabs"><button type="button" class="on" data-tab="new">Start New Application</button><button type="button" data-tab="resume">Resume Application</button><button type="button" data-tab="status">Check Application Status</button></div>
+<div id="tab-new">
+<h2>Required documents</h2>
+<p class="muted">Supports image files or mobile document uploads (each file must not exceed 7MB; supported formats include JPEG, JPG, PNG, and PDF).</p>
+<div class="box"><b>Travel documents</b><p class="muted">Travel document for entry into Hong Kong: Hong Kong SAR Identity Card, Passport, Macau SAR Identity Card, Hong Kong and Macao Travel Permit, Taiwan Travel Permit, Mainland Travel Permit for Taiwan Resident.</p>
+<b>Boarding passes</b><p class="muted">Boarding pass of the departure flight from Hong Kong, and the boarding pass of the relevant arrival flight in Hong Kong (passengers arriving by air), physical or electronic.</p>
+<b>Proof of tax payment</b><p class="muted">Receipt, itinerary or air ticket issued by an airline or travel agent showing the amount of APDT paid. If you do not have such proof, please contact your airline or travel agent for assistance.</p></div>
+<h2>Refund Methods</h2>
+<table class="sum"><tr><td>Alipay / WeChat Pay / AlipayHK / WeChat Pay HK</td><td>About one day in general after approval</td></tr>
+<tr><td>Credit / Debit Cards</td><td>About 3 working days after approval</td></tr>
+<tr><td>Cash (HKD)</td><td>Collection at designated location after approval</td></tr></table>
+<div class="warn">*Eligibility: Applications accepted if departed within 24 hours of arrival. Application deadline: 28 calendar days from departure date.</div>
+<div class="actions"><button type="button" class="pri" id="startNow">Start Now</button></div>
+</div>
+<div id="tab-resume" style="display:none">
+<h2 id="searchTitle">Find Application</h2>
+<p class="muted">Please enter your travel document number and choose one of the following methods:</p>
+<div class="grid">
+<div class="f full"><label for="s_doc">Travel document number <span class="req">*</span></label><input type="text" id="s_doc" name="s_doc" autocomplete="off" placeholder="Please enter"><div class="hint">Case sensitive. Do not enter ()</div></div>
+<div class="f full"><div class="radios"><label><input type="radio" name="s_by" value="code" checked> Use reference number (6 digits &amp; letters)</label><label><input type="radio" name="s_by" value="date"> Enquire by date of birth and departure flight date</label></div></div>
+<div class="f" id="byCode"><label for="s_code">Reference No.</label><input type="text" id="s_code" name="s_code" autocomplete="off" placeholder="Please enter reference number"><div class="hint">How to find the reference number: it is shown after your documents are uploaded and on every later page.</div></div>
+<div class="f" id="byDate1" style="display:none"><label for="s_dob">Date of birth</label><input type="text" id="s_dob" placeholder="YYYY/MM/DD"></div>
+<div class="f" id="byDate2" style="display:none"><label for="s_fdate">Departure flight date</label><input type="text" id="s_fdate" placeholder="YYYY/MM/DD"></div>
+</div>
+<div class="err" id="err-search"></div>
+<div class="actions"><button type="button" class="pri" id="startSearch">Start Search</button></div>
+</div>
+</section>
+</main>
+<script>
+APDT.header();
+(function () {
+  var s = APDT.load(), $ = function (id) { return document.getElementById(id); };
+  function showHome() { $('notice').style.display = 'none'; $('home').style.display = ''; }
+  if (s.pics && s.pics.agree && s.pics.declare) showHome();
+  $('confirmNotice').onclick = function () {
+    if (!$('pics_agree').checked || !$('pics_declare').checked) { $('err-pics').textContent = 'Please read and agree to the agreement first'; return; }
+    s = APDT.load(); s.pics = { agree: true, declare: true }; APDT.save(s); showHome(); window.scrollTo(0, 0);
+  };
+  var tab = 'new';
+  [].forEach.call(document.querySelectorAll('.tabs button'), function (b) {
+    b.onclick = function () {
+      tab = b.getAttribute('data-tab');
+      [].forEach.call(document.querySelectorAll('.tabs button'), function (x) { x.className = x === b ? 'on' : ''; });
+      $('tab-new').style.display = tab === 'new' ? '' : 'none'; $('tab-resume').style.display = tab === 'new' ? 'none' : '';
+      $('searchTitle').textContent = tab === 'status' ? 'Search Your Application' : 'Find Application';
+    };
+  });
+  [].forEach.call(document.querySelectorAll('input[name=s_by]'), function (r) {
+    r.onchange = function () { var c = r.value === 'code' && r.checked; $('byCode').style.display = c ? '' : 'none'; $('byDate1').style.display = $('byDate2').style.display = c ? 'none' : ''; };
+  });
+  $('startNow').onclick = function () { var x = APDT.load(); var keep = { pics: x.pics }; APDT.save(keep); APDT.go('apdt_upload.html'); };
+  $('startSearch').onclick = function () {
+    var a = APDT.load(), doc = $('s_doc').value.trim(), by = document.querySelector('input[name=s_by]:checked').value;
+    if (!doc) { $('err-search').textContent = 'Please enter your travel document number'; return; }
+    var hit = a.ref && a.docsum === APDT.sum(doc) && (by === 'code' ? $('s_code').value.trim().toUpperCase() === a.ref
+      : APDT.normDate($('s_dob').value) === a.dob && APDT.normDate($('s_fdate').value) === a.outdate);
+    if (!hit) { $('err-search').textContent = 'Record not found'; return; }
+    if (!a.confirmed) { APDT.go(a.refund ? 'apdt_confirm.html' : 'apdt_refund.html'); return; }
+    APDT.go('apdt_submit.html', '&bizId=' + a.ref + '&type=1&tsType=' + ((a.refund || {}).type || '') + '&t=' + APDT.token(a));
+  };
+})();
+</script>
+</body></html>

@@ -53,6 +53,14 @@ pub const FIELD_LABELS: &[(&str, &str)] = &[
     ("value", "内容 value"),
 ];
 
+/// The value of a card detail the user has not given yet: a card added by its name alone ("Citi Prestige", told
+/// in chat or typed on the Vault card) keeps its number, expiry and CVC as `UNKNOWN` until the user fills them in.
+/// Such a field is never filled into a page and a purchase on that card is refused (policy).
+pub const UNKNOWN: &str = "UNKNOWN";
+
+/// The card fields a card added by name holds as [`UNKNOWN`].
+pub const CARD_DETAILS: &[&str] = &["number", "expiry", "cvc"];
+
 /// Fields whose values are scrubbed from page text after use (short or common values like CVC / names are not,
 /// snapshot.js already hides card-security fields).
 pub const SCRUB_FIELDS: &[&str] = &["number", "value"];
@@ -61,7 +69,7 @@ pub const SCRUB_FIELDS: &[&str] = &["number", "value"];
 pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS vault_items (
   id TEXT PRIMARY KEY, label TEXT, kind TEXT, masked TEXT, fields TEXT, domains TEXT,
-  created_at REAL, updated_at REAL, last_used REAL, uses INTEGER DEFAULT 0
+  created_at REAL, updated_at REAL, last_used REAL, uses INTEGER DEFAULT 0, country TEXT DEFAULT ''
 );
 ";
 
@@ -108,14 +116,29 @@ pub enum VaultError {
     Other(#[from] anyhow::Error),
 }
 
-/// Create the vault table (called by `Store::new`).
+/// Create the vault table (called by `Store::new`); a table from before `country` gets the column.
 pub fn init(store: &Store) -> Result<()> {
-    store.db.script(SCHEMA)
+    store.db.script(SCHEMA)?;
+    let has_country = store
+        .db
+        .all("PRAGMA table_info(vault_items)", params![])?
+        .iter()
+        .any(|r| get_str(r, "name") == "country");
+    if !has_country {
+        store.db.execute(
+            "ALTER TABLE vault_items ADD COLUMN country TEXT DEFAULT ''",
+            params![],
+        )?;
+    }
+    Ok(())
 }
 
 static SPACE_DASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\s-]").unwrap());
 
 fn mask(v: &str) -> String {
+    if v == UNKNOWN {
+        return UNKNOWN.to_string();
+    }
     let s = SPACE_DASH.replace_all(v, "").into_owned();
     let n = s.chars().count();
     if n == 0 {
@@ -152,9 +175,20 @@ fn clean_domains(v: Option<&Value>) -> Vec<String> {
 
 fn row(r: &Value) -> Value {
     let kind = field_str(r, "kind");
+    let fields = loads_field(r, "fields", json!([]));
+    // the card details still UNKNOWN (a card added by its name): the kind's details not among the known fields
+    let missing: Vec<&str> = if kind == "card" {
+        CARD_DETAILS
+            .iter()
+            .copied()
+            .filter(|f| !fields.as_array().is_some_and(|a| a.iter().any(|x| x == f)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     json!({
         "id": r["id"], "label": r["label"], "kind": r["kind"], "kind_label": kind_label(&kind),
-        "masked": r["masked"], "fields": loads_field(r, "fields", json!([])), "domains": loads_field(r, "domains", json!([])),
+        "masked": r["masked"], "fields": fields, "missing": missing, "domains": loads_field(r, "domains", json!([])), "country": field_str(r, "country"),
         "created_at": r["created_at"], "updated_at": r["updated_at"], "last_used": r["last_used"],
         "uses": if truthy(&r["uses"]) { r["uses"].clone() } else { json!(0) },
     })
@@ -177,6 +211,113 @@ pub fn item(store: &Store, iid: &str) -> Result<Option<Value>> {
         .one("SELECT * FROM vault_items WHERE id=?", params![iid])?
         .as_ref()
         .map(row))
+}
+
+/// The field a model's name for a Vault field means ("passport_expiry", "expiry_date", "CVV", "card number" …), as
+/// one of [`KINDS`]' field names, or the name as written.
+fn field_alias(f: &str) -> String {
+    let mut k: String = f
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    for pre in [
+        "credit_card_",
+        "passport_",
+        "document_",
+        "membership_",
+        "card_",
+        "doc_",
+        "id_",
+    ] {
+        if let Some(rest) = k.strip_prefix(pre) {
+            k = rest.to_string();
+        }
+    }
+    match k.as_str() {
+        "expiration" | "expiration_date" | "expiry_date" | "exp" | "exp_date" | "expires"
+        | "valid_until" | "date_of_expiry" | "expiry_dt" => "expiry",
+        "no" | "num" | "nr" | "id" | "number_full" => "number",
+        "cvv" | "cvv2" | "cvc2" | "csc" | "security_code" | "security" => "cvc",
+        "cardholder" | "holder_name" | "name_on_card" | "card_holder" => "holder",
+        "full_name" | "holder_full_name" => "name",
+        "country_of_issue" | "issuing_country" | "issuer_country" | "issue_country" => "country",
+        "program_name" | "programme" => "program",
+        other => return other.to_string(),
+    }
+    .to_string()
+}
+
+/// Vault references a model copied into a tool call, resolved against the Vault itself: an `item_id` /
+/// `card_item_id` no item has becomes the one item id it is a slip of (`util::nearest`: "vlt_752694d1f8" for
+/// "vlt_752694d1f1f8", arrival_cards2_real 2026-10-31, where the refusal made the model tell the user the Vault had
+/// no passport expiry), and a `field` the item lacks becomes the item's field it names ("passport_expiry" → expiry).
+/// What matches nothing stays as written for the policy to refuse.
+pub fn resolve_args(store: &Store, args: &mut Value) -> Result<()> {
+    let Some(o) = args.as_object_mut() else {
+        return Ok(());
+    };
+    let mut ids: Option<Vec<String>> = None;
+    for key in ["item_id", "card_item_id"] {
+        let want = o
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if want.is_empty() || item(store, &want)?.is_some() {
+            continue;
+        }
+        if ids.is_none() {
+            ids = Some(
+                list_items(store)?
+                    .iter()
+                    .map(|r| get_str(r, "id"))
+                    .collect(),
+            );
+        }
+        let all = ids.as_deref().unwrap_or_default();
+        if let Some(id) = omuse_common::util::nearest(&want, all.iter().map(String::as_str)) {
+            o.insert(key.into(), Value::String(id.to_string()));
+        }
+    }
+    let field = o
+        .get("field")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let iid = o
+        .get("item_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if !field.is_empty() && !iid.is_empty() {
+        if let Some(it) = item(store, &iid)? {
+            let fields = item_fields(&it);
+            if !fields.contains(&field) {
+                let alias = field_alias(&field);
+                let fixed = if fields.contains(&alias) {
+                    Some(alias)
+                } else {
+                    omuse_common::util::nearest(&alias, fields.iter().map(String::as_str))
+                        .map(str::to_string)
+                };
+                if let Some(f) = fixed {
+                    o.insert("field".into(), Value::String(f));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The card details of an item that are still [`UNKNOWN`] (`missing` of a card added by its name).
+pub fn item_missing(it: &Value) -> Vec<String> {
+    it["missing"]
+        .as_array()
+        .map(|a| a.iter().map(py_str).collect())
+        .unwrap_or_default()
 }
 
 /// The fields of an item as a `Vec<String>`.
@@ -208,6 +349,12 @@ pub fn save_item(
     if label.is_empty() {
         return Err(VaultError::Value("请填写名称 label is required".into()));
     }
+    // a card's issuing country, optional: a field of its own beside the name (not a secret: the card picker reads it)
+    let country = if kind == "card" {
+        clean_country(&get_str(data, "country"))?
+    } else {
+        String::new()
+    };
     let old = match iid {
         Some(id) => store
             .get_secret(&format!("vault_{id}"))?
@@ -228,6 +375,12 @@ pub fn save_item(
     for f in fields {
         let v = take_chars(get_str(&values, f).trim(), 200).to_string();
         let v = if v.is_empty() { get_str(&old, f) } else { v };
+        // a card by its name alone: the details it lacks are UNKNOWN until the user gives them
+        let v = if v.is_empty() && kind == "card" && CARD_DETAILS.contains(f) {
+            UNKNOWN.to_string()
+        } else {
+            v
+        };
         vals.insert(f.to_string(), Value::String(v));
     }
     let main = if kind == "other" { "value" } else { "number" };
@@ -243,13 +396,13 @@ pub fn save_item(
         .as_object()
         .expect("object")
         .iter()
-        .filter(|(_, v)| truthy(v))
+        .filter(|(_, v)| truthy(v) && v.as_str() != Some(UNKNOWN))
         .map(|(f, _)| f.as_str())
         .collect();
     let masked = mask(&get_str(&vals, main));
     let mut rec = json!({
         "label": label, "kind": kind, "masked": masked, "fields": dumps(&json!(present)),
-        "domains": dumps(&json!(clean_domains(data.get("domains")))), "updated_at": now_ts(),
+        "domains": dumps(&json!(clean_domains(data.get("domains")))), "updated_at": now_ts(), "country": country,
     });
     if store
         .db
@@ -267,6 +420,102 @@ pub fn save_item(
     }
     *store.vault_patterns.lock() = None;
     Ok(item(store, &iid)?.unwrap_or(Value::Null))
+}
+
+/// Add a credit card the user holds by its name alone ("Citi Prestige": issuer and product), with the country that
+/// issued it when known ("USA", optional, a field of its own) — its number, expiry and CVC are [`UNKNOWN`] until the
+/// user adds them on the Vault card. The same card (its name, case and spacing aside) is never added twice:
+/// `(item, false)` when it is already there (a country given now fills an empty one). A name with a run of five digits
+/// or more is refused: it carries the card's number, which only the user types in, on the Vault card.
+pub fn add_card(
+    store: &Store,
+    name: &str,
+    country: &str,
+) -> std::result::Result<(Value, bool), VaultError> {
+    static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+    static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{5,}").unwrap());
+    let name = WS.replace_all(name.trim(), " ").into_owned();
+    if name.is_empty() {
+        return Err(VaultError::Value(
+            "请填写卡名 the card's name is required".into(),
+        ));
+    }
+    if DIGITS.is_match(&name.replace(['-', ' '], "")) {
+        return Err(VaultError::Value(
+            "只存卡名，卡号请用户自己在保险箱里填 (the name only: the user types the number in the Vault)".into(),
+        ));
+    }
+    let country = clean_country(country)?;
+    let key = card_key(&name);
+    if let Some(it) = list_items(store)?
+        .into_iter()
+        .find(|it| field_str(it, "kind") == "card" && card_key(&field_str(it, "label")) == key)
+    {
+        if field_str(&it, "country").is_empty() && !country.is_empty() {
+            let id = field_str(&it, "id");
+            store.db.execute(
+                "UPDATE vault_items SET country=? WHERE id=?",
+                params![country, id.as_str()],
+            )?;
+            return Ok((item(store, &id)?.unwrap_or(it), false));
+        }
+        return Ok((it, false));
+    }
+    let it = save_item(
+        store,
+        &json!({"kind": "card", "label": name, "country": country}),
+        None,
+    )?;
+    Ok((it, true))
+}
+
+/// A card's name as one key for "is this the same card": lower-case words, punctuation and the words any card name
+/// may carry or drop dropped ("card", "credit", "Visa", "Signature", "American Express"…) — "DBS Altitude Visa
+/// Signature" and "DBS Altitude", "HSBC Red Credit Card" and "HSBC Red" are one card; "Chase Sapphire" and "Chase
+/// Sapphire Reserve" stay two (2026-10-30, cards_markets_real: the same card saved twice under a near name).
+fn card_key(name: &str) -> String {
+    const GENERIC: &[&str] = &[
+        "card",
+        "cards",
+        "credit",
+        "debit",
+        "charge",
+        "the",
+        "my",
+        "visa",
+        "mastercard",
+        "master",
+        "signature",
+        "infinite",
+        "world",
+        "elite",
+        "american",
+        "express",
+        "unionpay",
+        "jcb",
+    ];
+    let lower = name.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty() && !GENERIC.contains(w))
+        .collect();
+    if words.is_empty() {
+        lower.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        words.join(" ")
+    }
+}
+
+/// A card's issuing country as given ("USA", "Singapore"), spaces tidied; at most 40 characters and no digits.
+fn clean_country(c: &str) -> std::result::Result<String, VaultError> {
+    static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+    let c = WS.replace_all(c.trim(), " ").into_owned();
+    if c.chars().count() > 40 || c.chars().any(|ch| ch.is_ascii_digit()) {
+        return Err(VaultError::Value(
+            "国家只写国名 the country is a country's name".into(),
+        ));
+    }
+    Ok(c)
 }
 
 /// Delete an item and its secret; `false` when it does not exist.
@@ -365,7 +614,7 @@ fn compile(store: &Store) -> Result<Arc<Vec<FRegex>>> {
         for f in SCRUB_FIELDS {
             let v = get_str(&sec, f).trim().to_string();
             let compact = SPACE_DASH.replace_all(&v, "").into_owned();
-            if compact.chars().count() < 5 {
+            if compact.chars().count() < 5 || v == UNKNOWN {
                 continue;
             }
             let is_digits = compact.chars().all(|c| c.is_numeric());
@@ -467,6 +716,135 @@ mod tests {
     }
 
     #[test]
+    fn a_card_by_its_name_has_unknown_details_until_the_user_adds_them() {
+        let d = tempfile::tempdir().unwrap();
+        let store = Store::new(d.path()).unwrap();
+        // the name and the issuing country are two fields; the details are UNKNOWN
+        let (it, new) = add_card(&store, " Citi  Prestige ", " USA ").unwrap();
+        assert!(new);
+        let got = |it: &Value| {
+            json!([
+                it["label"],
+                it["country"],
+                it["kind"],
+                it["masked"],
+                it["fields"],
+                it["missing"]
+            ])
+        };
+        assert_eq!(
+            got(&it),
+            json!([
+                "Citi Prestige",
+                "USA",
+                "card",
+                UNKNOWN,
+                [],
+                ["number", "expiry", "cvc"]
+            ])
+        );
+        let id = get_str(&it, "id");
+        assert_eq!(value(&store, &id, "number").unwrap(), UNKNOWN);
+        assert_eq!(value(&store, &id, "cvc").unwrap(), UNKNOWN);
+        // the same card again, however written: still one, its country kept
+        let (again, new) = add_card(&store, "citi prestige", "").unwrap();
+        assert!(!new && again["id"] == it["id"] && again["country"] == "USA");
+        // the country is optional; given later, it fills the empty one
+        let (chase, new) = add_card(&store, "Chase Sapphire Reserve", "").unwrap();
+        assert!(new && chase["country"] == "");
+        let (chase, new) = add_card(&store, "Chase Sapphire Reserve", "USA").unwrap();
+        assert!(!new && chase["country"] == "USA");
+        // a number is refused, in the name or the country: only the user types it, on the Vault card
+        // a near name is the same card: generic words dropped ("credit card", "Visa Signature", "American Express")
+        let (dbs, _) = add_card(&store, "DBS Altitude Visa Signature", "Singapore").unwrap();
+        for near in [
+            "DBS Altitude",
+            "dbs altitude card",
+            "DBS Altitude Credit Card",
+        ] {
+            let (again, new) = add_card(&store, near, "").unwrap();
+            assert!(!new && again["id"] == dbs["id"], "{near}");
+        }
+        assert!(add_card(&store, "Chase Sapphire", "USA").unwrap().1); // another card than Sapphire Reserve
+        assert!(add_card(&store, "Visa 4111 1111 1111 1111", "").is_err());
+        assert!(add_card(&store, "Amex Gold", "4111").is_err());
+        assert!(add_card(&store, "", "USA").is_err());
+        // "UNKNOWN" is no vault value: it is never scrubbed from a page
+        let out = scrub(&store, &json!({"snapshot": "Status: UNKNOWN"}));
+        assert_eq!(out["snapshot"], "Status: UNKNOWN");
+        // the user adds the details on the Vault card: the card is complete
+        let full = save_item(
+            &store,
+            &json!({"kind": "card", "label": "Citi Prestige", "country": "USA",
+                    "values": {"number": "4111 1111 1111 1234", "expiry": "12/28", "cvc": "123"}}),
+            Some(&id),
+        )
+        .unwrap();
+        assert_eq!(
+            json!([full["masked"], full["missing"], full["country"]]),
+            json!(["•••• 1234", [], "USA"])
+        );
+        // a card typed on the Vault card with its name only is the same as one added by name; no country is fine
+        let typed = save_item(
+            &store,
+            &json!({"kind": "card", "label": "UOB PRVI Miles"}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            json!([typed["missing"], typed["country"]]),
+            json!([["number", "expiry", "cvc"], ""])
+        );
+        // only a card has a country of its own
+        let m = save_item(
+            &store,
+            &json!({"kind": "membership", "label": "KrisFlyer", "country": "Singapore", "values": {"number": "8812345678"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(m["country"], "");
+    }
+
+    #[test]
+    fn a_mistyped_item_id_or_field_name_is_the_vaults_own() {
+        // arrival_cards2_real 2026-10-31: "vlt_752694d1f8" for "vlt_752694d1f1f8" was refused as an unknown item
+        let d = tempfile::tempdir().unwrap();
+        let store = Store::new(d.path()).unwrap();
+        let pass = save_item(
+            &store,
+            &json!({"kind": "id_document", "label": "Passport",
+                    "values": {"number": "E1234567X", "name": "LU JORDAN", "expiry": "2031-05-01", "country": "AUS"}}),
+            None,
+        )
+        .unwrap();
+        let id = get_str(&pass, "id");
+        let slip = format!("{}{}", &id[..id.len() - 4], &id[id.len() - 2..]); // two characters dropped
+        let mut a = json!({"ref": "e9", "item_id": slip, "field": "passport_expiry"});
+        resolve_args(&store, &mut a).unwrap();
+        assert_eq!(a, json!({"ref": "e9", "item_id": id, "field": "expiry"}));
+        for (said, field) in [
+            ("Expiry Date", "expiry"),
+            ("passport_number", "number"),
+            ("Names", "name"),
+            ("issuing_country", "country"),
+        ] {
+            let mut a = json!({"item_id": id, "field": said});
+            resolve_args(&store, &mut a).unwrap();
+            assert_eq!(a["field"], field, "{said}");
+        }
+        // nothing close: as written, for the policy to refuse
+        let mut a = json!({"item_id": "vlt_000000000000", "field": "cvc", "card_item_id": ""});
+        resolve_args(&store, &mut a).unwrap();
+        assert_eq!(
+            a,
+            json!({"item_id": "vlt_000000000000", "field": "cvc", "card_item_id": ""})
+        );
+        let mut b = json!({"item_id": id, "field": "cvv"});
+        resolve_args(&store, &mut b).unwrap();
+        assert_eq!(b["field"], "cvv"); // a passport has no CVC
+    }
+
+    #[test]
     fn items_scrub_and_fill_state() {
         let d = tempfile::tempdir().unwrap();
         let store = Store::new(d.path()).unwrap();
@@ -526,8 +904,9 @@ mod tests {
             save_item(&store, &json!({"kind": "nope", "label": "x"}), None),
             Err(VaultError::Value(_))
         ));
+        // the number is required, except for a card added by its name (its details are UNKNOWN)
         assert!(matches!(
-            save_item(&store, &json!({"kind": "card", "label": "x"}), None),
+            save_item(&store, &json!({"kind": "membership", "label": "x"}), None),
             Err(VaultError::Value(_))
         ));
         assert!(matches!(

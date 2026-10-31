@@ -1,5 +1,5 @@
 """First login: the profile is empty, so the first chat view of a session goes straight to Memory → Profile, where an
-ID photo read by the vision model saves name, birthday and nationality to the profile and the document to the Vault (the
+ID photo read by the vision model saves name, birthday, gender and nationality to the profile and the document to the Vault (the
 photo is not kept, the number never reaches the profile); the card then lists the stored ID with "Add another ID" instead
 of asking again. Until then the chat shows a banner unless the user says "later"; a complete profile ends both."""
 import asyncio
@@ -17,11 +17,11 @@ K.c.put(B + "api/settings", json={"language": "en", "ui_language": "en", "profil
 for k in ("name_en", "birthday", "nationality"):
     K.c.put(B + "api/profile", json={"key": k, "value": ""}, headers=K.H)
 st = K.c.get(B + "api/profile/status", headers=K.H).json()
-K.check("API: an empty profile is incomplete and the reminder is on", st == {"complete": False, "missing": ["name_en", "birthday", "nationality"], "reminder": True}, st)
+K.check("API: an empty profile is incomplete and the reminder is on", st == {"complete": False, "missing": ["name_en", "birthday", "gender", "nationality"], "reminder": True}, st)
 r = K.c.put(B + "api/profile/ocr", content=open(PNG_PATH, "rb").read(), headers={**K.H, "Content-Type": "image/png"})
 j = r.json()
 K.check("API: the ID photo is read into profile fields and a vault item proposal",
-        r.status_code == 200 and j["profile"] == {"name_en": "LU LUCAS", "birthday": "1985-04-12", "nationality": "Australia"}
+        r.status_code == 200 and j["profile"] == {"name_en": "LU LUCAS", "birthday": "1985-04-12", "gender": "Male", "nationality": "Australia"}
         and j["document"]["values"]["number"] == "E1234567X" and j["document"]["label"] == "Passport LU", j)
 K.check("API: the picture was not kept in the workspace", "lipstick" not in str(K.c.get(B + "api/files", headers=K.H).json()))
 aud = K.c.get(K.S + "/audit?limit=20", headers=K.H).json()["events"]
@@ -64,10 +64,10 @@ async def main():
         await pg.wait_for_selector("text=saved to the Vault", timeout=15000)
         txt = await pg.locator("#profile").inner_text()
         K.check("the card says the fields were saved and the ID went to the Vault, masked, and the photo is not kept",
-                "Read and saved 3 field(s)" in txt and "••••567X" in txt and "E1234567X" not in txt and "not kept" in txt, txt[-500:])
+                "Read and saved 4 field(s)" in txt and "••••567X" in txt and "E1234567X" not in txt and "not kept" in txt, txt[-500:])
         prof = K.c.get(B + "api/memory", headers=K.H).json()["profile"]
-        K.check("name, birthday and nationality are saved to the profile (no Save press needed)",
-                (prof.get("name_en"), prof.get("birthday"), prof.get("nationality")) == ("LU LUCAS", "1985-04-12", "Australia"), prof)
+        K.check("name, birthday, gender and nationality are saved to the profile (no Save press needed)",
+                (prof.get("name_en"), prof.get("birthday"), prof.get("gender"), prof.get("nationality")) == ("LU LUCAS", "1985-04-12", "Male", "Australia"), prof)
         items = K.c.get(K.S + "/vault", headers=K.H).json().get("items", [])
         K.check("the vault item exists (number stored there only)", any(i["label"] == "Passport LU" and i["kind"] == "id_document" for i in items)
                 and "E1234567X" not in str(prof), [i["label"] for i in items])

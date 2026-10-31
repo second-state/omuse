@@ -1,0 +1,118 @@
+<!doctype html>
+<!-- MDAC, after the real Malaysia Digital Arrival Card (mapped from the live site on 2026-10-31): /mdac/main with an
+     announcement and a REGISTER link to main?registerMain, one page of personal, travel and accommodation details.
+     The four dates are read-only boxes with a date picker (dd/mm/yyyy, set through the page's jQuery datepicker);
+     Nationality / Place of Birth reload the dialling codes, State loads the cities, City re-renders the postcode. A
+     slider puzzle keeps Submit disabled until the user solves it. Submit writes the chosen values into the hidden
+     named fields read on /mdac_done.html. -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Malaysia Digital Arrival Card - MDAC</title><style>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1b1b1b;background:#eef2f7}
+header{background:#0d4f8b;color:#fff;padding:12px 32px}nav a{color:#fff;margin-right:18px;font-weight:bold;text-decoration:none}
+main{max-width:980px;margin:18px auto;background:#fff;padding:20px 32px 28px;border:1px solid #d7d9dd}
+h1{font-size:22px;color:#0d4f8b}h2{font-size:16px;color:#0d4f8b;border-bottom:1px solid #d7d9dd;padding-bottom:4px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 24px}.f{display:flex;flex-direction:column}.f label{font-weight:bold;font-size:13px;margin-bottom:3px}
+input,select{height:32px;border:1px solid #9aa0a6;border-radius:3px;padding:4px 8px;font-size:14px;background:#fff}input[readonly]{background:#f6f7f9}
+.hidden{display:none}.modal{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center}
+.modal>div{background:#fff;padding:20px;max-width:520px}.captcha{display:flex;gap:12px;align-items:center;margin-top:14px}
+button{height:40px;padding:0 26px;border:0;border-radius:4px;font-size:15px;cursor:pointer;background:#0d4f8b;color:#fff}button[disabled]{opacity:.5}
+.dp{position:absolute;background:#fff;border:1px solid #9aa0a6;padding:6px;font-size:12px}
+</style></head>
+<body>
+<header><b>JABATAN IMIGRESEN MALAYSIA</b> · Malaysia Digital Arrival Card (MDAC)
+  <nav><a href="/mdac/main">HOME</a><a href="/mdac/main?registerMain">REGISTRATION</a><a href="#">CHECK REGISTRATION</a></nav></header>
+<main>
+<section id="landing">
+  <h1>MDAC</h1><p>All foreign visitors must submit the Malaysia Digital Arrival Card within 3 days before arrival.</p>
+  <p><a href="/mdac/main?registerMain"><button type="button">REGISTER</button></a></p>
+  <div class="modal" id="announce"><div><h3>ANNOUNCEMENT</h3><p>MDAC is free of charge.</p><button type="button" onclick="this.closest('.modal').remove()">×</button></div></div>
+</section>
+<form id="reg" class="hidden" action="/mdac_done.html" method="get" autocomplete="off" novalidate>
+  <h2>Personal Information</h2>
+  <div class="grid">
+    <div class="f"><label for="name">* Name :</label><input type="text" id="name"></div>
+    <div class="f"><label for="passNo">* Passport No. :</label><input type="text" id="passNo"></div>
+    <div class="f"><label for="dob">* Date of Birth :</label><input type="text" id="dob" readonly></div>
+    <div class="f"><label for="nationality">* Nationality / Citizenship :</label><select id="nationality" data-countries></select></div>
+    <div class="f"><label for="pob">* Place of Birth :</label><select id="pob" data-countries></select></div>
+    <div class="f"><label for="sex">* Sex :</label><select id="sex"><option value="">Please Choose</option><option value="1">MALE</option><option value="2">FEMALE</option></select></div>
+    <div class="f"><label for="passExpDte">* Date of Passport Expiry :</label><input type="text" id="passExpDte" readonly></div>
+    <div class="f"><label for="email">* Email Address :</label><input type="text" id="email"></div>
+    <div class="f"><label for="confirmEmail">* Confirm Email Address :</label><input type="text" id="confirmEmail"></div>
+    <div class="f"><label for="region">* Country / Region Code :</label><select id="region"><option value="">Please Choose</option></select></div>
+    <div class="f"><label for="mobile">* Mobile No. :</label><input type="text" id="mobile"></div>
+  </div>
+  <h2>Traveling Information</h2>
+  <div class="grid">
+    <div class="f"><label for="arrDt">* Date of Arrival :</label><input type="text" id="arrDt" readonly></div>
+    <div class="f"><label for="depDt">* Date of Departure :</label><input type="text" id="depDt" readonly></div>
+    <div class="f"><label for="vesselNm">* Flight / Vessel / Transportation No. :</label><input type="text" id="vesselNm"></div>
+    <div class="f"><label for="trvlMode">* Mode of Travel :</label><select id="trvlMode"><option value="">Please Choose</option><option value="1">AIR</option><option value="2">LAND</option><option value="3">SEA</option></select></div>
+    <div class="f"><label for="embark">* Last Port of Embarkation before Malaysia:</label><select id="embark" data-countries></select></div>
+  </div>
+  <div id="formAccommodation"><h2>Accommodation</h2>
+  <div class="grid">
+    <div class="f"><label for="accommodationStay">* Accommodation of Stay :</label><select id="accommodationStay"><option value="">Please Choose</option><option value="01">HOTEL/MOTEL/REST HOUSE</option><option value="02">RESIDENCE OF FRIENDS/RELATIVES</option><option value="99">OTHERS</option></select></div>
+    <div class="f"><label for="accommodationAddress1">* Address (In Malaysia) :</label><input type="text" id="accommodationAddress1"><input type="text" id="accommodationAddress2" style="margin-top:4px"></div>
+    <div class="f"><label for="accommodationState">* State :</label><select id="accommodationState"><option value="">Please Choose</option></select></div>
+    <div class="f"><label for="accommodationCity">* City :</label><select id="accommodationCity"><option value="">Please Choose</option></select></div>
+    <div class="f"><label for="accommodationPostcode">* Postcode :</label><span id="pcBox"><input type="text" id="accommodationPostcode"></span></div>
+  </div></div>
+  <div class="captcha"><span>Slide the puzzle piece — type the code shown to verify:</span><canvas width="120" height="40" id="cap"></canvas><input type="text" name="captcha" id="captcha" style="width:110px"></div>
+  <p><button type="submit" id="submit" disabled>Submit</button></p>
+  <div class="hidden">
+    <input name="name"><input name="sex"><input name="dob"><input name="nationality"><input name="passport_no"><input name="passport_expiry">
+    <input name="email"><input name="phone"><input name="mode"><input name="flight_no"><input name="arrival_date"><input name="departure_date">
+    <input name="accom_type"><input name="accommodation">
+  </div>
+</form>
+</main>
+<script>
+(function () {
+  const $id = id => document.getElementById(id);
+  const show = (el, on) => el.classList.toggle('hidden', !on);
+  if (/registerMain/.test(location.search)) { show($id('landing'), false); show($id('reg'), true); }
+  const C = [['AUS', 'AUSTRALIA'], ['CAN', 'CANADA'], ['CHN', 'CHINA'], ['GBR', 'UNITED KINGDOM'], ['IDN', 'INDONESIA'], ['IND', 'INDIA'],
+             ['JPN', 'JAPAN'], ['KOR', 'KOREA, REPUBLIC OF'], ['NZL', 'NEW ZEALAND'], ['SGP', 'SINGAPORE'], ['THA', 'THAILAND'], ['USA', 'UNITED STATES']];
+  document.querySelectorAll('select[data-countries]').forEach(s => { s.innerHTML = '<option value="">Please Choose</option>' +
+    C.map(([v, t]) => `<option value="${v}">${v} - ${t}</option>`).join(''); });
+  // Nationality / Place of Birth: the dialling codes are reloaded (the real site fetches them)
+  const CODES = [['1', 'CANADA'], ['1', 'UNITED STATES'], ['44', 'UNITED KINGDOM'], ['61', 'AUSTRALIA'], ['62', 'INDONESIA'], ['64', 'NEW ZEALAND'],
+                 ['65', 'SINGAPORE'], ['66', 'THAILAND'], ['81', 'JAPAN'], ['82', 'KOREA, REPUBLIC OF'], ['86', 'CHINA'], ['91', 'INDIA']];
+  const loadCodes = () => setTimeout(() => { $id('region').innerHTML = '<option value="">Please Choose</option>' +
+    CODES.map(([v, t]) => `<option value="${v}">( ${v} ) ${t}</option>`).join(''); }, 300);
+  $id('nationality').addEventListener('change', loadCodes); $id('pob').addEventListener('change', loadCodes);
+  const STATES = [['01', 'JOHOR'], ['10', 'SELANGOR'], ['11', 'TERENGGANU'], ['07', 'PULAU PINANG'], ['14', 'W.P. KUALA LUMPUR'], ['16', 'W.P. PUTRAJAYA']];
+  const CITIES = {'14': [['1400', 'W.PERSEKUTUAN'], ['1401', 'KUALA LUMPUR'], ['1402', 'CHERAS'], ['1403', 'BATU CAVES']],
+                  '10': [['1001', 'SHAH ALAM'], ['1002', 'PETALING JAYA']], '07': [['0701', 'GEORGE TOWN']], '01': [['0101', 'JOHOR BAHRU']],
+                  '11': [['1101', 'KUALA TERENGGANU']], '16': [['1601', 'PUTRAJAYA']]};
+  $id('accommodationState').innerHTML = '<option value="">Please Choose</option>' + STATES.map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+  $id('accommodationState').addEventListener('change', e => setTimeout(() => { $id('accommodationCity').innerHTML = '<option value="">Please Choose</option>' +
+    (CITIES[e.target.value] || []).map(([v, t]) => `<option value="${v}">${t}</option>`).join(''); }, 300));
+  // City re-renders the postcode box (what was typed before is lost)
+  $id('accommodationCity').addEventListener('change', () => setTimeout(() => { $id('pcBox').innerHTML = '<input type="text" id="accommodationPostcode">'; }, 300));
+  $id('confirmEmail').addEventListener('blur', e => { if (e.target.value && e.target.value !== $id('email').value) { e.target.value = ''; } });
+  // a minimal jQuery with the datepicker the page uses: setDate takes dd/mm/yyyy
+  const dates = ['dob', 'passExpDte', 'arrDt', 'depDt'];
+  window.jQuery = sel => { const el = typeof sel === 'string' ? document.querySelector(sel) : sel; return {
+    datepicker(cmd, v) { if (cmd === 'setDate' && el && dates.includes(el.id)) { el.value = v; if (el.id === 'arrDt') $id('depDt').value = ''; el.dispatchEvent(new Event('change', {bubbles: true})); } return this; } }; };
+  window.$ = window.jQuery;
+  dates.forEach(id => $id(id).addEventListener('click', e => { /* the calendar opens here on the real site */ }));
+  // the slider puzzle: drawn as a code the user types
+  const cv = $id('cap'), cx = cv.getContext('2d'); cx.font = '20px monospace'; cx.fillText('K9TW3', 18, 27);
+  $id('captcha').addEventListener('input', e => { $id('submit').disabled = e.target.value.trim().toUpperCase() !== 'K9TW3'; });
+  const opt = id => { const s = $id(id); return s.selectedIndex > 0 ? s.options[s.selectedIndex].text : ''; };
+  $id('reg').addEventListener('submit', () => {
+    const v = {name: $id('name').value.toUpperCase(), sex: {'1': 'M', '2': 'F'}[$id('sex').value] || '', dob: $id('dob').value,
+      nationality: $id('nationality').value, passport_no: $id('passNo').value, passport_expiry: $id('passExpDte').value,
+      email: $id('email').value.toLowerCase(), phone: $id('region').value ? '+' + $id('region').value + ' ' + $id('mobile').value : $id('mobile').value,
+      mode: {'1': 'AIR', '2': 'LAND', '3': 'SEA'}[$id('trvlMode').value] || '', flight_no: $id('vesselNm').value,
+      arrival_date: $id('arrDt').value, departure_date: $id('depDt').value,
+      accom_type: {'01': 'HOTEL', '02': 'RESIDENCE', '99': 'OTHERS'}[$id('accommodationStay').value] || '',
+      accommodation: [$id('accommodationAddress1').value, $id('accommodationAddress2').value, opt('accommodationCity'),
+                      ($id('accommodationPostcode') || {}).value, opt('accommodationState')].filter(Boolean).join(', ')};
+    for (const [k, x] of Object.entries(v)) { const i = document.querySelector(`#reg input[name="${k}"]`); if (i) i.value = x; }
+  });
+})();
+</script>
+</body></html>

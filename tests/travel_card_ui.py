@@ -36,9 +36,10 @@ async def main():
         card = pg.locator(".card", has_text="Flights & hotels").first
         await card.wait_for()
         txt = await card.text_content()
-        check("fresh: flights work free with Kiwi.com data first; the card explains Google Flights as the fallback with a key", "Flights: Kiwi.com data, free (information only)" in txt
-              and "Hotels & restaurants: Google data with a key, web search without" in txt and "Google Flights is the fallback" in txt and "Google Maps" in txt and "250 searches" in txt and "serpapi.com" in txt
-              and "never its links" in txt and "not used for web search" in txt, txt[:600])
+        check("fresh: flights work free with Kiwi.com data and its booking links; the card explains Google Flights first with a key, Kiwi.com as the fallback",
+              "Flights: Kiwi.com data, free, with booking links" in txt and "Hotels & restaurants: Google data with a key, web search without" in txt
+              and "a single date is searched on Google Flights" in txt and "Kiwi.com is used only when Google fails" in txt and "A range of dates or self-transfer is one Kiwi.com search" in txt
+              and "Each request is one search" in txt and "Google Maps" in txt and "250 searches" in txt and "serpapi.com" in txt and "not used for web search" in txt, txt[:900])
         check("English UI: no Chinese on the card", not han(txt), han(txt)[:3])
         await card.locator("input[type=password]").fill(KEY)
         await card.locator("button", has_text="Connect & test").click()

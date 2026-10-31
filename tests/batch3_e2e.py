@@ -1,9 +1,9 @@
-"""Roadmap batch 3 (ledger) end to end, local stack (tests/run_local.sh):
-1. an approved purchase becomes a ledger entry; the order number from the confirmation page moves it to "placed"
-2. "cancel that order": orders_list finds it, and the cancel approval names the ledger order
-3. a cancel on an order that is not in the ledger is flagged in the approval
-4. the Trust page shows the ledger
-"""
+"""Roadmap batch 3 (ledger), the parts a real run cannot check, on the local stack (tests/run_local.sh), driven through
+Sentinel's internal API (no model): an approved purchase confirmation becomes a ledger entry with its amount, delivery,
+card and approval; the order number from the confirmation page moves it to "placed"; a backfill creates nothing twice;
+3 approved Slack posts to one channel give a standing-approval suggestion (never for purchases or order changes) that
+only covers that destination once accepted; the Trust page lists the order. Placing an order and requesting its
+cancellation as the user (the final click is always the user's, in a takeover) is tests/refunds_real.py."""
 import asyncio
 import sys
 import time
@@ -48,42 +48,29 @@ def resolve(aid, decision):
     return c.post(f"{B}/sentinel/api/approvals/{aid}/resolve", json={"decision": decision}, headers=H).json()
 
 
-# ---- 1. purchase → ledger
-tid = c.post(B + "/api/chat", json={"message": "BUYTEST buy the socks on shop.test"}, headers=H).json()["task_id"]
-ap = wait(lambda: pending(tid))
-check("one purchase card to approve", ap and ap[0]["tool"] == "purchase_confirm", ap)
-resolve(ap[0]["id"], "approve")
-t = wait(lambda: (lambda x: x if x["status"] in ("COMPLETED", "FAILED") else None)(task(tid)), 120) or task(tid)
-check("purchase completed with no second approval", t["status"] == "COMPLETED" and not pending(tid), t["status"])
+RT = {"X-Persona-Runtime": "rt-test"}
+
+
+def act(tool, args, tsk):
+    return c.post(B + "/internal/act", headers=RT, json={"task_id": tsk, "call_id": "c" + str(time.time()), "tool": tool, "args": args}).json()
+
+
+# ---- 1. purchase → ledger (the confirmation is approved by the user; the order number comes from the page afterwards)
+tid = "ledger-t1"
+res = act("purchase_confirm", {"site": "shop.test", "items": [{"name": "Kiprun socks", "qty": 1, "price": 4.9}], "shipping": 0,
+                               "total": 4.9, "currency": "SGD", "delivery": "Home delivery"}, tid)
+check("the purchase confirmation asks the user (auto-approve is off in this stack)", res.get("status") == "approval_required", res)
+aid = res.get("approval_id")
+if aid:
+    resolve(aid, "approve")
+L = wait(lambda: [o for o in ledger() if o["task_id"] == tid])
+check("an approved purchase becomes a ledger entry with amount, delivery and who approved it",
+      L and abs(L[0]["total"] - 4.9) < 0.01 and L[0]["currency"] == "SGD" and L[0]["approval_id"] == aid
+      and L[0]["delivery"] == "Home delivery" and L[0]["merchant"] == "shop.test", L)
+r = c.post(B + "/internal/ledger/confirm", headers=RT, json={"task_id": tid, "order_number": "OM-77821",
+                                                            "evidence": {"kind": "confirmation", "text": "Order OM-77821 placed"}}).json()
 L = [o for o in ledger() if o["task_id"] == tid]
-check("ledger entry placed with the confirmation page's order number",
-      L and L[0]["status"] == "placed" and L[0]["order_number"] == "OM-77821" and L[0]["merchant"] == "shop.test", L)
-check("…with amount, delivery and who approved it",
-      L and abs(L[0]["total"] - 4.9) < 0.01 and L[0]["currency"] == "SGD" and L[0]["approval_id"] == ap[0]["id"]
-      and L[0]["delivery"] == "Home delivery", L)
-check("timeline shows the ledger update", any(e["type"] == "ledger" for e in t["events"]))
-
-# ---- 2. cancel through the ledger
-tid2 = c.post(B + "/api/chat", json={"message": "CANCELTEST cancel my socks order"}, headers=H).json()["task_id"]
-ap2 = wait(lambda: pending(tid2))
-calls = c.get(LLM + "/calls_for", params={"marker": "CANCELTEST cancel my socks"}).json()
-seen = " ".join(x["tools"] for x in calls)
-check("orders_list gives the agent the exact order", "OM-77821" in seen and "shop.test" in seen, seen[:400])
-summ = (ap2 or [{}])[0].get("summary") or {}
-fields = " ".join(" ".join(map(str, f)) for f in summ.get("fields") or [])
-check("cancel approval names the ledger order", ap2 and "账本订单" in fields and "OM-77821" in fields, summ)
-if ap2:
-    resolve(ap2[0]["id"], "approve")
-o = wait(lambda: next((x for x in ledger() if x["order_number"] == "OM-77821" and x["status"] == "cancel_requested"), None), 30)
-check("approved cancel is recorded on that order", o and any(h.get("by") == "user" for h in o["history"]), o)
-
-# ---- 3. an order that is not in the ledger
-tid3 = c.post(B + "/api/chat", json={"message": "CANCELTEST OTHER cancel the phone case order"}, headers=H).json()["task_id"]
-ap3 = wait(lambda: pending(tid3))
-summ3 = (ap3 or [{}])[0].get("summary") or {}
-check("cancel on an order not in the ledger is flagged", ap3 and "不在 OMuse 的交易账本里" in str(summ3.get("warning")), summ3)
-if ap3:
-    resolve(ap3[0]["id"], "deny")
+check("the confirmation page's order number moves it to \"placed\"", L and L[0]["status"] == "placed" and L[0]["order_number"] == "OM-77821", (r, L))
 
 # ---- backfill is harmless when everything is in already
 r = c.post(B + "/api/ledger/backfill", json={}, headers=H).json()
@@ -91,13 +78,9 @@ check("backfill creates nothing twice", r.get("created") == [], r)
 
 
 # ---- 5. fewer approvals: 3 approved Slack posts to #general → a suggestion; accepted → the 4th asks nothing
-RT = {"X-Persona-Runtime": "rt-test"}
 c.post("http://127.0.0.1:8094/_reset")
 c.post(B + "/sentinel/api/connections/slack/credential", headers=H, json={"token": "xoxb-test-token-123456"})
 
-
-def act(tool, args, tsk):
-    return c.post(B + "/internal/act", headers=RT, json={"task_id": tsk, "call_id": "c" + str(time.time()), "tool": tool, "args": args}).json()
 
 
 for i in range(3):

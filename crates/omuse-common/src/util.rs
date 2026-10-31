@@ -66,6 +66,77 @@ pub fn iso(ts: Option<f64>) -> String {
     }
 }
 
+/// Levenshtein distance of `a` and `b` in characters, or `limit + 1` as soon as it must exceed `limit`.
+pub fn edit_distance(a: &str, b: &str, limit: usize) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    if a.len().abs_diff(b.len()) > limit {
+        return limit + 1;
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j] + usize::from(ca != cb))
+                .min(prev[j + 1] + 1)
+                .min(cur[j] + 1);
+        }
+        if cur.iter().min().copied().unwrap_or(0) > limit {
+            return limit + 1;
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// The one candidate a value the model copied stands for: `want` itself when it is a candidate, else the single
+/// candidate at the smallest edit distance — 1 for values of 4–7 characters, 2 for longer ones, none for shorter —
+/// or the single candidate `want` is a cut-short start or end of (8+ characters). `None` when nothing is that close
+/// or two candidates are equally close: the value then stays as written.
+///
+/// ```
+/// use omuse_common::util::nearest;
+/// let ids = ["vlt_752694d1f1f8", "vlt_0a1b2c3d4e5f"];
+/// assert_eq!(nearest("vlt_752694d1f8", ids), Some("vlt_752694d1f1f8"));
+/// assert_eq!(nearest("vlt_999999999999", ids), None);
+/// ```
+pub fn nearest<'a>(want: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let n = want.chars().count();
+    let limit = match n {
+        0..=3 => 0,
+        4..=7 => 1,
+        _ => 2,
+    };
+    let mut best: Option<(usize, &'a str)> = None;
+    let mut tie = false;
+    for c in candidates {
+        if c == want {
+            return Some(c);
+        }
+        let d = edit_distance(c, want, limit);
+        let d = if d > limit && n >= 8 && (c.starts_with(want) || c.ends_with(want)) {
+            limit
+        } else {
+            d
+        };
+        if d > limit {
+            continue;
+        }
+        match best {
+            Some((bd, b)) if d == bd && b != c => tie = true,
+            Some((bd, _)) if d >= bd => {}
+            _ => {
+                best = Some((d, c));
+                tie = false;
+            }
+        }
+    }
+    if tie {
+        None
+    } else {
+        best.map(|(_, c)| c)
+    }
+}
+
 /// `"<prefix>_<12 hex>"` (Python `new_id`).
 pub fn new_id(prefix: &str) -> String {
     let u = uuid::Uuid::new_v4().simple().to_string();

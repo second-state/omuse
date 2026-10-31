@@ -1,7 +1,8 @@
-//! Flight data from Kiwi.com's public MCP server (`https://mcp.kiwi.com/`, streamable HTTP, no key): the default
-//! source behind `flights_search` when no SerpApi key is on hand. Information only — itineraries, times, carriers,
-//! prices, baggage — the booking links Kiwi returns are dropped: the booking happens on the airline's own site or
-//! with an agency the user chooses. Called by Sentinel itself (two JSON-RPC requests), not registered as a connector.
+//! Flight data from Kiwi.com's public MCP server (`https://mcp.kiwi.com/`, streamable HTTP, no key): the first source
+//! behind `flights_search`. One Kiwi search per call (a range of dates included); connections on one booking only
+//! unless the user explicitly asks for self-transfer (separate tickets). Each offer keeps Kiwi's booking link (a
+//! `kiwi.com` address only), which opens Kiwi's booking page for that itinerary; the airline's own site (`book_at`) is
+//! the other way to book. Called by Sentinel itself (one JSON-RPC request per search: `tools/call` without the MCP handshake), not registered as a connector.
 
 use std::fmt;
 use std::time::Duration;
@@ -104,9 +105,25 @@ fn direction(d: &Value) -> (Vec<Value>, String, Vec<String>) {
     (legs, route, layovers)
 }
 
-/// A Kiwi itinerary, compact and without its booking link; the `offer_id` (`kw_…`) brings the same details back
-/// through `flight_offer`.
-pub fn compact_itinerary(it: &Value, currency: &str) -> Value {
+/// Kiwi's booking link when it is a `kiwi.com` address (`https://kiwi.com/u/…`), else "" — the page it opens is the
+/// booking page for that itinerary.
+pub fn booking_link(it: &Value) -> String {
+    let url = get_str(it, "bookingUrl");
+    let ok = url::Url::parse(&url).ok().is_some_and(|u| {
+        u.scheme() == "https"
+            && u.host_str()
+                .is_some_and(|h| h == "kiwi.com" || h.ends_with(".kiwi.com"))
+    });
+    if ok {
+        url
+    } else {
+        String::new()
+    }
+}
+
+/// A Kiwi itinerary, compact, with its booking link; the `offer_id` (`kw_…`) brings the same details back through
+/// `flight_offer`. `self_transfer`: the search allowed separate-ticket connections.
+pub fn compact_itinerary(it: &Value, currency: &str, self_transfer: bool) -> Value {
     let (legs, route, layovers) = direction(&it["outbound"]);
     let mut airlines: Vec<String> = Vec::new();
     for l in &legs {
@@ -139,8 +156,15 @@ pub fn compact_itinerary(it: &Value, currency: &str) -> Value {
         "trip": if truthy(&it["inbound"]) { "Round trip" } else { "One way" },
         "legs": legs,
         "baggage": it.get("baggage").cloned().unwrap_or(json!({})),
+        // without self-transfer (the default) the connections are on one booking
+        "ticket": if !self_transfer || legs.len() < 2 {
+            "one booking, no self-transfer connections"
+        } else {
+            "may be separate tickets (self-transfer allowed): a missed connection is the traveller's risk"
+        },
         "data": "Kiwi.com",
-        "book": format!("on the airline's own site ({}) or with an agency the user chooses — never through Kiwi", airlines.join(", ")),
+        "booking_url": booking_link(it),
+        "book": format!("on Kiwi.com with booking_url (its booking page for this itinerary), or on the airline's own site ({})", airlines.join(", ")),
         "book_at": book_at,
     });
     if truthy(&it["inbound"]) {
@@ -159,13 +183,13 @@ pub fn compact_itinerary(it: &Value, currency: &str) -> Value {
     Value::Object(out)
 }
 
-/// The whole reply, compact (at most 12 itineraries, no links).
-pub fn compact_flights(data: &Value) -> Value {
+/// The whole reply, compact (at most 12 itineraries).
+pub fn compact_flights(data: &Value, self_transfer: bool) -> Value {
     let currency = get_str(data, "currency");
     let mut offers: Vec<Value> = arr(data, "itineraries")
         .iter()
         .take(12)
-        .map(|it| compact_itinerary(it, &currency))
+        .map(|it| compact_itinerary(it, &currency, self_transfer))
         .collect();
     for (i, o) in offers.iter_mut().enumerate() {
         o["rank"] = json!(i + 1);
@@ -174,8 +198,8 @@ pub fn compact_flights(data: &Value) -> Value {
         "count": offers.len(),
         "currency": currency,
         "offers": offers,
-        "data": "Kiwi.com (information only)",
-        "book": "on the airline's own site or with an agency the user chooses — never through Kiwi",
+        "data": "Kiwi.com",
+        "book": "on Kiwi.com with the offer's booking_url, or on the airline's own site (book_at)",
     });
     if let Some(e) = data.get("error").filter(|e| truthy(e)) {
         out["note"] = json!(e
@@ -191,8 +215,14 @@ pub fn offer_details(id: &str) -> Option<Value> {
     let raw = token_of(id)?;
     let mut v: Value = serde_json::from_str(&raw).ok()?;
     v["offer_id"] = json!(id);
-    v["booking_options"] = json!([{"book_with": "the airline (see airlines) or an agency the user chooses", "link": "",
-        "note": "Kiwi.com data is for information only; the booking happens on the airline's own site or with an agency of the user's choice."}]);
+    let mut opts = vec![
+        json!({"book_with": "Kiwi.com", "link": v["booking_url"].clone(),
+        "note": "Kiwi.com's booking page for this itinerary: the traveller's details, then the payment"}),
+    ];
+    for site in v["book_at"].as_array().cloned().unwrap_or_default() {
+        opts.push(json!({"book_with": site, "link": "", "note": "the airline's own site: search the same flights there"}));
+    }
+    v["booking_options"] = json!(opts);
     Some(v)
 }
 
@@ -205,36 +235,42 @@ impl KiwiMcp {
         }
     }
 
-    /// `flights_search` through Kiwi: the same arguments as the Google path (origin, destination, date, return_date,
-    /// adults, cabin, nonstop_only, max_price, sort, currency).
+    /// `flights_search` through Kiwi: the same arguments as the Google path (origin, destination, date, date_to,
+    /// return_date, adults, cabin, stops, max_price, airlines, sort, currency) in ONE Kiwi search — a range of
+    /// departure dates (up to 14 days) is Kiwi's own `departureDateTo`, and a round trip over a range keeps the stay's
+    /// length as nights at the destination. Every offer carries its date; `by_date` gives the cheapest per day.
     pub async fn flights(&self, a: &Value) -> Result<Value, KiwiError> {
         let (days, cut) = crate::serpapi::date_range(a, 14).map_err(KiwiError)?;
         if days.len() == 1 && !cut {
-            return self.flights_day(a).await;
+            return self.search(a, None).await;
         }
-        // four at a time: one call per day, merged into one result
-        use futures_util::StreamExt;
-        let runs = days.iter().cloned().map(|(d, r)| {
-            let mut x = a.clone();
-            x["date"] = json!(d);
-            x["return_date"] = json!(r);
-            async move {
-                let res = self.flights_day(&x).await;
-                (d, res)
-            }
-        });
-        let mut got: Vec<(String, Result<Value, KiwiError>)> =
-            futures_util::stream::iter(runs).buffered(4).collect().await;
-        got.sort_by(|x, y| x.0.cmp(&y.0));
-        let out = got
-            .into_iter()
-            .map(|(d, r)| (d, r.unwrap_or_else(|e| json!({"offers": [], "note": e.0}))))
+        let last = days.last().map(|d| d.0.clone()).unwrap_or_default();
+        let out = self.search(a, Some(&last)).await?;
+        // the one result, split by departure date for merge_days (offers, by_date, searched.dates)
+        let mut per_day: Vec<(String, Value)> = days
+            .iter()
+            .map(|(d, _)| {
+                let mut v = out.clone();
+                v["offers"] = json!(arr(&out, "offers")
+                    .iter()
+                    .filter(|o| get_str(&o["departure"], "time").starts_with(d.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>());
+                (d.clone(), v)
+            })
             .collect();
-        Ok(crate::serpapi::merge_days(out, cut, &get_str(a, "date_to")))
+        if let Some(first) = per_day.first_mut() {
+            first.1["searched"] = out["searched"].clone();
+        }
+        Ok(crate::serpapi::merge_days(
+            per_day,
+            cut,
+            &get_str(a, "date_to"),
+        ))
     }
 
-    /// One departure date (the range is handled by [`KiwiMcp::flights`]).
-    async fn flights_day(&self, a: &Value) -> Result<Value, KiwiError> {
+    /// One Kiwi search: `date`, or every departure from `date` to `last` (inclusive).
+    async fn search(&self, a: &Value, last: Option<&str>) -> Result<Value, KiwiError> {
         let (origin, dest, date) = (
             get_str(a, "origin"),
             get_str(a, "destination"),
@@ -274,9 +310,26 @@ impl KiwiMcp {
             "adults": crate::serpapi::people(a, "adults", 1, 9),
             "cabinClass": cabin, "currency": currency, "sort": sort,
         });
+        // connections on one booking only, unless the user explicitly asked for self-transfer (separate tickets: a
+        // missed connection is the traveller's problem)
+        let self_transfer = a.get("self_transfer").and_then(Value::as_bool) == Some(true);
+        args["allow_self_transfer"] = json!(self_transfer);
         let ret = get_str(a, "return_date");
-        if ret.len() == 10 {
-            args["returnDate"] = json!(ret);
+        match last {
+            Some(last) => {
+                args["departureDateTo"] = json!(last);
+                // over a range the return moves with each departure: the stay's length as nights at the destination
+                let stay = chrono::NaiveDate::parse_from_str(&ret, "%Y-%m-%d")
+                    .ok()
+                    .zip(chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok())
+                    .map(|(r, d)| (r - d).num_days());
+                if let Some(n) = stay.filter(|n| *n >= 0) {
+                    args["nights_in_dst_from"] = json!(n);
+                    args["nights_in_dst_to"] = json!(n);
+                }
+            }
+            None if ret.len() == 10 => args["returnDate"] = json!(ret),
+            None => {}
         }
         if let Some(n) = crate::serpapi::max_stops(a) {
             args["max_sector_stopovers"] = json!(n);
@@ -302,13 +355,8 @@ impl KiwiMcp {
                 .timeout(self.timeout)
                 .send()
         };
-        let init = post(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26",
-                               "capabilities": {}, "clientInfo": {"name": "omuse", "version": "1"}}}))
-            .await
-            .map_err(|e| KiwiError(format!("Kiwi: {e}")))?;
-        if init.status().as_u16() >= 400 {
-            return Err(KiwiError(format!("Kiwi HTTP {}", init.status().as_u16())));
-        }
+        // ONE request per search: Kiwi's server is stateless and answers tools/call without the MCP handshake (checked
+        // 2026-10-29), so the `initialize` round trip is skipped
         let r = post(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "search-flight", "arguments": args}}))
             .await
             .map_err(|e| KiwiError(format!("Kiwi: {e}")))?;
@@ -348,7 +396,7 @@ impl KiwiMcp {
                 content.chars().take(120).collect::<String>()
             ))
         })?;
-        let mut out = compact_flights(&data);
+        let mut out = compact_flights(&data, self_transfer);
         let found = crate::serpapi::mark_preferred(
             &mut out["offers"],
             &crate::serpapi::with_codes(&prefs, &filter),
@@ -370,7 +418,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kiwi_itineraries_compact_without_links() {
+    fn kiwi_itineraries_compact_with_the_kiwi_booking_link() {
         let data = json!({"query": "SIN → NRT", "currency": "SGD", "resultsCount": 1, "itineraries": [{
             "id": "abc_0|abc_1", "price": 341.0, "priceFormatted": "341 SGD", "totalDurationSeconds": 62700, "bookingUrl": "https://kiwi.com/u/y5yxg2q",
             "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 1},
@@ -380,12 +428,8 @@ mod tests {
                 {"from": "KMG", "to": "PVG", "departureTime": "2026-11-26T10:30:00", "arrivalTime": "2026-11-26T13:30:00", "durationSeconds": 10800, "carrier": "MU", "carrierName": "China Eastern Airlines", "flightNumber": "MU9743", "cabinClass": "Economy"},
                 {"from": "PVG", "to": "NRT", "departureTime": "2026-11-26T17:10:00", "arrivalTime": "2026-11-26T20:55:00", "durationSeconds": 9900, "carrier": "MU", "carrierName": "China Eastern Airlines", "flightNumber": "MU271", "cabinClass": "Economy"}]},
             "inbound": null}]});
-        let out = compact_flights(&data);
-        let s = out.to_string();
-        assert!(
-            !s.contains("kiwi.com/u/") && !s.contains("bookingUrl"),
-            "{s}"
-        );
+        let out = compact_flights(&data, false);
+        assert!(!out.to_string().contains("bookingUrl"));
         assert_eq!(out["count"], 1);
         let o = &out["offers"][0];
         assert_eq!(o["airlines"], "China Eastern Airlines");
@@ -396,13 +440,38 @@ mod tests {
         assert_eq!(o["duration_min"], 1045);
         assert_eq!(o["legs"].as_array().unwrap().len(), 3);
         assert_eq!(o["legs"][0]["flight_number"], "MU9648");
-        assert!(o["book"].as_str().unwrap().contains("never through Kiwi"));
+        assert_eq!(o["booking_url"], "https://kiwi.com/u/y5yxg2q");
+        assert!(o["book"].as_str().unwrap().contains("booking_url"));
+        assert_eq!(o["ticket"], "one booking, no self-transfer connections");
+        // self-transfer allowed (the user asked): a connection may be on separate tickets
+        let st = compact_flights(&data, true);
+        assert!(st["offers"][0]["ticket"]
+            .as_str()
+            .unwrap()
+            .starts_with("may be separate tickets"));
+        // a link that is not Kiwi's is dropped
+        for bad in [
+            "http://kiwi.com/u/x",
+            "https://kiwi.com.evil.test/u/x",
+            "https://evil.test/?kiwi.com",
+            "javascript:alert(1)",
+        ] {
+            assert_eq!(booking_link(&json!({"bookingUrl": bad})), "", "{bad}");
+        }
+        assert_eq!(
+            booking_link(&json!({"bookingUrl": "https://www.kiwi.com/en/booking/?token=x"})),
+            "https://www.kiwi.com/en/booking/?token=x"
+        );
         let id = o["offer_id"].as_str().unwrap().to_string();
         assert!(id.starts_with("kw_"));
         let d = offer_details(&id).unwrap();
         assert_eq!(d["offer_id"], id);
         assert_eq!(d["airlines"], "China Eastern Airlines");
-        assert!(d["booking_options"][0]["link"].as_str().unwrap().is_empty());
+        assert_eq!(d["booking_options"][0]["book_with"], "Kiwi.com");
+        assert_eq!(
+            d["booking_options"][0]["link"],
+            "https://kiwi.com/u/y5yxg2q"
+        );
         assert!(payload("event: message\ndata: {\"a\": 1}\n").unwrap()["a"] == 1);
     }
 }

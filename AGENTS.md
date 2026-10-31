@@ -102,12 +102,18 @@ runs the release image with one `--role` per container.
 
 ### Browser auto-approval
 
-Settings → Agent → "auto-approve browser actions" is the browser connection's `config.auto_approve`; until the user
+Settings → Agent → "auto-approve actions" (it covers every action that would ask since 2026-10-31 — mail, calendar,
+Drive, calls and connectors as well as the browser; only the final submit / pay click is handed to the user) is the
+browser connection's `config.auto_approve`; until the user
 sets it, `[browser] auto_approve` in `config.toml` is the default (true; `tests/run_local.sh` sets false so the
-suites keep testing the approval flow). In `routes::act::act`, an ASK that `Decision::browser_auto_ok` accepts (a
-browser tool, not `browser_fill_secret` or `browser_upload`, not per-use, not after a suspected injection) is recorded
-as an approval resolved by `auto`, audited as approved, run at once, and returned with `auto_approved`; the runtime
-adds an `approval_auto` event and the same chat card a manual approval gets. `tests/browser_auto_approve_e2e.py`.
+suites keep testing the approval flow). In `routes::act::act`, an ASK that `Decision::browser_auto_ok` accepts (any
+browser tool — vault fills and uploads included — and `purchase_confirm`, also after a suspected injection: with the
+setting on nothing in the browser asks) is recorded as an approval resolved by `auto`, audited as approved, run at once, and returned with `auto_approved`; the runtime
+adds an `approval_auto` event and the same chat card a manual approval gets. `tests/browser_auto_real.py`. The final
+click that pays, confirms a purchase or booking, or changes an order is never the agent's, whatever the setting: the
+policy refuses it with an instruction to hand the filled page over (`browser_request_takeover`), and the user presses it
+in the live view (`policy::hand_over_click`; a checkbox or option, e.g. agreeing to a fee, is no such click; a page that
+receives money — a refund method — takes a Vault card without a purchase, `guard::refund_page`).
 
 ### Parallel steps and sub-agents
 
@@ -132,33 +138,50 @@ scenario (`tests/parallel_steps_e2e.py`).
 - Real-model runs: the travel suites with `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env` (`OMUSE_E2E_MODELS=alt` for
   the second model pair); `tests/travel_ask_real.py` asks two research-only travel questions and checks that no
   browser, approval or takeover was involved, with a TIMING line each; `tests/browser_auto_real.py` reads a hotel booking from mail and
-  opens its address on openstreetmap.org (a data-egress check, so Sentinel always asks) with "auto-approve browser
+  finds the hotel with SerpApi (`places_search`) and opens its Google Maps page, the result's `map_url` (a data-egress
+  check, so Sentinel always asks) with "auto-approve browser
   actions" on (no dialog, recorded as approved by auto) and off (the same request stops at that step).
 - Market and README images (`deploy/market/assets`): `OMUSE_E2E_OUT=<dir> bash tests/run_in_docker.sh marketing_shots`
   photographs the current UI (showcase scenarios `SHOW_*` in `tests/fake_llm.py`) and frames it; copy
   `<dir>/market/*.webp` and `overview.png` into `deploy/market/assets`. Rebuild the test image first.
 - Image smoke test: `tests/docker_image_smoke.sh <image>`; set `OMUSE_VERSION`
   to the tag to also check the reported version.
-- Flights, hotels & restaurants: `tests/travel_real.py` (not in the default list, billed: seven SerpApi searches against the
-  real service with `OMUSE_E2E_SERPAPI_KEY` from the e2e env file and `OMUSE_E2E_SERPAPI_EP=https://serpapi.com`).
-- Flights & hotels: `tests/travel_search_e2e.py` (the SerpApi key, the four Google Flights / Hotels tools through the
-  flight-booking skill, the hotel tools refused without a key), `tests/kiwi_flights_e2e.py` (no key: flights_search with
-  Kiwi.com data, no booking link, beside web_search in one turn), `tests/travel_card_ui.py` (the card).
+- Real-model suites (`run_in_docker.sh real`) act as the user, no exceptions: `tests/user_common.py` drives the web UI
+  (types into the chat, answers approval dialogs, takes over and hands back the browser) and the checks use only what the
+  user sees — the answer and its links, file cards and downloads, dialogs, the browser view, and the user's own mailbox,
+  Drive and sites. No tool names, arguments, events or logs in a real-model check; when one fails, fix the product.
+- Use cases are tested by real-model suites; scripted (fake-model) suites only for what a real run cannot do. A fake
+  suite stays only when the scenario cannot be produced or checked end to end — an injected outage, timeout, retry or
+  rate limit, an exact internal guarantee (one search per turn, call counts), a forced security refusal — and its
+  docstring says why. Any other fake suite is replaced by a real one from the user's side, then deleted. Official sites
+  are stand-ins at their real addresses (`tests/https_standins.py` ROUTES, `STANDIN_HOSTS` in `run_in_docker.sh`).
+- Flights, hotels & cars as the user: `tests/travel_user_real.py` (in `run_in_docker.sh real`, billed: a few SerpApi
+  searches with `OMUSE_E2E_SERPAPI_KEY` from the e2e env file). In the browser the user pastes the key on Connections and
+  asks Main's chat for a flight, a date range, a hotel and a rental car; only the answers on the page and their links are
+  checked (prices, a booking link that opens the booking page, Kayak to compare), against the real SerpApi, Kiwi.com,
+  Kayak and Rentalcars.com (`REAL_DATA_SUITES`). E2e checks should judge what the user sees, not the system's insides.
+- Flights, hotels & cars in other setups, as the user (real model, `REAL_DATA_SUITES`): `tests/travel_kiwi_real.py` (no
+  travel key: flights from the real Kiwi.com for a date and a range, with the airline, times, price and a Kiwi.com link
+  that opens), `tests/travel_brave_real.py` (the user pastes `OMUSE_E2E_BRAVE_KEY` on Connections → Web search, no
+  SerpApi key; a flight, a hotel and a car in one message, then "yes" to the hotel and the car: prices and booking links
+  that open), `tests/travel_connect_real.py` (Connections → Flights & hotels against the real SerpApi: a non-key and an
+  unknown key refused on the page, `OMUSE_E2E_SERPAPI_KEY` accepted with the plan and searches left, Disconnect; no
+  model request). Answers never carry an undecoded `link.omuse.local` stand-in (`Answer.broken_links`).
+- Flights, hotels & cars, scripted (what a real run cannot force or count, each docstring says what):
+  `tests/travel_search_e2e.py` (the SerpApi key: the exact Google searches, Kiwi.com for a range and self-transfer, Google
+  failing → Kiwi.com, one search per request), `tests/kiwi_flights_e2e.py` (no key: the exact Kiwi.com arguments,
+  Kiwi.com down, one travel search per turn), `tests/cars_search_e2e.py` (Kayak's page failing → Rentalcars.com, neither
+  answering, cars_search alone), `tests/travel_card_ui.py` (the card).
 - Web search: `tests/web_search_e2e.py` (web_search through Brave / Tavily / Google (SerpApi), the browser's engines
-  without a key or when switched off), `tests/search_card_ui.py` (the card), `tests/brave_travel_e2e.py` (a Brave key and
-  no travel tools: flights, hotel and car searched through the API in one turn, no browser page).
-  `tests/search_timing_real.py` (not in the default list, real network) times each web search source — Brave, Tavily, the
+  without a key or when switched off), `tests/search_card_ui.py` (the card), `tests/brave_travel_e2e.py` (a Brave key, no
+  travel key and the browser's engines blocked: exactly one travel search per message, Brave's queries, no browser page;
+  the user's side is `travel_brave_real`).
+  `tests/bench_search_timing.py` (not in the default list, real network) times each web search source — Brave, Tavily, the
   free Exa MCP and the browser's own engines — with `OMUSE_E2E_SEARCH_ENGINES=` (empty: the real DuckDuckGo / Bing
   instead of the stand-in) and `SEARCH_TIMING_BURST=n` for a burst of browser searches. `tests/web_search_real.py` (not in the default list, billed against the free tiers) connects the real Brave and Tavily
   APIs with the keys `OMUSE_E2E_BRAVE_KEY` / `OMUSE_E2E_TAVILY_KEY` from the e2e env file — the endpoints come from
-  `OMUSE_E2E_BRAVE_EP` / `OMUSE_E2E_TAVILY_EP` on the command line, see its docstring. `tests/flights_real.py` (real
-  network, free) runs one `flights_search` through Kiwi.com's public MCP server without a key.
+  `OMUSE_E2E_BRAVE_EP` / `OMUSE_E2E_TAVILY_EP` on the command line, see its docstring.
 - Profile fields: `tests/profile_fields_ui.py` (custom fields and addresses without limit, add and remove).
-- Sapphire trip claim: `tests/csr_claim_e2e.py` (the booking, charge and refund from mail in one turn, the airline
-  letter drafted, the packet PDF, the portal form filled and handed over for Submit, reminders).
-- FWD travel insurance: `tests/fwd_insurance_e2e.py` (Singapore: quote, plans compared, application filled from the
-  Vault and handed over for Pay; delay claim from mail on FWD's form, handed over for Submit. Hong Kong: bolttech's PDF
-  claim form opened from its link, filled and attached to an email draft, never sent).
 - Bots: `tests/bots_e2e.py` (each bot's skills and tools, the planner's routing and its checks, the hand-over from Main and its answer with the link, a follow-up to
   the same bot conversation, an approval and a takeover inside a bot shown in Main, cancel), `tests/bots_ui.py` (the
   menu, the bot views, the links between Main and a bot's conversation). `tests/bots_real.py` (not in the default list,
@@ -166,25 +189,53 @@ scenario (`tests/parallel_steps_e2e.py`).
   `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh bots_real` (`OMUSE_E2E_PLANNER` /
   `OMUSE_E2E_EXECUTOR` on the command line override the env file's models). `tests/run_in_docker.sh real` runs every
   real-model suite (REAL_SUITES in the script; tests/real_common.py drives the new ones) with the env file's models —
-  planner xai/grok-4.7, executor openai/gpt-6-luna (openai-codex/gpt-6-luna times out too often through the gateway
-  for now).
+  planner xai/grok-4.7, executor openai/gpt-6-luna (openai-codex/gpt-6-luna times out too often through the gateway for now). With `OMUSE_E2E_OUT`, each real
+  suite also saves its model calls (`models-<suite>.json`: model, purpose, timing).
 - Streamed answers: `tests/stream_e2e.py` (answer_delta events, reasoning held back, tool-call turns flagged, the
-  setting off), `tests/stream_ui.py` (the live bubble while the task runs); `tests/stream_real.py` (not in the default
+  setting off), `tests/stream_real.py` (not in the default
   list, billed) does one request against the gateway in the e2e env file and, when that provider streams as it
   writes (`OMUSE_E2E_MODELS=alt` picks one that does), checks the deltas arrive well before the answer.
-- Google Drive: `tests/drive_connect_e2e.py` (one Google sign-in for Calendar + Drive), `drive_cleanup_e2e.py`,
-  `drive_video_e2e.py` (ffmpeg in the test image), `drive_storybook_e2e.py`; the Drive fake is in `tests/fake_apps.py`.
-- Image and video generation: `tests/imagegen_e2e.py` and `tests/videogen_e2e.py` (scripted, in the default list);
-  `tests/media_real.py` makes one picture and one short clip with the gateway in the e2e env file
-  (`xai/grok-imagine-image`, `xai/grok-imagine-video`, billed): `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env
-  bash tests/run_in_docker.sh media_real`.
 - `python3 tests/i18n_check.py` must report no missing or stale translations
   after any UI string change.
-- Travel skills: one scripted suite per skill (`tests/trip_today_e2e.py`, `sgac_e2e.py`, `arrival_cards_e2e.py`, `arrival_nomail_e2e.py`,
-  `entry_requirements_e2e.py`, `flight_disruption_e2e.py`, `baggage_e2e.py`, `travel_expense_e2e.py`,
-  `payments_asia_e2e.py`, `getting_around_e2e.py`, `tax_refund_e2e.py`, `emergency_e2e.py`, `hotel_requests_e2e.py`,
-  `dining_dietary_e2e.py`, `credit_card_picker_e2e.py`, `city_guides_e2e.py`; the profile's first-login nudge and
-  ID-photo OCR: `profile_onboarding_ui.py`; the runner turns the first-login profile nudge off for every suite, that
-  one turns it on) on `tests/skills_common.py` (mail in the local IMAP server,
-  an iCal calendar, the travel connector, pages under `tests/pages`); the scenarios live in `tests/fake_llm.py`
-  (`travel_skill`). Knowledge files a skill ships (`load_skill(file=…)`) are described in `KNOWLEDGE.md`.
+- Use cases as the user, real model (all in `run_in_docker.sh real`, billed; browser auto-approve on as on a fresh
+  install, the final pay / submit / order-change click always the user's in a takeover):
+  - Travel: `travel_flight_real` / `travel_hotel_real` / `travel_michelin_real` (`travel_book_user.py`: book through the
+    agency's connector, the page handed over, "My trips"), `travel_user_real`, `travel_kiwi_real`, `travel_brave_real`, `travel_connect_real`, `travel_ask_real`, `travel_nomail_real`,
+    `trip_hotel_real` (trip timeline from mail and calendar; early check-in request drafted), `travel_info_real` (entry
+    rules from the official stand-ins with reminders; Narita Express from JR East; payments with sourced rates),
+    `travel_receipts_real` (menu photo and allergy card; expense report Excel/PDF), `city_guides_real` +
+    `city_guides2_real` (every guide), `apdt_real` (Hong Kong departure tax refund: every field and document, the Vault
+    card for the refund, the reference number and the link for the user's own face check).
+  - Arrival cards: `arrival_real`, `arrival_cards_real` … `arrival_cards4_real` and `arrival_address_real` + `arrival_address2_real` (the user's own address from the profile; two addresses → asked once) (every country's card on a realistic stand-in at its official
+    address; health / declaration answers No, gender from the profile, next city = where the flight came from,
+    departure = arrival + 7 days, passport and expiry from the Vault, the CAPTCHA left, the user submits in a takeover).
+  - Insurance, claims, refunds: `insurance_real`, `insurance_hk_real`, `claims_real`, `emergency_real`, `refunds_real`
+    (helpers `claims_common.py`; `fake_apps.official_hits` returns the official stand-ins to searches).
+  - Credit cards: `cards_real`, `cards_markets_real`, `cards_pay_real`, `cards_claim_real`, `cards_interruption_real`
+    (cards in the Vault by name; helpers `cards_common.py`).
+  - Everyday: `shopping_real`, `watch_real`, `support_chat_real`, `pdf_forms_real`, `brief_real`, `gcal_real`,
+    `assistant_real` (`shop_common.py`); Drive and media: `drive_storybook_real`, `drive_video_real`,
+    `drive_cleanup_real`, `attach_media_real`, `chart_real`, `library_real` (about 22 min), `market_real`
+    (`drive_common.py`); connectors and memory: `apps_real`, `automations_real`, `telegram_real`, `mcp_real`,
+    `phone_real`, `memory_real`, `chat_real` (`conn_common.py`); `bots_real`, `stream_real`, `media_real`, `mail_real`,
+    `calendar_real`, `docs_real`, `photos_real`, `research_real`, `browser_auto_real`, `web_search_real`.
+- Scripted suites kept for what a real run cannot do (each docstring says what and why): forced failures and retries
+  (`retry_e2e`, `loop_e2e`, `stuck_e2e`, `batch1_e2e`, `batchR_e2e`, `market_e2e`), exact search guarantees
+  (`kiwi_flights_e2e`, `travel_search_e2e`, `brave_travel_e2e`, `cars_search_e2e`, `web_search_e2e`, `webread_e2e`),
+  security and protocol (`memory_vault_e2e`, `sendfile_e2e`, OAuth / MCP / telephony /
+  Telegram protocol parts of `apps_e2e`, `mcp_e2e`, `dial_e2e`, `phone_e2e`, `telegram_e2e`, `calendar_connect_e2e`,
+  `drive_connect_e2e`), the ledger internals (`batch3_e2e`), UI without a model (`*_ui.py`), and the trimmed
+  `e2e_027`, `e2e_029`, `e2e_0212`, `integration`, `city_guides_e2e`, `attach_media_e2e` (the upload API's forced refusals only), `bots_e2e`, `stream_e2e`,
+  `imagegen_e2e`, `videogen_e2e`, `title_e2e`, `parallel_steps_e2e`, `batch2_e2e`. The profile's first-login nudge and
+  ID-photo OCR: `profile_onboarding_ui.py`. Knowledge files a skill ships (`load_skill(file=…)`) are described in
+  `KNOWLEDGE.md`.
+- Real web where it is safe: the read-only use cases run against the real web search and the real sites
+  (`REAL_DATA_SUITES` in `run_in_docker.sh`: flights/hotels/cars, web search, research and the library, entry rules,
+  trains and payments, emergencies abroad, Japan's tax refund, market data, card terms on the issuers' sites). For those
+  suites the official sites' names resolve to the real sites (the stand-in host lines are taken out of the container's
+  `/etc/hosts` and put back afterwards) and their checks judge live content (the test reads the same live page or
+  figure itself, or checks a range and the source). Stand-ins stay only where a real site would get a real submission
+  (arrival cards, insurance, the Hong Kong refund, bookings, checkouts, claim portals) or the test needs a page it
+  controls (a flight in the user's own mail).
+- Skill edits without a rebuild: `OMUSE_E2E_SKILLS_DIR=1 bash tests/run_in_docker.sh <suite>` loads `skills/` from the
+  working tree (bots stay compiled in).

@@ -78,9 +78,13 @@ calls = [x for x in calls if not str(x.get("system", "")).startswith(("You name 
 systems = {x["system"] for x in calls}
 check("system prompt identical on every step (model server can reuse its cache)", len(calls) >= 4 and len(systems) == 1,
       (len(calls), len(systems)))
-check("live status (time, plan, dead ends) comes last, not in the system prompt",
-      all(x["last"].startswith(("（系统）当前状态", "(System) Status")) for x in calls[:-1])
-      and "Dead ends" not in calls[0]["system"] and any("nosuch.test" in x["last"] for x in calls), [x["last"][:120] for x in calls])
+# the live status comes last only when it carries something (a plan, failed sources): a bare "Status — now 5:30 pm" as the
+# last message got answered instead of the user's request (2026-10-30)
+STATUS = ("（系统）当前状态", "(System) Status")
+check("live status (plan, dead ends) comes last when there is one, never in the system prompt; the first step ends with the request",
+      not calls[0]["last"].startswith(STATUS) and "SWITCHSRC" in calls[0]["last"]
+      and all("Dead ends" not in x["system"] for x in calls)
+      and any(x["last"].startswith(STATUS) and "nosuch.test" in x["last"] for x in calls), [x["last"][:120] for x in calls])
 # ---------------------------------------------------------------- 4. time budget (0.2.23)
 c.put(B + "/api/settings", json={"max_minutes": 0.5}, headers=H).raise_for_status()
 t0 = time.time()

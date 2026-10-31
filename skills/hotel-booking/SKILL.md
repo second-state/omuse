@@ -1,7 +1,8 @@
 ---
 name: hotel-booking
-description: 订酒店：先用旅行数据连接器查酒店、房型、价格和取消政策，只在最后一步用浏览器在预订页下单（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search, compare and book hotels in Asian cities — data connector first, browser only for the final booking page.
+description: 订酒店：先用 hotels_search 查酒店、房型、价格和取消政策（每次调用只搜一次，每个请求只做一次旅行搜索；每家酒店带官网预订链接 booking_url），只在最后一步用浏览器在预订页下单（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search, compare and book hotels in Asian cities — one travel search per request (each hotel with its booking_url), browser only for the final booking page.
 
+form: on
 ---
 # Hotel booking / 订酒店
 
@@ -11,10 +12,14 @@ Search and compare with data tools; open the browser only for the provider's boo
 **No plan for the search.** Searching is just searching: never call plan_task to search, compare or check a date range — one turn of search calls, then the answer. Plan only once one result has been picked and booking it takes several steps (and a "book it" follow-up goes straight to the booking page).
 
 ## 0. One tool: hotels_search (no browser yet)
-- `hotels_search` is the only search call a hotel question needs: Google Hotels data with the Flights & hotels key,
-  else — or when Google finds nothing — it falls back to web search by itself (its result then says so in
-  `hotels_fallback`: web pages, not hotels — read the 1–3 best with browser_read for prices). **No `web_search`
-  beside it.** `hotel_rooms` (rates per room and seller) needs the key.
+- `hotels_search` is the only search call a hotel question needs, and a request gets **one travel search** in all —
+  flights, hotels, cars and places together (a second one is not run): ONE search per call — Google Hotels data with the Flights & hotels key; without the key,
+  or when Google fails, web search by itself (its result then says so in `hotels_fallback`: web pages, not hotels —
+  read the 1–3 best with browser_read for prices). An empty result is the answer: say so and ask what to change (dates,
+  area, stars, price, brands); the user's next message can search again. **No `web_search` beside it.** Each hotel's
+  `booking_url` is Google's page for that hotel and these dates (every seller with its price, the hotel's own site among
+  them; `hotel_site` is the hotel's own site) — give it with the hotel; the result's `compare_url` is the same stay on Kayak (no
+  extra call) — give it once, for comparing prices. `hotel_rooms` (rates per room and seller) needs the key.
 - A travel MCP connector in the tool list (`mcp_<server>__hotels_search` / `__hotel_rooms`) may be used instead.
 - Never open Booking, Agoda, Google Hotels or hotel search pages in the browser to search — the browser is for the
   final booking page only.
@@ -41,10 +46,12 @@ Search and compare with data tools; open the browser only for the provider's boo
 
 ## 2. Search and compare (data tools)
 - One `hotels_search(city, check_in, check_out, guests, …)` call (min_stars / max_price_per_night / area / brands when
-  given) — one call, not one with the brand and another without. The result's `searched` block repeats the city, dates, guests and brands used, and `preferred_found` says how
+  given) — one call per turn and per request, not one with the brand and another without. The result's `searched` block repeats the city, dates, guests and brands used, and `preferred_found` says how
   many hotels matched the brands.
-- Shortlist 2–4 hotels; call `hotel_rooms(hotel_id, check_in, check_out, guests)` for the one(s) you would book
-  (at most 3 calls). Compare: total for the stay vs. per night, taxes included or not, area + nearest station,
+- Shortlist 2–4 hotels from the one search and answer with each hotel's `booking_url` (Google's page for it and the
+  dates: every seller and price). `hotel_rooms(hotel_id, check_in, check_out, guests)` costs one more search: call it
+  only when the user asks for the room types or the rates per seller of one hotel, or to book it — never to answer a
+  search. Compare: total for the stay vs. per night, taxes included or not, area + nearest station,
   rating, room type and beds, breakfast, **cancellation policy** (free until when, what is charged after) and
   **payment** (pay at the hotel vs. prepay now; non-refundable rates are cheaper but cannot be changed).
 - Prefer a free-cancellation rate unless the user wants the cheapest at any condition — say the price difference.
@@ -73,9 +80,13 @@ Search and compare with data tools; open the browser only for the provider's boo
    <pay at hotel | prepaid>", card_item_id when paying by card, note = the cancellation policy.
 2. browser_navigate(room booking_url) → the snapshot has the form with refs; check the total matches.
 3. browser_type name, email, phone (one turn); vault fills if needed.
-   Send each browser_fill_secret as its own turn (one call, nothing else in that turn): every vault fill can wait for the user's approval, and a turn should hold at most one call that may wait.
-4. browser_click "Confirm booking" once (Sentinel takes care of approval).
-5. Read the confirmation from the click result; one browser_snapshot only if it is missing.
+   Send each browser_fill_secret as its own turn (one call, nothing else in that turn).
+4. **The last click is the user's**: never press "Confirm booking" (Sentinel refuses it). With the page filled as far as
+   you can (a card saved by name only, or no card in the Vault: the card boxes stay empty), call
+   browser_request_takeover with the reason "The booking page is filled in: check it (type the card if a prepaid rate needs one), press Confirm booking yourself and
+   hand the browser back". The chat shows the user a link to take over.
+5. After the hand-back, read the confirmation from one browser_snapshot. No confirmation → the booking is not made:
+   say so and that the page stays open for them.
 
 ## 6. Answer
 - Booking reference exactly as shown, hotel + address area, room, dates and nights, total and how it is paid,

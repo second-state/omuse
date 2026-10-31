@@ -1,6 +1,7 @@
 ---
 name: dining-dietary-translate
 description: 吃饭与语言：过敏/清真/素食/低钠等饮食要求写成当地语言的卡片，拍菜单或路牌照片翻译（视觉模型），点餐与餐桌礼仪、小费习惯；订餐厅交给 restaurant-booking / michelin-dining Eating and language help — allergy, halal, vegetarian and other dietary cards in the local language, menu and sign photos translated with the vision model, ordering and table customs; table bookings go to the restaurant-booking / michelin-dining skills.
+browser: off
 ---
 # Dining, dietary needs & translation / 吃饭与语言
 

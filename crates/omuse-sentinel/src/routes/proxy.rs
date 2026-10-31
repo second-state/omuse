@@ -182,6 +182,13 @@ pub async fn proxy(State(ctx): State<App>, Path(path): Path<String>, req: Reques
     resp
 }
 
+/// `GET /run_pending_tasks` → `<runtime>/api/run_pending_tasks`: runs the tasks a sleeping or suspended machine left
+/// due, streaming their progress (NDJSON) until all are done. Behind the login gate like everything else (a script
+/// signs in with Basic auth: `curl -N -u user:password https://…/run_pending_tasks`).
+pub async fn run_pending_tasks(ctx: State<App>, req: Request) -> Response {
+    proxy(ctx, Path("run_pending_tasks".to_string()), req).await
+}
+
 /// `GET /`: the page shell; also learns the public address users reach this OMuse at.
 pub async fn index(State(ctx): State<App>, headers: HeaderMap) -> Response {
     let host = req_host(&headers);

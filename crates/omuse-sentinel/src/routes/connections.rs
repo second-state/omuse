@@ -69,13 +69,11 @@ pub fn conn_view(ctx: &Ctx, name: &str) -> Result<Value, ApiError> {
     c["has_credential"] = json!(has);
     if name == "travel" {
         c["default_key"] = json!(!ctx.cfg.search.serpapi_key.trim().is_empty());
-        // flights: Kiwi.com first; Google Flights is the fallback when a SerpApi key is set
-        c["flights_source"] = json!("kiwi");
-        c["flights_fallback"] = json!(if has || !ctx.cfg.search.serpapi_key.trim().is_empty() {
-            "google"
-        } else {
-            ""
-        });
+        // flights: Google Flights when a SerpApi key is set, with Kiwi.com as the fallback (and for ranges of dates);
+        // without a key Kiwi.com alone
+        let keyed = has || !ctx.cfg.search.serpapi_key.trim().is_empty();
+        c["flights_source"] = json!(if keyed { "google" } else { "kiwi" });
+        c["flights_fallback"] = json!(if keyed { "kiwi" } else { "" });
     }
     if name == "search" {
         // every provider: the web chain in the order it is tried (after the browser's engines), then Tavily for news; with
@@ -1060,7 +1058,7 @@ pub async fn travel_cred(State(ctx): State<App>, body: Bytes) -> JsonResult {
     if !SERP_RE.is_match(&token) {
         return Err(ApiError::new(
             400,
-            "请粘贴 SerpApi 密钥（serpapi.com → Dashboard → API key）(API key)",
+            "请粘贴 SerpApi 密钥：serpapi.com → Dashboard → API key (Paste your SerpApi API key from serpapi.com → Dashboard)",
         ));
     }
     let api = SerpApi::new(ctx.http.clone(), &ctx.cfg.endpoints.serpapi, &token);

@@ -253,6 +253,7 @@ mod tests {
             "flight_offer",
             "hotels_search",
             "hotel_rooms",
+            "cars_search",
         ] {
             assert!(!has_tool(main, t), "{t}");
             assert!(has_tool(travel, t), "{t}");

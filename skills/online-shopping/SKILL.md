@@ -1,6 +1,7 @@
 ---
 name: online-shopping
 description: 网购：搜索商品、用视觉挑选、加入购物车（不结账）Shop online — search products, choose (with vision), add to cart; never checks out without approval.
+form: on
 ---
 # Online shopping / 网购（搜索、挑选、加入购物车）
 
@@ -25,17 +26,24 @@ description: 网购：搜索商品、用视觉挑选、加入购物车（不结�
    shows only accessories, drop the sort and pick the cheapest matching item from the normal results instead of
    re-filtering the same URL.
 2. **See the results.** Shop pages are long; the text snapshot is cut off. Do NOT re-open the same URL.
+   **Ranking or filtering the results** ("the best-rated under S$25", "the cheapest", "the top 3 with 200+ reviews") needs
+   EVERY result on the page, not the first screen (2026-10-30: three cases were ranked "best" from the first screen while
+   better-rated ones sat further down). browser_read(url) gives the whole page's text — every product with its price,
+   rating and number of ratings; or browser_scroll("down") + browser_look until the footer. Write the candidates down,
+   apply every condition (exact phone model, a case and not an accessory, price, number of ratings; skip "Sponsored"
+   only if it fails one), then rank — and say how many results you compared.
    - browser_look("List the products on screen with title, price, rating and the label of each product link") — the vision model
      sees the real page, including images.
    - browser_find("<product words>") finds product links anywhere on the page with their price in `context`.
    - browser_scroll("down") then browser_look again for more results.
 3. **Choose.** Match the user's wishes (e.g. "looks nice" → ask browser_look which ones look most attractive and why; check it fits
    the exact model, e.g. iPhone 17 Pro Max, not 17 Pro). Prefer good ratings with many reviews; skip "Sponsored" unless it fits best.
+   The user wants to choose themselves → show the candidates as cards with present_choices (see "Comparing and watching").
 4. **Open the product page** (click its title link), then find the button: browser_find("Add to Cart") (Amazon also uses
    "Add to Basket"); if there are options (colour/size), select them first — browser_look("which colour/size options are shown?").
 5. **Add to cart** by clicking the button's ref. Adding to the cart is not a purchase and doesn't need approval.
-   Anything that pays or places an order (Buy Now, Checkout, Place order) goes through Sentinel's approval — only do it if
-   the user explicitly asked to buy.
+   Checkout only when the user explicitly asked to buy; the click that pays or places the order (Buy Now, Place order,
+   Pay) is always the user's — hand the filled page over (below).
 6. **Verify**: browser_look("Was the item added to the cart? What does the confirmation say and how many items are in the cart?")
    or check the cart count in the snapshot.
 7. **Login / CAPTCHA / robot check** → first finish everything that needs no login (look up every item on the list,
@@ -51,20 +59,27 @@ description: 网购：搜索商品、用视觉挑选、加入购物车（不结�
      "Proceed to checkout", "Next step" and "Continue to payment" only move between pages and need no approval; do not
      stop to ask the user about them.
    - Then call **purchase_confirm ONCE**: site, items (name, qty, price as shown), shipping, total, currency, delivery
-     ("Home delivery to <address>, <ETA>"), card_item_id (vault_list → the card the user keeps for shopping). The user
-     approves this one card; after that, the card fills (browser_fill_secret, one call per field) and the Place order / Pay
-     click on that site go through without more approvals for 30 minutes, as long as the page total stays within it.
+     ("Home delivery to <address>, <ETA>"), card_item_id (vault_list → the card the user keeps for shopping, when it is
+     complete). After it the card fills go through (browser_fill_secret, one call per field). **The Place order / Pay
+     click is the user's** (Sentinel refuses it): with everything filled — a card saved by name only, or no card, leaves
+     the card boxes empty — call browser_request_takeover ("Check the order, type the card if it is empty and press
+     Place order yourself; hand the browser back when it is done").
    - If the total, the item, the card or the site changes, call purchase_confirm again. A card form inside a payment
      iframe: snapshot shows its fields with refs like f1e3 — fill those. Payment pages (Adyen, Stripe) put EACH card box in
      its own iframe: the number in one (e.g. f9e1), the expiry in the next (f10e1), the CVC in another (f11e1). Fill each
      detail into its own box — never two details into one box; if a box is missing, browser_snapshot again or
      browser_find("Expiry date") before asking the user to take over.
-   - After the order: read the confirmation page and report the order number, items, total and delivery date.
+   - After the hand-back: read the confirmation page and report the order number, items, total and delivery date; no
+     confirmation → the order was not placed, say so.
 9. **Final answer**: product title, price, seller/rating, link, and "added to cart ✓ (not checked out)"; mention anything uncertain.
 
 ## Comparing and watching
-- Showing several candidates: call present_choices(kind="comparison") with labels/prices copied exactly from the page
-  (e.g. from browser_find context). OMuse checks them against what you read; put your opinion in note.
+- Showing several candidates — and always when the user wants to pick ("show me options", "let me choose", "I'll pick
+  one"): call present_choices(kind="comparison") with labels/prices copied exactly from the page (e.g. from
+  browser_find context or browser_read). The user picks by pressing a card, so a plain list in the answer is not enough.
+  OMuse checks them against what you read; put your opinion in note. Listings from a results page with criteria
+  ("best-rated under S$25 with 200+ ratings"): pass ranking with those criteria — OMuse picks and orders the listings. The pick arrives as "I choose: <label>": carry on
+  with what the user asked for it (e.g. add it to the cart).
 - "Tell me when it's cheaper / back in stock": watch_create(url=product page, mode="price_below", threshold=…, keyword=
   a word from the product's own title, current_price=the price you saw) or mode="text", text="In stock". It notifies once
   per new drop; no need for a schedule. The watch reads the page itself and says what it read — report THAT value to the
@@ -72,5 +87,11 @@ description: 网购：搜索商品、用视觉挑选、加入购物车（不结�
 
 ## After the order / cancelling or returning
 - The order lands in the ledger (Trust page → Ledger) with the order number from the confirmation page — always report
-  that number. To cancel or return later, orders_list first and act on that exact order; the approval card shows which
-  ledger order the cancel is for.
+  that number. To cancel or return later, orders_list first (an empty query lists every order; the ledger names the
+  shop by its domain) and the shop's confirmation email (gmail_search the order number or the shop) for the order page's
+  link; act on that exact order.
+- **The final button is the user's** (Place order, Pay, Request cancellation, Return, Refund): Sentinel refuses that
+  click. Open the order's cancel / return page, fill everything else (reason, items, refund method as the user said),
+  then call browser_request_takeover("press <the button's label> to cancel order <number>") — do not stop with "press
+  it yourself" in the answer without the takeover. After the hand-back, browser_snapshot the page and report what it
+  says: the order number, cancellation / return requested or not, the refund amount and when it arrives, any reference.

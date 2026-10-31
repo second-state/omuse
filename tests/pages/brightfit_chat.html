@@ -1,0 +1,20 @@
+<!doctype html><html><head><meta charset="utf-8"><title>widget</title>
+<style>html,body{margin:0;height:100%;background:transparent;font-family:Arial,sans-serif}
+ .bub{position:absolute;right:12px;bottom:12px;width:64px;height:64px;border-radius:32px;background:rgb(255,87,34);border:0;cursor:pointer}
+ .bub svg{width:30px;height:30px}
+ .panel{position:absolute;right:12px;bottom:90px;width:340px;height:400px;background:#fff;border:1px solid #ddd;border-radius:12px;display:none;flex-direction:column}
+ .panel.open{display:flex} #log{flex:1;padding:10px;overflow:auto;font-size:14px} #log div{margin:5px 0}
+ .box{margin:8px;height:44px;border:0;border-radius:8px;background:#f1f1f1;padding:10px;font-size:14px;box-sizing:border-box}</style></head>
+<body><div class="panel" id="panel"><div id="log"><div>Coach Ben: Hi there! Ask me about your membership.</div></div>
+<div class="box" contenteditable="true" id="box"></div></div>
+<button class="bub" id="bub"><svg viewBox="0 0 24 24"><path fill="#fff" d="M4 4h16v12H7l-3 3z"/></svg></button>
+<script>
+const box = document.getElementById('box'), log = document.getElementById('log');
+document.getElementById('bub').onclick = () => document.getElementById('panel').classList.toggle('open');
+const add = t => { const d = document.createElement('div'); d.textContent = t; log.appendChild(d); log.scrollTop = 1e6; };
+const answer = q => /pause|freeze|hold|suspend|travel|away/i.test(q)
+  ? 'Yes — you can freeze your membership for up to 2 months a year. The freeze fee is S$15 a month; request it in the app 7 days ahead.'
+  : 'Could you say a bit more?';
+box.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); const q = box.textContent.trim(); if (!q) return;
+  add('You: ' + q); box.textContent = ''; setTimeout(() => add('Coach Ben: ' + answer(q)), 1200); } });
+</script></body></html>

@@ -75,7 +75,7 @@ async fn broker_end_to_end() {
     let text = get_str(&snap, "snapshot");
     println!("{text}");
     assert!(text.contains("# Order #12345"));
-    assert!(text.contains("(password field — agent must NOT type here)"));
+    assert!(text.contains("(password field — only the user types it, in a takeover)"));
     assert!(text.contains("options=[S | M]"));
     assert_eq!(snap["title"], "Test Shop");
     let search = re(r#"\[(e\d+)\] searchbox "Search orders""#, &text);

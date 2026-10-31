@@ -55,3 +55,40 @@ def drive_state():
 def disconnect_all():
     c.delete(S + "/connections/drive/credential", headers=H)
     c.delete(S + "/connections/calendar/credential", headers=H)
+
+
+# ---------------------------------------------------------------- the real-model Drive suites (drive_*_real.py)
+# What the user sees in their own Google Drive (the fake Drive stands in for it), read through the Drive API with the
+# user's token, never the fake's /_state.
+_UTOKEN = {"Authorization": "Bearer gat-1"}
+
+
+def my_drive(*, trashed: bool = False) -> list[dict]:
+    """The user's files (no folders) as Drive lists them: in My Drive (`trashed=False`) or in the Bin (`trashed=True`):
+    {"id", "name", "mimeType", "size", "parents", "webViewLink"}."""
+    q = f"trashed = {'true' if trashed else 'false'}"
+    rows = c.get(F + "/drive/files", params={"q": q, "pageSize": 1000}, headers=_UTOKEN).json().get("files", [])
+    return [{k: f.get(k) for k in ("id", "name", "mimeType", "size", "parents", "webViewLink")} for f in rows
+            if f.get("mimeType") != "application/vnd.google-apps.folder"]
+
+
+def image_model_settings(url: str, key: str, model: str) -> dict:
+    """Settings → Models: the user's own image endpoint, key and model (world setup, as tests/media_real.py does)."""
+    r = c.put(B + "/api/settings", headers=H, json={"model_override": True, "image_base_url": url, "image_api_key": key, "image_model": model})
+    return r.json().get("settings", {})
+
+
+async def attach(u, *paths: str) -> list[dict]:
+    """The user clicks ＋ in the chat (a tests/user_common.User), picks files and waits until each chip is uploaded or
+    failed: [{"name", "bad", "text"}] as the chips show them."""
+    pg = u.page
+    async with pg.expect_file_chooser() as fc:
+        await pg.locator("button.attach").click()
+    await (await fc.value).set_files(list(paths))
+    await pg.wait_for_function("n => { const c = [...document.querySelectorAll('.chip-att')]; "
+                               "return c.length >= n && c.every(x => !/%$/.test(x.querySelector('.small').textContent.trim())); }",
+                               arg=len(paths), timeout=60000)
+    chips = await pg.evaluate("() => [...document.querySelectorAll('.chip-att')].map(c => ({name: c.querySelector('.nm').textContent, "
+                              "bad: c.classList.contains('bad'), text: c.innerText.replace(/\\s+/g, ' ')}))")
+    print(f"INFO chips: {chips}")
+    return chips

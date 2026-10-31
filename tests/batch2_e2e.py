@@ -1,12 +1,14 @@
-"""Roadmap batch 2 end to end (local stack, tests/run_local.sh): personal context v1.
-1. memory sorted into domains; entities with aliases / relation
-2. a request gets the facts it needs (size, the shop's habits) grouped by domain, with the don't-ask-again rule —
-   the old selection (legacy) misses them for the same Chinese request
-3. a site's habits appear when the browser lands on that site
-4. something OMuse learns by itself waits for the user's OK (still used, marked) and the user can confirm it
-5. the Memory page shows the domains, the learned list and the "try it" preview (screenshot)
-6. the mailbox health check
-"""
+"""Personal context: the selection and prompt guarantees a real-model run cannot see (local stack, scripted model). The
+use cases — what the user tells OMuse sorted into domains on the Memory page, people as entities, "Try it", the right
+facts used for a request ("my wife" → Mei), something the user asked to remember kept at once — are tested from the
+user's side by tests/memory_real.py (and tests/assistant_real.py). What stays here, and why it cannot be e2e:
+  * the 7 domains in their order, an alias / relation set on an entity found by another wording (exact selection);
+  * the v1 selection against the legacy one, the trigger rule only on its phrase (exact selection);
+  * the executor's prompt carrying the grouped context and the don't-ask-again rule, the context_used event (internal);
+  * a site's habits shown to the model when the browser lands there (internal prompt);
+  * a habit OMuse learned by itself waits for the user's OK but is used meanwhile (a real model learning a habit on
+    its own cannot be produced on demand: forced with the scripted model);
+  * the personal-context probe (a developer tool) and the health check API."""
 import os
 import sys
 import time
@@ -57,9 +59,6 @@ add("The user prefers metal pens with an aesthetic design.")
 add("用户要求：以后每次说「准备出差」，先查邮件里的航班和酒店，再生成一页行程 PDF。")
 r = c.post(B + "/api/memory", json={"fact": "Mei collects jazz vinyl records.", "domain": "person", "entity": "Mei"}, headers=H).json()
 m = mem()
-dom = {f["fact"][:6]: f["domain"] for f in m["facts"]}
-check("domains: size → preference, shop habit → site, standing instruction → rule",
-      dom.get("我身高177") == "preference" and dom.get("shop.t") == "site" and dom.get("用户要求：以") == "rule", dom)
 check("7 domains listed for the Memory page", [d["key"] for d in m["domains"]] == ["person", "preference", "place", "account", "site", "rule", "work"])
 mei = next((e for e in m["entities"] if e["name"] == "Mei"), None)
 check("a person named by a fact becomes an entity", mei and mei["type"] == "person", m["entities"])
@@ -105,9 +104,6 @@ check("a habit OMuse learned itself waits for the user's OK", len(pend) == n0 + 
 check("…but is used meanwhile, marked unconfirmed", any("guest checkout" in f for f in preview("在 shop.test 买个水壶")))
 c.put(f"{B}/api/memory/{pend[0]['id']}", json={"status": "active"}, headers=H)
 check("the user confirms it on the Memory page", next(f for f in mem()["facts"] if f["id"] == pend[0]["id"])["status"] == "active")
-tid = c.post(B + "/api/chat", json={"message": "REMEMBER this"}, headers=H).json()["task_id"]
-wait_task(tid)
-check("something the user asked to remember is kept right away", any(f["fact"] == "Lucas likes quiet hotels" and f["status"] == "active" for f in mem()["facts"]))
 
 # ---- 5b. the fast personal-context probe runs end to end (plan + statement, nothing executed)
 r = c.post(B + "/api/golden/run", json={"suite": "context_probe", "context": "legacy"}, headers=H).json()

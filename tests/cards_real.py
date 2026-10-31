@@ -1,144 +1,119 @@
-"""Credit cards with a real model (see tests/real_common.py): two plain requests sent to the main bot, each handed to
-the Credit cards bot.
-  1. picker — which of the user's own cards (profile: Chase Sapphire Reserve; Citi Double Cash) to use for a flight:
-     the credit-card-picker skill, an answer that names one of those cards with its value and the date the catalog's
-     terms were verified, and no card number anywhere.
-  2. claim — a missed United flight paid with the Sapphire Reserve (booking, charge and refund in mail): the
-     csr-trip-claim skill (the Credit cards and Travel insurance bots both have it), the amount to claim = paid minus
-     refunded, the 20-day and 90-day deadlines as dates, and Submit on the portal never pressed for the user (a
-     takeover is handed back without pressing anything, and the task runs on to its answer).
-One TIMING line per request (model time excluded).
+"""Which credit card to use, US cards, with a real model and from the user's point of view (tests/user_common.py).
 
-    OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env OMUSE_E2E_PLANNER=xai/grok-4.7 OMUSE_E2E_EXECUTOR=openai/gpt-6-luna \\
-        tests/run_in_docker.sh cards_real"""
-import datetime as dt
-import json
+The user's Vault holds three US cards (issuing country USA): Chase Sapphire Reserve and Citi Double Cash saved by their
+names only (number, expiry and CVC UNKNOWN) and an American Express Gold Card with its details. In Main's chat:
+  1. dinner — which card for a US$300 dinner at a New York restaurant: the Credit cards bot answers (its "Continue in
+     💳 Credit cards" link); the cards are the user's own, the name-only ones included; the pick is the Amex Gold
+     (dining 4x at 1¢ = US$12 against US$9 and US$6) with the value per card; the catalog's date (August 2026);
+     no card number.
+  2. flight — a US$1,200 flight booked directly on united.com: the Sapphire Reserve (4x on direct airline bookings =
+     US$48), with the date.
+  3. missing — "I also have a Bread Cashback American Express": the answer says it is not in the card catalog and either
+     gives what the issuer's page says (with the date it was read) or says it cannot be verified; the Memory page's
+     Vault card then shows "Bread Cashback" by name, marked name-only, once.
+  4. number — the user names a Citi Prestige and types its number in the chat: the answer tells them to add the
+     number on the Vault card themselves (and does not repeat it); the Vault shows Citi Prestige by name only, and the
+     number appears nowhere on the Memory page.
+  5. again — a US$80 food-delivery order, naming the Citi Prestige and the Bread Cashback once more: the pick is made
+     from all five cards, and the Vault still has each card once.
+One TIMING line per request.
+
+    OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh cards_real"""
 import os
 import re
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tests import real_common as R  # noqa: E402
+from tests import cards_common as C  # noqa: E402
 from tests import skills_common as K  # noqa: E402
+from tests import user_common as U  # noqa: E402
+from tests.user_common import check  # noqa: E402
 
-LOSS = dt.date.today() - dt.timedelta(days=3)
-BOOKED = (dt.date.today() - dt.timedelta(days=40)).isoformat()
-D20, D90 = LOSS + dt.timedelta(days=20), LOSS + dt.timedelta(days=90)
-MAIL = [
-    ("United Airlines <noreply@united.example>", f"Your eTicket receipt — Confirmation ABC123 — UA 837 SFO-NRT {LOSS}",
-     f"Passenger LUCAS LU. UA 837 San Francisco (SFO) {LOSS} 11:05 → Tokyo Narita (NRT) 14:30 (+1). Fare USD 1,840.00, Basic Economy, "
-     f"non-refundable. Paid with Visa ending 4321 on {BOOKED}.", 40),
-    ("Chase <no.reply.alerts@chase.example>", "Your $1,840.00 transaction with UNITED AIRLINES",
-     f"A $1,840.00 transaction with UNITED AIRLINES was made on your Sapphire Reserve (...4321) on {BOOKED}.", 40),
-    ("United Refunds <refunds@united.example>", "Refund processed — confirmation ABC123",
-     "Taxes and fees of USD 86.40 have been refunded to Visa ending 4321. The Basic Economy fare of USD 1,753.60 is non-refundable "
-     "under the fare rules.", 2),
-]
-CARD_NO = re.compile(r"\b(?:\d[ -]?){13,19}\b")
+GOLD_NO = ("3782 822463 10005", "378282246310005")
+TYPED_NO = ("5424 1800 0000 0004", "5424180000000004")
 
 
-def loaded(info: dict, skill: str) -> bool:
-    return any(x["name"] == "load_skill" and (x.get("args") or {}).get("name") == skill for x in info["calls"])
+def no_number(text: str) -> bool:
+    flat = text.replace(" ", "").replace("-", "")
+    return not C.CARD_NO.search(text) and GOLD_NO[1] not in flat and TYPED_NO[1] not in flat
 
 
-def date_in(text: str, d: dt.date) -> bool:
-    """`d` written as a date: ISO, US or day-first, month spelled out or abbreviated."""
-    forms = {d.isoformat(), f"{d:%B} {d.day}, {d.year}", f"{d:%b} {d.day}, {d.year}", f"{d.day} {d:%B} {d.year}",
-             f"{d.day} {d:%b} {d.year}", f"{d.month}/{d.day}/{d.year}", f"{d:%m/%d/%Y}", f"{d:%b}. {d.day}, {d.year}"}
-    return any(f.lower() in text.lower() for f in forms)
+def by_cards(a: U.Answer, step: str) -> None:
+    check(f"{step}: answered by the Credit cards bot (its link in the answer)", "Credit cards" in a.bot_link, a.bot_link)
+    check(f"{step}: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.seconds)
+    check(f"{step}: the answer says the card terms are from the catalog as of August 2026", bool(C.CATALOG_DATE.search(a.text)), a.text[-900:])
+    check(f"{step}: no card number in the answer", no_number(a.text), a.text[:300])
 
 
-def resume(info: dict, rounds: int = 3, timeout: float = 900) -> dict:
-    """The user hands the browser back after a takeover without pressing anything; the task runs on (approvals approved
-    as in R.ask) to its end or the next takeover. Refreshes the tasks, calls and answer in `info`."""
-    for _ in range(rounds):
-        if not info["takeover"]:
-            break
-        print(f"INFO takeover: {json.dumps(R.task(info['takeover']).get('waiting'), ensure_ascii=False)[:300]}")
-        info["takeover"] = None
-        K.hand_back()
-        tid, deadline = info["tasks"][0], time.time() + timeout
-        while time.time() < deadline:
-            t = R.task(tid)
-            st = t.get("status")
-            kid = (t.get("waiting") or {}).get("task_id") if st == "WAITING_BOT" else None
-            kst = R.task(kid).get("status") if kid else None
-            if "WAITING_APPROVAL" in (st, kst):
-                R._approve({tid} | ({kid} if kid else set()), info["approvals"], info["excluded"])
-            elif "WAITING_EXTERNAL" in (st, kst):
-                info["takeover"] = kid if kst == "WAITING_EXTERNAL" else tid
-                break
-            elif st in R.TERMINAL:
-                break
-            time.sleep(0.4)
-    info["t1"] = time.monotonic()
-    info["main"] = R.task(info["tasks"][0])
-    info["kid"] = R.task(info["tasks"][1]) if len(info["tasks"]) > 1 else {}
-    info["calls"] = [dict(e["data"], task=x) for x in info["tasks"] for e in R.task(x).get("events", []) if e["type"] == "tool_call"]
-    info["names"] = [x["name"] for x in info["calls"] if x["name"] != "ask_bot"]
-    info["result"] = str(info["kid"].get("result") or info["main"].get("result") or "")
-    print(f"INFO after hand-back ({info['bot']}): {info['result'][:700]!r}")
-    return info
+async def main():
+    async with U.User() as u:
+        # 1. a dinner in New York: the user's three cards, two of them by name only
+        a = await u.ask("Which of my credit cards should I use for a US$300 dinner at a restaurant in New York tonight?", label="dinner")
+        by_cards(a, "dinner")
+        check("dinner: the user's own cards are compared, the name-only ones included",
+              a.mentions("Sapphire Reserve") and a.mentions("Double Cash") and a.mentions("Gold"), a.text[:900])
+        check("dinner: the pick is the Amex Gold (4x on dining)",
+              bool(re.search(r"(use|pick|best|recommend|go with|winner)[^.\n]{0,80}Gold|Gold[^.\n]{0,80}(best|wins|top|highest|pick)", a.text, re.I)),
+              a.text[:600])
+        vals = [v for v in ("12", "9", "6") if re.search(rf"\$\s?{v}(\.00)?(?![\d,])|{v}\.00\b", a.text)]
+        check("dinner: the value per card in dollars (at least two of US$12 / US$9 / US$6)", len(vals) >= 2, (vals, a.text[:900]))
+
+        # 2. a flight booked directly with the airline
+        a = await u.ask("Which of my cards should I use for a US$1,200 flight booked directly on united.com?", label="flight")
+        by_cards(a, "flight")
+        check("flight: the pick is the Sapphire Reserve (4x on flights booked directly)",
+              bool(re.search(r"(use|pick|best|recommend|go with|winner)[^.\n]{0,80}Sapphire Reserve|Sapphire Reserve[^.\n]{0,80}(best|wins|top|highest|pick)",
+                             a.text, re.I)), a.text[:600])
+        check("flight: its value, US$48 (4,800 points)", bool(re.search(r"\$\s?48(\.00)?(?![\d,])|4,?800\b", a.text)), a.text[:900])
+
+        # 3. a card that is not in the catalog
+        a = await u.ask("I also have a Bread Cashback American Express card. Would it beat my other cards for a US$500 TV at Best Buy?",
+                        label="missing", timeout=1200)
+        check("missing: answered by the Credit cards bot", "Credit cards" in a.bot_link, a.bot_link)
+        check("missing: the answer says the Bread Cashback is not in the card catalog",
+              bool(re.search(r"(not|isn't|isn’t|no row|no entry|missing)[^.\n]{0,60}catalog|catalog[^.\n]{0,60}(doesn't|doesn’t|does not|no row|no entry|not (list|includ|cover))",
+                             a.text, re.I)), a.text[:900])
+        check("missing: it gives what the issuer's page says with a date, or says the terms cannot be verified",
+              bool(re.search(r"(Oct(ober)?\.?|2026-10|10/\d{1,2}/2026)[^\n]{0,12}2026|2026-10-\d\d|could(n't| not) (be )?verif|unverified|not (been )?verified|can(not|'t) verify",
+                             a.text, re.I)), a.text[-900:])
+        check("missing: no card number in the answer", no_number(a.text), a.text[:300])
+        cards = await C.vault_cards(u)
+        bread = C.find(cards, "bread")
+        check("missing: the Vault card now shows the Bread Cashback by name, once, marked name-only",
+              len(bread) == 1 and bread[0]["name_only"], cards)
+
+        # 4. the user types a card number into the chat
+        a = await u.ask(f"Please also remember my Citi Prestige card, the number is {TYPED_NO[0]}, it expires 09/28.", label="number")
+        check("number: the answer tells the user to add the number on the Vault card (Memory → Vault) themselves",
+              bool(C.ADD_IN_VAULT.search(a.text)), a.text[:600])
+        check("number: the answer does not repeat the card number", no_number(a.text), a.text[:300])
+        cards = await C.vault_cards(u)
+        prestige = C.find(cards, "prestige")
+        check("number: the Vault card shows the Citi Prestige by name only (no number stored)",
+              len(prestige) == 1 and prestige[0]["name_only"] and "0004" not in prestige[0]["line"], cards)
+        page = await C.memory_page_text(u)
+        check("number: the number appears nowhere on the Memory page", TYPED_NO[1] not in page.replace(" ", "").replace("-", "")
+              and "5424" not in page, [ln for ln in page.splitlines() if "5424" in ln or "0004" in ln][:5])
+
+        # 5. the user names the two cards again: the pick uses all five, the Vault keeps each once
+        a = await u.ask("Which card for a US$80 Uber Eats order? Remember I have the Citi Prestige and the Bread Cashback too.", label="again")
+        by_cards(a, "again")
+        check("again: the pick is one of the user's five cards",
+              a.mentions("Gold", "Sapphire Reserve", "Double Cash", "Prestige", "Bread"), a.text[:600])
+        cards = await C.vault_cards(u)
+        names = [C.norm(c["name"]) for c in cards]
+        check("again: the Vault has each card once (the names said twice were not added again)",
+              len(names) == len(set(names)) and len(C.find(cards, "prestige")) == 1 and len(C.find(cards, "bread")) == 1, names)
+        check("again: the Vault shows the three cards the user started with", all(C.find(cards, w) for w in ("sapphire reserve", "double cash", "gold")), names)
+        check("again: the full card shows only its last digits, the name-only ones no number",
+              all(GOLD_NO[1] not in c["line"].replace(" ", "") for c in cards) and all(not C.CARD_NO.search(c["line"]) for c in cards), cards)
+        check("the chat never showed a card number in an answer", no_number(" ".join(
+            t for t in await u.page.locator(".msg.assistant .bubble").all_inner_texts())), "")
 
 
-R.setup(mail=MAIL, profile={"custom:credit cards": "Chase Sapphire Reserve; Citi Double Cash", "custom:card market": "US",
-                            "name_en": "LUCAS LU", "email_personal": "lucas@example.com", "phone": "+1 415 555 0100",
-                            "address_home": "12 Mission St, San Francisco, CA 94105"})
-
-# 1. which card for a flight
-info = R.ask("Which of my credit cards should I use for a US$1,200 flight booking directly on united.com?")
-R.routed("picker", info, "cards")
-R.finished("picker", info)
-res = info["result"]
-R.check("picker: the credit-card-picker skill was loaded", loaded(info, "credit-card-picker"), info["names"])
-R.check("picker: the user's cards came from the profile", "profile_get" in info["names"] or "Sapphire Reserve" in json.dumps(info["calls"]), info["names"])
-R.check("picker: the pick is one of the user's own cards", R.mentions(res, "Sapphire Reserve", "Double Cash"), res[:600])
-R.check("picker: the answer gives the value per card (a dollar amount or points)", bool(re.search(r"(\$|USD|US\$)\s?\d|\d[\d,]*\s*(points|pts)", res)), res[:600])
-R.check("picker: the answer carries the date the catalog terms were verified (2026-08)",
-        bool(re.search(r"2026-08|Aug(ust)?\.? (\d{1,2}, )?2026|\d{1,2} Aug(ust)? 2026", res)), res[:900])
-R.check("picker: no card number anywhere", not CARD_NO.search(res) and "4111" not in res, res[:300])
-R.no_browser("picker", info)
-R.timing("picker", info)
-
-# 2. a Sapphire Reserve trip cancellation claim (the doctor's visit given up front, as the skill asks for it once)
-info = R.ask(f"I came down with food poisoning and couldn't take my United flight to Tokyo on {LOSS}. I paid for it with my "
-             f"Chase Sapphire Reserve — can you claim the card's trip cancellation insurance for me? I saw Dr. Amy Chen at "
-             f"Mission Bay Clinic on {LOSS} and she gave me a letter saying I was unable to travel.", timeout=1500)
-bot = info["bot"]
-print(f"INFO claim handled by the {bot} bot")
-R.check("claim: routed to the cards bot (or insurance, which shares csr-trip-claim)", bot in ("cards", "insurance"), (bot, info["route"]))
-if bot in ("cards", "insurance"):
-    R.routed("claim", info, bot)
-went_takeover = info["takeover"] is not None
-resume(info)
-R.finished("claim", info, takeover=True)
-R.timing("claim", info)
-infos = [info]
-if not (date_in(info["result"], D20) and date_in(info["result"], D90)) and info["main"].get("status") == "COMPLETED":
-    # the bot stopped for a question: the user answers once in the same Main conversation
-    info2 = R.ask("I don't have anything else to add — please go ahead with the claim as far as you can.", conv=info["conv_id"], timeout=1500)
-    R.check("claim follow-up: back to the same bot conversation", info2["bot"] == bot and info2["kid_conv"] == info["kid_conv"],
-            (info2["bot"], info2["kid_conv"], info["kid_conv"]))
-    went_takeover = went_takeover or info2["takeover"] is not None
-    resume(info2)
-    R.finished("claim follow-up", info2, takeover=True)
-    R.timing("claim-followup", info2)
-    infos.append(info2)
-res = "\n".join(i["result"] for i in infos)
-calls = [x for i in infos for x in i["calls"]]
-names = [n for i in infos for n in i["names"]]
-approvals = [a for i in infos for a in i["approvals"]]
-R.check("claim: the csr-trip-claim skill was loaded", any(x["name"] == "load_skill" and (x.get("args") or {}).get("name") == "csr-trip-claim"
-                                                        for x in calls), names)
-R.check("claim: booking, charge and refund were read from mail", any(n.endswith("gmail_search") for n in names), names)
-R.check("claim: the amount to claim is paid minus refunded (1,753.60)", R.mentions(res, "1,753.60", "1753.60", "1,753.6", "1753.6"), res[:800])
-R.check("claim: the 20-day notice deadline as a date", date_in(res, D20), (D20, res[-1200:]))
-R.check("claim: the 90-day documents deadline as a date", date_in(res, D90), (D90, res[-1200:]))
-clicks = [a for a in approvals if a["tool"] == "browser_click"]
-entered = [x for x in calls if x["name"] == "browser_type" and (x.get("args") or {}).get("submit")]
-R.check("claim: Submit was never pressed on the portal (no approved submit-like click, no form sent with Enter)", not clicks and not entered,
-        (clicks, entered))
-R.check("claim: no card number in the answer", not CARD_NO.search(res) and "4111" not in res, res[:300])
-print(f"INFO claim: takeover requested: {went_takeover}; browser calls: {[n for n in names if n.startswith('browser_')]}")
-R.finish()
+U.setup(vault=False, profile={"name_en": "LUCAS LU", "email_personal": "lucas@example.com", "phone": "+1 415 555 0100",
+                              "address_home": "12 Mission St, San Francisco, CA 94105"})
+for name in ("Chase Sapphire Reserve", "Citi Double Cash"):   # added on the Vault card by name and country
+    K.vault_item(name, "card", {}, country="USA")
+K.vault_item("American Express Gold Card", "card", {"number": GOLD_NO[0], "expiry": "11/29", "cvc": "1234", "holder": "LUCAS LU"}, country="USA")
+U.run(main)

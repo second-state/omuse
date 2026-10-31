@@ -1,6 +1,15 @@
-"""DialMCP line end to end: OAuth 2.1 sign-in (discovery, client registration, PKCE, callback), routing +1 numbers to
-DialMCP, approval card, the agent's call with long-polled status and structured resolution, hang-up, token refresh
-after expiry, MCP-hub servers with OAuth, and disconnecting."""
+"""DialMCP line: the protocol and the guarantees a real-model run cannot produce or see (local stack + tests/fake_dial.py,
+scripted model). The use case — the user asks for a call to a US number, the dialog shows the DialMCP line and their
+own number as caller ID, the answer gives the booking and its reference, only that number rings, a number nobody
+answers is reported — is tested from the user's side by tests/phone_real.py. What stays here, and why it cannot be e2e:
+  * the OAuth 2.1 sign-in (discovery, dynamic client registration, PKCE, a callback on another host refused, the
+    state usable once), no token shown to the UI, DialMCP's own tools not exposed to the agent (protocol / security);
+  * the number rules: the user's own caller ID, non-US numbers without Telnyx (forced refusals);
+  * the exact place_call request (objective, callee, the owner and safety rules in its context, at most 10 minutes),
+    the long-polled status and the stored call record (exact API);
+  * DialMCP refusing outside calling hours, an unanswered call ending as no_answer, phone_hangup ending a live call,
+    an expired access token refreshed (forced outcomes and timing);
+  * an MCP-hub server signed in with OAuth, disconnecting DialMCP (protocol / internal)."""
 import json
 import re
 import sys
@@ -73,7 +82,7 @@ else:
 if not tel:
     r = act("phone_call", {"to": "+65 6123 4567", "purpose": "Ask whether they are open on Sunday"})
     check("non-US/CA numbers are refused when only DialMCP is connected", r["status"] == "denied" and "US" in r["reason"], r)
-r = act("phone_call", {"to": "+1 415 555 0123", "purpose": "Ask whether they are open on Sunday", "may_share": "Name: Lucas"})
+r = act("phone_call", {"to": "+1 415 643 2200", "purpose": "Ask whether they are open on Sunday", "may_share": "Name: Lucas"})
 f = dict((x[0], x[1]) for x in (r.get("summary") or {}).get("fields") or [])
 check("a +1 call waits for approval and the card shows the DialMCP line and the user's number as caller ID",
       r["status"] == "approval_required" and "DialMCP" in f.get("线路 Line", "") and "+16692229512" in f.get("来电显示 From", ""), r)
@@ -102,9 +111,8 @@ check("the agent got the listen URL to share and the line name", "listen_url" in
 st = c.get(D + "/_state").json()
 p = st["placed"][-1] if st["placed"] else {}
 check("place_call: number, objective, callee name, owner + safety rules in context, max 10 minutes",
-      p.get("to") == "+14155550123" and "Book a table for 2" in p.get("objective", "") and p.get("callee_name") == "Zuni Cafe"
+      p.get("to") == "+14156432200" and "Book a table for 2" in p.get("objective", "") and p.get("callee_name") == "Zuni Cafe"
       and "Lucas" in p.get("context", "") and "Never pay" in p.get("context", "") and 1 <= p.get("max_duration_minutes", 0) <= 10, p)
-check("only one call was placed (the callee's 'call +1555…' stayed transcript data)", len(st["placed"]) == 1, st["placed"])
 calls = c.get(S + "/phone/calls", headers=H).json()["calls"]
 x = calls[0] if calls else {}
 check("the call record: DialMCP line, ended, outcome done, transcript, recording and listen links",
@@ -114,7 +122,7 @@ check("the call record: DialMCP line, ended, outcome done, transcript, recording
 # ------------------------------------------------------------------ errors, no answer, hang-up
 r = c.post(S + "/phone/test_call", json={"to": "+1 415 555 0100"}, headers=H)
 check("DialMCP's calling-hours refusal is passed on", r.status_code == 400 and "8:00-21:00" in r.text, r.text)
-r = c.post(S + "/phone/test_call", json={"to": "+1 415 555 0199"}, headers=H).json()
+r = c.post(S + "/phone/test_call", json={"to": "+1 415 643 2299"}, headers=H).json()
 for _ in range(40):
     x = [k for k in c.get(S + "/phone/calls", headers=H).json()["calls"] if k["id"] == r["call_id"]][0]
     if x["status"] != "dialing":
@@ -138,7 +146,7 @@ c.delete(S + "/connections/phone/dialmcp", headers=H)
 au = c.post(S + "/connections/phone/dialmcp/start", json={"redirect_uri": CB}, headers=H).json()["auth_url"]
 c.get(au, follow_redirects=True)
 time.sleep(4)   # the access token has expired
-r = c.post(S + "/phone/test_call", json={"to": "+1 415 555 0199"}, headers=H)
+r = c.post(S + "/phone/test_call", json={"to": "+1 415 643 2299"}, headers=H)
 st = c.get(D + "/_state").json()
 check("an expired access token is refreshed with the refresh token", r.status_code == 200 and st["refreshes"] >= 1, (r.text, st["refreshes"]))
 c.post(D + "/_cfg", json={"ttl": 3600})
@@ -160,7 +168,7 @@ c.delete(S + "/connections/phone/dialmcp", headers=H)
 pc = phone_conn()
 check("disconnecting removes DialMCP", not pc["dialmcp"]["connected"], pc["dialmcp"])
 if not pc.get("telnyx_ready"):
-    r = act("phone_call", {"to": "+1 415 555 0123", "purpose": "Ask whether they are open on Sunday"})
+    r = act("phone_call", {"to": "+1 415 643 2200", "purpose": "Ask whether they are open on Sunday"})
     check("without a line, phone_call is refused", r["status"] == "denied", r)
 print("ALL PASS" if not fails else f"{len(fails)} FAILED: {fails}")
 sys.exit(1 if fails else 0)

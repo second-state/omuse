@@ -74,6 +74,27 @@ pub(crate) fn in_quarantine(p: &Path, trailing_sep: bool) -> bool {
     }
 }
 
+/// A result too long for the model's limit with its short top-level fields first: links, notes and ids (a fallback's
+/// `compare_url`, `hotels_fallback`) then survive the cut, which takes the bulky results and page text instead
+/// (travel_brave_real 2026-10-31: the Kayak compare link came last and was cut).
+pub(crate) fn short_fields_first(body: &Value, limit: usize) -> Value {
+    let Some(m) = body.as_object() else {
+        return body.clone();
+    };
+    if pyjson::dumps(body).chars().count() <= limit {
+        return body.clone();
+    }
+    let size = |v: &Value| pyjson::dumps(v).chars().count();
+    let (short, long): (Vec<_>, Vec<_>) = m.iter().partition(|(_, v)| size(v) <= 600);
+    Value::Object(
+        short
+            .into_iter()
+            .chain(long)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    )
+}
+
 impl Runtime {
     /// A workspace path; errors when it escapes the workspace.
     pub fn path(&self, rel: &str) -> Result<PathBuf, LocalErr> {
@@ -115,7 +136,7 @@ impl Runtime {
         match res.get("status").and_then(Value::as_str) {
             Some("ok") => {
                 let body = res.get("result").cloned().unwrap_or(Value::Null);
-                let txt = pyjson::dumps(&body);
+                let txt = pyjson::dumps(&short_fields_first(&body, RESULT_LIMIT));
                 let untrusted = body.is_object()
                     && (get_str(&body, "trust") == "untrusted" || body.get("messages").is_some());
                 if untrusted {
@@ -203,6 +224,66 @@ impl Runtime {
             };
             // invalid numbers become what the user means (no budget = every price, 0 travellers = 1)
             omuse_common::util::sanitize_search_args(&mut args);
+            // the model's links, repaired where its arguments are read (crate::links): a link cut short or mistyped
+            // becomes the one a result showed — the rest of OMuse only ever sees whole, real links
+            crate::links::repair_value(&mut args, &crate::links::seen(transcript));
+            // and the other values it copies the same way (crate::ids): ids, refs, accounts, input paths, a skill's name
+            crate::ids::repair_args(name, &mut args, transcript);
+            // a click in an arrival card's or a claim's run carries the kind of form: Sentinel refuses its Submit from the
+            // element's real label and the page is handed over (`policy::user_submit_click`)
+            if name == "browser_click" {
+                let kind = if arrival_run(transcript) {
+                    "arrival"
+                } else if super::guards::claim_run(transcript) {
+                    "claim"
+                } else {
+                    ""
+                };
+                if let (false, Some(o)) = (kind.is_empty(), args.as_object_mut()) {
+                    o.insert("user_submits".into(), json!(kind));
+                }
+            }
+            // an arrival card's hand-over: the unanswered Yes / No questions get the user's default, No, in code first
+            // (Sentinel `default_no`; arrival_cards4_real 2026-10-31: the UK ETA's declarations left blank)
+            if name == "browser_request_takeover" && arrival_run(transcript) {
+                let departure = departure_default(transcript, &get_str(t, "goal"));
+                if let Some(o) = args.as_object_mut() {
+                    o.insert("default_no".into(), json!(true));
+                    // and the departure date the user's default gives (arrival + 7 days), when nothing gives another
+                    if let Some(d) = departure {
+                        o.insert("set_departure".into(), json!(d));
+                    }
+                }
+            }
+            // one tool for every known form: `form_fill(facts)` runs the function for the page the task has open
+            // (crate::forms, by its URL) and goes to Sentinel as `browser_fill_form` with the plan computed in code; a
+            // page no function knows gets the generic path's message instead (no call)
+            let mut form_msg: Option<String> = None;
+            // the agent's click on a box a known page always has ticked: the tick itself (idempotent), never a toggle
+            let name: &str = match super::guards::apdt_fixed_ticks(transcript, call) {
+                Some(mut f) if f["on_box"].as_bool().unwrap_or(false) => {
+                    if let Some(o) = f.as_object_mut() {
+                        o.remove("on_box");
+                    }
+                    args = f;
+                    "browser_fill_form"
+                }
+                _ => name,
+            };
+            let name: &str = if name == "form_fill" {
+                match self.form_plan(&task_id, mode.lane, &args).await {
+                    Ok(plan) => {
+                        args = plan;
+                        "browser_fill_form"
+                    }
+                    Err(msg) => {
+                        form_msg = Some(msg);
+                        name
+                    }
+                }
+            } else {
+                name
+            };
             let mut ev =
                 json!({"call_id": call.id, "name": name, "args": preview_args(&args), "sub": sub});
             if !mode.lane.is_empty() {
@@ -219,10 +300,52 @@ impl Runtime {
             let seen = self.inner.lock().seen_ids.get(&task_id).cloned();
             let st = self.store.clone();
             let tid2 = task_id.clone();
+            // travel searches happen in Main and the Travel bot; the other bots (insurance: the trip's facts) may read mail
+            let goal = get_str(t, "goal");
+            let travel_bot = self.bot_of(t).is_main() || self.bot_of(t).id == "travel";
             let repeated = invented_id_guard(transcript, call, seen.as_ref())
+                .or_else(|| {
+                    travel_bot
+                        .then(|| mail_before_travel_guard(&goal, call))
+                        .flatten()
+                })
                 .or_else(|| repeat_guard(transcript, call))
                 .or_else(|| retype_guard(transcript, call))
+                .or_else(|| empty_mail_guard(call))
+                .or_else(|| arrival_submit_guard(transcript, call))
+                .or_else(|| apdt_face_guard(transcript, call))
+                .or_else(|| super::guards::takeover_before_fill_guard(transcript, call))
+                .or_else(|| super::guards::user_edit_guard(transcript, call))
+                .or_else(|| {
+                    let (st, tid) = (st.clone(), tid2.clone());
+                    one_search_guard(move || st.events(&tid, 0).unwrap_or_default(), call)
+                })
+                .or_else(|| {
+                    // the first of several searches is the one the request names first
+                    let searched = transcript
+                        .iter()
+                        .flat_map(crate::agent::util::tool_calls)
+                        .any(|tc| {
+                            travel_search(&crate::agent::util::stored_call(tc).0).is_some()
+                                && get_str(tc, "id") != call.id
+                        });
+                    search_order_guard(&goal, searched, call)
+                })
                 .or_else(|| host_guard(move || st.events(&tid2, 0).unwrap_or_default(), call));
+            // the softer checks never stop the call: what they found goes with its result as a note for the agent
+            // (the user's rule, 2026-10-30: auto-approve is the default, so only the hand-over and the Vault's
+            // secrets are hard stops)
+            let notes: Vec<String> = [
+                clear_guard(transcript, call),
+                super::guards::form_fill_note(transcript, call),
+                arrival_mail_guard(transcript, &goal, call),
+                arrival_ask_first_guard(transcript, &goal, call),
+                departure_date_guard(transcript, call),
+                next_city_note(transcript, call),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
             let reread = if repeated.is_some() {
                 None
             } else {
@@ -377,8 +500,24 @@ in the chat) and write the final answer.");
  {blocked} already blocked automated browsing in this task; other URLs on it will be blocked too. \
 Use another source, or browser_request_takeover if this exact site is essential.");
                 ok = false;
+            } else if let Some(m) = form_msg.take() {
+                content = m;
             } else if ext_names.contains(&name) {
                 let golden = get_str(t, "source") == "golden";
+                // a known page's fixed answers, ticked in code before the agent's click moves on (once per task)
+                if let Some(fill) = super::guards::apdt_fixed_ticks(transcript, call)
+                    .filter(|f| !f["on_box"].as_bool().unwrap_or(false))
+                {
+                    if self.inner.lock().fixed_ticks.insert(task_id.clone()) {
+                        let r = self
+                            .sentinel("POST", "/internal/act", Some(json!({"task_id": task_id,
+                                "call_id": format!("{}-ticks", call.id), "tool": "browser_fill_form", "args": fill,
+                                "lane": mode.lane})), 60.0)
+                            .await;
+                        self.event(&task_id, "fixed_ticks", json!({"ok": r.is_ok()}))
+                            .await;
+                    }
+                }
                 let mut act = json!({"task_id": task_id, "call_id": call.id, "tool": name,
                         "args": args, "no_ask": sub || mode.batch, "dry_run": golden});
                 if !mode.lane.is_empty() {
@@ -578,6 +717,9 @@ on this site; switch to another source, or request a takeover if this site is es
                     ids.extend(IDS.find_iter(&content).map(|m| m.as_str().to_string()));
                 }
             }
+            for n in &notes {
+                content = format!("{content}\n\n(System note) {n}");
+            }
             transcript.push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
             self.note_tool_text(&task_id, &content);
             let mut ev = json!({"call_id": call.id, "name": name, "ok": ok, "sub": sub, "preview": truncate(&content, 800)});
@@ -589,6 +731,26 @@ on this site; switch to another source, or request a takeover if this site is es
                 ev["approval_id"] = json!(auto_aid);
             }
             self.event(&task_id, "tool_result", ev).await;
+            // the last click of a purchase, booking or submission is the user's (Sentinel `hand_over_click`): the page
+            // is handed over here, in code, instead of trusting the model to call browser_request_takeover after the
+            // refusal (travel_flight_real 2026-10-30: "The payment click was blocked by Sentinel, so I did not retry")
+            if !sub {
+                if let Some(button) = hand_over_button(&content) {
+                    let tc = ToolCall {
+                        id: format!("{}_handover", call.id),
+                        name: "browser_request_takeover".into(),
+                        args: json!({"reason": format!(
+                            "The page is filled in. Review it, fill in anything still missing (such as the CAPTCHA or \
+                        security code) and press \"{button}\" yourself; hand the browser back when it is done."
+                        )}),
+                    };
+                    transcript.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": tc.id, "type": "function",
+                        "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+                    return self
+                        .exec_call(t, &tc, transcript, catalog, remaining, allow, mode)
+                        .await;
+                }
+            }
             Ok(CallOutcome { ok, refused })
         })
     }
@@ -1135,17 +1297,32 @@ Scroll, wait for the page to finish loading, describe it differently, or use bro
         if !result.is_object() && !result.is_array() {
             return;
         }
-        let (url, text) = if result.is_object() && tool.starts_with("browser_") {
-            (sget(result, "url"), sget(result, "snapshot"))
+        // what was read, per page: a browser page's snapshot; browser_read's pages (`{"pages": [{url, text}]}`) each on
+        // their own (2026-10-30: choice cards refused a page browser_read had just read, shopping_real); anything else
+        // as the tool's whole result
+        let mut entries: Vec<(String, String)> = Vec::new();
+        if result.is_object() && tool.starts_with("browser_") {
+            if let Some(pages) = result.get("pages").and_then(Value::as_array) {
+                for p in pages {
+                    let t = sget(p, "text");
+                    let t = if t.is_empty() { sget(p, "snapshot") } else { t };
+                    entries.push((sget(p, "url"), t));
+                }
+            } else {
+                entries.push((sget(result, "url"), sget(result, "snapshot")));
+            }
         } else {
-            (tool.to_string(), pyjson::dumps(result))
-        };
-        if text.trim().is_empty() {
+            entries.push((tool.to_string(), pyjson::dumps(result)));
+        }
+        entries.retain(|(_, t)| !t.trim().is_empty());
+        if entries.is_empty() {
             return;
         }
         let mut inner = self.inner.lock();
         let ev = inner.evidence.entry(task_id.to_string()).or_default();
-        ev.push(json!({"url": url, "text": take_chars(&text, 120000), "tool": tool}));
+        for (url, text) in entries {
+            ev.push(json!({"url": url, "text": take_chars(&text, 120000), "tool": tool}));
+        }
         let n = ev.len();
         if n > 80 {
             ev.drain(..n - 80);
@@ -1181,7 +1358,7 @@ Scroll, wait for the page to finish loading, describe it differently, or use bro
         format!("{}{}", net, p.path.trim_end_matches('/')).to_lowercase()
     }
 
-    fn sources_for(&self, task_id: &str, url: &str) -> Vec<String> {
+    pub(crate) fn sources_for(&self, task_id: &str, url: &str) -> Vec<String> {
         let ev = self
             .inner
             .lock()
@@ -1216,6 +1393,47 @@ Scroll, wait for the page to finish loading, describe it differently, or use bro
     }
 
     /// Problems with `present_choices` options that cannot be found in what the task read (empty = all verified).
+    /// The listings on the results page a comparison draws from (`url`, or its options' page), as read in this task.
+    pub(crate) fn listings_read(&self, task_id: &str, url: &str) -> Vec<crate::listings::Listing> {
+        let mut out: Vec<crate::listings::Listing> = Vec::new();
+        for text in self.sources_for(task_id, url) {
+            for l in crate::listings::parse(&text) {
+                if !out.iter().any(|o| o.title == l.title) {
+                    out.push(l);
+                }
+            }
+        }
+        out
+    }
+
+    /// A comparison of listings the model chose itself from a results page (no `ranking`): the page's listings when it
+    /// has enough of them and the options are among them — the criteria are then asked for once, and code ranks.
+    pub(crate) fn unranked_listings(&self, task_id: &str, options: &[Value]) -> bool {
+        let Some(url) = options
+            .iter()
+            .map(|o| sget(o, "source_url"))
+            .find(|u| !u.trim().is_empty())
+        else {
+            return false;
+        };
+        let listings = self.listings_read(task_id, &url);
+        if listings.len() < 6 {
+            return false;
+        }
+        let on_page = options
+            .iter()
+            .filter(|o| {
+                let label = Self::norm(&sget(o, "label"));
+                !label.is_empty()
+                    && listings.iter().any(|l| {
+                        Self::norm(&l.title).contains(&label)
+                            || label.contains(&Self::norm(&l.title))
+                    })
+            })
+            .count();
+        on_page >= 2 && self.inner.lock().ranking_asked.insert(task_id.to_string())
+    }
+
     pub fn check_choices(&self, task_id: &str, options: &[Value]) -> Vec<String> {
         let mut problems = Vec::new();
         for (i, o) in options.iter().enumerate() {
@@ -1280,4 +1498,63 @@ pub(crate) fn exc_msg(e: &anyhow::Error) -> String {
         Some((head, rest)) if !head.contains(' ') => rest.to_string(),
         _ => s,
     }
+}
+
+impl Runtime {
+    /// The plan for the form the task has open (`form_fill`): the page's URL from the browser, its function
+    /// (`forms::form_for`), the facts from the call and the profile → `{"form", "fills"}` for `browser_fill_form`.
+    /// `Err` is the generic path's message: no page open, or no function for this page.
+    async fn form_plan(&self, task_id: &str, lane: &str, args: &Value) -> Result<Value, String> {
+        let page = if lane.is_empty() {
+            task_id.to_string()
+        } else {
+            format!("{task_id}~{lane}")
+        };
+        let st = self
+            .sentinel("GET", "/internal/browser_state", None, 10.0)
+            .await
+            .unwrap_or(Value::Null);
+        let url = st["tasks"]
+            .as_array()
+            .and_then(|a| a.iter().find(|x| get_str(x, "task_id") == page))
+            .map(|x| get_str(x, "url"))
+            .unwrap_or_default();
+        if url.is_empty() || url == "about:blank" {
+            return Err("ERROR: no form page is open in this task — open the form first (browser_navigate), then call \
+form_fill."
+                .into());
+        }
+        let Some((form, f)) = crate::forms::form_for(&url) else {
+            return Err(format!(
+                "No form function knows this page ({}). Fill it field by field from the snapshot (browser_type, \
+browser_select, browser_fill_secret for passport fields), then hand it over with browser_request_takeover.",
+                truncate(&url, 120)
+            ));
+        };
+        let facts = crate::forms::Facts::from_args(args);
+        let profile = self.store.profile().unwrap_or_else(|_| json!({}));
+        let inputs = crate::forms::Inputs {
+            facts: &facts,
+            profile: &profile,
+        };
+        let fills: Vec<Value> = f(&inputs)
+            .iter()
+            .filter_map(crate::forms::Op::to_json)
+            .collect();
+        Ok(json!({"form": form, "fills": fills}))
+    }
+}
+
+/// The reason of a hand-over the runtime makes itself (`Runtime::run`: a filled form the agent did not hand over).
+pub(crate) const HANDOVER_REASON: &str =
+    "The form is filled in. Review it, fill in anything still missing (such as the \
+CAPTCHA or security code) and submit it yourself; hand the browser back when it is done.";
+
+/// The button of a click refused as the user's own — by Sentinel (`policy::hand_over_click`: "\"Pay now\" … that click
+/// is the user's own") or by a guard (`guards::arrival_submit_guard`) — from the refusal the agent got.
+pub(crate) fn hand_over_button(result: &str) -> Option<String> {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"^(?:DENIED by Sentinel|ERROR): [\s\S]*?"([^"\n]{1,60})" [^:\n]{0,80}: that click is the user's own"#).unwrap()
+    });
+    RE.captures(result).map(|c| c[1].to_string())
 }

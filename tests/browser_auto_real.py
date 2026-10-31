@@ -1,99 +1,96 @@
-"""Auto-approve browser actions, with a real model on a real website (OMUSE_E2E_REAL=1, see travel_common.py).
+"""Auto-approve browser actions, with a real model on a real website, from the user's point of view (see
+tests/user_common.py). The user's mailbox has their Tokyo hotel booking (Hotel Ginza Grand, 8-7-6 Ginza).
 
-The task reads the user's hotel booking from mail and then opens the hotel's address on openstreetmap.org. Reading
-mail taints the task, and a URL that carries parameters on a site the task has not used yet is exactly what Sentinel's
-data-egress check stops for approval — so the second step always needs one (the request names the site but not its
-domain: a domain written in the request is trusted and would skip the check). With the setting on, the task must never
-wait: the action is recorded as approved by "auto" and the answer names the location. With the setting off, the same
-request must stop at that step (the suite then approves it by hand so the task can finish).
+The user asks Main's chat to find the booking in their mail and look the hotel up on Google Maps (named, not its
+domain: a domain written in the request is trusted and would skip the check). OMuse finds the place with SerpApi
+(places_search, the Google Maps data) and loads its Google Maps page (the result's map_url) in the browser. Reading mail taints the task, and
+opening a page with the address in its URL on a site the task has not used yet is exactly what Sentinel stops for
+approval — so that step always needs one. What the user does and sees:
+* on: in Settings the user turns "Auto-approve browser actions" on and asks; no approval dialog appears, the chat (Main's
+  or the bot's conversation behind "Continue in …") shows the "Sentinel auto-approved: Open page · auto-approved"
+  card, and the answer names the hotel from the mail and tells what the map found;
+* off: in Settings the user turns it off and asks the same; an approval dialog to open the Google Maps page appears (the user
+  approves it), no auto-approved card is shown, and the answer names the hotel.
+One TIMING line per request (from Enter to the answer).
 
-    OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env OMUSE_E2E_MODELS=alt tests/run_in_docker.sh browser_auto_real"""
-import json
+    OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env OMUSE_E2E_MODELS=alt bash tests/run_in_docker.sh browser_auto_real"""
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tests import skills_common as K  # noqa: E402
-from tests import travel_common as T  # noqa: E402
+from tests import user_common as U  # noqa: E402
+from tests.user_common import check  # noqa: E402
 
-if not T.REAL:
-    print("browser_auto_real needs a real model (OMUSE_E2E_REAL=1)")
-    sys.exit(1)
-
-B, H, c = T.B, T.H, T.c
-# the site is named, but not its domain: a domain written in the request counts as trusted and skips the egress check
-PROMPT = ("Find my Tokyo hotel booking in my email, then look the hotel's address up on OpenStreetMap (the free map site, "
-          "use its search page with the address in the URL) and tell me the hotel name, address and whether the map found it. "
-          "Research only.")
+PROMPT = ("Find my Tokyo hotel booking in my email, then look the hotel up on Google Maps and open its map page, "
+          "and tell me the hotel name, address and whether the map found it. Research only.")
 MAIL = [
     ("Hotel Ginza Grand <reservations@ginzagrand.example>", "Booking confirmed: Hotel Ginza Grand 20-23 Nov 2026",
      "Confirmation 88812345 for Lucas Lu. Hotel Ginza Grand, 8-7-6 Ginza, Chuo City, Tokyo 104-0061, Japan. Check-in 20 Nov 2026 15:00.", 2),
 ]
+AUTO = re.compile(r"auto-approved", re.I)
 
 
-def set_auto(on: bool) -> None:
-    r = c.put(B + "/sentinel/api/connections/browser", json={"config": {"auto_approve": on}}, headers=H)
-    T.check(f"auto-approve browser actions set to {on}", r.status_code == 200, r.text[:200])
+async def set_auto(u: U.User, on: bool) -> None:
+    """Settings → "Auto-approve actions": the user ticks or unticks the box (it saves at once, with a toast)."""
+    pg = u.page
+    await pg.goto(U.APP + "#settings")
+    box = pg.locator("label.toggle", has_text="Auto-approve actions").locator("input[type=checkbox]")
+    await box.wait_for(timeout=20000)
+    if await box.is_checked() != on:
+        await box.click()
+        toast = "approved automatically" if on else "need your approval"
+        await pg.wait_for_function("t => document.body.innerText.includes(t)", arg=toast, timeout=10000)
+    await pg.reload()
+    await box.wait_for(timeout=20000)
+    check(f"Settings shows \"Auto-approve actions\" {'on' if on else 'off'} after a reload", await box.is_checked() == on)
 
 
-def trace(tasks):
-    for tid in tasks:
-        for e in T.task(tid).get("events", []):
-            d = e.get("data") or {}
-            if e["type"] == "tool_call":
-                print(f"INFO call {d.get('name')} {json.dumps(d.get('args'), ensure_ascii=False)[:160]}")
-            elif e["type"] == "tool_result":
-                print(f"INFO  -> ok={T.ok(d)} {'auto ' if d.get('approved') == 'auto' else ''}{str(d.get('preview') or d.get('error') or '')[:140]!r}")
-            elif e["type"] in ("plan", "waiting", "approval_auto", "approval_resolved", "site_blocked", "error", "retry"):
-                print(f"INFO {e['type']} {json.dumps(d, ensure_ascii=False)[:300]}")
+async def cards(u: U.User) -> list[str]:
+    """The cards the user sees for this request: in Main's chat and, when a bot answered, in that bot's conversation."""
+    out = await u.thread_cards()
+    pg = u.page
+    link = pg.locator(".msg.assistant .handoff-link").last
+    if await link.count():
+        back = pg.url
+        await link.click()
+        try:
+            await pg.wait_for_selector(".msg.assistant:not(.live) .bubble", timeout=30000)
+        except Exception:   # noqa: BLE001
+            pass
+        await pg.wait_for_timeout(1000)
+        out += await u.thread_cards()
+        await pg.goto(back)
+        await pg.wait_for_selector("#chatInput")
+    print(f"INFO cards: {out}")
+    return out
 
 
-K.seed_mail(MAIL)
-K.connect_mail()
-T.start_proxy()
-T.use_proxy_model()
-c.put(B + "/api/settings", json={"language": "en"}, headers=H)
-try:
-    # ---- on: the egress-checked page load is approved by auto, shown, and the task never waits
-    set_auto(True)
-    info = T.run(PROMPT, timeout=600)
-    tasks = info["tasks"]
-    trace(tasks)
-    final = T.task(tasks[-1])
-    ev = [e for tid in tasks for e in T.task(tid).get("events", [])]
-    names = [e["data"]["name"] for e in ev if e["type"] == "tool_call" and not (e["data"] or {}).get("sub")]
-    auto = [e["data"] for e in ev if e["type"] == "approval_auto"]
-    waits = [e["data"] for e in ev if e["type"] == "waiting" and (e["data"] or {}).get("type") == "approval"]
-    T.check("on: the task completed", final.get("status") == "COMPLETED", (final.get("status"), final.get("error"), str(final.get("result"))[:300]))
-    T.check("on: the booking was read from mail first", any(n.startswith("gmail_") for n in names), names)
-    T.check("on: the map site was opened with the address in the URL",
-            any("openstreetmap.org" in json.dumps((e["data"] or {}).get("args")) for e in ev if e["type"] == "tool_call"), names)
-    T.check("on: the task never waited for an approval", not waits and not info["approvals"], (waits, info["approvals"]))
-    T.check(f"on: the egress-checked browser action was approved by auto ({len(auto)})", len(auto) >= 1
-            and all(str(a.get("tool", "")).startswith("browser_") for a in auto), (auto, names))
-    hist = c.get(B + "/sentinel/api/approvals?status=resolved&limit=50", headers=H).json()["approvals"]
-    rec = [a for a in hist if a["task_id"] in tasks]
-    T.check("on: each auto-approval is on record, approved, decided by auto", rec and all(a["status"] == "approved" and a.get("decided_by") == "auto" for a in rec), rec[:3])
-    res = str(final.get("result") or "")
-    T.check("on: the answer names the hotel from the mail", "Ginza Grand" in res, res[:400])
-    T.timing("browser_auto_real/on", info, len(names), sum(1 for n in names if n.startswith("browser_")))
+async def main():
+    async with U.User() as u:
+        # ---- on: the map page is approved automatically; no dialog, an auto-approved card
+        await set_auto(u, True)
+        a = await u.ask(PROMPT, label="on")
+        c = await cards(u)
+        check("on: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
+        check("on: no approval dialog appeared", not a.approvals, a.approvals)
+        auto = [x for x in c if AUTO.search(x)]
+        check("on: the chat shows the browser action as auto-approved", bool(auto), c)
+        check("on: the auto-approved card is the page load (\"Open page\")", any(re.search(r"open page", x, re.I) for x in auto), auto)
+        check("on: the answer tells what the map (Google Maps) found", a.mentions("Google Maps") or any("google.com/maps" in x for x in a.links),
+              (a.text[:400], a.links))
+        check("on: the answer names the hotel from the mail", "Ginza Grand" in a.text, a.text[:400])
 
-    # ---- off: the same request stops at that page load until the user approves
-    set_auto(False)
-    info2 = T.run(PROMPT, timeout=600)
-    tasks2 = info2["tasks"]
-    trace(tasks2)
-    final2 = T.task(tasks2[-1])
-    ev2 = [e for tid in tasks2 for e in T.task(tid).get("events", [])]
-    manual = [a for a in info2["approvals"] if str(a["tool"]).startswith("browser_")]
-    T.check(f"off: the same work asked for approval ({len(manual)}, approved here by the suite)", len(manual) >= 1,
-            (info2["approvals"], [e["data"]["name"] for e in ev2 if e["type"] == "tool_call"]))
-    T.check("off: no auto-approval happened", not [e for e in ev2 if e["type"] == "approval_auto"], [e["type"] for e in ev2])
-    T.check("off: approved by hand, the task completed", final2.get("status") == "COMPLETED", (final2.get("status"), final2.get("error")))
-    T.timing("browser_auto_real/off", info2, len([e for e in ev2 if e["type"] == "tool_call"]),
-             len([e for e in ev2 if e["type"] == "tool_call" and e["data"]["name"].startswith("browser_")]))
-    os.makedirs(os.path.dirname(T.LAST), exist_ok=True)
-    json.dump({"suite": "browser_auto_real", "tasks": tasks + tasks2, "conv_id": info2["conv_id"]}, open(T.LAST, "w"))
-finally:
-    set_auto(False)
-    T.finish()
+        # ---- off: the same request stops at the map page until the user approves
+        await set_auto(u, False)
+        a = await u.ask(PROMPT, label="off")
+        c = await cards(u)
+        check("off: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
+        check("off: an approval dialog for the map site appeared (approved by the user)",
+              any("google.com/maps" in x.lower() or "google maps" in x.lower() for x in a.approvals), a.approvals)
+        check("off: no action was auto-approved", not [x for x in c if AUTO.search(x)], c)
+        check("off: the answer names the hotel from the mail", "Ginza Grand" in a.text, a.text[:400])
+
+
+U.setup(mail=MAIL, vault=False)
+U.run(main)

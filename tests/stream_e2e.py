@@ -1,4 +1,12 @@
-"""Streamed answers: with Settings `stream_answers` on (default) the executor's call is `stream: true`, and the page's
+"""Streamed answers: the exact request and event guarantees a real-model run cannot see (scripted model). The use case —
+the answer appears in the chat bit by bit while it is written, each piece the beginning of the final answer, no
+reasoning shown, and nothing the model says while calling a tool shown as the answer — is tested from the user's side
+by tests/stream_real.py. What stays here, and why it cannot be e2e: the executor's request is `stream: true` with usage
+asked for (the helper calls are not), the deltas' pace and order before the task's completed update and their not
+being stored as events, `<think>` reasoning held back (forced: the scripted model always reasons first), a tool-call
+turn flagged `calls` (internal event field), and the `stream_answers` setting off (an API-only setting, not in the UI).
+
+With Settings `stream_answers` on (default) the executor's call is `stream: true`, and the page's
 event stream gets `answer_delta` events with the visible text so far while the model writes — never the
 `<think>…</think>` reasoning, which is held back until the answer proper begins; a turn that carries tool calls is
 flagged (`calls`) so its commentary is not shown as an answer; the last delta equals the stored answer and comes before

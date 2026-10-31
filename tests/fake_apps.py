@@ -1,4 +1,5 @@
 """Fake Notion (/v1/...) and Slack (/api/...) APIs for tests (port 8094)."""
+import base64
 import datetime as dt
 import json
 import time
@@ -55,7 +56,13 @@ def reset():
 
 reset()
 DB = {"object": "database", "id": DB_ID, "title": rt("Tasks"), "url": "https://www.notion.so/" + DB_ID.replace("-", ""),
-      "properties": {"Name": {"type": "title"}, "Status": {"type": "status"}, "Due": {"type": "date"}, "Tags": {"type": "multi_select"}}}
+      "properties": {"Name": {"type": "title"},
+                     # as the real API returns a status property: its options and the three groups they belong to
+                     "Status": {"type": "status", "status": {
+                         "options": [{"id": "s1", "name": "Todo"}, {"id": "s2", "name": "Doing"}, {"id": "s3", "name": "Done"}],
+                         "groups": [{"name": "To-do", "option_ids": ["s1"]}, {"name": "In progress", "option_ids": ["s2"]},
+                                    {"name": "Complete", "option_ids": ["s3"]}]}},
+                     "Due": {"type": "date"}, "Tags": {"type": "multi_select", "multi_select": {"options": []}}}}
 
 
 def auth(req):
@@ -186,8 +193,9 @@ async def q_db(did: str, req: Request):
     if f.get("timestamp") == "last_edited_time":
         after = f["last_edited_time"].get("on_or_after") or f["last_edited_time"].get("after")
         rows = [p for p in rows if p["last_edited_time"] >= after]
-    elif f.get("property") == "Status":
-        rows = [p for p in rows if p["properties"]["Status"]["status"]["name"] == f["status"]["equals"]]
+    elif f.get("property") == "Status" or f.get("or"):
+        wanted = {x["status"]["equals"] for x in (f.get("or") or [f]) if x.get("property") == "Status"}
+        rows = [p for p in rows if p["properties"]["Status"]["status"]["name"] in wanted]
     rows.sort(key=lambda p: p["last_edited_time"])
     return {"results": rows, "has_more": False}
 
@@ -389,7 +397,7 @@ async def yahoo_chart(sym: str, interval: str = "1wk"):
     name, cur, p0 = _MKT[sym]
     n = 24 if interval == "1mo" else 52
     step = 30 * 86400 if interval == "1mo" else 7 * 86400
-    t0 = 1759104000 - n * step   # ends 2025-09-29
+    t0 = (int(time.time()) // 86400 - 1) * 86400 - (n - 1) * step   # the last close is yesterday's: the data is current
     closes = [round(p0 * (1 + 0.01 * i) + (15 if i == n // 2 else 0), 2) for i in range(n)]
     return {"chart": {"result": [{"meta": {"symbol": sym, "longName": name, "currency": cur, "fullExchangeName": "HKSE",
                                            "regularMarketPrice": closes[-1], "regularMarketTime": t0 + (n - 1) * step,
@@ -446,6 +454,96 @@ async def slow_page(s: float = 6, name: str = "slow"):
     return HTMLResponse(f"<html><head><title>{name}</title></head><body><h1>{name}</h1><button>Go</button></body></html>")
 
 
+# ---------------------------------------------------------------- official sites in the search results
+# The real-model suites (insurance_real, claims_real, emergency_real, refunds_real) look things up the way a user's
+# agent does: a web search for "Singapore Airlines flight status SQ 638" must find the airline's page. The official
+# sites are stand-ins at their real addresses (tests/https_standins.py), so a query about one of them gets that site's
+# page as its first results; any other query gets the generic results the scripted suites expect.
+_SQ = ("singapore airlines", "singaporeair", "sq ", "sq6", "sq-", "sq1", "sq2", "sq3")
+OFFICIAL = [   # (all of these words … , any of these …, results)
+    ((), ("flight status", "flightstatus", "status of flight", "flight delay", "delayed flight", "is sq", "sq 638 status", "sq638 status"),
+     [("Flight Status | Singapore Airlines", "https://www.singaporeair.com/en_UK/sg/travel-info/flightstatus.html",
+       "Check the latest departure and arrival times of Singapore Airlines flights by flight number or route.")]),
+    ((), ("delays and cancellations", "flight disruption", "refund", "compensation", "voucher", "cancelled flight", "delay certificate",
+          "meal voucher", "rebook"),
+     [("Delays and Cancellations | Singapore Airlines", "https://www.singaporeair.com/en_UK/sg/travel-info/flight-disruptions.html",
+       "Rebooking, refunds to your original form of payment, meals and hotel when your flight is delayed or cancelled; flight delay certificates.")]),
+    ((), ("baggage", "luggage", " bag ", "bag did", "worldtracer", "pir"),
+     [("Delayed, Damaged or Lost Baggage | Singapore Airlines", "https://www.singaporeair.com/en_UK/sg/travel-info/delayed-baggage.html",
+       "Report delayed baggage at the airport, track your bag online with WorldTracer and claim interim expenses."),
+      ("WorldTracer — Track your delayed baggage", "https://wtrweb.worldtracer.aero/WorldTracerWeb/bagtrace.html",
+       "Track your delayed bag with your file reference (for example NRTSQ12345) and family name.")]),
+]
+OFFICIAL_TOPICS = [   # (any of these words, then the rows above apply only to queries about that site … , results)
+    (("embassy", "consulate", "consular", "passport", "emergency passport"),
+     [("Lost or stolen passports | Australian Embassy Japan", "https://japan.embassy.gov.au/tkyo/embassy.html",
+       "Report a lost or stolen passport, apply for an emergency passport, consular hours and the 24-hour Consular Emergency Centre."),
+      ("Medical assistance in Japan | Australian Embassy Japan", "https://japan.embassy.gov.au/tkyo/medical.html",
+       "English-speaking clinics and hospitals in Tokyo; what to do in a medical emergency.")]),
+    (("english-speaking doctor", "english speaking doctor", "english-speaking clinic", "english speaking clinic", "english-speaking hospital",
+      "english speaking hospital", "doctor in tokyo", "clinic in tokyo", "hospital in tokyo", "clinics tokyo", "hospitals tokyo"),
+     [("Medical assistance in Japan | Australian Embassy Japan", "https://japan.embassy.gov.au/tkyo/medical.html",
+       "English-speaking clinics and hospitals in Tokyo; what to do in a medical emergency.")]),
+    (("tax-free", "tax free", "taxfree", "tax refund", "consumption tax", "tax exemption"),
+     [("Japan Tax-Free Shop: the new refund system | Japan Tourism Agency", "https://www.mlit.go.jp/kankocho/tax-free/en/taxfree.html",
+       "From 1 November 2026 visitors pay the tax-inclusive price and receive the consumption tax back at departure.")]),
+]
+FWD_ROWS = {
+    "hk": [("Travel Insurance | FWD Hong Kong", "https://www.fwd.com.hk/",
+            "MyTravel Insurance, underwritten by bolttech Insurance (Hong Kong). Make a travel insurance claim: download the claim form."),
+           ("Travel Insurance Claim Form (PDF) | FWD Hong Kong",
+            "https://www.fwd.com.hk/files/v3/assets/blta9d684affff23c8c/bltf22c68114bd0cfb6/649e7bda1ea829102cf584d2/travel-insurance-clm-form-fillable.pdf",
+            "bolttech's travel insurance claim form (fillable PDF); email it to claims.hk@bolttechinsurance.com.")],
+    "claim": [("Make a travel claim online | FWD Singapore", "https://www.fwd.com.sg/claim-online/travel.html",
+               "Submit your FWD travel insurance claim online within 30 days of the incident.")],
+    "quote": [("Travel Insurance Online Quote | FWD Singapore", "https://www.fwd.com.sg/travel-insurance/online-quote/",
+               "Get a travel insurance quote online: Premium, Business and First plans.")],
+}
+
+
+def official_hits(q: str) -> list[tuple[str, str, str]]:
+    """The official stand-in pages a query is about, first (empty for any query the scripted suites send)."""
+    low = f" {(q or '').lower()} "
+    out: list[tuple[str, str, str]] = []
+    if "fwd" in low or "bolttech" in low:
+        if "bolttech" in low or "hong kong" in low or " hk " in low or "mytravel" in low:
+            out += FWD_ROWS["hk"]
+        elif "claim" in low:
+            out += FWD_ROWS["claim"]
+        else:
+            out += FWD_ROWS["quote"]
+    if any(w in low for w in _SQ):
+        for _, anyw, rows in OFFICIAL:
+            if any(w in low for w in anyw):
+                out += rows
+    elif "worldtracer" in low or ("baggage" in low and ("trac" in low or "delayed" in low)):
+        out += OFFICIAL[2][2]
+    for anyw, rows in OFFICIAL_TOPICS:
+        if any(w in low for w in anyw) and ("japan" in low or "tokyo" in low or "australia" in low):
+            out += rows
+    # entry rules and getting around (travel_info_real.py)
+    entry = ("visa", "exempt", "entry", "enter ", "arrival card", "tdac", "sgac", "immigration", "passport")
+    if ("thailand" in low or " thai " in low or "bangkok" in low) and any(w in low for w in entry):
+        out += [("Visa Exemption Scheme | Thai e-Visa — Ministry of Foreign Affairs", "https://www.thaievisa.go.th/visa/visa-exemption",
+                 "From 15 September 2026 nationals of listed countries may enter Thailand visa-free for up to 30 days; the TDAC must be submitted within 3 days before arrival."),
+                ("TDAC — Thailand Digital Arrival Card | Immigration Bureau", "https://tdac.immigration.go.th/",
+                 "Submit the Thailand Digital Arrival Card within 3 days before arrival. Free of charge.")]
+    if "singapore" in low and "airlines" not in low and any(w in low for w in entry):
+        out += [("Visa Requirements | Immigration & Checkpoints Authority", "https://www.ica.gov.sg/enter-transit-depart/entering-singapore/visa_requirements",
+                 "Who needs a visa to visit Singapore; passport validity; the SG Arrival Card within 3 days before arrival."),
+                ("SG Arrival Card | ICA", "https://eservices.ica.gov.sg/sgarrivalcard/",
+                 "Submit your SG Arrival Card with the electronic health declaration within 3 days before arrival. Free of charge.")]
+    if "narita" in low and any(w in low for w in ("tokyo", "train", "express", "n'ex", "nex", "timetable", "station", "fare", "skyliner")):
+        out += [("Narita Express (N'EX) timetable and fares | JR East", "https://www.jreast.co.jp/multi/en/nex/",
+                 "Narita Airport to Tokyo in about 53 minutes, all seats reserved; morning departures and fares (Tokyo ¥3,070).")]
+    seen, uniq = set(), []
+    for r in out:
+        if r[1] not in seen:
+            seen.add(r[1])
+            uniq.append(r)
+    return uniq
+
+
 DDG_HITS = []
 
 
@@ -470,8 +568,11 @@ async def fake_ddg(q: str = ""):
     DDG_HITS.append(q)
     if DDG_DOWN["on"]:
         return HTMLResponse("<html><body>Please complete the challenge</body></html>")
-    rows = "".join(f'<div class="result"><a class="result__a" href="/l/?uddg=http%3A%2F%2Fshop.test%3A8094%2Fslow%3Fs%3D0%26name%3DPage{i}">'
-                   f'Result {i} for {q}</a><a class="result__snippet">Snippet {i} about {q}</a></div>' for i in range(1, 6))
+    from urllib.parse import quote as _q
+    rows = "".join(f'<div class="result"><a class="result__a" href="/l/?uddg={_q(u, safe="")}">{t}</a><a class="result__snippet">{d}</a></div>'
+                   for t, u, d in official_hits(q))
+    rows += "".join(f'<div class="result"><a class="result__a" href="/l/?uddg=http%3A%2F%2Fshop.test%3A8094%2Fslow%3Fs%3D0%26name%3DPage{i}">'
+                    f'Result {i} for {q}</a><a class="result__snippet">Snippet {i} about {q}</a></div>' for i in range(1, 6))
     return HTMLResponse(f"<html><body>{rows}</body></html>")
 
 
@@ -606,7 +707,12 @@ def _mp4(label: str) -> bytes:
         return b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 200
 
 
-def _jpg(color, text: str) -> bytes:
+def _jpg(color, text: str, photo: str = "") -> bytes:
+    """A JPEG: the party photo tests/pages/drive/<photo>.jpg when there is one (the real-model suites need a picture a
+    model can see a party in), else a plain coloured card with `text` on it."""
+    real = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "pages", "drive", photo + ".jpg")
+    if photo and _os.path.exists(real):
+        return open(real, "rb").read()
     from PIL import Image, ImageDraw
     im = Image.new("RGB", (640, 480), color)
     ImageDraw.Draw(im).text((20, 20), text, fill=(255, 255, 255))
@@ -633,12 +739,12 @@ def _seed_drive():
         video={"width": 320, "height": 240, "durationMillis": "2000"})
     add("vid-2", "kyoto-temple.mp4", "video/mp4", modified="2026-04-11", viewed="2026-04-11", parents=("fld-trip",), data=_mp4("temple"),
         video={"width": 320, "height": 240, "durationMillis": "2000"})
-    add("img-1", "mia-cake.jpg", "image/jpeg", modified="2026-09-20", viewed="2026-09-21", parents=("fld-bday",), data=_jpg((200, 60, 80), "cake"),
-        image={"width": 640, "height": 480})
-    add("img-2", "mia-balloons.jpg", "image/jpeg", modified="2026-09-20", viewed="2026-09-21", parents=("fld-bday",), data=_jpg((60, 120, 200), "balloons"),
-        image={"width": 640, "height": 480})
-    add("img-3", "mia-friends.jpg", "image/jpeg", modified="2026-09-20", viewed=None, parents=("fld-bday",), data=_jpg((60, 160, 90), "friends"),
-        image={"width": 640, "height": 480})
+    add("img-1", "mia-cake.jpg", "image/jpeg", modified="2026-09-20", viewed="2026-09-21", parents=("fld-bday",), data=_jpg((200, 60, 80), "cake", "mia-cake"),
+        image={"width": 800, "height": 450})
+    add("img-2", "mia-balloons.jpg", "image/jpeg", modified="2026-09-20", viewed="2026-09-21", parents=("fld-bday",), data=_jpg((60, 120, 200), "balloons", "mia-balloons"),
+        image={"width": 800, "height": 450})
+    add("img-3", "mia-friends.jpg", "image/jpeg", modified="2026-09-20", viewed=None, parents=("fld-bday",), data=_jpg((60, 160, 90), "friends", "mia-friends"),
+        image={"width": 800, "height": 533})
     add("big-1", "backup-2022.zip", "application/zip", size=2_684_354_560, modified="2022-05-01", viewed=None)
     add("big-2", "old-render.mov", "video/quicktime", size=943_718_400, modified="2023-01-15", viewed="2023-02-01",
         video={"width": 1920, "height": 1080, "durationMillis": "600000"})
@@ -898,6 +1004,26 @@ def serp_account(api_key: str = ""):
     return {"account_id": "acc1", "plan_name": "Free Plan", "searches_per_month": 250, "this_month_usage": 12, "total_searches_left": 238}
 
 
+def _pb(field, value):
+    """One protobuf field: a varint (int) or bytes (str / bytes)."""
+    def varint(n):
+        out = b""
+        while n >= 0x80:
+            out += bytes([(n & 0x7F) | 0x80]); n >>= 7
+        return out + bytes([n])
+    if isinstance(value, int):
+        return varint(field << 3) + varint(value)
+    v = value.encode() if isinstance(value, str) else value
+    return varint(field << 3 | 2) + varint(len(v)) + v
+
+
+def _google_flights_url(origin, dest, date):
+    """The search URL Google gives for a one-way search (its tfs encodes the date and the two airports, as the real one does)."""
+    place = lambda code: _pb(1, 1) + _pb(2, code.split(",")[0])
+    tfs = _pb(1, 28) + _pb(2, 2) + _pb(3, _pb(2, date) + _pb(13, place(origin)) + _pb(14, place(dest))) + _pb(8, 1) + _pb(9, 1) + _pb(14, 1) + _pb(19, 2)
+    return "https://www.google.com/travel/flights?hl=en&gl=us&curr=USD&tfs=" + base64.urlsafe_b64encode(tfs).decode().rstrip("=")
+
+
 @app.get("/serpapi/search.json")
 def serp_search(request: Request):
     q = dict(request.query_params)
@@ -907,6 +1033,8 @@ def serp_search(request: Request):
     eng = q.get("engine")
     date = q.get("outbound_date", "2026-11-20")
     if eng == "google_flights":
+        if q.get("departure_id") == "ERR":   # Google Flights failing outright (flights_search then asks Kiwi.com)
+            return JSONResponse({"error": "Google Flights is unavailable"}, status_code=503)
         if q.get("departure_id") == "ZZZ":   # a route Google has no flights for (the flight chain's last step)
             return {"search_metadata": {}, "best_flights": [], "other_flights": []}
         if q.get("booking_token"):
@@ -918,7 +1046,7 @@ def serp_search(request: Request):
                                                       "baggage_prices": ["1 free checked bag", "Carry-on included"], "option_title": "Economy Lite"}},
                                         {"together": {"book_with": "Trip.com", "marketed_as": ["SQ 638"], "price": 612,
                                                       "booking_request": {"url": "https://www.google.com/travel/clk/f", "post_data": "u=trip"}, "option_title": "Economy"}}]}
-        return {"search_metadata": {"google_flights_url": "https://www.google.com/travel/flights?q=SIN-NRT"},
+        return {"search_metadata": {"google_flights_url": _google_flights_url(q.get("departure_id", ""), q.get("arrival_id", ""), date)},
                 "best_flights": [{"flights": [{"departure_airport": {"id": "SIN", "name": "Changi", "time": f"{date} 09:25"}, "arrival_airport": {"id": "NRT", "name": "Narita", "time": f"{date} 17:15"},
                                                "airline": "Singapore Airlines", "flight_number": "SQ 638", "duration": 410, "airplane": "Boeing 787", "travel_class": "Economy"}],
                                   "layovers": [], "total_duration": 410, "price": 620, "type": "One way", "booking_token": _FL_TOKEN, "extensions": ["Checked baggage for a fee"]}],
@@ -947,6 +1075,8 @@ def serp_search(request: Request):
                 "organic_results": [{"position": i, "title": f"Google result {i} for {q.get('q', '')}", "link": f"http://shop.test:8094/slow?s=0&name=G{i}",
                                      "snippet": f"Google snippet {i} about {q.get('q', '')}", "date": "Oct 1, 2026"} for i in range(1, 6)]}
     if eng == "google_hotels":
+        if "Errorville" in q.get("q", ""):   # Google Hotels failing outright (hotels_search then answers from web search)
+            return JSONResponse({"error": "Google Hotels is unavailable"}, status_code=503)
         if "Atlantis" in q.get("q", ""):   # a city Google has no hotels for (the hotel chain's web step)
             return {"search_metadata": {}, "properties": []}
         if q.get("property_token"):
@@ -962,7 +1092,7 @@ def serp_search(request: Request):
             return {"search_metadata": {"google_hotels_url": "https://www.google.com/travel/search?q=tokyo"}, "brands": _HOTEL_BRANDS,
                     "properties": [dict(h, property_token=_HT_TOKEN + h["name"][:3].lower()) for h, ids in _BRANDED_HOTELS if ids & want]}
         return {"search_metadata": {"google_hotels_url": "https://www.google.com/travel/search?q=tokyo"}, "brands": _HOTEL_BRANDS,
-                "properties": [{"type": "hotel", "name": "Hotel Ginza Grand", "property_token": _HT_TOKEN, "extracted_hotel_class": 4, "overall_rating": 4.4, "reviews": 2100,
+                "properties": [{"type": "hotel", "name": "Hotel Ginza Grand", "link": "https://ginzagrand.example", "property_token": _HT_TOKEN, "extracted_hotel_class": 4, "overall_rating": 4.4, "reviews": 2100,
                                 "rate_per_night": {"lowest": "S$210", "extracted_lowest": 210}, "total_rate": {"lowest": "S$630", "extracted_lowest": 630},
                                 "prices": [{"source": "Booking.com", "free_cancellation": True}], "nearby_places": [{"name": "Ginza Station", "transportations": [{"type": "Walking", "duration": "4 min"}]}],
                                 "amenities": ["Free Wi-Fi", "Breakfast", "Gym"], "check_in_time": "3:00 PM", "check_out_time": "11:00 AM"},
@@ -1022,9 +1152,10 @@ def brave_search(request: Request, q: str = "", count: int = 20):
     if request.headers.get("x-subscription-token") != BRAVE_KEY:
         return JSONResponse({"type": "ErrorResponse", "error": {"code": "SUBSCRIPTION_TOKEN_INVALID", "detail": "Invalid subscription token"}}, status_code=401)
     SEARCH_LOG.append({"provider": "brave", "q": q, "count": count})
-    return {"type": "search", "query": {"original": q}, "web": {"type": "search", "results": [
+    hits = [{"title": t, "url": u, "description": d, "age": "1 month ago"} for t, u, d in official_hits(q)]
+    return {"type": "search", "query": {"original": q}, "web": {"type": "search", "results": (hits + [
         {"title": f"Brave result {i} for {q}", "url": f"http://shop.test:8094/slow?s=0&name=B{i}", "description": f"Brave snippet {i} about {q}", "age": "3 days ago"}
-        for i in range(1, min(count, 20) + 1)]}}
+        for i in range(1, min(count, 20) + 1)])[:max(1, min(count, 20))]}}
 
 
 TAVILY_DOWN = {"on": False}
@@ -1044,7 +1175,8 @@ async def tavily_search(request: Request):
         return JSONResponse({"detail": {"error": "Unauthorized: missing or invalid API key."}}, status_code=401)
     b = await request.json()
     SEARCH_LOG.append({"provider": "tavily", "q": b.get("query"), "count": b.get("max_results"), "topic": b.get("topic"), "days": b.get("days")})
-    return {"query": b.get("query"), "results": [
+    return {"query": b.get("query"), "results": [{"title": t, "url": u, "content": d, "score": 0.99, "published_date": None}
+                                                for t, u, d in official_hits(b.get("query") or "")] + [
         {"title": f"Tavily result {i} for {b.get('query')}", "url": f"http://shop.test:8094/slow?s=0&name=T{i}", "content": f"Tavily content {i} about {b.get('query')}",
          "score": 0.9 - i / 100, "published_date": None} for i in range(1, int(b.get("max_results") or 5) + 1)], "response_time": 0.3}
 
@@ -1058,7 +1190,8 @@ async def exa_search(request: Request):
         return JSONResponse({"error": "x-api-key header is invalid"}, status_code=401)
     b = await request.json()
     SEARCH_LOG.append({"provider": "exa", "q": b.get("query"), "count": b.get("numResults")})
-    return {"requestId": "exa1", "results": [
+    return {"requestId": "exa1", "results": [{"title": t, "url": u, "publishedDate": "2026-10-01", "highlights": [d]}
+                                             for t, u, d in official_hits(b.get("query") or "")] + [
         {"title": f"Exa result {i} for {b.get('query')}", "url": f"http://shop.test:8094/slow?s=0&name=E{i}", "publishedDate": "2026-10-01",
          "highlights": [f"Exa highlight {i} about {b.get('query')}"]} for i in range(1, int(b.get("numResults") or 5) + 1)]}
 
@@ -1079,13 +1212,15 @@ async def exa_mcp(request: Request):
         return JSONResponse({"error": "rate limited"}, status_code=429)
     b = await request.json()
     rid = b.get("id")
+    KIWI_REQUESTS[b.get("method")] = KIWI_REQUESTS.get(b.get("method"), 0) + 1
     if b.get("method") == "initialize":
         return {"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}, "serverInfo": {"name": "exa", "version": "fake"}}}
     if b.get("method") == "tools/call":
         args = (b.get("params") or {}).get("arguments") or {}
         q, n = args.get("query", ""), int(args.get("numResults") or 5)
         SEARCH_LOG.append({"provider": "exa-mcp", "q": q, "count": n})
-        text = "\n\n".join(f"Title: Exa free result {i} for {q}\nURL: http://shop.test:8094/slow?s=0&name=X{i}\nPublished: N/A\nAuthor: N/A\nHighlights:\nExa free highlight {i} about {q}" for i in range(1, n + 1))
+        off = [f"Title: {t}\nURL: {u}\nPublished: 2026-10-01\nAuthor: N/A\nHighlights:\n{d}" for t, u, d in official_hits(q)]
+        text = "\n\n".join(off + [f"Title: Exa free result {i} for {q}\nURL: http://shop.test:8094/slow?s=0&name=X{i}\nPublished: N/A\nAuthor: N/A\nHighlights:\nExa free highlight {i} about {q}" for i in range(1, n + 1)])
         body = {"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": text}], "isError": False}}
         return Response("event: message\ndata: " + json.dumps(body) + "\n\n", media_type="text/event-stream")
     return {"jsonrpc": "2.0", "id": rid, "result": {}}
@@ -1104,6 +1239,48 @@ def _kiwi_airport(place) -> str:
     return _KIWI_CITIES.get(s.lower(), "SIN")
 
 
+CAR_SITES = {"kayak": "ok", "rentalcars": "ok"}   # ok | down (503) | bot (a "Bot or Not?" page)
+CAR_LOG = []
+
+
+@app.post("/cars/_mode")
+async def cars_mode(request: Request):
+    CAR_SITES.update(await request.json())
+    return CAR_SITES
+
+
+@app.get("/cars/_log")
+def cars_log():
+    return CAR_LOG
+
+
+def _car_page(site, request, title):
+    """Kayak's / Rentalcars.com's results page for a rental (cars_search checks that it answers before linking it)."""
+    CAR_LOG.append({"site": site, "url": str(request.url)})
+    if CAR_SITES[site] == "down":
+        return PlainTextResponse("unavailable", status_code=503)
+    if CAR_SITES[site] == "bot":
+        return Response("<html><head><title>Bot or Not?</title></head><body>Show us your human side</body></html>", media_type="text/html")
+    return Response(f"<html><head><title>{title}</title><script>grecaptcha</script></head><body>$96 $111</body></html>", media_type="text/html")
+
+
+@app.get("/kayak/cars/{path:path}")
+def kayak_cars(path: str, request: Request):
+    return _car_page("kayak", request, f"{path.split('/')[0]} car rental, Kayak")
+
+
+@app.get("/kayak/{kind}/{path:path}")
+def kayak_other(kind: str, path: str, request: Request):
+    """Kayak's flight / hotel pages: the compare links are built, never fetched — any request here is logged as one."""
+    CAR_LOG.append({"site": "kayak-" + kind, "url": str(request.url)})
+    return Response(f"<html><head><title>{kind} on Kayak</title></head></html>", media_type="text/html")
+
+
+@app.get("/rentalcars/search-results")
+def rentalcars(request: Request):
+    return _car_page("rentalcars", request, "Search Results – Rentalcars.com")
+
+
 KIWI_DOWN = {"on": False}
 
 
@@ -1118,11 +1295,20 @@ def kiwi_log():
     return KIWI_LOG
 
 
+KIWI_REQUESTS = {}   # JSON-RPC method → how many requests
+
+
+@app.get("/kiwi-mcp/_requests")
+def kiwi_requests():
+    return KIWI_REQUESTS
+
+
 @app.post("/kiwi-mcp/")
 async def kiwi_mcp(request: Request):
     """Kiwi.com's public MCP server (streamable HTTP, keyless): initialize, then tools/call search-flight → a JSON text."""
     b = await request.json()
     rid = b.get("id")
+    KIWI_REQUESTS[b.get("method")] = KIWI_REQUESTS.get(b.get("method"), 0) + 1
     if b.get("method") == "initialize":
         return {"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}, "serverInfo": {"name": "kiwi", "version": "fake"}}}
     if b.get("method") == "tools/call" and KIWI_DOWN["on"]:
@@ -1138,23 +1324,36 @@ async def kiwi_mcp(request: Request):
         via = "HKG" if "HKG" not in (fr, to) else "BKK"
         cabin = {"BUSINESS": "Business", "FIRST_CLASS": "First", "PREMIUM_ECONOMY": "Premium economy"}.get(str(args.get("cabinClass", "")).upper(), "Economy")
         mult = {"Business": 3.4, "First": 5.0, "Premium economy": 1.7}.get(cabin, 1.0)
-        d1 = (dt.date.fromisoformat(d) + dt.timedelta(days=1)).isoformat()
-        its = [
-            {"id": "kw1_0", "price": round(620.0 * mult), "priceFormatted": f"{round(620 * mult)} {cur}", "totalDurationSeconds": 24600, "bookingUrl": "https://kiwi.com/u/abc123", "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 1},
-             "outbound": {"from": fr, "to": to, "departureTime": f"{d}T09:25:00", "arrivalTime": f"{d}T17:15:00", "durationSeconds": 24600, "stops": 0, "route": [fr, to], "cabinClass": cabin,
-                          "segments": [{"from": fr, "to": to, "fromCity": str(args.get("flyFrom")), "toCity": str(args.get("flyTo")), "departureTime": f"{d}T09:25:00", "arrivalTime": f"{d}T17:15:00", "durationSeconds": 24600,
-                                        "carrier": "SQ", "carrierName": "Singapore Airlines", "flightNumber": "SQ638", "cabinClass": cabin}]}, "inbound": None},
-            {"id": "kw2_0|kw2_1", "price": round(510.0 * mult), "priceFormatted": f"{round(510 * mult)} {cur}", "totalDurationSeconds": 45300, "bookingUrl": "https://kiwi.com/u/def456", "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 0},
-             "outbound": {"from": fr, "to": to, "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d1}T13:30:00", "durationSeconds": 45300, "stops": 1, "route": [fr, via, to], "cabinClass": cabin,
-                          "segments": [{"from": fr, "to": via, "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d1}T03:40:00", "durationSeconds": 13500, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX710", "cabinClass": cabin},
-                                       {"from": via, "to": to, "departureTime": f"{d1}T08:00:00", "arrivalTime": f"{d1}T13:30:00", "durationSeconds": 16200, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX500", "cabinClass": cabin}]}, "inbound": None}]
-        if cabin == "Business":
-            # a business long-haul with a short economy feeder: a mixed-cabin itinerary that counts as business
-            its.append({"id": "kw3_0|kw3_1", "price": round(1900.0), "priceFormatted": f"1900 {cur}", "totalDurationSeconds": 36000, "bookingUrl": "https://kiwi.com/u/ghi789",
-                        "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 2},
-                        "outbound": {"from": fr, "to": to, "departureTime": f"{d}T07:00:00", "arrivalTime": f"{d}T19:00:00", "durationSeconds": 36000, "stops": 1, "route": [fr, "HND", to], "cabinClass": "Business",
-                                     "segments": [{"from": fr, "to": "HND", "departureTime": f"{d}T07:00:00", "arrivalTime": f"{d}T08:15:00", "durationSeconds": 4500, "carrier": "NH", "carrierName": "ANA", "flightNumber": "NH12", "cabinClass": "Economy"},
-                                                  {"from": "HND", "to": to, "departureTime": f"{d}T11:00:00", "arrivalTime": f"{d}T19:00:00", "durationSeconds": 28800, "carrier": "NH", "carrierName": "ANA", "flightNumber": "NH841", "cabinClass": "Business"}]}, "inbound": None})
+        def day_its(d, k):
+            """One day's itineraries; a later day of a range costs a little more (ids and links carry the day)."""
+            d1 = (dt.date.fromisoformat(d) + dt.timedelta(days=1)).isoformat()
+            its = [
+                {"id": "kw1_0", "price": round(620.0 * mult), "priceFormatted": f"{round(620 * mult)} {cur}", "totalDurationSeconds": 24600, "bookingUrl": "https://kiwi.com/u/abc123", "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 1},
+                 "outbound": {"from": fr, "to": to, "departureTime": f"{d}T09:25:00", "arrivalTime": f"{d}T17:15:00", "durationSeconds": 24600, "stops": 0, "route": [fr, to], "cabinClass": cabin,
+                              "segments": [{"from": fr, "to": to, "fromCity": str(args.get("flyFrom")), "toCity": str(args.get("flyTo")), "departureTime": f"{d}T09:25:00", "arrivalTime": f"{d}T17:15:00", "durationSeconds": 24600,
+                                            "carrier": "SQ", "carrierName": "Singapore Airlines", "flightNumber": "SQ638", "cabinClass": cabin}]}, "inbound": None},
+                {"id": "kw2_0|kw2_1", "price": round(510.0 * mult), "priceFormatted": f"{round(510 * mult)} {cur}", "totalDurationSeconds": 45300, "bookingUrl": "https://kiwi.com/u/def456", "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 0},
+                 "outbound": {"from": fr, "to": to, "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d1}T13:30:00", "durationSeconds": 45300, "stops": 1, "route": [fr, via, to], "cabinClass": cabin,
+                              "segments": [{"from": fr, "to": via, "departureTime": f"{d}T23:55:00", "arrivalTime": f"{d1}T03:40:00", "durationSeconds": 13500, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX710", "cabinClass": cabin},
+                                           {"from": via, "to": to, "departureTime": f"{d1}T08:00:00", "arrivalTime": f"{d1}T13:30:00", "durationSeconds": 16200, "carrier": "CX", "carrierName": "Cathay Pacific", "flightNumber": "CX500", "cabinClass": cabin}]}, "inbound": None}]
+            if cabin == "Business":
+                # a business long-haul with a short economy feeder: a mixed-cabin itinerary that counts as business
+                its.append({"id": "kw3_0|kw3_1", "price": round(1900.0), "priceFormatted": f"1900 {cur}", "totalDurationSeconds": 36000, "bookingUrl": "https://kiwi.com/u/ghi789",
+                            "baggage": {"personalItem": 1, "cabinBag": 1, "checkedBag": 2},
+                            "outbound": {"from": fr, "to": to, "departureTime": f"{d}T07:00:00", "arrivalTime": f"{d}T19:00:00", "durationSeconds": 36000, "stops": 1, "route": [fr, "HND", to], "cabinClass": "Business",
+                                         "segments": [{"from": fr, "to": "HND", "departureTime": f"{d}T07:00:00", "arrivalTime": f"{d}T08:15:00", "durationSeconds": 4500, "carrier": "NH", "carrierName": "ANA", "flightNumber": "NH12", "cabinClass": "Economy"},
+                                                      {"from": "HND", "to": to, "departureTime": f"{d}T11:00:00", "arrivalTime": f"{d}T19:00:00", "durationSeconds": 28800, "carrier": "NH", "carrierName": "ANA", "flightNumber": "NH841", "cabinClass": "Business"}]}, "inbound": None})
+            for x in its:
+                if k:
+                    x["id"] = x["id"].replace("_", f"d{k}_")
+                    x["bookingUrl"] += f"d{k}"
+                    x["price"] += 15 * k
+                    x["priceFormatted"] = f"{x['price']} {cur}"
+            return its
+        # ONE search covers a range of departure dates (departureDateTo), like the real server
+        last = args.get("departureDateTo") or d
+        n = max(0, (dt.date.fromisoformat(last) - dt.date.fromisoformat(d)).days)
+        its = [x for k in range(n + 1) for x in day_its((dt.date.fromisoformat(d) + dt.timedelta(days=k)).isoformat(), k)]
         if args.get("max_sector_stopovers") == 0:
             its = [x for x in its if x["outbound"]["stops"] == 0]
         if args.get("select_airlines"):   # like the real server: only itineraries flown by these carriers (IATA codes)

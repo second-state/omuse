@@ -272,6 +272,11 @@ impl Runtime {
                 .unwrap_or_default();
         }
         if rel.is_empty() {
+            // a follow-up message in the same conversation is a new task: the picture is the last one the chat shows
+            // (media_real 2026-10-31: "give the boat a red sail" → "no image to edit", the user asked to upload it)
+            rel = last_conv_image(&self.store, &get_str(t, "conv_id")).unwrap_or_default();
+        }
+        if rel.is_empty() {
             return "ERROR: 没有可以修改的图片 (no image to edit): 先用 make_image 生成一张，或给 path（工作区里的图片）。 Generate one with make_image first, or pass the workspace path of an image.".into();
         }
         let main = match self.img_read(&rel) {
@@ -563,4 +568,45 @@ impl Runtime {
         }
         format!("已放大 upscaled: {}（{}x{}，未发送）。", out, bw, bh)
     }
+}
+
+/// The workspace path of the newest picture a conversation shows (a `file` / `files` card with an image), or of the
+/// newest image the user attached there.
+pub(crate) fn last_conv_image(store: &crate::store::Store, conv_id: &str) -> Option<String> {
+    if conv_id.is_empty() {
+        return None;
+    }
+    let is_image = |it: &Value| {
+        get_str(it, "mime").starts_with("image/")
+            || ["png", "jpg", "jpeg", "webp", "gif"].iter().any(|e| {
+                get_str(it, "path")
+                    .to_lowercase()
+                    .ends_with(&format!(".{e}"))
+            })
+    };
+    for m in store.msgs(conv_id, 200).ok()?.iter().rev() {
+        let card = serde_json::from_str::<Value>(&get_str(m, "content")).unwrap_or(Value::Null);
+        let items: Vec<Value> = match get_str(&card, "type").as_str() {
+            "file" => vec![card.clone()],
+            "files" => card
+                .get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            _ => m
+                .get("meta")
+                .and_then(|x| x.get("attachments"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        };
+        if let Some(it) = items
+            .iter()
+            .rev()
+            .find(|it| is_image(it) && !get_str(it, "path").is_empty())
+        {
+            return Some(get_str(it, "path"));
+        }
+    }
+    None
 }

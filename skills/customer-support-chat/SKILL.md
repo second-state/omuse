@@ -36,7 +36,9 @@ help-center forms — or by email. Try them in that order unless the user says o
 - Retention offers ("50% off for 3 months", "pause instead"): don't accept or refuse on your own unless the user already
   said what they want — report the offer and ask.
 - Anything that commits money or changes the account (accepting an offer, confirming a cancellation, choosing a refund
-  method, agreeing to a fee) must match what the user asked for; the final confirm click goes through approval.
+  method, agreeing to a fee) must match what the user asked for. The final button that cancels, returns or refunds an
+  order on a self-service page is the user's: Sentinel refuses that click, so fill the page, then
+  browser_request_takeover("press <label> …") and read the result page after the hand-back.
 - Asked for passwords or OTP codes → browser_request_takeover so the user answers directly. Asked for an ID / membership / card number inside a web form → vault_list, then browser_fill_secret (the user approves it); never type such numbers into a chat box — take over instead.
 - Chat closed or not offered → the help-center form, or an email to the support address (gmail_send, approval).
 

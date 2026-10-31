@@ -3,9 +3,11 @@
 
 pub mod airports;
 pub mod billing;
+pub mod cars;
 pub mod gcal;
 pub mod gdrive;
 pub mod ical;
+pub mod kayak;
 pub mod kiwi;
 pub mod loyalty;
 pub mod market;

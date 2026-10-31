@@ -32,6 +32,10 @@ async fn fake_runtime() -> String {
         )
         .route("/api/chat", post(|| async { axum::Json(json!({"task_id": "t_chat_1"})) }))
         .route(
+            "/api/run_pending_tasks",
+            get(|| async { "{\"event\": \"pending\", \"count\": 0}\n{\"event\": \"done\"}\n" }),
+        )
+        .route(
             "/api/length",
             put(|h: axum::http::HeaderMap, body: axum::body::Bytes| async move {
                 let cl = h.get("content-length").and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -290,6 +294,23 @@ async fn proxy_passes_through() {
         ctx.store.user_request("t_chat_1").unwrap(),
         "buy the blue one"
     );
+}
+
+#[tokio::test]
+async fn run_pending_tasks_reaches_the_runtime() {
+    let rt = fake_runtime().await;
+    let (ctx, _d) = ctx_with(&rt, false);
+    let resp = router(ctx)
+        .oneshot(
+            req("GET", "/run_pending_tasks")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).ends_with("{\"event\": \"done\"}\n"));
 }
 
 #[tokio::test]
@@ -567,4 +588,118 @@ fn page_id_gives_sub_agent_lanes_their_own_browser_page() {
         page_id("t", &"a".repeat(40)),
         format!("t~{}", "a".repeat(16))
     );
+}
+
+#[tokio::test]
+async fn a_keyless_places_search_in_a_tainted_task_asks_like_the_map_page_load() {
+    // browser_auto_real 2026-10-31: without a SerpApi key places_search read the Google Maps page with the address
+    // from the user's mail, past the egress check a browser_navigate to the same page stops at
+    let (ctx, _d) = ctx_with("http://127.0.0.1:9", false);
+    let r = router(ctx.clone());
+    ctx.store
+        .update_task_ctx("t1", Some("CONFIDENTIAL"), None, None)
+        .unwrap();
+    let body = json!({"tool": "places_search", "task_id": "t1", "call_id": "c1",
+                      "args": {"query": "Hotel Ginza Grand", "area": "Ginza", "city": "Tokyo"}});
+    let (s, v) = send(
+        &r,
+        req("POST", "/internal/act")
+            .header("X-Persona-Runtime", TOKEN)
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    // auto-approve is on by default: the page load is approved at once, shown as "Open page · auto-approved"
+    assert_eq!(v["auto_approved"], json!(true), "{v}");
+    assert!(
+        v["summary"]["title"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Open page"),
+        "{v}"
+    );
+    let ap = ctx
+        .store
+        .approval(v["approval_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(ap["tool"], json!("browser_navigate"), "{ap}");
+    assert!(ap.to_string().contains("google.com/maps"), "{ap}");
+}
+
+/// A fake browser broker for one checkout page: what a ref is, the page text with its total, and the typing.
+async fn fake_checkout_broker() -> String {
+    const URL: &str = "https://shop.test/book/restaurant/R-TYO-2";
+    let r = Router::new()
+        .route(
+            "/agent/describe",
+            post(|| async {
+                axum::Json(json!({"tag": "input", "name": "Card number", "input_type": "text",
+                                  "page_url": URL, "page_title": "Kappo Yamabuki — booking"}))
+            }),
+        )
+        .route("/state", get(|| async { axum::Json(json!({"url": URL, "tasks": []})) }))
+        .route(
+            "/agent/page_text",
+            post(|| async { axum::Json(json!({"text": "Kappo Yamabuki\nDeposit\nTotal: JPY 28,000\nConfirm booking"})) }),
+        )
+        .route(
+            "/agent/type",
+            post(|| async { axum::Json(json!({"url": URL, "title": "Kappo Yamabuki — booking", "snapshot": "[e5] textbox \"Card number\""})) }),
+        );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, r).await.unwrap() });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn a_card_fill_before_the_purchase_was_confirmed_confirms_it_from_the_page_and_fills() {
+    // travel_michelin_real 2026-10-31: the deposit's card fills were refused ("call purchase_confirm first") and the
+    // model gave up; the confirmation is made in code from the page's site and total, then the card is filled
+    let broker = fake_checkout_broker().await;
+    let dir = tempfile::tempdir().unwrap();
+    let toml = format!(
+        "[data]\ndir = \"{}\"\n[internal]\nruntime_url = \"http://127.0.0.1:9\"\nruntime_token = \"{TOKEN}\"\nbrowser_token = \"bt\"\n\
+         browser_url = \"{broker}\"\n[auth]\nenabled = false\npassword = \"secret-pass\"\n[telegram]\nenabled = false\n",
+        dir.path().display()
+    );
+    let cfg = Arc::new(Config::parse(&toml).unwrap());
+    std::fs::create_dir_all(cfg.sentinel_data().join("shots")).unwrap();
+    let ctx: App = Arc::new(Ctx::new(cfg).unwrap());
+    let card = omuse_sentinel_core::vault::save_item(
+        &ctx.store,
+        &json!({"kind": "card", "label": "Visa", "domains": "",
+                "values": {"number": "4111 1111 1111 1111", "expiry": "12/29", "cvc": "123", "holder": "LUCAS LU"}}),
+        None,
+    )
+    .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let body = json!({"tool": "browser_fill_secret", "task_id": "t1", "call_id": "c1",
+                      "args": {"ref": "e5", "item_id": card, "field": "number"}});
+    let (s, v) = send(
+        &router(ctx.clone()),
+        req("POST", "/internal/act")
+            .header("X-Persona-Runtime", TOKEN)
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        v["result"]["filled"]
+            .as_str()
+            .unwrap_or("")
+            .contains("1111"),
+        "{v}"
+    );
+    let p = ctx
+        .store
+        .active_purchase("t1", "shop.test")
+        .unwrap()
+        .expect("a confirmed purchase");
+    assert!(p.to_string().contains("28000"), "{p}");
 }

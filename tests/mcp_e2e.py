@@ -1,4 +1,17 @@
-"""End-to-end: MCP connector framework against the local stack + tests/fake_mcp.py (port 8093)."""
+"""MCP connector framework: the protocol and the guarantees a real-model run cannot produce or see (local stack +
+tests/fake_mcp.py on 8093, no model). The use case — the user adds a server on Connections, its tools are listed with
+their modes (the injected "helper" switched off), a read tool answers in the chat, a write tool asks first, a
+destructive one is denied — is tested from the user's side by tests/mcp_real.py. What stays here, and why it cannot be
+e2e:
+  * a wrong token and plain http to a public host are refused (forced errors);
+  * the transports (Streamable HTTP with SSE-framed results, the legacy HTTP+SSE), tools/list pagination, ping (protocol);
+  * kinds and modes per annotation, an unannotated get_* guessed as read, the token never returned (exact guarantees);
+  * the agent's catalog publishes enabled tools and hides off / poisoned / changed ones (internal);
+  * results reach the agent marked untrusted, an injection in a result makes the next write ask (forced injection);
+  * a server that changes a tool's description ("rug pull") or adds one: hidden until the user accepts (a server-side
+    change the suite forces);
+  * disabling / removing a server, the audit entries (internal).
+"""
 import sys, time, httpx
 B, M = "http://127.0.0.1:8080", "http://127.0.0.1:8093"
 H = {"X-Persona-UI": "1"}
@@ -85,21 +98,6 @@ check("legacy SSE server added", r.status_code == 200 and r.json()["transport"] 
 res = act("mcp_old_notes__notes_search", {"query": "groceries"})
 check("legacy SSE call works", res.get("status") == "ok" and "milk" in str(res), res)
 check("ping test works", c.post(B + "/sentinel/api/mcp/servers/old_notes/test", headers=H).json().get("ok"))
-
-# --- agent loop through the runtime
-c.put(B + "/sentinel/api/mcp/servers/notes/tools/notes_create", headers=H, json={"mode": "ask"})
-r = c.post(B + "/api/chat", headers=H, json={"message": "MCPNOTES 帮我查笔记并写总结"})
-tid = r.json().get("task_id")
-def task(): return c.get(B + f"/api/tasks/{tid}", headers=H).json()
-ok = wait_for(lambda: (task().get("task") or task()).get("status") in ("WAITING_APPROVAL", "COMPLETED", "FAILED"), 60)
-t = task(); t = t.get("task") or t
-check("agent called MCP read tool then paused for write approval", t.get("status") == "WAITING_APPROVAL", str(t)[:600])
-pend = [a for a in c.get(B + "/sentinel/api/approvals?status=pending", headers=H).json()["approvals"] if a["task_id"] == tid]
-if pend:
-    c.post(B + f"/sentinel/api/approvals/{pend[0]['id']}/resolve", headers=H, json={"decision": "approve"})
-ok = wait_for(lambda: (task().get("task") or task()).get("status") == "COMPLETED", 60)
-t = task(); t = t.get("task") or t
-check("agent finished after approval", ok and "MCP done" in str(t.get("result")), str(t)[:600])
 
 # --- disable / delete
 c.put(B + "/sentinel/api/mcp/servers/old_notes", headers=H, json={"enabled": False})

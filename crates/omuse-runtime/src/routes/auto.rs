@@ -330,3 +330,97 @@ pub async fn run_schedule(st: St, UrlPath(sid): UrlPath<String>) -> R {
     let t = st.sched.run_now(&sid, None, None, "").await?;
     Ok(Json(json!({"task_id": t["id"]})))
 }
+
+/// `GET /api/run_pending_tasks` (also `/run_pending_tasks` on Sentinel): runs every task that is due but has not run
+/// yet — a machine that slept or was suspended leaves them pending — and streams the progress as NDJSON, one JSON
+/// object a line: `pending` (what is due), `started` / `skipped` per task, `finished` per run (its status and answer),
+/// a `waiting` heartbeat every 15 s while runs work, and `done` last; then the connection closes. A run that stops for
+/// the user (an approval, a takeover) counts as finished here: it waits in its chat.
+pub async fn run_pending_tasks(st: St) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let state = st.0.clone();
+    let s = async_stream::stream! {
+        let line = |v: Value| Ok::<Bytes, std::convert::Infallible>(Bytes::from(pyjson::dumps(&v) + "\n"));
+        let now = now_ts();
+        let due = match state.sched.pending(now) {
+            Ok(d) => d,
+            Err(e) => {
+                yield line(json!({"event": "error", "error": take_chars(&e.to_string(), 300)}));
+                yield line(json!({"event": "done", "started": 0, "finished": 0}));
+                return;
+            }
+        };
+        yield line(json!({"event": "pending", "count": due.len(), "tasks": due.iter().map(|s| json!({
+            "schedule_id": s["id"], "name": s["name"], "due_at": s["next_run"]})).collect::<Vec<_>>()}));
+        // (schedule id, name, task id) of each run to follow
+        let mut runs: Vec<(String, String, String)> = Vec::new();
+        for sch in &due {
+            let (sid, name) = (get_str(sch, "id"), get_str(sch, "name"));
+            match state.sched.fire(sch, now).await {
+                Ok(sc::Fired::Started(tid)) => {
+                    yield line(json!({"event": "started", "schedule_id": sid, "name": name, "task_id": tid}));
+                    runs.push((sid, name, tid));
+                }
+                Ok(sc::Fired::Taken) => {
+                    // the background loop started it a moment ago: follow that run
+                    let tid = state.rt.store.schedule(&sid).ok().flatten().map(|s| get_str(&s, "last_task")).unwrap_or_default();
+                    if tid.is_empty() {
+                        yield line(json!({"event": "skipped", "schedule_id": sid, "name": name, "reason": "already handled"}));
+                    } else {
+                        yield line(json!({"event": "started", "schedule_id": sid, "name": name, "task_id": tid}));
+                        runs.push((sid, name, tid));
+                    }
+                }
+                Ok(sc::Fired::Busy(tid)) => yield line(json!({"event": "skipped", "schedule_id": sid, "name": name,
+                    "reason": "the previous run is still active", "task_id": tid})),
+                Ok(sc::Fired::NoEvents) => yield line(json!({"event": "skipped", "schedule_id": sid, "name": name,
+                    "reason": "no new events"})),
+                Ok(sc::Fired::Disabled) => yield line(json!({"event": "skipped", "schedule_id": sid, "name": name,
+                    "reason": "no next time: switched off"})),
+                Err(e) => yield line(json!({"event": "error", "schedule_id": sid, "name": name,
+                    "error": take_chars(&e.to_string(), 300)})),
+            }
+        }
+        let started = runs.len();
+        let mut finished = 0;
+        let mut beat = tokio::time::Instant::now();
+        while !runs.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let mut left = Vec::new();
+            for (sid, name, tid) in runs {
+                let t = state.rt.store.task(&tid).ok().flatten();
+                let status = t.as_ref().map(|t| get_str(t, "status")).unwrap_or_else(|| "CANCELLED".into());
+                if is_terminal(&status) || sc::WAITING.contains(&status.as_str()) {
+                    finished += 1;
+                    let result = t.as_ref().map(|t| get_str(t, "result")).unwrap_or_default();
+                    let error = t.as_ref().map(|t| get_str(t, "error")).unwrap_or_default();
+                    yield line(json!({"event": "finished", "schedule_id": sid, "name": name, "task_id": tid,
+                        "status": status, "result": take_chars(&result, 4000), "error": take_chars(&error, 500)}));
+                } else {
+                    left.push((sid, name, tid));
+                }
+            }
+            runs = left;
+            if !runs.is_empty() && beat.elapsed() >= std::time::Duration::from_secs(15) {
+                beat = tokio::time::Instant::now();
+                yield line(json!({"event": "waiting", "running": runs.len()}));
+            }
+        }
+        yield line(json!({"event": "done", "started": started, "finished": finished}));
+    };
+    (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/x-ndjson; charset=utf-8",
+            ),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+            (
+                axum::http::header::HeaderName::from_static("x-accel-buffering"),
+                "no",
+            ),
+        ],
+        axum::body::Body::from_stream(s),
+    )
+        .into_response()
+}

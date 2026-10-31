@@ -1,6 +1,6 @@
 """Local PDF export: Chinese text, tables and local images end up in a real PDF, made on this machine with no network
 (remote images / scripts in the source never load), and the agent hands the PDF over with send_file."""
-import base64, io, os, sys, time
+import base64, io, os, re, sys, time
 import httpx
 from pypdf import PdfReader
 
@@ -67,6 +67,17 @@ time.sleep(1)
 log = open(T + "/pages.log").read()
 check("no network requests while printing", "track-md.png" not in log and "track-html.png" not in log,
       [l for l in log.splitlines() if "track" in l])
+# a page count the user asked for: a list that runs a little over one page is fitted to one (printed smaller)
+long_md = "# Packing list\n\n" + "\n".join(f"- [ ] item {i}: something to pack for the trip" for i in range(50))
+rt = {"X-Persona-Runtime": "rt-test"}
+r1 = c.post(B + "/internal/render_pdf", json={"markdown": long_md, "output": "reports/long.pdf"}, headers=rt).json()
+r2 = c.post(B + "/internal/render_pdf", json={"markdown": long_md, "output": "reports/fit.pdf", "pages": 1}, headers=rt).json()
+n1 = len(PdfReader(WS + "/reports/long.pdf").pages) if r1.get("path") else 0
+n2 = len(PdfReader(WS + "/reports/fit.pdf").pages) if r2.get("path") else 0
+# how the list falls on the pages (for a failure)
+split = {f: [len(re.findall(r"item \d+", p.extract_text() or "")) for p in PdfReader(WS + f"/reports/{f}.pdf").pages] for f in ("long", "fit")}
+check("as written the list runs over one page", n1 == 2 and r1.get("pages") == 2 and r1.get("scale") == 1.0, (n1, r1, split))
+check("with pages=1 it is fitted to one page, printed smaller", n2 == 1 and r2.get("pages") == 1 and 0.6 <= r2.get("scale", 1) < 1.0, (n2, r2, split))
 bad = c.post(B + "/internal/render_pdf", json={"source": "../../etc/passwd"}, headers={"X-Persona-Runtime": "rt-test"})
 check("paths outside the workspace refused", "error" in bad.json(), bad.text[:200])
 noauth = c.post(B + "/internal/render_pdf", json={"source": "reports/cn.md"})

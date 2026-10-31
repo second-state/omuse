@@ -1,6 +1,6 @@
 //! Input validation of the travel search tools, in code and deterministic: Sentinel runs [`validate`] on the arguments
-//! of `flights_search`, `flight_offer`, `hotels_search`, `hotel_rooms`, `places_search` and `place_details` before any
-//! data source is asked, and on `web_search` / `news_search` (car rental and everything else without a data tool).
+//! of `flights_search`, `flight_offer`, `hotels_search`, `hotel_rooms`, `places_search`, `place_details` and
+//! `cars_search` before any data source is asked, and on `web_search` / `news_search` (everything without a data tool).
 //!
 //! A value that makes no sense is replaced with what the user means when there is one, and the change is reported
 //! (`fixed`, shown to the model with the result):
@@ -10,7 +10,7 @@
 //! * minimum rating outside 0–5, star class outside 2–5, price level outside 1–4 → removed (no filter); a minimum price
 //!   level above the maximum → the two swapped;
 //! * cabin, stops, sort: an unknown value → the default (economy, any number of stops, the source's order); `max_stops`
-//!   below 0 or above 2 → removed; yes/no flags (`free_cancellation`, `open_now`, `nonstop_only`) → a real true, or
+//!   below 0 or above 2 → removed; yes/no flags (`free_cancellation`, `open_now`, `nonstop_only`, `self_transfer`) → a real true, or
 //!   removed;
 //! * currency: not a three-letter code → removed (the tool's default); airlines and brands: a list of names, empty and
 //!   repeated ones dropped; dates written `2026/11/20` or `2026-11-5` → `2026-11-20`, `2026-11-05`;
@@ -18,22 +18,32 @@
 //!
 //! What cannot be guessed is refused with a message that says how to fix it (`Err`): a missing or impossible date, a
 //! date in the past, a return before the departure, a range that ends before it starts, check-out on or before
-//! check-in, a stay over 30 nights, the same origin and destination, a missing city, hotel, offer or place id.
+//! check-in, a stay over 30 nights, the same origin and destination, a missing city, hotel, offer or place id; for a car,
+//! an unknown pickup or return airport, a return before the pickup, a rental over 60 days. A car's pickup and return
+//! times become `HH:00` (a time that is not one is removed: 10:00), its class one of Kayak's (`economy` → `small`, an
+//! unknown one removed), a driver's age outside 18–99 removed.
+
+use std::sync::LazyLock;
 
 use chrono::NaiveDate;
+use regex::Regex;
 use serde_json::{json, Map, Value};
 
 /// The tools [`validate`] knows.
-pub const TOOLS: [&str; 8] = [
+pub const TOOLS: [&str; 9] = [
     "flights_search",
     "flight_offer",
     "hotels_search",
     "hotel_rooms",
     "places_search",
     "place_details",
+    "cars_search",
     "web_search",
     "news_search",
 ];
+
+/// The longest car rental one search takes.
+pub const MAX_RENTAL_DAYS: i64 = 60;
 
 /// The longest hotel stay one search takes.
 pub const MAX_NIGHTS: i64 = 30;
@@ -299,6 +309,79 @@ impl V<'_> {
     }
 }
 
+/// A flight search's cabin, stops and self-transfer made to agree with what the user asked, in code: a higher cabin the
+/// request names ("business class", "lie-flat", "first class", "premium economy") is never searched as economy;
+/// "direct" / "nonstop" searches nonstop; a self-transfer itinerary only when the request asks for one ("self-transfer",
+/// "separate tickets") — each change listed in `fixed`, next to the result.
+pub fn align_with_request(tool: &str, c: &mut Checked, request: &str) {
+    static FIRST: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\bfirst[- ]class\b|头等舱|頭等艙").unwrap());
+    static BUSINESS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\bbusiness[- ]class\b|\bin business\b|\blie[- ]flat\b|\bflat[- ]bed\b|商务舱|商務艙").unwrap()
+    });
+    static PREMIUM: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\bpremium economy\b|超级经济舱|特选经济舱|豪華經濟艙").unwrap()
+    });
+    static NONSTOP: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b(direct|non-?stop)\b|直飞|直飛").unwrap());
+    static SELF_TRANSFER: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)self[- ]transfer|separate tickets|自行中转|自助转机|自行轉機").unwrap()
+    });
+    if tool != "flights_search" || request.trim().is_empty() {
+        return;
+    }
+    let cabin = c
+        .args
+        .get("cabin")
+        .and_then(Value::as_str)
+        .unwrap_or("economy")
+        .to_string();
+    let want = if FIRST.is_match(request) {
+        Some("first")
+    } else if BUSINESS.is_match(request) {
+        Some("business")
+    } else if PREMIUM.is_match(request) {
+        Some("premium_economy")
+    } else {
+        None
+    };
+    if let Some(w) = want {
+        let rank = |x: &str| match x {
+            "first" => 3,
+            "business" => 2,
+            "premium_economy" => 1,
+            _ => 0,
+        };
+        if rank(&cabin) < rank(w) {
+            c.args["cabin"] = json!(w);
+            c.fixed
+                .push(format!("cabin: {cabin} → {w} (the request asks for it)"));
+        }
+    }
+    if NONSTOP.is_match(request) {
+        let stops = c
+            .args
+            .get("stops")
+            .and_then(Value::as_str)
+            .unwrap_or("any")
+            .to_string();
+        if stops != "nonstop" {
+            c.args["stops"] = json!("nonstop");
+            c.fixed.push(format!(
+                "stops: {stops} → nonstop (the request asks for a direct flight)"
+            ));
+        }
+    }
+    if c.args.get("self_transfer").and_then(Value::as_bool) == Some(true)
+        && !SELF_TRANSFER.is_match(request)
+    {
+        c.args["self_transfer"] = json!(false);
+        c.fixed.push(
+            "self_transfer: true → false (the request does not ask for separate tickets)".into(),
+        );
+    }
+}
+
 /// Validate one travel tool call (see the module doc). `today` is the date the past is measured from.
 pub fn validate(tool: &str, args: &Value, today: NaiveDate) -> Result<Checked, String> {
     let m = args.as_object().cloned().unwrap_or_default();
@@ -364,6 +447,7 @@ pub fn validate(tool: &str, args: &Value, today: NaiveDate) -> Result<Checked, S
             );
             v.range("max_stops", 0.0, 2.0, false, true);
             v.flag("nonstop_only");
+            v.flag("self_transfer");
             v.choice(
                 "sort",
                 &["best", "price", "departure", "arrival", "duration"],
@@ -422,6 +506,72 @@ pub fn validate(tool: &str, args: &Value, today: NaiveDate) -> Result<Checked, S
         "place_details" => {
             v.need("place_id", "use a place_id from places_search")?;
         }
+        "cars_search" => {
+            for k in ["pickup", "dropoff"] {
+                let p = text(&v.m, k);
+                if k == "pickup" && p.is_empty() {
+                    return Err("cars_search: pickup is required — the pickup airport's code (NRT, LAX, LHR …)".into());
+                }
+                if !p.is_empty() && crate::airports::airport_codes(&p).is_none() {
+                    return Err(format!(
+                        "cars_search: {k} {p:?} is not an airport — give the airport's code (NRT, LAX, LHR …)"
+                    ));
+                }
+            }
+            if text(&v.m, "dropoff").is_empty() {
+                v.m.remove("dropoff");
+            }
+            let first = v.first_day("pickup_date")?;
+            let last = v
+                .date("dropoff_date")?
+                .ok_or("cars_search: dropoff_date is required (YYYY-MM-DD)")?;
+            for k in ["pickup_time", "dropoff_time"] {
+                if v.m.contains_key(k) {
+                    match crate::cars::hour(&text(&v.m, k)) {
+                        Some(h) => {
+                            let t = format!("{h:02}:00");
+                            if text(&v.m, k) != t {
+                                v.set(k, json!(t));
+                            }
+                        }
+                        None => v.drop(k, "removed (not a time of day: 10:00)"),
+                    }
+                }
+            }
+            let hour = |k: &str| crate::cars::hour(&text(&v.m, k)).unwrap_or(10);
+            if last < first || (last == first && hour("dropoff_time") <= hour("pickup_time")) {
+                return Err("cars_search: the return (dropoff_date and dropoff_time) must be after the pickup".into());
+            }
+            let days = (last - first).num_days();
+            if days > MAX_RENTAL_DAYS {
+                return Err(format!(
+                    "cars_search: {days} days is more than one search takes ({MAX_RENTAL_DAYS}) — split the rental"
+                ));
+            }
+            v.choice(
+                "car_class",
+                &crate::cars::CAR_CLASSES,
+                &[
+                    ("economy", "small"),
+                    ("mini", "small"),
+                    ("compact", "small"),
+                    ("intermediate", "medium"),
+                    ("midsize", "medium"),
+                    ("mid_size", "medium"),
+                    ("standard", "medium"),
+                    ("full_size", "large"),
+                    ("fullsize", "large"),
+                    ("premium", "luxury"),
+                    ("minivan", "van"),
+                    ("mpv", "van"),
+                    ("people_carrier", "van"),
+                    ("cabrio", "convertible"),
+                ],
+                None,
+            );
+            v.range("driver_age", 18.0, 99.0, false, true);
+            v.names("companies");
+        }
         "web_search" | "news_search" => {
             v.need("query", "the search words")?;
             if let Some(x) = v.m.get("max_results") {
@@ -460,7 +610,7 @@ mod tests {
             "flights_search",
             json!({"origin": "SIN", "destination": "TYO", "date": "2026/11/5", "adults": 0, "max_price": 0,
                    "cabin": "Premium Economy", "stops": "direct", "max_stops": -1, "sort": "cheapest", "currency": "sgd",
-                   "airlines": ["SQ", " ", "sq", "NH"], "nonstop_only": "false"}),
+                   "airlines": ["SQ", " ", "sq", "NH"], "nonstop_only": "false", "self_transfer": "no"}),
         );
         assert_eq!(
             c.args,
@@ -477,9 +627,11 @@ mod tests {
         let c = ok(
             "flights_search",
             json!({"origin": "SIN", "destination": "TYO", "date": "2026-11-20", "adults": 40,
-                                             "cabin": "spaceship", "stops": "lots", "currency": "S$", "max_price": "-5"}),
+                                             "cabin": "spaceship", "stops": "lots", "currency": "S$", "max_price": "-5",
+                                             "self_transfer": "yes"}),
         );
         assert_eq!(c.args["adults"], 9);
+        assert_eq!(c.args["self_transfer"], true);
         assert_eq!(
             (c.args["cabin"].as_str(), c.args["stops"].as_str()),
             (Some("economy"), Some("any"))
@@ -626,5 +778,100 @@ mod tests {
         );
         assert_eq!(parse_date("20/11/2026"), None);
         assert_eq!(parse_date("2026-13-01"), None);
+    }
+
+    #[test]
+    fn car_rentals_need_an_airport_and_a_return_after_the_pickup() {
+        let c = ok(
+            "cars_search",
+            json!({"pickup": "lax", "dropoff": "", "pickup_date": "2026/12/3", "dropoff_date": "2026-12-06",
+                   "pickup_time": "9:30 AM", "dropoff_time": "noon", "car_class": "Full-size", "driver_age": 12,
+                   "companies": "Hertz, , hertz, Avis"}),
+        );
+        assert_eq!(
+            c.args,
+            json!({"pickup": "lax", "pickup_date": "2026-12-03", "dropoff_date": "2026-12-06", "pickup_time": "09:00",
+                   "car_class": "large", "companies": ["Hertz", "Avis"]})
+        );
+        assert!(
+            c.fixed.iter().any(|f| f.starts_with("dropoff_time")),
+            "{:?}",
+            c.fixed
+        );
+        let base = |extra: Value| {
+            let mut a =
+                json!({"pickup": "NRT", "pickup_date": "2026-12-03", "dropoff_date": "2026-12-06"});
+            for (k, x) in extra.as_object().unwrap() {
+                a[k] = x.clone();
+            }
+            a
+        };
+        assert_eq!(
+            ok("cars_search", base(json!({"car_class": "SUV"}))).args["car_class"],
+            "suv"
+        );
+        assert!(ok("cars_search", base(json!({"car_class": "spaceship"})))
+            .args
+            .get("car_class")
+            .is_none());
+        assert!(err("cars_search", base(json!({"pickup": ""}))).contains("pickup is required"));
+        assert!(err("cars_search", base(json!({"pickup": "Narnia"}))).contains("is not an airport"));
+        assert!(err("cars_search", base(json!({"dropoff": "Atlantis"})))
+            .contains("dropoff \"Atlantis\" is not an airport"));
+        assert!(
+            err("cars_search", base(json!({"dropoff_date": "2026-12-01"})))
+                .contains("must be after the pickup")
+        );
+        // the same day works when the return is later in the day
+        assert!(
+            err("cars_search", base(json!({"dropoff_date": "2026-12-03"})))
+                .contains("must be after the pickup")
+        );
+        ok(
+            "cars_search",
+            base(json!({"dropoff_date": "2026-12-03", "dropoff_time": "18:00"})),
+        );
+        assert!(
+            err("cars_search", base(json!({"dropoff_date": "2027-03-01"})))
+                .contains("split the rental")
+        );
+        assert!(
+            err("cars_search", base(json!({"pickup_date": "2026-10-01"}))).contains("in the past")
+        );
+    }
+
+    #[test]
+    fn a_flight_search_follows_the_cabin_stops_and_tickets_asked_for() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 31).unwrap();
+        let args = json!({"origin": "SIN", "destination": "LHR", "date": "2026-12-01", "adults": 1,
+                          "cabin": "economy", "stops": "any", "self_transfer": true});
+        let mut c = validate("flights_search", &args, today).unwrap();
+        align_with_request(
+            "flights_search",
+            &mut c,
+            "A direct business class flight to London on 1 Dec, lie-flat please",
+        );
+        assert_eq!(
+            (c.args["cabin"].as_str(), c.args["stops"].as_str()),
+            (Some("business"), Some("nonstop"))
+        );
+        assert_eq!(c.args["self_transfer"], false);
+        assert_eq!(c.fixed.len(), 3, "{:?}", c.fixed);
+        // what the request does not say is left as the model set it; a higher cabin is not lowered
+        let mut c = validate(
+            "flights_search",
+            &json!({"origin": "SIN", "destination": "LHR", "date": "2026-12-01",
+                                                       "cabin": "first", "self_transfer": true}),
+            today,
+        )
+        .unwrap();
+        align_with_request(
+            "flights_search",
+            &mut c,
+            "Cheapest flight to London, business or better, self-transfer is fine",
+        );
+        assert_eq!(c.args["cabin"], "first");
+        assert_eq!(c.args["self_transfer"], true);
+        assert!(c.fixed.is_empty(), "{:?}", c.fixed);
     }
 }

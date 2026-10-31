@@ -1,8 +1,8 @@
-"""Flights & hotels connection (Google Flights / Google Hotels / Google Maps through SerpApi, tests/fake_apps.py's stand-in): a bad key is
-refused, a good key is accepted with the plan and searches left, the four tools appear in the catalog, the flight-booking
-skill searches flights (one call, IATA codes resolved from city names, SGD), fetches the booking options of the cheapest
-direct offer, searches hotels near Ginza (4+ stars) and one hotel's rates — compact results with offer and hotel ids — all
-without the browser; the card shows the plan; disconnecting removes the tools and the policy explains how to connect."""
+"""Flights & hotels with a SerpApi key (Google Flights / Google Hotels / Google Maps through tests/fake_apps.py's
+stand-in): what a real run cannot show — the exact searches sent (one call per request, IATA codes from city names,
+filters, brands, alliances, invalid numbers replaced), and forced failures (Google failing → Kiwi.com, both failing,
+nothing found). Connecting the key as the user does it (a bad key refused, the plan and searches left) and the answers
+the user sees are real-model suites: tests/travel_connect_real.py and tests/travel_user_real.py."""
 import datetime as dt
 import os
 import sys
@@ -30,17 +30,12 @@ def conn():
 
 K.setup(language="en")
 c.post(FAKE + "/serpapi/_reset")
-# flights ask Kiwi.com first; this suite is about the Google path, so Kiwi is down until the Kiwi-first check at the end
-c.post(FAKE + "/kiwi-mcp/_down", json={"on": True})
-r = c.post(B + "/sentinel/api/connections/travel/credential", headers=H, json={"token": "wrong-key-0123456789abcdef"})
-K.check("a refused key is reported", r.status_code == 400 and "refused" in r.text, r.text[:200])
-r = c.post(B + "/sentinel/api/connections/travel/credential", headers=H, json={"token": "short"})
-K.check("a malformed key is rejected before any call", r.status_code == 400 and "API key" in r.text, r.text[:200])
+# with the key a one-date flight search is Google Flights alone: Kiwi.com stays up and is never asked (checked below)
+c.post(FAKE + "/kiwi-mcp/_down", json={"on": False})
+kiwi_n0 = len(c.get(FAKE + "/kiwi-mcp/_log").json())
+# the key is connected as setup (tests/travel_connect_real.py checks connecting it in the UI against the real SerpApi)
 r = c.post(B + "/sentinel/api/connections/travel/credential", headers=H, json={"token": KEY})
-K.check("a good key connects with the plan and the searches left", r.status_code == 200 and r.json()["plan"] == "Free Plan" and r.json()["searches_left"] == 238, r.text[:300])
-cv = conn()
-K.check("the connection view carries the plan and a credential", cv["has_credential"] and cv["enabled"] and cv["config"]["plan"] == "Free Plan"
-        and cv["config"]["searches_left"] == 238, cv)
+assert r.status_code == 200, r.text[:300]
 names = cat_names()
 K.check("the six travel tools are in the catalog", all(x in names for x in ("flights_search", "flight_offer", "hotels_search", "hotel_rooms", "places_search", "place_details")), names)
 r = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-p1", "call_id": "p1", "tool": "places_search", "args": {"query": "ramen", "city": "Tokyo", "area": "Ginza", "min_rating": 4.0, "open_now": True}}).json()
@@ -54,17 +49,20 @@ r = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-p1", "call_
 pd = (r.get("result") or {}).get("content") or {}
 K.check("place_details: hours per day, phone, website, the rating breakdown and review snippets", r.get("status") == "ok" and pd.get("hours") == ["wednesday: 11 AM–10:30 PM", "thursday: 11 AM–10:30 PM"]
         and pd["phone"] == "+81 3-3572-3025" and pd["rating_summary"][0] == "5★ 1500" and pd["review_snippets"][0].startswith("Great tonkotsu"), str(r)[:400])
-K.check("with the key the connection view says flights come from Kiwi.com with Google as the fallback", conn().get("flights_source") == "kiwi" and conn().get("flights_fallback") == "google", conn())
-r = c.post(B + "/sentinel/api/connections/travel/test", headers=H)
-K.check("Test reads the account again", r.status_code == 200 and r.json()["plan"] == "Free Plan", r.text[:200])
+K.check("with the key the connection view says flights come from Google Flights with Kiwi.com as the fallback", conn().get("flights_source") == "google" and conn().get("flights_fallback") == "kiwi", conn())
 
+# a flight and a hotel in one message: ONE travel search per request — the flight now, the hotel offered and searched
+# when the user says yes in the next message
 t = K.run(f"TRAVELSEARCH cheapest flight Singapore to Tokyo on {DATE} and a 4-star hotel near Ginza for 3 nights DATE={DATE}")
 K.trace(t)
 names = K.names(t)
-K.check("the task completed with the flights and the hotel", t["status"] == "COMPLETED" and "SQ 638" in (t.get("result") or "") and "Hotel Ginza Grand" in (t.get("result") or ""),
-        (t["status"], t.get("error"), (t.get("result") or "")[:300]))
-K.check("skill, flights, booking options, hotels, rooms — no browser",
-        names == ["load_skill", "flights_search", "flight_offer", "hotels_search", "hotel_rooms"], names)
+K.check("the first answer has the flights and offers the hotel search next", t["status"] == "COMPLETED" and "SQ 638" in (t.get("result") or "")
+        and "Shall I search the hotel" in (t.get("result") or ""), (t["status"], t.get("error"), (t.get("result") or "")[:300]))
+K.check("skill, the flight search, its booking options — one travel search, no browser", names == ["load_skill", "flights_search", "flight_offer"], names)
+th = K.run(f"TRAVELHOTEL yes, the hotel please DATE={DATE}", conv=t["_conv"])
+K.trace(th)
+K.check("the next message searches the hotel: hotels, its rooms", th["status"] == "COMPLETED" and K.names(th) == ["hotels_search", "hotel_rooms"]
+        and "Hotel Ginza Grand" in (th.get("result") or ""), (K.names(th), (th.get("result") or "")[:200]))
 log = c.get(FAKE + "/serpapi/_log").json()
 fl = [q for q in log if q.get("engine") == "google_flights" and not q.get("booking_token")]
 K.check("flights: one Google Flights search, city names resolved to IATA codes, one way, sorted by price, in SGD",
@@ -81,15 +79,27 @@ res = {r["name"]: r for r in K.results(t, "flights_search")}
 prev = (K.results(t, "flights_search") or [{}])[0].get("preview", "")
 K.check("the flights result is compact: airline, route with local times, price, stops, an offer id",
         "Singapore Airlines" in prev and "SQ 638" in prev and '"price": 620' in prev and "fl_" in prev, prev[:400])
-prev = (K.results(t, "hotels_search") or [{}])[0].get("preview", "")
+K.check("each Google Flights offer links to its own booking page on Google Flights (booking_url, no extra search)",
+        "google.com/travel/flights/booking?" in prev and "booking_url" in prev, prev[:600])
+K.check("the one-date flight search never asked Kiwi.com", len(c.get(FAKE + "/kiwi-mcp/_log").json()) == kiwi_n0, kiwi_n0)
+prev = (K.results(th, "hotels_search") or [{}])[0].get("preview", "")
 K.check("the hotels result is compact: name, stars, rating, price per night, a hotel id",
         "Hotel Ginza Grand" in prev and '"stars": 4' in prev and '"price_per_night": 210' in prev and "ht_" in prev, prev[:400])
-K.check("no approval was needed (reads only)", not t["_approvals"], t["_approvals"])
+rh = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-links", "call_id": "c-links", "tool": "hotels_search",
+                                                    "args": {"city": "Tokyo", "check_in": DATE, "check_out": OUT, "currency": "SGD"}}).json()
+h0 = (((rh.get("result") or {}).get("content") or {}).get("hotels") or [{}])[0]
+K.check("each hotel links Google's page for it and the dates (booking_url) and its own site (hotel_site)",
+        h0.get("hotel_site") == "https://ginzagrand.example" and str(h0.get("booking_url", "")).startswith("https://www.google.com/travel/hotels/entity/")
+        and "&ts=" in str(h0.get("booking_url")), h0)
+K.check("no approval was needed (reads only)", not t["_approvals"] and not th["_approvals"], (t["_approvals"], th["_approvals"]))
 r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-biz", "call_id": "c-biz", "tool": "flights_search",
                                                    "args": {"origin": "TYO", "destination": "London", "date": DATE, "cabin": "business", "max_stops": 1, "adults": 2, "currency": "GBP"}}).json()
 q = [x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_flights" and not x.get("booking_token")][-1]
 K.check("city codes and names become every airport of the city in ONE Google search; business class, at most one stop and 2 adults go through as asked",
         q["departure_id"] == "HND,NRT" and q["arrival_id"] == "LHR,LGW,STN,LTN,LCY" and q["travel_class"] == "3" and q["stops"] == "2" and q["adults"] == "2" and q["currency"] == "GBP", q)
+K.check("the Google result carries Kayak's page for the same search (compare_url): every airport of both cities, business, 2 adults",
+        ((r.get("result") or {}).get("content") or {}).get("compare_url") == f"http://127.0.0.1:8094/kayak/flights/HND,NRT-LHR,LGW,STN,LTN,LCY/{DATE}/business/2adults?sort=price_a",
+        ((r.get("result") or {}).get("content") or {}).get("compare_url"))
 sr = ((r.get("result") or {}).get("content") or {}).get("searched") or {}
 K.check("the Google result repeats the search: business, at most one stop, the airports used", sr.get("cabin") == "business" and sr.get("stops") == "at most one stop"
         and sr.get("origin") == "HND,NRT" and sr.get("adults") == 2, sr)
@@ -115,15 +125,16 @@ r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-westin", "call_
                                                    "args": {"city": "Tokyo", "area": "Ginza", "check_in": DATE, "check_out": OUT, "brands": ["Westin"], "currency": "SGD"}}).json()
 ho = (r.get("result") or {}).get("content") or {}
 qs = hq()[n0:]
-K.check("a single brand: its Google id from the area's brand list (a first, unfiltered search), then the filtered one (Westin → brands=70)",
-        len(qs) == 2 and "brands" not in qs[0] and qs[1].get("brands") == "70" and [h["name"] for h in ho.get("hotels", [])] == ["The Westin Tokyo"], (qs, ho.get("hotels")))
+K.check("a brand with no known group id: ONE search, its name in the search words (no first lookup search), and the result says so",
+        len(qs) == 1 and qs[0].get("q") == "Westin hotels near Ginza Tokyo" and "brands" not in qs[0]
+        and "no brand filter for Westin" in str((ho.get("searched") or {}).get("brand_filter")), (qs, (ho.get("searched") or {}).get("brand_filter")))
 n0 = len(hq())
 r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-aman", "call_id": "c-aman", "tool": "hotels_search",
                                                    "args": {"city": "Tokyo", "area": "Ginza", "check_in": DATE, "check_out": OUT, "brands": ["Aman"], "currency": "SGD"}}).json()
 ho = (r.get("result") or {}).get("content") or {}
 qs = hq()[n0:]
 K.check("a brand Google lists no filter for here: searched by its name in the query instead, and the result says so",
-        len(qs) == 2 and qs[1].get("q") == "Aman hotels near Ginza Tokyo" and "brands" not in qs[1]
+        len(qs) == 1 and qs[0].get("q") == "Aman hotels near Ginza Tokyo" and "brands" not in qs[0]
         and "no brand filter for Aman" in str((ho.get("searched") or {}).get("brand_filter")), (qs, (ho.get("searched") or {}).get("brand_filter")))
 r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-alli", "call_id": "c-alli", "tool": "flights_search",
                                                    "args": {"origin": "SIN", "destination": "NRT", "date": DATE, "airlines": ["Star Alliance"], "currency": "SGD"}}).json()
@@ -159,31 +170,51 @@ r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-zero", "call_id
 q = [x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_maps"][-1]
 K.check("Google Maps (restaurants): a minimum rating of 0 and a price level of 0 are dropped, the search still runs", r.get("status") == "ok"
         and "min_rating" not in q and "max_price" not in q, q)
-# Kiwi.com up again: flights come from Kiwi even with a key, and no SerpApi search is spent; the fallback says why when it is used
-c.post(FAKE + "/kiwi-mcp/_down", json={"on": False})
-n_serp = len([x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_flights"])
-r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-kiwi", "call_id": "c-kiwi", "tool": "flights_search",
-                                                   "args": {"origin": "SIN", "destination": "NRT", "date": DATE, "currency": "SGD"}}).json()
-src = (r.get("result") or {}).get("source", "")
-K.check("with a key and Kiwi.com up, flights come from Kiwi.com and no Google Flights search is made", "Kiwi.com" in src
-        and len([x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_flights"]) == n_serp, (src, n_serp))
-c.post(FAKE + "/kiwi-mcp/_down", json={"on": True})
-r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-fb", "call_id": "c-fb", "tool": "flights_search",
-                                                   "args": {"origin": "SIN", "destination": "NRT", "date": DATE, "currency": "SGD"}}).json()
+# with the key: a range of dates and self-transfer go to Kiwi.com (ONE search, no Google credit); Google failing outright
+# falls back to Kiwi.com; Google finding nothing is the answer (nothing else is searched)
+gfl = lambda: len([x for x in c.get(FAKE + "/serpapi/_log").json() if x.get("engine") == "google_flights"])
+kn = lambda: len(c.get(FAKE + "/kiwi-mcp/_log").json())
+g0, k0 = gfl(), kn()
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-range", "call_id": "c-range", "tool": "flights_search",
+                                                   "args": {"origin": "SIN", "destination": "NRT", "date": DATE, "date_to": OUT, "currency": "SGD"}}).json()
 res = (r.get("result") or {}).get("content") or {}
-K.check("Kiwi.com down: Google Flights answers as the fallback and says why", (r.get("result") or {}).get("source") == "Google Flights (fallback)"
-        and "Kiwi.com failed" in res.get("fallback", "") and res.get("count", 0) > 0, (r.get("result") or {}).get("source"))
-r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-web", "call_id": "c-web", "tool": "flights_search",
+K.check("with a key, a range of dates is ONE Kiwi.com search and no Google Flights search", "Kiwi.com" in (r.get("result") or {}).get("source", "")
+        and gfl() == g0 and kn() == k0 + 1 and len(res.get("by_date", [])) == 3 and res["offers"][0].get("booking_url", "").startswith("https://kiwi.com/u/"), ((r.get("result") or {}).get("source"), gfl() - g0, kn() - k0))
+g0, k0 = gfl(), kn()
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-self", "call_id": "c-self", "tool": "flights_search",
+                                                   "args": {"origin": "SIN", "destination": "NRT", "date": DATE, "self_transfer": True, "currency": "SGD"}}).json()
+K.check("with a key, self-transfer (asked for explicitly) is a Kiwi.com search with allow_self_transfer", "Kiwi.com" in (r.get("result") or {}).get("source", "")
+        and gfl() == g0 and kn() == k0 + 1 and c.get(FAKE + "/kiwi-mcp/_log").json()[-1].get("allow_self_transfer") is True, (r.get("result") or {}).get("source"))
+g0, k0 = gfl(), kn()
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-fb", "call_id": "c-fb", "tool": "flights_search",
+                                                   "args": {"origin": "ERR", "destination": "NRT", "date": DATE, "currency": "SGD"}}).json()
+res = (r.get("result") or {}).get("content") or {}
+K.check("Google Flights failing outright: Kiwi.com answers as the fallback and says why", (r.get("result") or {}).get("source") == "Kiwi.com flights (Google Flights failed)"
+        and "Google Flights failed" in res.get("fallback", "") and res.get("count", 0) > 0 and gfl() == g0 + 1 and kn() == k0 + 1, str(r)[:400])
+g0, k0 = gfl(), kn()
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-none", "call_id": "c-none", "tool": "flights_search",
                                                    "args": {"origin": "ZZZ", "destination": "NRT", "date": DATE, "currency": "SGD"}}).json()
-w = r.get("result") or {}
-K.check("Kiwi.com down and Google Flights with no flights: the web search chain answers last and says both failed", r.get("status") == "ok"
-        and "web search" in str(w.get("source", "")) and "Kiwi.com failed" in w.get("flights_fallback", "") and "Google Flights found no flights" in w.get("flights_fallback", ""), str(r)[:400])
-r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-hweb", "call_id": "c-hweb", "tool": "hotels_search",
-                                                   "args": {"city": "Atlantis", "check_in": DATE, "check_out": OUT}}).json()
-w = r.get("result") or {}
-K.check("with a key, Google Hotels finding nothing falls back to web search and says so", r.get("status") == "ok" and "web search" in str(w.get("source", ""))
-        and "Google Hotels found no hotels" in w.get("hotels_fallback", ""), str(r)[:300])
+res = (r.get("result") or {}).get("content") or {}
+K.check("Google Flights finding nothing is the answer: no Kiwi.com, no web search, and a note to ask the user what to change",
+        r.get("status") == "ok" and (r.get("result") or {}).get("source") == "Google Flights" and res.get("count") == 0 and "ask the user what to change" in res.get("note", "")
+        and gfl() == g0 + 1 and kn() == k0, str(r)[:400])
+c.post(FAKE + "/kiwi-mcp/_down", json={"on": True})
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-both", "call_id": "c-both", "tool": "flights_search",
+                                                   "args": {"origin": "ERR", "destination": "NRT", "date": DATE, "currency": "SGD"}}).json()
 c.post(FAKE + "/kiwi-mcp/_down", json={"on": False})
+K.check("Google Flights and Kiwi.com both failing: the search fails and names both", r.get("status") != "ok" and "Google Flights failed" in str(r) and "Kiwi.com failed" in str(r), str(r)[:400])
+w0 = len(c.get(FAKE + "/serpapi/_log").json())
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-hnone", "call_id": "c-hnone", "tool": "hotels_search",
+                                                   "args": {"city": "Atlantis", "check_in": DATE, "check_out": OUT}}).json()
+ho = (r.get("result") or {}).get("content") or {}
+K.check("with a key, Google Hotels finding nothing is the answer (ONE search, no web search) with a note to ask what to change",
+        r.get("status") == "ok" and (r.get("result") or {}).get("source") == "Google Hotels" and ho.get("count") == 0 and "ask the user what to change" in ho.get("note", "")
+        and len(c.get(FAKE + "/serpapi/_log").json()) == w0 + 1, str(r)[:300])
+r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-hweb", "call_id": "c-hweb", "tool": "hotels_search",
+                                                   "args": {"city": "Errorville", "check_in": DATE, "check_out": OUT}}).json()
+w = r.get("result") or {}
+K.check("with a key, Google Hotels failing outright falls back to web search and says so", r.get("status") == "ok" and "web search" in str(w.get("source", ""))
+        and "Google Hotels failed" in w.get("hotels_fallback", ""), str(r)[:300])
 r = c.delete(B + "/sentinel/api/connections/travel/credential", headers=H)
 K.check("disconnect removes the key; the flight tools stay (Kiwi.com data), the hotel and place tools too", r.status_code == 200 and not conn()["has_credential"] and "flights_search" in cat_names(), r.text[:100])
 a = c.post(B + "/internal/act", headers=RT, json={"task_id": "travel-t1", "call_id": "c1", "tool": "hotel_rooms", "args": {"hotel_id": "ht_x", "check_in": DATE, "check_out": OUT}}).json()

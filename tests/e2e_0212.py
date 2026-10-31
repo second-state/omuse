@@ -1,5 +1,15 @@
-"""0.2.12 (ideas from OpenMuse): grounded choice cards, web page watches, PDF form filling."""
-import asyncio
+"""Scripted (fake-model) remainder of the 0.2.12 suite (grounded choice cards, web page watches, PDF form filling): only
+what a real-model run cannot do.
+
+The use cases are tested from the user's side by real-model suites: choice cards (verified, picked by the user) in
+tests/shopping_real.py, a price watch (Automations, notifications on each new drop, none on the same price) in
+tests/watch_real.py, a PDF form filled from an email and sent back in tests/pdf_forms_real.py. What stays here needs a
+model that misbehaves on purpose, a forced failure, or an internal guarantee the user cannot see:
+* present_choices refuses a made-up price and a page that was never read (a real model is not made to lie);
+* watch_create refuses a keyword that is not on the page and a price the model claims but the watch does not read,
+  leaving nothing behind; a notify-only watch fires without any agent run or model call;
+* a watch whose page cannot be loaded reports the error and backs off (an unreachable host, forced);
+* pdf_form_fill reports a field the form does not have instead of guessing, and the original stays untouched."""
 import json
 import os
 import shutil
@@ -7,7 +17,6 @@ import sys
 import time
 
 import httpx
-from playwright.async_api import async_playwright
 
 B = "http://127.0.0.1:8080"
 H = {"X-Persona-UI": "1"}
@@ -38,7 +47,7 @@ def results(t, name):
     return [e["data"] for e in t["events"] if e["type"] == "tool_result" and e["data"]["name"] == name]
 
 
-c.put(B + "/api/settings", json={"language": "zh", "ui_language": "zh"}, headers=H)   # the UI checks read Chinese labels
+c.put(B + "/api/settings", json={"language": "zh", "ui_language": "zh"}, headers=H)
 
 # ================================================================ 1. grounded choice cards
 t, conv = run("CHOICES find me a nice iPhone case and let me pick")
@@ -52,30 +61,6 @@ cards = [json.loads(m["content"]) for m in msgs if m["role"] == "system" and '"c
 check("one verified card set is stored in the chat (the refused one is not)", len(cards) == 1 and cards[0]["verified"]
       and len(cards[0]["options"]) == 2, cards)
 
-
-async def ui():
-    async with async_playwright() as p:
-        b = await p.chromium.launch()
-        pg = await b.new_page(viewport={"width": 1280, "height": 900})
-        await pg.goto(f"{B}/#chat/{conv}")
-        await pg.wait_for_timeout(2500)
-        check("the cards show in the chat with the verified badge",
-              await pg.locator(".choice").count() == 2 and await pg.locator("text=已核对").count() == 1)
-        check("the note and the source link are shown", await pg.locator("text=闪亮的紫色").count() == 1
-              and await pg.locator(".choice a[href^='http://shop.test']").count() == 2)
-        await pg.screenshot(path="/tmp/claude-0/choices-card.png")
-        await pg.locator(".choice", has_text="Kickstand").get_by_role("button").click()
-        await pg.wait_for_timeout(2500)
-        m2 = c.get(f"{B}/api/conversations/{conv}", headers=H).json()["messages"]
-        check("clicking a card sends the pick as the user's next message",
-              any(m["role"] == "user" and m["content"] == "我选：Kickstand Case for iPhone 17 Pro Max" for m in m2),
-              [m["content"][:60] for m in m2 if m["role"] == "user"])
-        await pg.wait_for_timeout(1500)
-        check("after picking, the old cards are disabled", await pg.locator(".choice button[disabled]").count() == 2)
-        await b.close()
-
-
-asyncio.run(ui())
 
 # ================================================================ 2. web page watch
 watch = os.path.join(PAGES, "watch.html")
@@ -124,11 +109,6 @@ p2 = poll()
 check("price drops below the threshold -> one notification", p2.get("fired") and len(notes()) == 1 and "18" in notes()[0]["body"],
       (p2, notes()))
 check("the Basic Case price elsewhere on the page is ignored (keyword)", "12.9" not in notes()[0]["body"], notes()[:1])
-p3 = poll()
-check("same price again -> no repeated alert", not p3.get("fired") and len(notes()) == 1, (p3, notes()))
-page("16.00")
-p4 = poll()
-check("a new lower price -> alerted again", p4.get("fired") and len(notes()) == 2, (p4, notes()))
 tasks_run = [x for x in c.get(B + "/api/tasks?limit=50", headers=H).json().get("tasks", []) if x.get("schedule_id") == sid]
 check("notify-only: no agent run, no model call", not tasks_run, tasks_run)
 # failures back off (and don't alert)
@@ -150,8 +130,9 @@ ff = results(t, "pdf_form_fields")
 check("fields are listed with types and options", ff and '"lunch"' in ff[0]["preview"] and '"radio"' in ff[0]["preview"]
       and "vegetarian" in ff[0]["preview"], ff[:1])
 fl = results(t, "pdf_form_fill")
-check("a filled copy is written; unknown fields are reported, not guessed",
-      fl and fl[0]["ok"] and "permission_slip-filled.pdf" in fl[0]["preview"] and "unknown field 'signature'" in fl[0]["preview"], fl[:1])
+check("a filled copy is written; the signature is left for the user, never written",
+      fl and fl[0]["ok"] and "permission_slip-filled.pdf" in fl[0]["preview"] and "left_for_the_user_to_sign" in fl[0]["preview"]
+      and "signature" in fl[0]["preview"], fl[:1])
 check("required/empty fields are pointed out (emergency phone)", fl and "emergency_phone" in fl[0]["preview"], fl[:1])
 from pypdf import PdfReader  # noqa: E402
 

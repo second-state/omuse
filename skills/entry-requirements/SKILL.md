@@ -1,6 +1,7 @@
 ---
 name: entry-requirements
 description: 亚洲入境准备：签证/免签、电子入境卡（泰国 TDAC、新加坡 SGAC、韩国 e-Arrival/K-ETA、马来西亚 MDAC、日本 Visit Japan Web、印尼、越南、中国过境免签）、护照有效期、海关与药品规定，按出发日期设提醒 Visas and visa-free rules, digital arrival cards (Thailand TDAC, Singapore SGAC, Korea e-Arrival / K-ETA, Malaysia MDAC, Japan Visit Japan Web, Indonesia, Vietnam, China transit), passport validity, customs and medication rules, with reminders timed to the trip.
+profile: nationality
 ---
 # Entry requirements / 入境准备
 
@@ -9,8 +10,10 @@ quoting a rule, browser_read the official page named here and say the date you c
 always a scam — only the government sites named here.
 
 ## 1. What you need from the user (profile / memory first, then ask once)
-Passport nationality (profile_get / memory_search "passport"), destination(s) and dates, transit points, purpose,
-whether they have visited the country before on this passport (some ETAs are multi-year).
+Passport nationality: call profile_get (field `nationality`) first, then memory_search "passport" — never ask the user
+for a nationality the profile already has; say "for your <nationality> passport" in the answer. Then destination(s)
+and dates, transit points, purpose, whether they have visited the country before on this passport (some ETAs are
+multi-year).
 
 ## 2. Checklist per destination (verify, then tailor)
 - **Passport validity**: most of Asia wants 6 months beyond arrival (Singapore, Thailand, Malaysia, Indonesia,
@@ -52,8 +55,8 @@ whether they have visited the country before on this passport (some ETAs are mul
 - Nothing found or unsure → say "not verified" and link the official page; never state a visa rule from memory alone.
 
 ## 4. Answer
-A table (destination / requirement / when / status / official link / date checked), then the next action and the
-reminders created. One line on travel insurance when the trip has flights and checked bags and no policy email was
+A table (destination / requirement / when / status / official link / date checked — write "checked <today's date>"
+for every rule you read), then the next action and the reminders created. One line on travel insurance when the trip has flights and checked bags and no policy email was
 found (delays, medical and lost luggage are the common claims).
 
 ## Remember what you learn (for next time)

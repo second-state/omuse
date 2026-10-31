@@ -822,7 +822,10 @@ pub async fn execute(
         return telegram_send(st, take_chars(&text, 3500)).await;
     }
     if connector == "travel" {
-        let checked = checked_travel_args(tool, args)?;
+        let mut checked = checked_travel_args(tool, args)?;
+        // the cabin, stops and self-transfer the user asked for, from their own words
+        let request = store.user_request(task_id).unwrap_or_default();
+        omuse_apps::travel_args::align_with_request(tool, &mut checked, &request);
         let res = with_fixed(
             travel_sync(st, tool, &checked.args, task_id).await?,
             &checked.fixed,
@@ -869,7 +872,40 @@ pub async fn execute(
         return Ok(res);
     }
     if connector.starts_with("mcp:") {
-        return Ok(omuse_mcp::mcp_hub::call(store, tool, args, task_id).await?);
+        let mut res = omuse_mcp::mcp_hub::call(store, tool, args, task_id).await?;
+        // a travel connector's flight or hotel search gets Kayak's page for the same search too, first in its text
+        let base = tool.rsplit("__").next().unwrap_or(tool);
+        let compare = match base {
+            "flights_search" => {
+                omuse_apps::kayak::flights_url(&st.cfg.endpoints.kayak, args, &fstr(args, "date"))
+            }
+            "hotels_search" => omuse_apps::kayak::hotels_url(&st.cfg.endpoints.kayak, args),
+            _ => None,
+        };
+        if let (Some(u), Some(text)) = (
+            compare,
+            res.get("content")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        ) {
+            let what = "the same search on Kayak, to compare prices across sites — give it once with the answer";
+            // a JSON object stays one, as the connector wrote it: the link goes in as its first key, right after the
+            // opening brace; any other text gets it on a line above
+            let keys = format!(
+                "\"compare_url\": {}, \"compare\": {}",
+                json!(u),
+                json!(what)
+            );
+            let trimmed = text.trim_start();
+            res["content"] = json!(match serde_json::from_str::<Value>(&text) {
+                Ok(v) if v.as_object().is_some_and(|m| !m.is_empty()) => {
+                    let rest = &trimmed[1..];
+                    format!("{{{keys}, {}", rest.trim_start())
+                }
+                _ => format!("{{{keys}}}\n{text}"),
+            });
+        }
+        return Ok(res);
     }
     if connector == "phone" {
         let phone = &st.phone;
@@ -1373,6 +1409,231 @@ pub fn snap_envelope(store: &Store, task_id: &str, snap: &Value) -> anyhow::Resu
     Ok(out)
 }
 
+/// `browser_fill_form`: run a known form's plan (computed by `omuse_runtime::forms`) through the broker. An operation
+/// with `vault: {field, date_fmt?}` gets the value of the one Vault ID document allowed on the page's site (never a
+/// card's), formatted as the form asks, and is marked secret; an operation the Vault cannot serve is skipped and
+/// reported. The result says, per field, what was filled and what was not — never a value.
+async fn fill_form(st: &AppState, store: &Store, page: &str, args: &Value) -> ActResult {
+    let url = broker(st, "GET", "/state", None, 10.0)
+        .await
+        .ok()
+        .and_then(|s| {
+            s["tasks"]
+                .as_array()
+                .and_then(|a| a.iter().find(|x| get_str(x, "task_id") == page))
+                .map(|x| get_str(x, "url"))
+        })
+        .unwrap_or_default();
+    let dom = guard::domain_of(&url);
+    let docs: Vec<Value> = vault::list_items(store)?
+        .into_iter()
+        .filter(|it| get_str(it, "kind") == "id_document" && vault::domain_ok(it, &dom))
+        .collect();
+    let doc = match docs.len() {
+        1 => docs.first().cloned(),
+        _ => docs
+            .iter()
+            .find(|it| get_str(it, "label").to_lowercase().contains("passport"))
+            .cloned(),
+    };
+    let mut fills: Vec<Value> = Vec::new();
+    let mut skipped: Vec<Value> = Vec::new();
+    for f in opt_val(args, "fills")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        let Some(v) = f.get("vault").filter(|v| v.is_object()) else {
+            fills.push(f);
+            continue;
+        };
+        let field = fstr(v, "field");
+        let value = doc
+            .as_ref()
+            .and_then(|it| vault::value(store, &get_str(it, "id"), &field).ok())
+            .filter(|x| !x.is_empty() && x != vault::UNKNOWN);
+        let Some(value) = value else {
+            skipped.push(json!({"sel": fstr(&f, "sel"), "field": fstr(&f, "field"), "why": "no Vault ID document value for this site"}));
+            continue;
+        };
+        let fmt = fstr(v, "date_fmt");
+        let value = if fmt.is_empty() {
+            value
+        } else {
+            chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+                .map(|d| d.format(&fmt).to_string())
+                .unwrap_or(value)
+        };
+        let mut g = f.clone();
+        if let Some(o) = g.as_object_mut() {
+            o.remove("vault");
+            o.insert("value".into(), json!(value));
+            o.insert("secret".into(), json!(true));
+        }
+        if let Some(it) = doc.as_ref() {
+            let _ = vault::mark_used(store, &get_str(it, "id"));
+            ID_FILLED.lock().insert(page.to_string(), get_str(it, "id"));
+        }
+        fills.push(g);
+    }
+    let r = broker(
+        st,
+        "POST",
+        "/agent/fill_form",
+        Some(&json!({"task_id": page, "fills": fills})),
+        120.0,
+    )
+    .await?;
+    FORM_FILLED.lock().insert(page.to_string());
+    vault::note_fill(page, &fstr(&r, "url"));
+    let out = json!({"url": fstr(&r, "url"), "filled": r.get("filled").cloned().unwrap_or(json!([])), "skipped": skipped});
+    Ok(vault::scrub(store, &out))
+}
+
+/// The pages a known form's function filled (`browser_fill_form`): their hand-over is never sent back for blanks.
+static FORM_FILLED: LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
+
+/// The Vault ID document (passport) a page was filled from, by page: its other fields are completed at the hand-over.
+static ID_FILLED: LazyLock<parking_lot::Mutex<std::collections::HashMap<String, String>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+/// Whether a form field's label or hints (placeholder, name, autocomplete, section heading) belong to a payment card:
+/// a card's fields are never an ID document's (cards_pay_real 2026-10-31: the passport expiry went into the FWD
+/// form's card expiry, a box labelled just "Expiry" with the placeholder MM/YY).
+fn card_field(text: &str) -> bool {
+    static CARD: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\bcards?\b|credit|debit|payment|cvv|cvc|security code|mm\s*/\s*yy\b|\bcc-|\bcc_|银行卡|信用卡|卡号|付款")
+            .unwrap()
+    });
+    CARD.is_match(text)
+}
+
+/// The Vault field of an ID document an empty form field asks for, by its label (`None`: not one of them).
+fn id_field_for(label: &str) -> Option<&'static str> {
+    static EXPIRY: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)expir|valid (until|thru|through)|date of expiry|有效期|到期").unwrap()
+    });
+    static NUMBER: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)(passport|travel document|document) *(no\b|no\.|number|#)|护照号|证件号")
+            .unwrap()
+    });
+    if card_field(label) {
+        None
+    } else if EXPIRY.is_match(label) {
+        Some("expiry")
+    } else if NUMBER.is_match(label) {
+        Some("number")
+    } else {
+        None
+    }
+}
+
+/// At a hand-over, the empty passport number / expiry fields of a page that was filled from a Vault ID document are
+/// filled from that same item, in code (arrival_cards3_real 2026-10-31: the eTravel form got the passport number,
+/// the expiry was never filled and the model told the user the Vault had none). Only an item the agent already used
+/// on this page, only where the item allows the site, never a card; what fails is left for the empty-fields check.
+async fn complete_id_document(st: &AppState, store: &Store, page: &str) {
+    let Some(iid) = ID_FILLED.lock().get(page).cloned() else {
+        return;
+    };
+    let Ok(Some(it)) = vault::item(store, &iid) else {
+        return;
+    };
+    let Ok(r) = broker(
+        st,
+        "POST",
+        "/agent/empty_fields",
+        Some(&json!({"task_id": page})),
+        20.0,
+    )
+    .await
+    else {
+        return;
+    };
+    if !vault::domain_ok(&it, &guard::domain_of(&get_str(&r, "url"))) {
+        return;
+    }
+    let fields = vault::item_fields(&it);
+    let empty = r["empty"].as_array().cloned().unwrap_or_default();
+    for f in empty.iter().filter(|f| get_str(f, "kind") == "text") {
+        // the field's own hints count too: a box labelled just "Expiry" whose placeholder is MM/YY is a card's
+        // (cards_pay_real 2026-10-31)
+        if card_field(&get_str(f, "hint")) {
+            continue;
+        }
+        let (Some(field), r) = (id_field_for(&get_str(f, "label")), get_str(f, "ref")) else {
+            continue;
+        };
+        if r.is_empty() || !fields.iter().any(|x| x == field) {
+            continue;
+        }
+        let Ok(val) = vault::value(store, &iid, field) else {
+            continue;
+        };
+        if val.is_empty() || val == vault::UNKNOWN {
+            continue;
+        }
+        let body = json!({"task_id": page, "ref": r, "text": val, "keys": true, "date": field == "expiry", "secret": true});
+        if let Ok(snap) = broker(st, "POST", "/agent/type", Some(&body), 90.0).await {
+            let _ = vault::mark_used(store, &iid);
+            vault::note_fill(page, &fstr(&snap, "url"));
+        }
+    }
+}
+
+/// How many empty fields a hand-over tolerates without a send-back: the user fills a few in before submitting.
+const MAX_LEFT_FOR_USER: usize = 3;
+
+/// Whether this is the first send-back for `page` (each page is sent back at most once).
+fn sent_back_first_time(page: &str) -> bool {
+    static SENT: LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
+    SENT.lock().insert(page.to_string())
+}
+
+/// The empty fields of a page being handed over, as ("「label」 「label」 …", how many) — `None` when nothing is
+/// empty but what only the user can fill anyway (a CAPTCHA, a code, a password) or what is optional.
+async fn empty_fields_left(st: &AppState, page: &str) -> Option<(String, usize)> {
+    static USERS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)captcha|security (code|check)|verification|one[- ]time|otp|password|验证码|密码|characters|signature|签名").unwrap()
+    });
+    // optional fields stay empty: no "N/A" in a middle name (arrival_real 2026-10-30)
+    static OPTIONAL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\(if any\)|\(if applicable\)|optional|如有|选填|（可选）|\(可选\)")
+            .unwrap()
+    });
+    let r = broker(
+        st,
+        "POST",
+        "/agent/empty_fields",
+        Some(&json!({"task_id": page})),
+        20.0,
+    )
+    .await
+    .ok()?;
+    let left: Vec<String> = r["empty"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|f| get_str(f, "label"))
+                .filter(|l| !l.trim().is_empty() && !USERS.is_match(l) && !OPTIONAL.is_match(l))
+                .collect()
+        })
+        .unwrap_or_default();
+    if left.is_empty() {
+        return None;
+    }
+    Some((
+        left.iter()
+            .take(15)
+            .map(|l| format!("「{}」", l.replace('\n', " ")))
+            .collect::<Vec<_>>()
+            .join(" "),
+        left.len(),
+    ))
+}
+
 /// The browser tools (Python `_browser`). The broker addresses pages by `page` (the task id, or a sub-agent lane's
 /// `<task>~<lane>`); the task's context flags (taint, injection, domains) are recorded under `task_id`.
 pub async fn browser(
@@ -1388,7 +1649,63 @@ pub async fn browser(
         return Ok(broker(st, "GET", "/agent/downloads", None, BROKER_TIMEOUT).await?);
     }
     if action == "request_takeover" {
-        let reason = args.get("reason").cloned().unwrap_or(json!(""));
+        // the rest of the ID document already used on this page goes in, in code (passport number / expiry)
+        complete_id_document(st, store, page).await;
+        // an arrival card (the runtime asks with `default_no`): every plain Yes / No question still unanswered gets
+        // No before the page is checked and handed over — the user's own default, reviewed by them on the page
+        // and the departure date the runtime computed from the user's default (arrival + 7 days)
+        if let Some(d) = args.get("set_departure").and_then(Value::as_str) {
+            let _ = broker(
+                st,
+                "POST",
+                "/agent/set_departure",
+                Some(&json!({"task_id": page, "value": d})),
+                20.0,
+            )
+            .await;
+        }
+        if args
+            .get("default_no")
+            .is_some_and(|v| v.as_bool() == Some(true))
+        {
+            let _ = broker(
+                st,
+                "POST",
+                "/agent/default_no",
+                Some(&json!({"task_id": page})),
+                20.0,
+            )
+            .await;
+        }
+        // fields still empty do not hold the hand-over up: the user reviews the page and fills them in before
+        // submitting (2026-10-31, "we can tolerate some missing values"); what is left is named for them. The values
+        // the runtime and Sentinel know were filled in code above (ID document, Yes / No defaults, departure date).
+        // A page still mostly empty (more than MAX_LEFT_FOR_USER fields) is a hand-over made too early (arrival_real
+        // 2026-10-31: handed over for the CAPTCHA with the trip section blank): sent back once, then it goes through.
+        let mut reason = fstr(args, "reason");
+        if let Some((left, n)) = empty_fields_left(st, page).await {
+            // a page code filled (`form_fill`) is best effort and goes to the user as it is (the user's rule,
+            // 2026-10-31: "it does not have to be perfect"); the send-back is for the generic path only
+            if n > MAX_LEFT_FOR_USER
+                && !FORM_FILLED.lock().contains(page)
+                && sent_back_first_time(page)
+            {
+                return Err(act_status(
+                    format!(
+                        "还没交给用户：这个页面上还有 {n} 项空着 — {left}。先把你有值或有默认值的都填上（个人资料、保险箱、邮件里的行程），\
+验证码留到最后交给用户，然后再调用 browser_request_takeover。 (Not handed over yet: {n} fields on this page are still \
+empty — {left}. Fill every one you have a value or a default for (the profile, the Vault, the trip in mail); the CAPTCHA \
+is left for the final hand-over. Then call browser_request_takeover again; it goes through the second time.)"
+                    ),
+                    "error",
+                ));
+            }
+            reason = format!(
+                "{}\n\n还没填的项，提交前请补上 Left for you to fill in before you submit: {left}",
+                reason.trim()
+            );
+        }
+        let reason = json!(reason);
         broker(
             st,
             "POST",
@@ -1402,34 +1719,34 @@ pub async fn browser(
             "waiting_user",
         ));
     }
-    if (action == "look" || action == "locate")
-        && vault::filled_here(page, &task_url(st, page).await)
-    {
-        return Err(act_status(
-            "这个页面上已经填了保险箱里的号码，为保护隐私不能截图给视觉模型看；请用 browser_snapshot / browser_find \
-             (vision is disabled on a page holding a vault value — use the text snapshot)",
-            "denied",
-        ));
-    }
     let mut payload = match args {
         Value::Object(_) => args.clone(),
         _ => json!({}),
     };
     set(&mut payload, "task_id", json!(page));
+    if action == "fill_form" {
+        return fill_form(st, store, page, args).await;
+    }
     if action == "fill_secret" {
         let (iid, field) = (fstr(args, "item_id"), fstr(args, "field"));
         let val = vault::value(store, &iid, &field)?;
-        if val.is_empty() {
+        if val.is_empty() || val == vault::UNKNOWN {
             return Err(act_status(
                 "保险箱里没有这个内容 (vault value missing)",
                 "denied",
             ));
         }
+        // a card's expiry is MM/YY; any other date (a passport's expiry) goes in the order the field shows; the
+        // value is a secret: the browser hides it in the pictures a vision model sees
+        let card = vault::item(store, &iid)?.is_some_and(|it| get_str(&it, "kind") == "card");
         let body = json!({"task_id": page, "ref": args.get("ref").cloned().unwrap_or(json!("")), "text": val,
-            "keys": true, "expiry": field == "expiry"});
+            "keys": true, "expiry": card && field == "expiry", "date": !card && field == "expiry", "secret": true});
         let snap = broker(st, "POST", "/agent/type", Some(&body), 90.0).await?;
         vault::mark_used(store, &iid)?;
         vault::note_fill(page, &fstr(&snap, "url"));
+        if !card {
+            ID_FILLED.lock().insert(page.to_string(), iid.clone());
+        }
         let mut out = vault::scrub(store, &snap_envelope(store, task_id, &snap)?);
         let it = vault::item(store, &iid)?.unwrap_or_else(|| json!({"label": "?", "masked": ""}));
         set(
@@ -1458,7 +1775,9 @@ pub async fn browser(
         }));
     }
     if action == "read" {
-        let res = broker(st, "POST", "/agent/read", Some(&payload), 120.0).await?;
+        let mut res = broker(st, "POST", "/agent/read", Some(&payload), 120.0).await?;
+        // a page with almost no text whose scripts may still be drawing it is read again, longer, in code
+        reread_thin_pages(st, task_id, &mut res).await;
         let mut pages: Vec<Value> = Vec::new();
         let mut allflags: Vec<String> = Vec::new();
         for pg in opt_val(&res, "pages")
@@ -1491,7 +1810,7 @@ pub async fn browser(
                 set(
                     &mut item,
                     "note",
-                    json!("页面几乎没有文字（可能需要 JavaScript、登录，或被拦截）；需要的话用 browser_navigate 打开 little text: the page may need JavaScript or a login, or block bots — use browser_navigate if needed"),
+                    json!("页面几乎没有文字（有脚本的页面已多等 5 秒再读；可能需要登录，或拦截了机器人） little text (a page with scripts was read again after 5 s): it may need a login or block bots"),
                 );
             }
             pages.push(item);
@@ -1939,53 +2258,68 @@ pub fn travel_client(st: &AppState) -> ActResult<omuse_apps::serpapi::SerpApi> {
     ))
 }
 
-/// The Flights & hotels tools. Flights: Google Flights data when a SerpApi key is on hand, else Kiwi.com's public
-/// MCP (free, information only — the booking links are dropped). Hotels: Google Hotels data, key required.
+/// The Flights & hotels tools: one search query per call. Flights: Google Flights data when a SerpApi key is on hand,
+/// else (and for a range of dates or self-transfer) Kiwi.com's public MCP. Hotels: Google Hotels data, key required.
 pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str) -> ActResult {
     let store = &st.store;
     let keyed = !serpapi_key(st).is_empty();
     let offer = fstr(args, "offer_id");
     let (src, data) = match tool {
-        // the chain, like web_search: Kiwi.com (free, ranges of up to 14 days) → Google Flights through SerpApi (only with a
-        // key: each search costs a credit) → the web search chain (search APIs, then the browser's own engines), which has
-        // no structured offers but names the airlines' and agencies' fare pages
+        // ONE search query per call. Google Flights first (a SerpApi key, one departure date): it has the most
+        // airlines, nonstops and premium cabins, and which airline sells the whole trip as one ticket. Kiwi.com for a
+        // range of dates (one query there), for self-transfer (only when the user asks), without a key, and when
+        // Google fails outright. An empty result is the answer; nothing else is searched.
         "flights_search" => {
-            let kiwi = omuse_apps::kiwi::KiwiMcp::new(st.http.clone(), &st.cfg.endpoints.kiwi_mcp)
-                .flights(args)
-                .await;
-            let mut failed: Vec<String> = Vec::new();
-            match kiwi {
-                Ok(d) if d["count"].as_u64().unwrap_or(0) > 0 => {
-                    ("Kiwi.com flights (information only)", d)
-                }
-                // narrowed to the user's preferred airlines and none flies it: that is the answer (the model says so and
-                // asks before searching all airlines) — Google Flights may still have them, the web search would not filter
-                Ok(d) if get_str(&d["searched"], "airline_filter").starts_with("only these airlines") => {
-                    let google = if keyed {
-                        travel_client(st)?.flights(args).await.ok()
-                    } else {
-                        None
-                    };
-                    match google {
-                        Some(mut g) if g["count"].as_u64().unwrap_or(0) > 0 => {
-                            g["fallback"] = json!("Kiwi.com found no flight on the preferred airlines; these are Google Flights results");
-                            ("Google Flights (fallback)", g)
+            let to = fstr(args, "date_to");
+            let range = !to.trim().is_empty() && to.trim() != fstr(args, "date").trim();
+            let google_first = keyed && !range && !truthy(&args["self_transfer"]);
+            let kiwi = || async {
+                omuse_apps::kiwi::KiwiMcp::new(st.http.clone(), &st.cfg.endpoints.kiwi_mcp)
+                    .flights(args)
+                    .await
+            };
+            let (src, mut d) = if google_first {
+                match travel_client(st)?.flights(args).await {
+                    Ok(g) => ("Google Flights", g),
+                    Err(g) => match kiwi().await {
+                        Ok(mut k) => {
+                            k["fallback"] = json!(format!("Google Flights failed ({g}); these are Kiwi.com results"));
+                            ("Kiwi.com flights (Google Flights failed)", k)
                         }
-                        _ => ("Kiwi.com flights (information only)", d),
-                    }
+                        Err(e) => return Err(act(format!("Google Flights failed ({g}); Kiwi.com failed ({e})"))),
+                    },
                 }
-                Ok(_) => {
-                    failed.push("Kiwi.com found no flights".into());
-                    flights_after_kiwi(st, args, task_id, keyed, failed).await?
+            } else {
+                match kiwi().await {
+                    Ok(k) => ("Kiwi.com flights", k),
+                    Err(e) => return Err(act(format!("Kiwi.com failed ({e}); try again later"))),
                 }
-                Err(e) => {
-                    failed.push(format!("Kiwi.com failed: {e}"));
-                    flights_after_kiwi(st, args, task_id, keyed, failed).await?
-                }
+            };
+            if d["count"].as_u64().unwrap_or(0) == 0 {
+                let prefs = omuse_apps::serpapi::pref_list(args, "airlines");
+                d["note"] = json!(if prefs.is_empty() {
+                    "no flights found for this search; say so and ask the user what to change (dates, airports, stops) — one flight search per request".to_string()
+                } else {
+                    format!("no flights found on the preferred airlines ({}) — the search was limited to them; say so plainly and ask: \"Shall I search all airlines?\" (or other dates, stops). One flight search per request: do not search again now.", prefs.join(", "))
+                });
             }
+            // Kayak's page for the same search (built here, no call): the cheapest day of a range, else the date
+            let day = d["by_date"]
+                .as_array()
+                .and_then(|b| {
+                    b.iter()
+                        .filter(|x| x["cheapest"].as_f64().is_some())
+                        .min_by(|x, y| x["cheapest"].as_f64().partial_cmp(&y["cheapest"].as_f64()).unwrap_or(std::cmp::Ordering::Equal))
+                })
+                .map(|x| fstr(x, "date"))
+                .unwrap_or_else(|| fstr(args, "date"));
+            if let Some(u) = omuse_apps::kayak::flights_url(&st.cfg.endpoints.kayak, args, &day) {
+                d = with_compare(d, &u, "the same search on Kayak, to compare prices across sites — give it once with the answer");
+            }
+            (src, d)
         }
         "flight_offer" if offer.starts_with("kw_") => (
-            "Kiwi.com flight (information only)",
+            "Kiwi.com flight",
             omuse_apps::kiwi::offer_details(&offer).ok_or_else(|| {
                 act(format!("unknown offer id {offer}: search again with flights_search and use an offer_id from that result"))
             })?,
@@ -1994,18 +2328,26 @@ pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str)
             "Google Flights booking options",
             travel_client(st)?.flight_offer(args).await?,
         ),
-        // like flights: Google Hotels / Google Maps with the SerpApi key, else (or when Google finds nothing) the web search chain
+        // ONE search query per call: Google Hotels with the SerpApi key (an empty result is the answer); the web search
+        // only without a key or when Google fails outright
         "hotels_search" => {
-            let mut failed = Vec::new();
-            if keyed {
+            let hotels_compare = omuse_apps::kayak::hotels_url(&st.cfg.endpoints.kayak, args);
+            let failed = if keyed {
                 match travel_client(st)?.hotels(args).await {
-                    Ok(d) if d["count"].as_u64().unwrap_or(0) > 0 => return untrusted_travel(store, task_id, "Google Hotels", d),
-                    Ok(_) => failed.push("Google Hotels found no hotels".to_string()),
-                    Err(e) => failed.push(format!("Google Hotels failed: {e}")),
+                    Ok(mut d) => {
+                        if d["count"].as_u64().unwrap_or(0) == 0 {
+                            d["note"] = json!("no hotels found for this search; say so and ask the user what to change (dates, area, stars, price, brands) — one hotel search per request");
+                        }
+                        if let Some(u) = hotels_compare {
+                            d = with_compare(d, &u, "the same stay on Kayak, to compare prices across sites — give it once with the answer");
+                        }
+                        return untrusted_travel(store, task_id, "Google Hotels", d);
+                    }
+                    Err(e) => format!("Google Hotels failed: {e}"),
                 }
             } else {
-                failed.push("no SerpApi key for Google Hotels".into());
-            }
+                "no SerpApi key for Google Hotels".to_string()
+            };
             let stars = args.get("min_stars").and_then(Value::as_i64).map(|s| format!("{s} star ")).unwrap_or_default();
             let brands = omuse_apps::serpapi::pref_list(args, "brands").join(" or ");
             let area = fstr(args, "area");
@@ -2018,28 +2360,66 @@ pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str)
                 fstr(args, "check_in"),
                 fstr(args, "check_out"),
             );
-            return web_fallback(st, task_id, &query, &failed, "hotels").await;
-        }
-        "places_search" => {
-            let mut failed = Vec::new();
-            if keyed {
-                match travel_client(st)?.places(args).await {
-                    Ok(d) if d["count"].as_u64().unwrap_or(0) > 0 => return untrusted_travel(store, task_id, "Google Maps places", d),
-                    Ok(_) => failed.push("Google Maps found no places".to_string()),
-                    Err(e) => failed.push(format!("Google Maps failed: {e}")),
-                }
-            } else {
-                failed.push("no SerpApi key for Google Maps".into());
+            let mut web = web_fallback(st, task_id, &query, &[failed], "hotels").await?;
+            if let Some(u) = hotels_compare {
+                set(&mut web, "compare_url", json!(u));
             }
-            let area = fstr(args, "area");
-            let query = format!(
-                "best {} {}{}{}",
-                fstr(args, "query"),
-                if area.trim().is_empty() { String::new() } else { format!("near {area} ") },
-                fstr(args, "city"),
-                if truthy(&args["open_now"]) { " open now" } else { "" },
+            // what the pages show is what the user gets: their "from" prices, said to be "from" prices (travel_brave_real
+            // 2026-10-31: the hotels were named and the prices the pages showed withheld)
+            set(&mut web, "prices", json!("The pages' prices are \"from\" prices, not quotes for these dates: give each \
+hotel with the price its page shows, saying it is a \"from\" price, and the compare link for the dates."));
+            return Ok(web);
+        }
+        "places_search" => return places_with_fallback(st, store, task_id, &keyed, args).await,
+        // ONE web search for the rental companies and their "from" prices, and the booking link built from the rental:
+        // Kayak's results page, else (only when Kayak's page does not answer) Rentalcars.com's
+        "cars_search" => {
+            let rental = omuse_apps::cars::Rental::from_args(args).map_err(act)?;
+            let companies = omuse_apps::serpapi::pref_list(args, "companies");
+            let eps = &st.cfg.endpoints;
+            let kayak = rental.kayak_url(&eps.kayak);
+            let (book_with, url, note) = match page_answers(st, &kayak).await {
+                Ok(()) => ("Kayak", kayak, String::new()),
+                Err(k) => {
+                    let rc = rental.rentalcars_url(&eps.rentalcars);
+                    match page_answers(st, &rc).await {
+                        Ok(()) => ("Rentalcars.com", rc, format!("Kayak's page did not answer ({k})")),
+                        Err(r) => (
+                            "Kayak",
+                            kayak,
+                            format!("neither Kayak ({k}) nor Rentalcars.com ({r}) answered from here; the link may still open in the user's browser"),
+                        ),
+                    }
+                }
+            };
+            let query = rental.web_query(&companies);
+            let mut web = web_search_sync(st, &json!({"query": query, "max_results": 8}), task_id).await?;
+            // the companies the results name, read in code: the answer names them even when the snippets bury them
+            let seen = omuse_apps::cars::companies_in(
+                &web["results"]
+                    .as_array()
+                    .map(|rs| rs.iter().map(|r| format!("{} {}", fstr(r, "title"), fstr(r, "snippet"))).collect::<Vec<_>>().join("\n"))
+                    .unwrap_or_default(),
             );
-            return web_fallback(st, task_id, &query, &failed, "places").await;
+            set(&mut web, "booking_url", json!(url));
+            set(
+                &mut web,
+                "car_rental",
+                json!({
+                    "book_with": book_with,
+                    "booking_url": url,
+                    "booking_note": if note.is_empty() { Value::Null } else { json!(note) },
+                    "searched": {
+                        "pickup": format!("{} {} {:02}:00", rental.pickup, rental.pickup_date, rental.pickup_hour),
+                        "return": format!("{} {} {:02}:00", rental.dropoff, rental.dropoff_date, rental.dropoff_hour),
+                        "days": rental.days(), "car_class": rental.car_class.as_deref().unwrap_or("any"),
+                        "companies": companies,
+                    },
+                    "companies_found": seen,
+                    "rule": format!("name the rental companies the web results show (companies_found lists them — always name these in the answer), with their \"from\" prices where a result gives one (say they are \"from\" prices, not quotes for these dates); the live offers for these dates and this car are on {book_with}'s page (booking_url) — give it with the answer. This was the one car search for this request."),
+                }),
+            );
+            return Ok(web);
         }
         "place_details" => ("Google Maps place", travel_client(st)?.place(args).await?),
         "hotel_rooms" => (
@@ -2048,18 +2428,215 @@ pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str)
         ),
         other => return Err(act(format!("unknown travel tool {other}"))),
     };
-    if src == WEB_FLIGHTS {
-        // already the web search's own untrusted envelope
-        return Ok(data);
-    }
     let text = take_chars(&serde_json::to_string(&data).unwrap_or_default(), 30000).to_string();
     Ok(untrusted(store, task_id, src, data, &text)?)
+}
+
+/// The result with Kayak's page for the same search first (`compare_url`, `compare`): a long result is cut for the model
+/// at 30,000 characters, and the link must survive the cut.
+fn with_compare(d: Value, url: &str, what: &str) -> Value {
+    let mut out = Map::new();
+    out.insert("compare_url".into(), json!(url));
+    out.insert("compare".into(), json!(format!("compare_url: {what}")));
+    if let Value::Object(m) = d {
+        out.extend(
+            m.into_iter()
+                .filter(|(k, _)| k != "compare_url" && k != "compare"),
+        );
+    }
+    Value::Object(out)
 }
 
 /// A travel result wrapped as untrusted content (what `travel_sync` does at its end).
 fn untrusted_travel(store: &Store, task_id: &str, src: &str, data: Value) -> ActResult {
     let text = take_chars(&serde_json::to_string(&data).unwrap_or_default(), 30000).to_string();
     Ok(untrusted(store, task_id, src, data, &text)?)
+}
+
+/// The pages of a `/agent/read` reply with almost no text (and no error or block) that run scripts are read once more
+/// with a longer wait for those scripts (`wait_ms`), replacing the thin reads; a plain short page is not read again
+/// (webread_e2e: three small pages must still read in parallel in about a second).
+async fn reread_thin_pages(st: &AppState, task_id: &str, res: &mut Value) {
+    let Some(pages) = res.get_mut("pages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let thin: Vec<usize> = pages
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            // only a page its scripts draw can gain from waiting; a plain short page is what it is
+            opt_val(p, "error").is_none()
+                && p.get("blocked").filter(|b| b.is_object()).is_none()
+                && opt_val(p, "length").and_then(as_f64).unwrap_or(0.0) < 200.0
+                && opt_val(p, "scripts").and_then(as_f64).unwrap_or(0.0) > 0.0
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if thin.is_empty() {
+        return;
+    }
+    let urls: Vec<Value> = thin.iter().map(|&i| pages[i]["url"].clone()).collect();
+    let body = json!({"task_id": task_id, "urls": urls, "wait_ms": SLOW_PAGE_WAIT_MS});
+    let Ok(again) = broker(st, "POST", "/agent/read", Some(&body), 120.0).await else {
+        return;
+    };
+    let fresh = opt_val(&again, "pages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for (&i, p) in thin.iter().zip(fresh.iter()) {
+        if opt_val(p, "length").and_then(as_f64).unwrap_or(0.0)
+            > opt_val(&pages[i], "length").and_then(as_f64).unwrap_or(0.0)
+        {
+            pages[i] = p.clone();
+        }
+    }
+}
+
+/// How long a page drawn by scripts (Google Maps, a thin first read) gets before it is read.
+const SLOW_PAGE_WAIT_MS: i64 = 5000;
+
+/// The words a place search looks for: "ramen near Shibuya, Tokyo", "pharmacy in Bangkok", or the query alone.
+pub fn places_query(args: &Value) -> String {
+    let (query, area, city) = (fstr(args, "query"), fstr(args, "area"), fstr(args, "city"));
+    let q = match (area.trim().is_empty(), city.trim().is_empty()) {
+        (false, false) => format!("{} near {}, {}", query.trim(), area.trim(), city.trim()),
+        (true, false) => format!("{} in {}", query.trim(), city.trim()),
+        _ => query.trim().to_string(),
+    };
+    let q = if truthy(&args["open_now"]) {
+        format!("{q} open now")
+    } else {
+        q
+    };
+    q.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Why a Google Maps page the browser read is no answer (`None`: it is one): an error, a block or bot check, a
+/// consent wall, or too little text to hold any place.
+fn maps_page_unusable(page: &Value) -> Option<String> {
+    if let Some(e) = opt_val(page, "error") {
+        return Some(format!("the page failed: {}", take_chars(&py_str(e), 120)));
+    }
+    if let Some(b) = page.get("blocked").filter(|b| b.is_object()) {
+        return Some(format!(
+            "the page was blocked ({})",
+            take_chars(&fstr(b, "kind"), 40)
+        ));
+    }
+    let text = fstr(page, "text");
+    let low = text.to_lowercase();
+    if low.contains("before you continue to google") || low.contains("unusual traffic") {
+        return Some("Google asked for consent or a bot check".into());
+    }
+    if text.chars().count() < 200 {
+        return Some("the page had almost no text".into());
+    }
+    None
+}
+
+/// `places_search`, with its fallback chain in code — each step runs only when the one before gave nothing:
+/// 1. SerpApi's Google Maps data (needs a SerpApi key): structured places, each with its `map_url`;
+/// 2. the Google Maps search page in the browser (no key, a SerpApi error, or no places): its text, read by the
+///    broker (`/agent/read`), with the page's link;
+/// 3. a web search for the same words (the browser failed, was blocked or met a consent wall).
+///
+/// The result says which source answered and why the ones before it did not (`places_fallback`).
+async fn places_with_fallback(
+    st: &AppState,
+    store: &Store,
+    task_id: &str,
+    keyed: &bool,
+    args: &Value,
+) -> ActResult {
+    let mut failed: Vec<String> = Vec::new();
+    // 1. SerpApi
+    if *keyed {
+        match travel_client(st)?.places(args).await {
+            Ok(d) if d["count"].as_u64().unwrap_or(0) > 0 => {
+                return untrusted_travel(store, task_id, "Google Maps places", d)
+            }
+            Ok(_) => failed.push("Google Maps (SerpApi) found no places".to_string()),
+            Err(e) => failed.push(format!("Google Maps (SerpApi) failed: {e}")),
+        }
+    } else {
+        failed.push("no SerpApi key for Google Maps".into());
+    }
+    let query = places_query(args);
+    if query.is_empty() {
+        return Err(act(
+            "query (what — ramen, sushi, cafe, pharmacy …) and city are required",
+        ));
+    }
+    // 2. the Google Maps page in the browser
+    let map_url = omuse_apps::serpapi::place_map_url(&query, "", "");
+    let body = json!({"task_id": task_id, "urls": [map_url], "wait_ms": SLOW_PAGE_WAIT_MS});
+    let why = match broker(st, "POST", "/agent/read", Some(&body), 120.0).await {
+        Ok(r) => {
+            let page = opt_val(&r, "pages")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .cloned()
+                .unwrap_or_else(|| json!({"error": "no page"}));
+            match maps_page_unusable(&page) {
+                None => {
+                    let (text, _) = guard::redact_secrets(&fstr(&page, "text"));
+                    let d = json!({"source": "Google Maps in the browser", "map_url": map_url, "query": query,
+                        "text": text,
+                        "places_fallback": format!("{} — this is the Google Maps page's text, not structured place data: no \
+place_id for place_details. Take names, ratings and addresses from it, and give the user map_url.", failed.join("; "))});
+                    return untrusted_travel(store, task_id, "Google Maps in the browser", d);
+                }
+                Some(w) => format!("Google Maps in the browser: {w}"),
+            }
+        }
+        Err(e) => format!(
+            "Google Maps in the browser failed: {}",
+            take_chars(&e.to_string(), 120)
+        ),
+    };
+    failed.push(why);
+    // 3. a web search
+    web_fallback(st, task_id, &format!("best {query}"), &failed, "places").await
+}
+
+/// Whether a booking page answers: a 2xx reply within 8 s whose title is not a bot check ("Bot or Not?", "Just a
+/// moment…", a captcha). `Err` says what happened.
+async fn page_answers(st: &AppState, url: &str) -> Result<(), String> {
+    let r = st
+        .http
+        .get(url)
+        .timeout(Duration::from_secs(8))
+        .header(
+            reqwest::header::USER_AGENT,
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+        )
+        .send()
+        .await
+        .map_err(|e| take_chars(&e.to_string(), 120).to_string())?;
+    if !r.status().is_success() {
+        return Err(format!("HTTP {}", r.status().as_u16()));
+    }
+    let body = r.text().await.map_err(|e| e.to_string())?;
+    let title = body
+        .split_once("<title")
+        .and_then(|(_, t)| t.split_once('>'))
+        .and_then(|(_, t)| t.split_once("</title>"))
+        .map(|(t, _)| t.to_lowercase())
+        .unwrap_or_default();
+    if [
+        "bot or not",
+        "just a moment",
+        "captcha",
+        "access denied",
+        "are you a robot",
+    ]
+    .iter()
+    .any(|m| title.contains(m))
+    {
+        return Err(format!("a bot check page ({})", title.trim()));
+    }
+    Ok(())
 }
 
 /// The last step of a travel search chain: the web search chain (search APIs, then the browser's engines) with the
@@ -2073,69 +2650,61 @@ async fn web_fallback(
 ) -> ActResult {
     let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut web = web_search_sync(st, &json!({"query": query, "max_results": 8}), task_id).await?;
+    // the most relevant pages are read here, in code (browser_read's checks: secrets redacted, injection flagged): the
+    // top four at once, keeping the first FALLBACK_PAGES that loaded with real text — a blocked page or an
+    // aggregator's empty shell is no answer (travel_brave_real 2026-10-31)
+    let urls: Vec<Value> = opt_val(&web, "results")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|r| fstr(r, "url"))
+        .filter(|u| u.starts_with("http"))
+        .take(4)
+        .map(Value::from)
+        .collect();
+    let mut read_note = String::new();
+    let mut kept = 0;
+    if !urls.is_empty() {
+        match browser(st, "browser_read", &json!({"urls": urls}), task_id, task_id).await {
+            Ok(r) => {
+                let good: Vec<Value> = opt_val(&r, "pages")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|p| {
+                        opt_val(p, "error").is_none()
+                            && p.get("blocked").filter(|b| b.is_object()).is_none()
+                            && opt_val(p, "chars").and_then(as_f64).unwrap_or(0.0) >= 500.0
+                    })
+                    .take(FALLBACK_PAGES)
+                    .collect();
+                kept = good.len();
+                set(&mut web, "pages", json!(good));
+            }
+            Err(e) => {
+                read_note = format!(
+                    "; reading the top pages failed: {}",
+                    take_chars(&e.to_string(), 120)
+                )
+            }
+        }
+    }
     set(
         &mut web,
         &format!("{what}_fallback"),
         json!(format!(
-            "{} — these are web search results, not {what} data: no ids for the detail tools. Read the most relevant pages \
-(browser_read: the official site or a booking site) for prices and details, and say they come from those pages.",
+            "{} — these are web search results, not {what} data, and the text of the first {kept} pages that loaded \
+(`pages`){read_note}: no ids for the detail tools; say the details come from those pages.",
             failed.join("; ")
         )),
     );
     Ok(web)
 }
 
-/// The source label of the last step of the flight chain: its data is already a web search envelope.
-const WEB_FLIGHTS: &str = "web search (flights fallback)";
-
-/// The rest of the flight chain after Kiwi.com: Google Flights with a SerpApi key, then the web search chain.
-/// Returns `(source, data)`; for the web step the data is the web search's own envelope ([`WEB_FLIGHTS`]).
-async fn flights_after_kiwi(
-    st: &AppState,
-    args: &Value,
-    task_id: &str,
-    keyed: bool,
-    mut failed: Vec<String>,
-) -> ActResult<(&'static str, Value)> {
-    if keyed {
-        match travel_client(st)?.flights(args).await {
-            Ok(mut d) if d["count"].as_u64().unwrap_or(0) > 0 => {
-                d["fallback"] = json!(format!(
-                    "{}; these are Google Flights results",
-                    failed.join("; ")
-                ));
-                return Ok(("Google Flights (fallback)", d));
-            }
-            Ok(_) => failed.push("Google Flights found no flights".into()),
-            Err(e) => failed.push(format!("Google Flights failed: {e}")),
-        }
-    }
-    // last: the web search chain, with the request spelled out (route, dates, cabin, stops)
-    let cabin = match fstr(args, "cabin").to_lowercase().as_str() {
-        "business" => "business class",
-        "first" => "first class",
-        "premium_economy" | "premium economy" => "premium economy",
-        _ => "",
-    };
-    let stops = if omuse_apps::serpapi::max_stops(args) == Some(0) {
-        "nonstop"
-    } else {
-        ""
-    };
-    let to = fstr(args, "date_to");
-    let dates = if to.trim().is_empty() {
-        fstr(args, "date")
-    } else {
-        format!("{} to {}", fstr(args, "date"), to)
-    };
-    let query = format!(
-        "{cabin} {stops} flights {} to {} {dates} fares",
-        fstr(args, "origin"),
-        fstr(args, "destination")
-    );
-    let web = web_fallback(st, task_id, &query, &failed, "flights").await?;
-    Ok((WEB_FLIGHTS, web))
-}
+/// How many of a fallback web search's results are read for the model.
+const FALLBACK_PAGES: usize = 2;
 
 /// The Slack client for the stored token.
 pub fn slack_client(st: &AppState) -> ActResult<Slack> {
@@ -2934,6 +3503,61 @@ pub async fn drive_call(st: &AppState, tool: &str, args: &Value, task_id: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_id_documents_fields_are_known_by_their_labels() {
+        for (label, field) in [
+            ("Date of passport expiry *", Some("expiry")),
+            ("Passport Expiry Date", Some("expiry")),
+            ("Valid until", Some("expiry")),
+            ("护照有效期", Some("expiry")),
+            ("Passport No. *", Some("number")),
+            ("Passport number", Some("number")),
+            ("Travel document number", Some("number")),
+            ("Middle name *", None),
+            ("Flight number", None),
+            ("Phone number", None),
+            ("Card expiry (MM/YY)", None),
+            ("Expiry date of card", None),
+            ("Credit card number", None),
+            ("Expiry MM/YY", None),
+        ] {
+            assert_eq!(id_field_for(label), field, "{label}");
+        }
+    }
+
+    #[test]
+    fn the_places_fallback_decides_in_code() {
+        // the words every step searches for
+        assert_eq!(
+            places_query(
+                &json!({"query": "ramen", "area": "Shibuya", "city": "Tokyo", "open_now": true})
+            ),
+            "ramen near Shibuya, Tokyo open now"
+        );
+        assert_eq!(
+            places_query(&json!({"query": " Hotel  Ginza Grand ", "city": ""})),
+            "Hotel Ginza Grand"
+        );
+        // the browser's Google Maps page answers only with real text; otherwise the chain goes on to the web search
+        let text = "Ichiran Shibuya 4.4 (12,345) Ramen · 1-22-7 Jinnan Open 24 hours ".repeat(5);
+        assert_eq!(maps_page_unusable(&json!({"url": "u", "text": text})), None);
+        for (page, why) in [
+            (json!({"error": "timeout"}), "failed"),
+            (
+                json!({"blocked": {"kind": "captcha"}, "text": text}),
+                "blocked",
+            ),
+            (
+                json!({"text": format!("Before you continue to Google {text}")}),
+                "consent",
+            ),
+            (json!({"text": "Google Maps"}), "almost no text"),
+        ] {
+            let w = maps_page_unusable(&page).unwrap_or_default();
+            assert!(w.contains(why), "{page}: {w}");
+        }
+    }
 
     #[test]
     fn drive_queries_follow_the_arguments() {

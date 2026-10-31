@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Refund Method - Air Passenger Departure Tax Refund Platform</title>
+<link rel="stylesheet" href="apdt.css"><script src="apdt.js"></script></head>
+<body>
+<main>
+<div id="stepbar"></div>
+<p class="muted">Your application has been saved automatically. For inquiries, please use this reference number: <b id="ref"></b></p>
+<h1>Refund Method</h1>
+<table class="sum"><tr><td>Amount of tax refund requested</td><td><b>HK$120</b></td></tr></table>
+<h2>Please select your preferred tax refund method</h2>
+<div class="notes">Tips: After the tax refund application is approved, the refund will be made according to the selected method. The handling fee will be calculated in Hong Kong dollars and deducted from the refund.</div>
+<div id="methods">
+<label class="method"><input type="radio" name="refund" value="alipay"> <div><b>Alipay</b><div class="d">About one day in general after approval · Handling fee: approx. HK$6 · Limited to verified Chinese Mainland Alipay accounts</div></div></label>
+<label class="method"><input type="radio" name="refund" value="wechat"> <div><b>WeChat Pay</b><div class="d">About one day in general after approval · Handling fee: approx. HK$6 · Limited to Verified Chinese Mainland WeChat accounts</div></div></label>
+<label class="method"><input type="radio" name="refund" value="alipayHK"> <div><b>AlipayHK</b><div class="d">About one day in general after approval · Handling fee: approx. HK$4 · Limited to Alipay accounts that have been verified using Hong Kong Identity Cards.</div></div></label>
+<label class="method"><input type="radio" name="refund" value="wechatHK"> <div><b>WeChat Pay HK</b><div class="d">About one day in general after approval · Handling fee: approx. HK$4 · Limited to WeChat Pay HK accounts that have been verified using Hong Kong Identity Cards.</div></div></label>
+<label class="method"><input type="radio" name="refund" value="bank"> <div><b>Credit / Debit Card</b><div class="d">About 3 working days after approval · Handling fee: approx. HK$18 · Visa, Mastercard and American Express</div></div></label>
+<label class="method"><input type="radio" name="refund" value="cash"> <div><b>Cash (HKD)</b><div class="d">Collection at designated location after approval · No Handling Fee</div></div></label>
+</div>
+<div class="err" id="err-refund"></div>
+
+<div class="box" id="bank" style="display:none">
+<div class="lg">Credit / Debit Card</div>
+<div class="grid">
+<div class="f"><label for="card_number">Card Number <span class="req">*</span></label><input type="text" id="card_number" name="card_number" inputmode="numeric" placeholder="Please enter card number" autocomplete="off"><div class="err" id="err-card_number"></div></div>
+<div class="f"><label for="card_holder">Name of Cardholder <span class="req">*</span></label><input type="text" id="card_holder" name="card_holder" placeholder="Please enter the name of the cardholder" autocomplete="off"><div class="err" id="err-card_holder"></div></div>
+<div class="f"><label for="card_valid">Validity Period <span class="req">*</span></label><input type="text" id="card_valid" name="card_valid" placeholder="MM/YY" maxlength="5" autocomplete="off"><div class="hint">Please enter the validity period: MM/YY</div><div class="err" id="err-card_valid"></div></div>
+</div>
+<label class="chk"><input type="checkbox" id="fee_agree" name="fee_agree"> <span>By selecting credit / debit card for my refund, I agree to a processing fee of up to HK$18, including platform and payment provider charges, deducted from the refund. The final amount may vary based on the payment currency and the exchange rate (Include but not limited to risk margin) applied by the payment provider.</span></label>
+<div class="err" id="err-fee_agree"></div>
+</div>
+<div class="box" id="wallet" style="display:none">
+<div class="f"><label for="account" id="accountLbl">Enter GlobalPass ID <span class="req">*</span></label><input type="text" id="account" name="account" autocomplete="off"><div class="err" id="err-account"></div></div>
+<label class="chk"><input type="checkbox" id="fee_agree_w" name="fee_agree_w"> <span>I agree to a processing fee, including platform and payment provider charges, deducted from the refund. The final amount may vary based on the payment currency and the exchange rate applied by the payment provider.</span></label>
+<div class="err" id="err-fee_agree_w"></div>
+</div>
+<div class="box" id="cash" style="display:none">
+<p>Once your application is approved, you can collect cash refund at money exchange shops inside the restricted area at airport within 14 days.</p>
+<p class="muted">Collection Points: Departures Level, Terminal 1 restricted area, near Gates 1, 23, 35 and 60.</p>
+</div>
+<div class="actions"><button type="button" class="sec" id="prev">Previous Step</button><button type="button" class="pri" id="next">Next</button></div>
+</main>
+<script>
+APDT.header();
+(function () {
+  var $ = function (id) { return document.getElementById(id); }, s = APDT.load();
+  if (!s.ref) { APDT.go('apdt.html'); return; }
+  $('stepbar').innerHTML = APDT.steps(1); $('ref').textContent = s.ref;
+  history.replaceState(null, '', 'apdt_refund.html?lang=' + APDT.lang() + '&bizId=' + s.ref + '&t=' + APDT.token(s));
+  function method() { var r = document.querySelector('input[name=refund]:checked'); return r ? r.value : ''; }
+  [].forEach.call(document.querySelectorAll('input[name=refund]'), function (r) {
+    r.addEventListener('change', function () {
+      var m = method();
+      $('bank').style.display = m === 'bank' ? '' : 'none'; $('cash').style.display = m === 'cash' ? '' : 'none';
+      $('wallet').style.display = /alipay|wechat/.test(m) ? '' : 'none';
+      $('accountLbl').firstChild.textContent = /wechat/.test(m) ? 'Enter WeChat Pay account no. ' : 'Enter GlobalPass ID ';
+    });
+  });
+  function luhn(n) { var t = 0; for (var i = 0; i < n.length; i++) { var d = +n[n.length - 1 - i]; if (i % 2) { d *= 2; if (d > 9) d -= 9; } t += d; } return t % 10 === 0; }
+  function err(id, t) { $('err-' + id).textContent = t; return t ? 1 : 0; }
+  $('prev').onclick = function () { APDT.go('apdt_upload.html'); };
+  $('next').onclick = function () {
+    [].forEach.call(document.querySelectorAll('.err'), function (e) { e.textContent = ''; });
+    var m = method(), n = 0, r = { type: m };
+    if (!m) n += err('refund', 'Please select your preferred tax refund method');
+    if (m === 'bank') {
+      var num = $('card_number').value.replace(/[\s-]/g, ''), v = $('card_valid').value.trim(), mm = /^(\d{2})\s*\/\s*(\d{2})$/.exec(v);
+      var brand = /^4\d{15}$/.test(num) ? 'Visa' : /^(5[1-5]\d{14}|2(2[2-9]|[3-6]\d|7[01])\d{13}|2720\d{12})$/.test(num) ? 'Mastercard' : /^3[47]\d{13}$/.test(num) ? 'American Express' : '';
+      n += err('card_number', brand && luhn(num) ? '' : 'Please enter the correct bank card number (only supports Visa, Master, AE)');
+      n += err('card_holder', $('card_holder').value.trim() ? '' : 'Please enter the name of the cardholder');
+      var now = new Date(), ok = mm && +mm[1] >= 1 && +mm[1] <= 12 && (2000 + +mm[2]) * 12 + +mm[1] >= now.getFullYear() * 12 + now.getMonth() + 1;
+      n += err('card_valid', ok ? '' : 'Please enter the correct validity format (MM/YY), and the expiration date must be after the current date');
+      n += err('fee_agree', $('fee_agree').checked ? '' : 'Please read and agree to the agreement first');
+      r.brand = brand; r.card4 = num.slice(-4); r.cardsum = APDT.sum(num); r.holder = $('card_holder').value.trim(); r.valid = v.replace(/\s/g, ''); r.fee_agree = $('fee_agree').checked;
+    } else if (/alipay|wechat/.test(m)) {
+      n += err('account', $('account').value.trim() ? '' : 'Please fill in complete information');
+      n += err('fee_agree_w', $('fee_agree_w').checked ? '' : 'Please read and agree to the agreement first');
+      r.account = $('account').value.trim(); r.fee_agree = $('fee_agree_w').checked;
+    }
+    if (n) return;
+    s = APDT.load(); s.refund = r; s.confirmed = false; APDT.save(s);
+    APDT.go('apdt_confirm.html', '&bizId=' + s.ref);
+  };
+})();
+</script>
+</body></html>

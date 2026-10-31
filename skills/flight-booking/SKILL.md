@@ -1,7 +1,8 @@
 ---
 name: flight-booking
-description: 订机票：只用 flights_search 查航班比价（Kiwi.com、Google Flights，最后自动退到网页搜索；仅供参考），只在最后一步用浏览器在航空公司官网或用户选定的代理商预订页下单（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search and compare flights with flights_search ONLY (Kiwi.com, then Google Flights, then web search by itself; information only), then book on the airline's own site or with the agency the user chooses — the browser only for that final booking page.
+description: 订机票：只用 flights_search 查航班比价（每次调用只搜一次，每个请求只做一次旅行搜索（机票、酒店、租车、餐厅合计）；有密钥用 Google Flights，日期范围、自行中转、没有密钥或 Google 出错时用 Kiwi.com；每个结果都带预订链接 booking_url），最后一步用浏览器在 booking_url、航空公司官网或用户选定的代理商下单（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search and compare flights with flights_search ONLY — ONE search per call and ONE travel search per request — flights, hotels, cars and places together (Google Flights with the key; Kiwi.com for a range of dates, self-transfer, without the key or when Google fails; every offer has its booking_url), then book from the offer's booking_url, on the airline's own site or with the agency the user chooses — the browser only for that final booking page.
 
+form: on
 ---
 # Flight booking / 订机票
 
@@ -46,12 +47,16 @@ Before any call, take from the user's words (ask once only when one is genuinely
 ## 1. One search per question (no plan)
 - Any question about flights — "cheapest flight from A to B", "the last flight tonight that lands before midnight",
   "business class on Friday" — is **one `flights_search` call and nothing else**, then the answer. **No `web_search`
-  beside it**: flights_search falls back to Google Flights and then to web search by itself. No plan_task, no search
-  per airport, no extra dates unless the user asked for flexibility.
+  beside it**, no plan_task, no search per airport, no extra dates unless the user asked for flexibility. A second
+  `flights_search` in the same turn or for the same request is not run: when the result is empty or not good enough,
+  answer with what it has and ask the user what to change; their next message can search again.
 - **A range of dates is still one search**: "cheapest between 1 and 10 December", "any day next week", "flexible ±3
-  days" → `date` = the first day, `date_to` = the last (Kiwi.com data covers up to 14 days, Google Flights 7; the result
+  days" → `date` = the first day, `date_to` = the last (up to 14 days, one Kiwi.com search; the result
   says when it cut the range). Every offer carries its `date`, and `by_date` lists the cheapest per day — use it to
   name the cheapest day. Never one call per day, never a plan for it.
+- **Self-transfer** (separate tickets with your own connections, the bags collected and checked in again) is off by
+  default: every connection is on one booking. Set `self_transfer=true` only when the user explicitly asks for it
+  ("self-transfer is fine", "separate tickets are OK") — never because it is cheaper.
 - A city with several airports is still one search: give its **city code** (or the city's name) and the tool covers all
   of them — `TYO` = HND + NRT, never two searches. Codes the tool knows (airport codes for single-airport cities such as
   SIN, HKG, SGN, HAN, SYD, DEL work as they are):
@@ -86,13 +91,19 @@ Before any call, take from the user's words (ask once only when one is genuinely
   RIO = Rio de Janeiro (GIG, SDU)
   BUE = Buenos Aires (EZE, AEP)
   Two cities on one side: a comma list (`TYO,OSA`). The result's `searched.origin` shows the airports actually used.
-- `flights_search` is always there and has its own fallback chain: Kiwi.com data, then Google Flights when the Flights & hotels key
-  is set, then the web search chain (its result then has web pages, not offers — read the fare pages with browser_read) — it is the only call a flight question needs;
-  **information only**. Never book through Kiwi, never quote or open a Kiwi link; `flight_offer` gives the details
-  of one offer (no link for Kiwi data).
+- `flights_search` is always there and makes ONE search per call. Its source: Google Flights when the Flights & hotels
+  key is set and the request is one departure date (each offer's `ticket` says whether it is one ticket and who sells
+  it — prefer one ticket, e.g. a United ticket with an Air China leg, over separate ones); Kiwi.com for a range of
+  dates, for self-transfer, without the key, or when Google fails. An empty result is the answer. **Every offer has a
+  `booking_url`**: for Google data, Google Flights' page for that itinerary (it lists who sells it, the airline's own
+  site first; for a round trip it opens on the outbound, where the return is picked); for Kiwi.com data, Kiwi.com's
+  booking page for that itinerary (Kiwi sells it as an agency) and `book_at`, the airline's own website. Give the
+  `booking_url` with each offer in the answer. The result's `compare_url` is the same search on Kayak (built from the
+  request, no extra call): give it once, for comparing prices across sites.
 - A travel MCP connector in the tool list (`mcp_<server>__flights_search` …) can be used in the same turn too.
-- Do NOT open Google Flights, Kayak, Skyscanner or airline search pages in the browser — the browser is for the
-  final booking page only: the airline's own site, or the agency the user chooses (ask which when they have one).
+- Do NOT search on Google Flights, Kayak, Skyscanner or airline search pages in the browser — the browser is for the
+  final booking page only: the offer's `booking_url`, the airline's own site, or the agency the user chooses (ask
+  which when they have one).
 - Times in the data are local to each airport (Singapore/Hong Kong/Taipei/Shanghai UTC+8, Tokyo/Osaka/Seoul UTC+9,
   Bangkok UTC+7). An arrival marked (+1) lands the next calendar day; mention it. Never convert times yourself unless asked.
 
@@ -100,8 +111,12 @@ Before any call, take from the user's words (ask once only when one is genuinely
 - Shortlist 2–4 offers that fit **the cabin and stop limit searched**. "Cheapest direct" = the lowest fare among offers
   with stops 0. Compare total price (fare × adults), departure/arrival time, duration, stops, **baggage** (low-cost
   fares often include only a 7 kg cabin bag — say what a checked bag costs) and **change/refund rules**.
-- Call `flight_offer(offer_id)` once for the offer you will book: it has the fare breakdown, rules and the booking_url.
+- Every offer already has its `booking_url`. Call `flight_offer(offer_id)` only when the user wants the sellers'
+  prices, baggage or fare rules for one offer (Google data: it costs one more search credit).
 - Never invent or round prices, times or rules: report only what the tools returned, with currency.
+- Every offer in the answer names **its airline(s) and flight numbers** (the offer's `title` / `airlines`, each leg's
+  carrier on a connection — e.g. "China Southern CZ 8490 + CZ 3085"), the local departure and arrival times, the stops,
+  the price and its `booking_url` — a route and a price without the airline is not an answer the user can book.
 
 ## 3. Show the options
 - present_choices(kind="comparison"): label = the offer's `title` exactly (e.g. "Scoot TR 765"), details = exact strings
@@ -113,15 +128,16 @@ Before any call, take from the user's words (ask once only when one is genuinely
 ## 3a. "Book it" — the flight was already found in this conversation
 - When an earlier turn already searched and the user now says "book it", "book the SQ 638", "go ahead with the 9 am
   JAL": **no plan_task, no new search, no present_choices again.** Take the offer from the conversation (its
-  booking_url; for Kiwi data the airline and flight) and run steps 4–5 as ONE flow: vault_list; the booking page; the
+  booking_url) and run steps 4–5 as ONE flow: vault_list; the booking page; the
   traveller typed in from the profile (profile_get for name / email / phone when not in the conversation); the passport
   filled from the vault; **purchase_confirm with card_item_id** (the total shown on the page — Sentinel fills a card
-  only after the user approves this summary); the card filled from the vault; then — unless the user said to pay or
-  complete the booking now — hand the filled page over with browser_request_takeover ("the booking page is filled in,
-  check it and press Pay") so they review it and pay themselves. No card in the vault → say so in one line and hand the page over for
-  them to type it; never ask for the number in chat.
-- Kiwi data has no link: each offer's `book_at` is the airline's own website — open it (with the route and date), or the
-  agency the user named earlier. No web_search for it.
+  only after this summary); the card filled from the vault when it is complete; then hand the filled page over with
+  browser_request_takeover ("the booking page is filled in, check it and press Pay") — the Pay click is always the
+  user's. No card in the vault, or only a card saved by name (number UNKNOWN) → say so in one line and leave the card
+  boxes for them to type; never ask for the number in chat.
+- The offer's `booking_url` is where the booking starts: on Google Flights' page pick the seller it lists (the
+  airline's own site first); a Kiwi.com `booking_url` is Kiwi.com's booking page (Kiwi sells it as an agency) — when the
+  user prefers to book with the airline, open its `book_at` site with the route and date instead. No web_search for it.
 
 ## 4. Traveller details (before booking)
 - Needed: full name exactly as in the passport, email, phone, passport number, card. Use what the request says, then
@@ -130,15 +146,19 @@ Before any call, take from the user's words (ask once only when one is genuinely
   card. Fill them with browser_fill_secret (field `number` for the passport; `number`, `expiry`, `cvc`, `holder` for a
   card). Optional fields (e.g. passport expiry) stay empty unless the page requires them. No vault item → browser_request_takeover so the user types it.
 
-## 5. Book (browser — only the booking page: the airline's site, or the agency the user chose; never Kiwi)
+## 5. Book (browser — only the booking page: the offer's booking_url, the airline's site, or the agency the user chose)
 1. purchase_confirm once: site = the booking page's domain, items = [{name: "<flight no> <from>-<to> <date>, <n> adult",
    price: fare}], total = the total from the data (it must match the page), currency, delivery = "E-ticket to <email>",
    card_item_id = the vault card id, note = baggage + refund rules.
 2. browser_navigate(booking_url). The snapshot lists the form fields with refs; check the page total matches.
 3. browser_type name, email, phone (several calls in one turn are fine); browser_fill_secret for passport and card.
-   Send each browser_fill_secret as its own turn (one call, nothing else in that turn): every vault fill can wait for the user's approval, and a turn should hold at most one call that may wait.
-4. browser_click the "Pay now" / "Confirm booking" button once. Sentinel handles any approval; do not ask in chat.
-5. The click result shows the confirmation page. Only if it does not, take one browser_snapshot.
+   Send each browser_fill_secret as its own turn (one call, nothing else in that turn).
+4. **The last click is the user's**: never press "Pay now / Confirm booking" (Sentinel refuses it). With the page filled as far as
+   you can (a card saved by name only, or no card in the Vault: the card boxes stay empty), call
+   browser_request_takeover with the reason "The booking page is filled in: check it (type the card if it is empty), press Pay now / Confirm booking yourself and
+   hand the browser back". The chat shows the user a link to take over.
+5. After the hand-back, read the confirmation from one browser_snapshot. No confirmation → the booking is not made:
+   say so and that the page stays open for them.
 - Do not re-open the page, do not take extra snapshots, do not use browser_look on payment pages.
 - An error on the page ("Please complete: …") → fill only what it names and click again.
 

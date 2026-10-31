@@ -16,7 +16,7 @@ def page(url):
 
 ica = page("https://eservices.ica.gov.sg/sgarrivalcard/")
 check("eservices.ica.gov.sg opens over HTTPS (test CA trusted) with the arrival card form",
-      "SG Arrival Card" in ica and "Passport number" in ica and "ERR_CERT" not in ica, ica[:400])
+      "SG Arrival Card" in ica and "Fill in Manually" in ica and "ERR_CERT" not in ica, ica[:400])
 check("the ICA stand-in carries no test note or title", "(test)" not in ica and "stand-in" not in ica.lower(), ica[:400])
 fwd = page("https://www.fwd.com.sg/travel-insurance/online-quote/")
 check("www.fwd.com.sg's quote path serves the quote page", "Get a travel insurance quote" in fwd and "ERR_CERT" not in fwd, fwd[:400])

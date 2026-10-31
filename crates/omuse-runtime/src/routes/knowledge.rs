@@ -204,7 +204,11 @@ pub async fn library_get(st: St, UrlPath(sid): UrlPath<String>) -> R {
         return Err(not_found());
     };
     let slug = get_str(&sub, "slug");
-    let report = lib::read_report(&st.rt.workspace, &slug);
+    let report = lib::with_sources(
+        &lib::read_report(&st.rt.workspace, &slug),
+        &st.rt.workspace,
+        &slug,
+    );
     Ok(Json(
         json!({"subject": sub, "report": report, "path": lib::report_path(&slug)}),
     ))
@@ -518,6 +522,9 @@ pub async fn set_profile(st: St, body: Bytes) -> R {
     if looks_sensitive(&val) {
         return Err(http(400, VAULT_MSG));
     }
+    if key == "gender" && !val.trim().is_empty() && crate::store::gender_of(&val).is_none() {
+        return Err(http(400, "gender: Male, Female or X (as on the passport)"));
+    }
     st.rt.store.set_profile(&key, &val, "user-ui")?;
     st.rt
         .audit("user", "profile.set", "", json!({"resource": key}))
@@ -526,7 +533,7 @@ pub async fn set_profile(st: St, body: Bytes) -> R {
 }
 
 /// The fields a profile needs before forms (arrival cards, bookings) can be filled without asking.
-pub const PROFILE_REQUIRED: [&str; 3] = ["name_en", "birthday", "nationality"];
+pub const PROFILE_REQUIRED: [&str; 4] = ["name_en", "birthday", "gender", "nationality"];
 
 /// `GET /api/profile/status`: `complete` (the required fields are filled), `missing` and whether the reminder is on.
 pub async fn profile_status(st: St) -> R {
@@ -603,6 +610,12 @@ pub async fn profile_ocr(st: St, headers: HeaderMap, body: Body) -> R {
     for (k, v) in [
         ("name_en", name.clone()),
         ("birthday", field("date_of_birth")),
+        (
+            "gender",
+            crate::store::gender_of(&field("sex"))
+                .unwrap_or("")
+                .to_string(),
+        ),
         ("nationality", field("nationality")),
     ] {
         if !v.is_empty() && !looks_sensitive(&v) {

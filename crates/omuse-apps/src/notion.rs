@@ -682,7 +682,7 @@ impl Notion {
         let db = self.database(reference).await?;
         let mut body = json!({"page_size": clamp(limit, 20, 100)});
         if let Some(f) = filter.filter(|f| truthy(f)) {
-            body["filter"] = f.clone();
+            body["filter"] = fix_filter(&db, f)?;
         }
         if let Some(s) = sorts.filter(|s| truthy(s)) {
             body["sorts"] = s.clone();
@@ -940,9 +940,120 @@ impl Notion {
     }
 }
 
+/// A query filter with each status / select value made the database's own: an option in another case becomes that
+/// option, a status group's name ("In progress") becomes its options, and a value that is neither is refused with the
+/// options listed (apps_real 2026-10-31: "In Progress" on a Status whose options are Todo / Doing / Done answered "no
+/// tasks in progress").
+pub fn fix_filter(db: &Value, filter: &Value) -> Result<Value, NotionError> {
+    let props = obj(db.get("properties").unwrap_or(&Value::Null));
+    let norm = |s: &str| {
+        s.to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+    };
+    match filter {
+        Value::Array(xs) => xs
+            .iter()
+            .map(|x| fix_filter(db, x))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        Value::Object(m) => {
+            let prop = m.get("property").and_then(Value::as_str).unwrap_or("");
+            let kind = ["status", "select", "multi_select"]
+                .into_iter()
+                .find(|k| m.get(*k).is_some_and(Value::is_object));
+            let (Some(kind), Some(col)) = (kind, props.get(prop)) else {
+                // and / or groups: their parts
+                let mut out = m.clone();
+                for k in ["and", "or"] {
+                    if let Some(v) = m.get(k) {
+                        out.insert(k.into(), fix_filter(db, v)?);
+                    }
+                }
+                return Ok(Value::Object(out));
+            };
+            let spec = col.get(get_str(col, "type")).unwrap_or(&Value::Null);
+            let options: Vec<(String, String)> = arr(spec.get("options"))
+                .iter()
+                .map(|o| (get_str(o, "id"), get_str(o, "name")))
+                .collect();
+            let cond = obj(&m[kind]);
+            let Some((op, v)) = ["equals", "does_not_equal", "contains", "does_not_contain"]
+                .into_iter()
+                .find_map(|op| cond.get(op).and_then(Value::as_str).map(|v| (op, v)))
+            else {
+                return Ok(filter.clone());
+            };
+            if options.is_empty() || options.iter().any(|(_, n)| n == v) {
+                return Ok(filter.clone());
+            }
+            let leaf = |name: &str| json!({"property": prop, kind: {op: name}});
+            if let Some((_, n)) = options.iter().find(|(_, n)| norm(n) == norm(v)) {
+                return Ok(leaf(n));
+            }
+            if let Some(g) = arr(spec.get("groups"))
+                .iter()
+                .find(|g| norm(&get_str(g, "name")) == norm(v))
+            {
+                let names: Vec<Value> = arr(g.get("option_ids"))
+                    .iter()
+                    .filter_map(|id| {
+                        options
+                            .iter()
+                            .find(|(oid, _)| Some(oid.as_str()) == id.as_str())
+                    })
+                    .map(|(_, n)| leaf(n))
+                    .collect();
+                if !names.is_empty() {
+                    let join = if op.starts_with("does_not") {
+                        "and"
+                    } else {
+                        "or"
+                    };
+                    return Ok(json!({join: names}));
+                }
+            }
+            Err(NotionError(format!(
+                "「{prop}」没有「{v}」这个选项 (no such option). Options: {}",
+                options
+                    .iter()
+                    .map(|(_, n)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )))
+        }
+        other => Ok(other.clone()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_status_filter_takes_the_databases_own_options_and_groups() {
+        let db = json!({"properties": {"Status": {"type": "status", "status": {
+            "options": [{"id": "s1", "name": "Todo"}, {"id": "s2", "name": "Doing"}, {"id": "s3", "name": "Done"}],
+            "groups": [{"name": "To-do", "option_ids": ["s1"]}, {"name": "In progress", "option_ids": ["s2"]},
+                       {"name": "Complete", "option_ids": ["s3"]}]}}}});
+        let f = |v: &str| json!({"property": "Status", "status": {"equals": v}});
+        assert_eq!(fix_filter(&db, &f("doing")).unwrap(), f("Doing"));
+        assert_eq!(
+            fix_filter(&db, &f("In Progress")).unwrap(),
+            json!({"or": [f("Doing")]})
+        );
+        let e = fix_filter(&db, &f("Blocked")).unwrap_err().to_string();
+        assert!(e.contains("Todo, Doing, Done"), "{e}");
+        // nested, and a property without options: as given
+        let nested = json!({"and": [f("in progress")]});
+        assert_eq!(
+            fix_filter(&db, &nested).unwrap(),
+            json!({"and": [{"or": [f("Doing")]}]})
+        );
+        let date = json!({"property": "Due", "date": {"before": "2026-12-01"}});
+        assert_eq!(fix_filter(&db, &date).unwrap(), date);
+    }
 
     #[test]
     fn ids_from_urls_and_raw() {

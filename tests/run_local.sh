@@ -10,6 +10,8 @@ export PYTHONPATH=$PWD
 (cd tests/pages && env -u HTTPS_PROXY -u HTTP_PROXY python3 -m http.server 8099 >$T/pages.log 2>&1 &)
 # inside the test container only: the official sites' stand-ins over HTTPS on 443 (tests/https_standins.py)
 [ "${OMUSE_STANDINS:-}" = 1 ] && python3 tests/https_standins.py >$T/standins.log 2>&1 &
+# the stand-ins' CA for the services' own HTTPS clients too (the broker saving a PDF from a stand-in site)
+[ "${OMUSE_STANDINS:-}" = 1 ] && export OMUSE_EXTRA_CA=/tmp/claude-0/standins/ca.pem
 TEST_PAGE=http://shop.test:8099/page.html python3 -m uvicorn tests.fake_llm:app --port 8090 >$T/llm.log 2>&1 &
 python3 -m uvicorn tests.fake_telegram:app --port 8091 >$T/tg.log 2>&1 &
 python3 -m uvicorn tests.fake_mcp:app --port 8093 >$T/mcp.log 2>&1 &
@@ -17,6 +19,7 @@ python3 -m uvicorn tests.fake_apps:app --port 8094 >$T/apps.log 2>&1 &
 python3 -m uvicorn tests.fake_dial:app --port 8096 >$T/dial.log 2>&1 &
 python3 -m uvicorn tests.fake_travel:app --port 8097 >$T/travel.log 2>&1 &
 env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy python3 -m uvicorn tests.fake_voice:app --port 8095 >$T/voice.log 2>&1 &
+MARKET_HOSTS=${OMUSE_E2E_MARKET_HOSTS:-'["http://127.0.0.1:8094/yahoo1", "http://127.0.0.1:8094/yahoo2"]'}
 cat > $T/config.toml <<TOML
 [server]
 host = "0.0.0.0"
@@ -24,6 +27,7 @@ port = 8080
 runtime_port = 8081
 browser_port = 8082
 timezone = "Asia/Singapore"
+scheduler_loop = ${OMUSE_E2E_SCHEDULER_LOOP:-true}   # a suite's "# run_local: OMUSE_E2E_SCHEDULER_LOOP=false" line (run_in_docker.sh)
 
 [data]
 sentinel = "$T/sdata"
@@ -46,7 +50,10 @@ reasoning_effort = "low"
 
 [browser]
 search_engines = "${OMUSE_E2E_SEARCH_ENGINES-empty=http://shop.test:8094/emptysearch?q=,duckduckgo=http://shop.test:8094/ddg?q=}"   # OMUSE_E2E_SEARCH_ENGINES= (empty): the real engines
-auto_approve = false       # the suites check the approval flow; browser_auto_approve_e2e.py turns it on itself
+auto_approve = false       # the suites check the approval flow; browser_auto_real.py turns it on itself
+
+[skills]
+dir = "${OMUSE_E2E_SKILLS_DIR-}"   # OMUSE_E2E_SKILLS_DIR=/repo/skills (run_in_docker.sh): the working tree's skills, no rebuild
 
 [telegram]
 api = "http://127.0.0.1:8091"
@@ -86,12 +93,14 @@ tavily = "${OMUSE_E2E_TAVILY_EP:-http://127.0.0.1:8094/tavily}"
 exa = "${OMUSE_E2E_EXA_EP:-http://127.0.0.1:8094/exa}"
 exa_mcp = "${OMUSE_E2E_EXA_MCP_EP:-http://127.0.0.1:8094/exa-mcp/mcp}"
 kiwi_mcp = "${OMUSE_E2E_KIWI_MCP_EP:-http://127.0.0.1:8094/kiwi-mcp/}"
+kayak = "${OMUSE_E2E_KAYAK_EP:-http://127.0.0.1:8094/kayak}"
+rentalcars = "${OMUSE_E2E_RENTALCARS_EP:-http://127.0.0.1:8094/rentalcars}"
 slack = "http://127.0.0.1:8094/api"
 github_raw = "http://127.0.0.1:8094/ghraw"
 ms_login = "http://127.0.0.1:18999"
 outlook_imap = "127.0.0.1:1143:none"
 outlook_smtp = "127.0.0.1:1025:none"
-market_data_hosts = ["http://127.0.0.1:8094/yahoo1", "http://127.0.0.1:8094/yahoo2"]
+market_data_hosts = $MARKET_HOSTS   # OMUSE_E2E_MARKET_HOSTS=[] (real-data suites): Yahoo itself
 ical_allow_http = true
 
 [internal]

@@ -1,6 +1,8 @@
 ---
 name: fwd-travel-insurance
 description: FWD 旅行保险：在新加坡或香港买 FWD 旅行保险（报价、比较方案、填表、付款交给用户），以及出事后理赔（新加坡在 FWD 网上表格提交；香港的旅行保险由 bolttech 承保，理赔表填好后发邮件到 claims.hk@bolttechinsurance.com）FWD travel insurance in Singapore and Hong Kong — buy a policy (quote, compare plans, fill the application, the user pays) and claim after a delay, lost bag, medical bill or cancellation (Singapore: FWD's online claim form; Hong Kong: plans underwritten by bolttech, the claim form filled and emailed to bolttech).
+form: on
+form_kind: claim
 ---
 # FWD travel insurance (Singapore, Hong Kong) / FWD 旅行保险
 
@@ -39,12 +41,16 @@ Buy before departure; it never covers something that already happened.
    on `…/travel-insurance/pre-existing-medical-conditions/`). HK MyTravel: its "cancel for any reason" cover needs the
    policy **bought within 30 days of the first trip payment** and the cancellation made **before the original
    departure** — check the dates against the booking emails and say whether it still qualifies. Recommend one plan in
-   the note; wait for the pick unless the user already chose ("the cheapest", "the one with cancellation").
+   the note and wait for the pick. **When the request already decides the plan** ("the cheapest", "the cheapest with
+   at least SGD 10,000 cancellation", "the one with cancellation"), call present_choices with picked = that plan's label
+   (the comparison is shown to the user and you go on) and continue with step 4 in the same turn — no question; the
+   final answer says which rule picked the chosen plan.
 4. **Apply** (the plan the user picked):
    - vault_list first. Type names, dates of birth, email and phone (profile_get). The NRIC / HKID or passport number
      only from the Vault with browser_fill_secret — never typed from chat, never in the answer.
    - Answer the health and declaration questions only from what the user said; anything you do not know → ask, never
-     tick "no" for them.
+     tick "no" for them. When the user's answers cover them (e.g. "no pre-existing conditions"), also tick the page's
+     final declaration / terms box — FWD will not take the payment without it, and the user reads it before paying.
    - purchase_confirm once: site = the domain, items = [{name: "<plan> travel insurance, <destination>, <dates>,
      <n> travellers", price: premium}], total, currency, card_item_id when a card is in the Vault.
    - Fill the card from the Vault after the approval (each browser_fill_secret in its own turn). No card in the Vault →
@@ -52,7 +58,9 @@ Buy before departure; it never covers something that already happened.
    - Then browser_request_takeover: "the application is filled in — check it and press Pay". Never press Pay unless the
      user told you to complete the purchase.
 5. After the hand-back: read the confirmation (policy number), memory_remember (domain=trip: insurer, plan, policy
-   number, period — no ID numbers), and add the emergency line to the answer.
+   number, period — no ID numbers), and add the emergency line to the answer. Every answer of this flow — the one
+   with the hand-over and the one after it — repeats the plans the page offered with their premiums (one line each)
+   and which one was chosen and why.
 
 ## 2. Claim (after a delay, cancellation, lost bag, medical bill …)
 **Gather in ONE turn**: gmail_search the policy email (`(FWD OR bolttech) (policy OR certificate) travel
@@ -83,8 +91,9 @@ Medical details stay in the claim documents — never in memory, the profile or 
 ### 2b. Hong Kong (bolttech's claim form by email)
 - The form: **bolttech's Travel Insurance Claim Form** (fillable PDF):
   `https://www.fwd.com.hk/files/v3/assets/blta9d684affff23c8c/bltf22c68114bd0cfb6/649e7bda1ea829102cf584d2/travel-insurance-clm-form-fillable.pdf`
-  browser_navigate to it: the result's `pdf.path` is the saved copy under downloads/ (if `pdf` is missing, say so and
-  ask the user to upload the form instead).
+  browser_navigate to it: the result's `pdf.path` is the saved copy under downloads/. If the result has no `pdf` (or a
+  `pdf.error`), open `https://www.fwd.com.hk/`, find the claim form's link in the claims section and browser_click it: the
+  browser downloads it (browser_downloads gives its path). Only when both fail, say so and ask the user to upload the form.
 - pdf_form_fields(path) — the labels say what each field is (policy number, full name, address, email, date / time /
   place of incident, original and delayed schedule with flight numbers, hours delayed, how it happened, amount claimed,
   airline name and its reference). Fill with pdf_form_fill only from mail, the profile and what the user said.

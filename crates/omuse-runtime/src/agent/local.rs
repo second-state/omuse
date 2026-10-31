@@ -375,6 +375,13 @@ request — keep it short and leave out what the request does not need. The skil
                 for k in ["source", "markdown", "output", "title"] {
                     body[k] = a.get(k).filter(|v| truthy(v)).cloned().unwrap_or(json!(""));
                 }
+                let want = a
+                    .get("pages")
+                    .and_then(omuse_common::util::as_i64)
+                    .filter(|n| (1..=50).contains(n));
+                if let Some(n) = want {
+                    body["pages"] = json!(n);
+                }
                 let r = self
                     .sentinel("POST", "/internal/render_pdf", Some(body), 180.0)
                     .await
@@ -391,19 +398,46 @@ request — keep it short and leave out what the request does not need. The skil
                     .get("size")
                     .and_then(omuse_common::util::as_i64)
                     .unwrap_or(0);
-                // 2026-10-29 (docs_real): "a one-page packing list" came out as 2 pages and the answer said one — the
-                // model never saw the page count; now it does, and can shorten and render again
-                let pages = self
-                    .path(&get_str(&r, "path"))
-                    .ok()
-                    .and_then(|p| lopdf::Document::load(p).ok())
-                    .map(|d| d.get_pages().len());
-                let pages = pages.map_or_else(String::new, |n| {
+                // 2026-10-29 (docs_real): "a one-page packing list" came out as 2 pages, twice, after the model shortened
+                // it — now `pages` fits it in code (printed smaller, down to 60%) and the result says what came out
+                let pages = r
+                    .get("pages")
+                    .and_then(Value::as_u64)
+                    .map(|n| n as usize)
+                    .or_else(|| {
+                        self.path(&get_str(&r, "path"))
+                            .ok()
+                            .and_then(|p| lopdf::Document::load(p).ok())
+                            .map(|d| d.get_pages().len())
+                    });
+                let scale = r.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
+                let count = pages.map_or_else(String::new, |n| {
                     format!(", {n} page{}", if n == 1 { "" } else { "s" })
                 });
-                Ok(format!("PDF 已在本机生成 created locally: {} ({} KB{})。如果用户要这个文件，用 send_file 发给他 Use send_file to give it to the user. \
-If the user asked for a page count and this is not it, shorten or tighten the content and render it again before sending.",
-                           get_str(&r, "path"), size / 1024, pages))
+                let fit = match (want, pages) {
+                    (Some(w), Some(n)) if n as i64 <= w && scale < 1.0 => format!(
+                        " Fitted to {w} page{} as asked (printed at {:.0}%).",
+                        if w == 1 { "" } else { "s" },
+                        scale * 100.0
+                    ),
+                    (Some(w), Some(n)) if n as i64 > w => format!(
+                        " Still {n} pages at the smallest readable size: shorten the content and render it again with pages={w}."
+                    ),
+                    _ => String::new(),
+                };
+                let missing: Vec<String> = arr(&r, "missing_images").iter().map(py_str).collect();
+                let fit = if missing.is_empty() {
+                    fit
+                } else {
+                    format!(
+                        "{fit} WARNING: these pictures are not in the workspace (no file by that name or one like it) and are \
+NOT in the PDF: {}.",
+                        missing.join(", ")
+                    )
+                };
+                Ok(format!("PDF 已在本机生成 created locally: {} ({} KB{})。{fit} 如果用户要这个文件，用 send_file 发给他 Use send_file to give it to the user. \
+If the user asked for a page count, pass it as pages=N.",
+                           get_str(&r, "path"), size / 1024, count))
             }
             "make_xlsx" => self.make_xlsx(a),
             "make_docx" => self.make_docx(a),
@@ -627,10 +661,30 @@ facts hidden; they are only used for forms, check-in or document-expiry checks)"
             }
             "profile_get" => {
                 let prof = self.store.profile().map_err(stores_err)?;
+                // a field asked by another common name is the profile's own key (insurance_real 2026-10-31:
+                // `date_of_birth` came back empty and the application went over without the birth date)
+                // and a key written with other case or a slip ("address:singapore flat") is the profile's own
+                let keys: Vec<String> = prof
+                    .as_object()
+                    .map(|m| m.keys().cloned().collect())
+                    .unwrap_or_default();
+                let lower: Vec<String> = keys.iter().map(|k| k.to_lowercase()).collect();
                 let want: Vec<String> = arr(a, "fields")
                     .iter()
                     .filter(|x| truthy(x))
-                    .map(py_str)
+                    .map(|x| crate::store::profile_alias(&py_str(x)))
+                    .map(|w| {
+                        if w.ends_with('*') || keys.contains(&w) {
+                            return w;
+                        }
+                        omuse_common::util::nearest(
+                            &w.to_lowercase(),
+                            lower.iter().map(String::as_str),
+                        )
+                        .and_then(|l| lower.iter().position(|x| x == l))
+                        .map(|i| keys[i].clone())
+                        .unwrap_or(w)
+                    })
                     .collect();
                 let pick = |k: &str| {
                     want.is_empty()
@@ -679,6 +733,38 @@ profile_suggest it for them to confirm).".into());
                 self.publish(json!({"kind": "memory_update"})).await;
                 Ok(format!("已提交，等用户在「记忆」页确认 — queued for the user to confirm on the Memory page: {} → {}", get_str(&r, "key"), get_str(&r, "value")))
             }
+            "vault_add_card" => {
+                let (name, country) = (sget(a, "name"), sget(a, "country"));
+                let r = match self
+                    .sentinel(
+                        "POST",
+                        "/internal/vault/card",
+                        Some(json!({"name": name, "country": country, "task_id": tid})),
+                        20.0,
+                    )
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(format!(
+                            "ERROR: 没有存入保险箱 not added to the vault: {}",
+                            super::exec::exc_msg(&e)
+                        ))
+                    }
+                };
+                let it = &r["item"];
+                if !get_truthy(&r, "added") {
+                    return Ok(format!(
+                        "已经在保险箱里 already in the Vault: {} (id={})",
+                        get_str(it, "label"),
+                        get_str(it, "id")
+                    ));
+                }
+                self.publish(json!({"kind": "memory_update"})).await;
+                Ok(format!("已存入保险箱 added to the Vault: {} (id={}) — by its name only; its number, expiry and CVC are UNKNOWN until \
+the user adds them in Memory → Vault. Tell the user it is saved and where to add the details if they want to pay with it.",
+                           get_str(it, "label"), get_str(it, "id")))
+            }
             "vault_list" => {
                 let res = match self.sentinel("GET", "/internal/vault", None, 20.0).await {
                     Ok(r) => r,
@@ -697,10 +783,25 @@ profile_suggest it for them to confirm).".into());
                     .iter()
                     .map(|i| {
                         let doms = arr(i, "domains");
+                        let missing: Vec<String> = arr(i, "missing").iter().map(py_str).collect();
+                        let missing = if missing.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                " · {} UNKNOWN (name only: the user adds them in Memory → Vault before it can be filled or paid with)",
+                                missing.join(", ")
+                            )
+                        };
+                                                let country = get_str(i, "country");
+                        let label = if country.is_empty() {
+                            get_str(i, "label")
+                        } else {
+                            format!("{} · issued in {country}", get_str(i, "label"))
+                        };
                         format!(
-                            "- id={} · {} · {} · {} · fields: {}{}",
+                            "- id={} · {} · {} · {} · fields: {}{}{missing}",
                             get_str(i, "id"),
-                            get_str(i, "label"),
+                            label,
                             get_str(i, "kind"),
                             get_str(i, "masked"),
                             arr(i, "fields")
@@ -774,64 +875,90 @@ memory. Tell the user to add it to the vault (Memory page → Vault (记忆 → 
                         ))
                     }
                 };
+                // any word of the query (the shop's name, an item, the order number) against the merchant, the order
+                // number, the items and the delivery; the merchant is the site's domain, so a shop's name may only match
+                // an item — with no match, the recent orders are listed rather than none
                 let q = sget(a, "query").trim().to_lowercase();
-                let rows: Vec<&Value> = arr(&res, "orders")
-                    .iter()
-                    .filter(|o| {
-                        q.is_empty()
-                            || format!("{} {}", get_str(o, "merchant"), get_str(o, "order_number"))
-                                .to_lowercase()
-                                .contains(&q)
-                    })
+                let words: Vec<&str> = q
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|w| w.chars().count() >= 3)
                     .collect();
-                if rows.is_empty() {
-                    return Ok("账本里没有匹配的订单 — no matching order in the ledger (OMuse has not placed one). Ask the user which order they mean.".into());
+                let all = arr(&res, "orders");
+                if all.is_empty() {
+                    return Ok("账本里没有订单 — the ledger is empty (OMuse has not placed an order). Ask the user which order they mean.".into());
                 }
-                Ok(rows
+                let hay = |o: &Value| {
+                    format!(
+                        "{} {} {} {}",
+                        get_str(o, "merchant"),
+                        get_str(o, "order_number"),
+                        arr(o, "items")
+                            .iter()
+                            .map(|i| sget(i, "name"))
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        get_str(o, "delivery")
+                    )
+                    .to_lowercase()
+                };
+                let matched: Vec<&Value> = all
                     .iter()
-                    .take(20)
-                    .map(|o| {
-                        let items = arr(o, "items");
-                        let num = get_str(o, "order_number");
-                        format!(
-                            "- {} · {} · 订单号 order {} · {} {:.2} · {} · {} ({}){}",
-                            local_strftime(
-                                o.get("created_at")
+                    .filter(|o| words.is_empty() || words.iter().any(|w| hay(o).contains(w)))
+                    .collect();
+                let (rows, head) = if matched.is_empty() {
+                    (
+                        all.iter().collect::<Vec<&Value>>(),
+                        format!("没有和「{q}」直接匹配的订单，下面是最近的订单 — nothing matches \"{q}\" directly; the recent orders:\n"),
+                    )
+                } else {
+                    (matched, String::new())
+                };
+                Ok(head
+                    + &rows
+                        .iter()
+                        .take(20)
+                        .map(|o| {
+                            let items = arr(o, "items");
+                            let num = get_str(o, "order_number");
+                            format!(
+                                "- {} · {} · 订单号 order {} · {} {:.2} · {} · {} ({}){}",
+                                local_strftime(
+                                    o.get("created_at")
+                                        .and_then(omuse_common::util::as_f64)
+                                        .unwrap_or(0.0),
+                                    "%Y-%m-%d"
+                                ),
+                                get_str(o, "merchant"),
+                                if num.is_empty() {
+                                    "(无 none)".to_string()
+                                } else {
+                                    num
+                                },
+                                get_str(o, "currency"),
+                                o.get("total")
                                     .and_then(omuse_common::util::as_f64)
                                     .unwrap_or(0.0),
-                                "%Y-%m-%d"
-                            ),
-                            get_str(o, "merchant"),
-                            if num.is_empty() {
-                                "(无 none)".to_string()
-                            } else {
-                                num
-                            },
-                            get_str(o, "currency"),
-                            o.get("total")
-                                .and_then(omuse_common::util::as_f64)
-                                .unwrap_or(0.0),
-                            sget(o, "card"),
-                            get_str(o, "status_label"),
-                            get_str(o, "status"),
-                            if items.is_empty() {
-                                String::new()
-                            } else {
-                                format!(
-                                    " · items: {}",
-                                    items
-                                        .iter()
-                                        .take(3)
-                                        .filter(|i| i.is_object())
-                                        .map(|i| get_str(i, "name"))
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                )
-                            }
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"))
+                                sget(o, "card"),
+                                get_str(o, "status_label"),
+                                get_str(o, "status"),
+                                if items.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(
+                                        " · items: {}",
+                                        items
+                                            .iter()
+                                            .take(3)
+                                            .filter(|i| i.is_object())
+                                            .map(|i| get_str(i, "name"))
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    )
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"))
             }
             "memory_forget" => {
                 self.store
@@ -849,6 +976,17 @@ memory. Tell the user to add it to the vault (Memory page → Vault (记忆 → 
 keep counters with schedule_state_set, change it with schedule_update, or schedule_delete it first if it really must be replaced.",
                         get_str(&dup, "id"), get_str(&dup, "name"), crate::scheduler::describe(&dup),
                         if own { " — it is the one running you right now" } else { "" }));
+                }
+                // "… until X" is a goal (it stops when X happens): asked in a schedule's words, made a goal in code —
+                // only for the user's own request, not inside a schedule's or goal's run
+                if get_str(t, "schedule_id").is_empty() {
+                    if let Some(success) = self
+                        .until_condition(&tid, &get_str(t, "goal"), &sget(a, "goal"))
+                        .await
+                    {
+                        let ga = super::util::goal_args_from_schedule(a, &success);
+                        return self.local(t, "goal_create", &ga).await;
+                    }
                 }
                 let tz = get_str(&self.settings(), "timezone");
                 let sch = crate::scheduler::create_schedule(
@@ -916,11 +1054,98 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                 if opts_.is_empty() {
                     return Ok("ERROR: options is empty.".into());
                 }
-                let clean: Vec<Value> = opts_.iter().map(|o| json!({
+                let mut clean: Vec<Value> = opts_.iter().map(|o| json!({
                     "label": truncate(&sget(o, "label"), 160),
                     "details": arr(o, "details").iter().map(|d| truncate(&py_str(d), 200)).take(6).collect::<Vec<_>>(),
                     "source_url": truncate(&sget(o, "source_url"), 500),
                     "note": truncate(&sget(o, "note"), 400)})).collect();
+                // listings on a results page are ranked in code from the criteria the model read off the user's words
+                let ranking = a
+                    .get("ranking")
+                    .and_then(crate::listings::Ranking::from_json);
+                let mut ranked_pick = String::new();
+                if kind == "comparison" {
+                    if let Some(r) = &ranking {
+                        let url = a
+                            .get("ranking")
+                            .map(|v| sget(v, "url"))
+                            .filter(|u| !u.trim().is_empty())
+                            .or_else(|| {
+                                clean
+                                    .iter()
+                                    .map(|o| get_str(o, "source_url"))
+                                    .find(|u| !u.trim().is_empty())
+                            })
+                            .unwrap_or_default();
+                        let mut r = r.clone();
+                        r.count = r.count.or(Some(clean.len()));
+                        // a results page of listings (6 or more read off it); on anything else the model's options stand
+                        let all = self.listings_read(&tid, &url);
+                        let best = if all.len() >= 6 {
+                            r.apply(&all)
+                        } else {
+                            vec![]
+                        };
+                        if !best.is_empty() {
+                            let note_of = |title: &str| {
+                                clean
+                                    .iter()
+                                    .find(|o| {
+                                        let l = get_str(o, "label").to_lowercase();
+                                        !l.is_empty() && title.to_lowercase().contains(&l)
+                                    })
+                                    .map(|o| get_str(o, "note"))
+                                    .unwrap_or_default()
+                            };
+                            let built: Vec<Value> = best
+                                .iter()
+                                .map(|l| {
+                                    let details: Vec<String> = [l.rating_text.clone(), l.price_text.clone()]
+                                        .into_iter()
+                                        .filter(|d| !d.is_empty())
+                                        .collect();
+                                    json!({"label": truncate(&l.title, 160), "details": details,
+                                           "source_url": truncate(&url, 500), "note": note_of(&l.title)})
+                                })
+                                .collect();
+                            if !sget(a, "picked").trim().is_empty() {
+                                ranked_pick = get_str(&built[0], "label");
+                            }
+                            clean = built;
+                        }
+                    } else if self.unranked_listings(&tid, &clean) {
+                        self.event(
+                            &tid,
+                            "choices_rejected",
+                            json!({"problems": ["listings without ranking"]}),
+                        )
+                        .await;
+                        return Ok("ERROR: not shown — these are listings from a results page: pass `ranking` with the \
+user's criteria (by: rating | price | ratings; max_price, min_price, min_stars, min_ratings, title_has: words every \
+name must have, title_not, count) and OMuse picks and orders the listings from the page itself. 这些是结果页上的商品：\
+请传 ranking（用户的条件），由系统从页面里挑选和排序。".into());
+                    }
+                }
+                // a card without a price gets the one its page shows after its name (read there, so it verifies)
+                if kind == "comparison" {
+                    for o in clean.iter_mut() {
+                        let details = arr(o, "details");
+                        if details
+                            .iter()
+                            .any(|d| crate::listings::has_price(&py_str(d)))
+                        {
+                            continue;
+                        }
+                        let text = self.sources_for(&tid, &get_str(o, "source_url")).join("\n");
+                        if let Some(p) = crate::listings::price_after(&text, &get_str(o, "label")) {
+                            if let Some(d) = o.get_mut("details").and_then(Value::as_array_mut) {
+                                if d.len() < 6 {
+                                    d.push(json!(p));
+                                }
+                            }
+                        }
+                    }
+                }
                 if kind == "comparison" {
                     let problems = self.check_choices(&tid, &clean);
                     if !problems.is_empty() {
@@ -944,6 +1169,8 @@ snapshot), or read the page first. Translations and opinions go in note.", probl
                     .map_err(stores_err)?;
                 self.publish(json!({"kind": "conv_update", "conv_id": cid}))
                     .await;
+                // a bot's comparison shows in Main too, where the user asked (like its approvals and takeovers)
+                self.mirror_to_parent(&cid, &info, &tid).await;
                 self.event(
                     &tid,
                     "choices",
@@ -967,6 +1194,34 @@ snapshot), or read the page first. Translations and opinions go in note.", probl
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+                // the user's request already decided (`picked`): the comparison is shown and the task goes on with it
+                // (matched in code: case, spacing and a slip of a letter or two do not make it ask again)
+                let labels: Vec<String> = clean
+                    .iter()
+                    .map(|o| get_str(o, "label").trim().to_lowercase())
+                    .collect();
+                let wanted = if ranked_pick.is_empty() {
+                    sget(a, "picked")
+                } else {
+                    ranked_pick
+                };
+                let picked = omuse_common::util::nearest(
+                    &wanted.trim().to_lowercase(),
+                    labels.iter().map(String::as_str),
+                )
+                .and_then(|l| {
+                    clean
+                        .iter()
+                        .find(|o| get_str(o, "label").trim().to_lowercase() == l)
+                })
+                .map(|o| get_str(o, "label"))
+                .unwrap_or_default();
+                if !picked.trim().is_empty() {
+                    return Ok(format!("已显示 {} 张选项卡{}，用户的要求已经选定「{}」：不要再问，现在继续。 Shown to the user as {} cards; \
+the user's request already picked \"{}\" — don't ask, go on with it now.\n{}", clean.len(),
+                        if verified { "（已逐条核对原文 verified against the pages you read）" } else { "" }, picked.trim(), clean.len(),
+                        picked.trim(), listing));
+                }
                 Ok(format!("已显示 {} 张选项卡{}。 Shown to the user as {} cards. Finish now with a short answer (the list below, plus your \
 recommendation); the user's pick will arrive as their next message.\n{}", clean.len(),
                     if verified { "（已逐条核对原文 verified against the pages you read）" } else { "" }, clean.len(), listing))
@@ -992,6 +1247,8 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                     Ok(g) => g,
                     Err(e) => return value_msg(e),
                 };
+                crate::goals::set_ask(&self.store, &get_str(&g, "id"), &get_str(t, "goal"))
+                    .map_err(stores_err)?;
                 self.publish(json!({"kind": "goal_update", "goal_id": g.get("id")}))
                     .await;
                 self.audit(
@@ -1188,10 +1445,14 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                     && self.skills().iter().any(|s| get_str(s, "name") == want)
                 {
                     // another bot's skill: the main bot hands the request over, a specialised one points to it
-                    let owners: Vec<String> = crate::bots::owners(&want)
+                    let mut owners: Vec<String> = crate::bots::owners(&want)
                         .iter()
                         .map(|b| format!("{} ({})", b.id, b.name))
                         .collect();
+                    if owners.is_empty() {
+                        // a skill no specialised bot lists is Main's (the refusal used to name nobody)
+                        owners.push("main (Main)".to_string());
+                    }
                     return Ok(if bot.is_main() {
                         format!("ERROR: the skill {want} belongs to the bot(s) {}: hand the request over with ask_bot instead of answering yourself.", owners.join(", "))
                     } else {
@@ -1213,22 +1474,72 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                         // `plan: on` (long, branching or parallel skills): the planner makes the plan from the
                         // skill's own steps, once per task; every other skill is followed from its sheet
                         let plan_on = fm.get("plan").is_some_and(|v| v.eq_ignore_ascii_case("on"));
-                        {
+                        // `form: on`: a form-filling skill (its step budget below)
+                        let form = fm.get("form").is_some_and(|v| v.eq_ignore_ascii_case("on"));
+                        // `steps: N`: the skill's own step budget for this task, when above the setting's; a form
+                        // skill gets at least FORM_STEPS (cards_interruption_real 2026-10-31: a CSR claim on the
+                        // default 30 ran out of steps right after the last field)
+                        let steps = fm
+                            .get("steps")
+                            .and_then(|v| v.trim().parse::<i64>().ok())
+                            .or(form.then_some(0))
+                            .map(|n| {
+                                if form {
+                                    n.max(super::guards::FORM_STEPS)
+                                } else {
+                                    n
+                                }
+                            });
+                        if let Some(n) = steps {
                             let mut inner = self.inner.lock();
-                            if off {
-                                inner.no_browser.insert(tid.clone(), want.clone());
-                            } else {
-                                inner.no_browser.remove(&tid);
-                            }
+                            let e = inner.skill_steps.entry(tid.clone()).or_insert(0);
+                            *e = (*e).max(n.clamp(0, 120));
                         }
+                        // the browser stays on while any skill loaded in this task needs it: a guide loaded after a
+                        // skill made for websites does not switch it off; a skill made for websites lifts the policy
+                        // and says so
+                        // nor does a guide switch it off when the user's own request names a website
+                        // (browser_auto_real 2026-10-31: "look the hotel up on Google Maps" met the Tokyo guide)
+                        let off = off && !super::guards::names_website(&get_str(t, "goal"));
+                        let (off, lifted) = {
+                            let mut inner = self.inner.lock();
+                            if off && !inner.browser_skill.contains_key(&tid) {
+                                inner.no_browser.insert(tid.clone(), want.clone());
+                                (true, false)
+                            } else if off {
+                                (false, false)
+                            } else {
+                                inner.browser_skill.insert(tid.clone(), want.clone());
+                                (false, inner.no_browser.remove(&tid).is_some())
+                            }
+                        };
                         let plan = if plan_on {
                             self.skill_plan(&tid, &want, &text).await
                         } else {
                             String::new()
                         };
+                        // `profile: a, b`: the profile fields the skill's answers depend on, handed over with it in
+                        // code (travel_info_real 2026-10-31: "depends on the nationality on your passport, which I
+                        // don't know" while the profile had it)
+                        // — at the top of the sheet, where it is read (travel_info_real 2026-10-31: at the end of a long
+                        // sheet it was missed again)
+                        let pnote = skill_profile_note(
+                            &fm,
+                            &self.store.profile().unwrap_or_else(|_| json!({})),
+                        );
+                        let text = if pnote.is_empty() {
+                            text
+                        } else {
+                            format!("{}\n\n{text}", pnote.trim())
+                        };
                         if off {
                             return Ok(format!(
                                 "{text}\n\n(System) This skill answers without the browser: the browser tools and sub-agents (delegate) are off for the rest of this task. Use this sheet and data tools (market_data, connectors); a task that needs a website goes to a skill made for it.{plan}"
+                            ));
+                        }
+                        if lifted {
+                            return Ok(format!(
+                                "{text}\n\n(System) The browser is available again for this task (this skill needs websites).{plan}"
                             ));
                         }
                         return Ok(format!("{text}{plan}"));
@@ -1339,11 +1650,22 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                 "ERROR: 输出不能覆盖原件 output must be a new file (keep the original).".into(),
             );
         }
-        let vals = a
+        let mut vals = a
             .get("values")
             .filter(|v| v.is_object())
             .cloned()
             .unwrap_or_else(|| json!({}));
+        // a signature is the user's own: a value for a signature field is never written (in code, not by instruction)
+        static SIGN: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?i)sign(ature|ed)?\b|签名|簽名|簽署|签署").unwrap());
+        let mut left_to_sign: Vec<String> = Vec::new();
+        if let Some(m) = vals.as_object_mut() {
+            let keys: Vec<String> = m.keys().filter(|k| SIGN.is_match(k)).cloned().collect();
+            for k in keys {
+                m.remove(&k);
+                left_to_sign.push(k);
+            }
+        }
         let (s2, o2) = (src.clone(), out.clone());
         let mut r =
             match tokio::task::spawn_blocking(move || crate::pdfforms::fill(&s2, &vals, &o2))
@@ -1354,6 +1676,9 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                 Err(e) => return Ok(format!("ERROR: {}", e.0)),
             };
         r["output"] = json!(self.rel(std::path::Path::new(&get_str(&r, "output"))));
+        if !left_to_sign.is_empty() {
+            r["left_for_the_user_to_sign"] = json!(left_to_sign);
+        }
         self.event(&tid, "pdf_filled", json!({"path": r.get("output"), "filled": arr(&r, "filled").len(),
                                                "problems": arr(&r, "problems").iter().take(5).collect::<Vec<_>>()})).await;
         Ok(format!("已生成填好的副本 filled copy saved (original untouched): {}\nNext: send_file it so the user can check it; ask about required_still_empty / problems. Send it by email \
@@ -2320,4 +2645,34 @@ fn value_err(e: anyhow::Error) -> LocalErr {
         Some(v) => LocalErr::value(v.0.clone()),
         None => LocalErr::from(e),
     }
+}
+
+/// The profile values a skill's front matter `profile: nationality, birthday` lists, as a system note for the
+/// load_skill result: each field's value, or that the profile does not have it (ask the user once). Empty when the
+/// skill lists none.
+pub(crate) fn skill_profile_note(
+    fm: &std::collections::HashMap<String, String>,
+    profile: &Value,
+) -> String {
+    let Some(list) = fm.get("profile") else {
+        return String::new();
+    };
+    let lines: Vec<String> = list
+        .split(',')
+        .map(|f| crate::store::profile_alias(f.trim()))
+        .filter(|f| !f.is_empty())
+        .map(
+            |f| match profile.get(&f).map(py_str).filter(|v| !v.trim().is_empty()) {
+                Some(v) => format!("{f}: {v}"),
+                None => format!("{f}: (not in the profile — ask the user once)"),
+            },
+        )
+        .collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n(System) From the user's profile, for this skill: {}.",
+        lines.join("; ")
+    )
 }

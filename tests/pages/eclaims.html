@@ -1,15 +1,80 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Card Benefit Services — File a claim (test)</title></head>
+<html lang="en"><head><meta charset="utf-8"><title>eClaimsLine — File a claim | Card Benefit Services</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.35 Arial, Helvetica, sans-serif; color: #1d2733; background: #f2f5f8; }
+  header { background: #0b3a64; color: #fff; padding: 10px 28px; display: flex; align-items: center; gap: 18px; }
+  header .logo { font-size: 20px; font-weight: bold; letter-spacing: .3px; }
+  header .logo span { color: #7cc4ff; }
+  header nav { margin-left: auto; font-size: 13px; }
+  header nav a { color: #d6e9ff; margin-left: 16px; text-decoration: none; }
+  main { max-width: 1080px; margin: 14px auto 0; background: #fff; border: 1px solid #d7dee6; border-radius: 6px; padding: 14px 26px 16px; }
+  h1 { font-size: 20px; margin: 0 0 2px; }
+  .steps { font-size: 12px; color: #5a6875; margin-bottom: 10px; }
+  .steps b { color: #0b3a64; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 34px; }
+  fieldset { border: 0; padding: 0; margin: 0; }
+  legend { font-weight: bold; color: #0b3a64; font-size: 15px; padding: 0 0 4px; border-bottom: 2px solid #e3ebf3; width: 100%; margin-bottom: 6px; }
+  label { display: block; margin: 6px 0 2px; font-size: 13px; font-weight: bold; }
+  label small { font-weight: normal; color: #6b7785; }
+  input, select { width: 100%; height: 30px; padding: 4px 8px; border: 1px solid #9fb0c2; border-radius: 4px; font: 14px Arial, sans-serif; background: #fff; color: #111; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+  .legal { font-size: 12px; color: #5a6875; margin: 12px 0 8px; }
+  .actions { display: flex; align-items: center; gap: 16px; }
+  button { background: #0b6fbf; color: #fff; border: 0; border-radius: 4px; padding: 9px 26px; font-size: 15px; font-weight: bold; cursor: pointer; }
+  .help { font-size: 12px; color: #5a6875; }
+  footer { max-width: 1080px; margin: 6px auto; font-size: 11px; color: #7a8794; }
+</style></head>
 <body>
-<h1>File a claim</h1>
-<p class="note">Test stand-in for the benefit administrator's claim portal (chasecardbenefits.com). Nothing is sent anywhere.</p>
-<form id="claim" action="/eclaims_done.html" method="get">
-  <label>Benefit <select name="benefit" id="benefit"><option>Trip Cancellation</option><option>Trip Interruption</option><option>Trip Delay</option></select></label><br>
-  <label>Cardholder name <input name="name" id="name" placeholder="Name as on the card"></label><br>
-  <label>Card number <input name="card" id="card" placeholder="16 digits" autocomplete="cc-number"></label><br>
-  <label>Date of loss <input name="loss" id="loss" placeholder="YYYY-MM-DD"></label><br>
-  <label>Amount claimed (USD) <input name="amount" id="amount" placeholder="0.00"></label><br>
-  <label>Reason <input name="reason" id="reason" placeholder="e.g. sickness"></label><br>
-  <button type="submit" id="submit">Submit claim</button>
-</form>
+<header><div class="logo">eClaims<span>Line</span></div><div>Card Benefit Services</div>
+  <nav><a href="#">File a claim</a><a href="#">Check claim status</a><a href="#">Upload documents</a><a href="#">Help</a></nav></header>
+<main>
+  <h1>File a claim</h1>
+  <div class="steps"><b>1. Claim details</b> &nbsp;›&nbsp; 2. Upload documents &nbsp;›&nbsp; 3. Confirmation</div>
+  <form id="claim" action="/eclaims_done.html" method="get">
+    <div class="cols">
+      <fieldset>
+        <legend>Cardholder</legend>
+        <label for="name">Cardholder name <small>(as on the card)</small></label>
+        <input id="name" name="name" autocomplete="name">
+        <div class="row2">
+          <div><label for="email">Email</label><input id="email" name="email" autocomplete="email"></div>
+          <div><label for="phone">Phone</label><input id="phone" name="phone" autocomplete="tel"></div>
+        </div>
+        <label for="card">Card</label>
+        <select id="card" name="card">
+          <option value="">— Select your card —</option>
+          <option>Chase Sapphire Reserve</option><option>Chase Sapphire Preferred</option><option>Chase Freedom Unlimited</option>
+          <option>Chase Ink Business Preferred</option><option>United Explorer Card</option><option>Other Visa / Mastercard</option>
+        </select>
+        <label for="last4">Last 4 digits of the card</label>
+        <input id="last4" name="last4" maxlength="4" inputmode="numeric">
+      </fieldset>
+      <fieldset>
+        <legend>Claim</legend>
+        <label for="benefit">Benefit</label>
+        <select id="benefit" name="benefit">
+          <option value="">— Select a benefit —</option>
+          <option>Trip Cancellation</option><option>Trip Interruption</option><option>Trip Delay Reimbursement</option>
+          <option>Baggage Delay</option><option>Lost Luggage</option><option>Auto Rental Collision Damage Waiver</option>
+          <option>Purchase Protection</option>
+        </select>
+        <div class="row2">
+          <div><label for="loss">Date of loss <small>(YYYY-MM-DD)</small></label><input id="loss" name="loss" placeholder="YYYY-MM-DD"></div>
+          <div><label for="amount">Amount claimed (USD)</label><input id="amount" name="amount" placeholder="0.00" inputmode="decimal"></div>
+        </div>
+        <label for="reason">Reason for the cancellation or interruption</label>
+        <input id="reason" name="reason" placeholder="e.g. sickness of the cardholder">
+        <label for="booking">Travel supplier and booking reference</label>
+        <input id="booking" name="booking" placeholder="e.g. airline, hotel, confirmation number">
+      </fieldset>
+    </div>
+    <p class="legal">By submitting you confirm the information is true and complete. You will receive a claim number and the list of
+      documents to upload. Documents are due within 90 days of the date of loss.</p>
+    <div class="actions"><button type="submit" id="submit">Submit claim</button>
+      <span class="help">Questions? Call the number on the back of your card or 1-800-350-1697.</span></div>
+  </form>
+</main>
+<footer>© 2026 Card Benefit Services. Benefits are provided by the insurer named in your Guide to Benefits.</footer>
 </body></html>

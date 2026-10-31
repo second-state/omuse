@@ -2,9 +2,25 @@
 
 use std::time::Duration;
 
+/// `OMUSE_EXTRA_CA`: a PEM file of further trusted root certificates (a company's TLS-inspecting proxy; the test
+/// container's CA for the official sites' stand-ins), added to the bundled roots. Unset or unreadable: the bundled
+/// roots alone.
+fn with_extra_ca(b: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    let Ok(path) = std::env::var("OMUSE_EXTRA_CA") else {
+        return b;
+    };
+    match std::fs::read(&path)
+        .ok()
+        .and_then(|pem| reqwest::Certificate::from_pem_bundle(&pem).ok())
+    {
+        Some(certs) => certs.into_iter().fold(b, |b, c| b.add_root_certificate(c)),
+        None => b,
+    }
+}
+
 /// A reqwest client with a total timeout and a 10 s connect timeout (`httpx.Timeout(total, connect=10.0)`).
 pub fn client(total_secs: f64) -> reqwest::Client {
-    reqwest::Client::builder()
+    with_extra_ca(reqwest::Client::builder())
         .timeout(Duration::from_secs_f64(total_secs))
         .connect_timeout(Duration::from_secs(10))
         .pool_idle_timeout(Duration::from_secs(3))
@@ -15,7 +31,7 @@ pub fn client(total_secs: f64) -> reqwest::Client {
 
 /// Same, with keep-alive connection reuse limited (`httpx.Limits(keepalive_expiry=3.0)` is the default above).
 pub fn client_no_timeout() -> reqwest::Client {
-    reqwest::Client::builder()
+    with_extra_ca(reqwest::Client::builder())
         .connect_timeout(Duration::from_secs(10))
         .no_proxy()
         .build()

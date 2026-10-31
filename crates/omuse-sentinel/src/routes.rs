@@ -75,6 +75,10 @@ pub struct Ctx {
     pub market: Market,
     /// `_MS_FLOWS`: Outlook device-code flows.
     ms_flows: Mutex<HashMap<String, Value>>,
+    /// task (broker page) -> (the ledger orders its page is about, the button) after an order-change click was handed
+    /// to the user: when they hand the browser back on a "cancellation requested" page, those orders are marked
+    /// (`user::b_release`)
+    pub order_changes: Mutex<HashMap<String, (Vec<String>, String)>>,
 }
 
 impl std::ops::Deref for Ctx {
@@ -112,6 +116,7 @@ impl Ctx {
             shots: cfg.sentinel_data().join("shots"),
             proxy,
             ms_flows: Mutex::new(HashMap::new()),
+            order_changes: Mutex::new(HashMap::new()),
             st,
         })
     }
@@ -478,6 +483,7 @@ pub fn router(ctx: App) -> Router {
         .route("/internal/act", post(act::act))
         .route("/internal/user_request", post(internal::user_request))
         .route("/internal/vault", get(user::internal_vault))
+        .route("/internal/vault/card", post(user::internal_vault_card))
         .route("/internal/watch/sources", get(internal::watch_sources))
         .route("/internal/watch", post(internal::watch))
         .route("/internal/taint", post(internal::taint))
@@ -675,6 +681,7 @@ pub fn router(ctx: App) -> Router {
         .route(CAL_CALLBACK, get(connections::calendar_callback))
         .route("/sentinel/api/health", get(user::health))
         .route("/api/{*path}", any(proxy::proxy))
+        .route("/run_pending_tasks", get(proxy::run_pending_tasks))
         .route("/", get(proxy::index))
         .route("/static/{*name}", get(proxy::static_file));
 

@@ -46,7 +46,7 @@ pub const SUBAGENT_TOOLS: [&str; 30] = [
 /// A concurrent batch is sent to Sentinel with `no_ask`: a read that would need an approval (`browser_read` of a URL
 /// carrying data in a tainted task) comes back as an error telling the model to call it alone next turn, so no
 /// approval dialog is ever left behind for a call the task is not waiting on.
-pub const PARALLEL_TOOLS: [&str; 35] = [
+pub const PARALLEL_TOOLS: [&str; 36] = [
     "delegate",
     "calculate",
     "data_query",
@@ -73,6 +73,7 @@ pub const PARALLEL_TOOLS: [&str; 35] = [
     "flight_offer",
     "hotels_search",
     "hotel_rooms",
+    "cars_search",
     "notion_search",
     "notion_get_page",
     "notion_query_database",
@@ -114,8 +115,9 @@ pub fn concurrent_runs(calls: &[(&str, bool)]) -> Vec<std::ops::Range<usize>> {
 }
 
 /// local tools that change something lasting: a golden (test) run stops at them instead of running them
-pub const DRY_RUN_LOCAL: [&str; 17] = [
+pub const DRY_RUN_LOCAL: [&str; 18] = [
     "memory_remember",
+    "vault_add_card",
     "memory_forget",
     "profile_suggest",
     "schedule_create",
@@ -253,11 +255,12 @@ asks in the chat for photos or files, send them here — not by email unless the
              "note": {"type": "string", "description": "一句说明 one-line caption"}}), &[]),
         fn_("make_pdf", "在本机把工作区文件（.md / .txt / .html）或一段 Markdown 生成 PDF（支持中文、表格、图片，A4，带页码）。\
 所有文件都在本机处理——绝对不要把用户的文件上传到在线转换网站。生成后如果用户要文件，用 send_file 发给他。\
- Make a PDF locally from a workspace file (.md/.txt/.html) or Markdown text. Never upload the user's documents \
-to online converters. Then use send_file if the user wants the file.",
+ Make a PDF locally from a workspace file (.md/.txt/.html) or Markdown text (a line \\pagebreak starts a new page). Never \
+upload the user's documents to online converters. Then use send_file if the user wants the file.",
             json!({"source": {"type": "string", "description": "工作区里的源文件 workspace path of the source (.md/.txt/.html)"},
              "markdown": {"type": "string", "description": "或者直接给 Markdown 内容 or Markdown text instead of a file"},
              "output": {"type": "string", "description": "输出路径，默认与源文件同名 .pdf output path (default: next to source)"},
+             "pages": {"type": "integer", "description": "用户要求的最多页数 the most pages the user asked for (\"a one-page list\" = 1): the PDF is fitted to it"},
              "title": s}), &[]),
         fn_("make_docx", "在本机生成 Word 文档（.docx），不要用任何在线转换网站。内容用 Markdown 写：# 标题、## 小标题、段落、**粗体**、\
 列表、表格、> 引用，以及 ![说明](charts/xxx.png) 插入工作区里的图片（例如 make_chart send=false 生成的图）。\
@@ -299,7 +302,7 @@ rate of an instalment plan, payback(cost, saving_per_period). Annual rates are p
 再一次传多个 queries。结果可 save 成 .csv/.xlsx（make_xlsx 可直接用作 source）。日志等文本文件传 pattern（带命名分组的正则）。\
  Exact numbers from tables (CSV, Excel, text logs) — never count rows or add up a column yourself. Call once with only \
 path to see the columns, then pass several queries in one call. Query keys, applied in this order: \
-derive [{as, expr: arithmetic over columns written as they are named, e.g. \"Amount (SGD) - Budget (SGD)\"} | {as, from, bins:[edges], labels} | \
+derive [{as, expr: arithmetic over columns written as they are named, e.g. \"Amount (SGD) - Budget (SGD)\"} | {as, from, bins:[edges], labels, right} (as pandas.cut: (low, high], the first bin with its low edge; right:false = [low, high)) | \
 {as, from, map:{old:new}} | {as, from, date_part: year|quarter|month|week|date|weekday|hour} | {as, from, slice:[0,7]} | \
 {as, zscore|pct_change|rank|cumsum: col, by:[cols]}], where [{col, op (== != > >= < <= contains in between regex \
 empty), value — a value naming a column compares the two columns}], where_any (OR), then ONE of group_by:[cols] + agg:[{col, fn: count|count_distinct|\
@@ -490,8 +493,17 @@ not available). Omit `path` for this task's latest image.",
 exact excerpt copied from a page or email you read in this task (same language, no paraphrase), with source_url = \
 that page (or a link on it); OMuse checks each one against what you actually read and refuses unverifiable cards. \
 Put translations, opinions and your recommendation in note (not checked). kind=clarify: plain choices, not checked. \
-After calling it, finish with a short answer — the user's pick arrives as their next message.",
-            json!({"question": s, "kind": {"type": "string", "enum": ["comparison", "clarify"]},
+After calling it, finish with a short answer — the user's pick arrives as their next message. When the user's request \
+already decides (\"the cheapest with at least …\"), pass picked = that option's label: the comparison is shown and you go \
+on with it in the same turn. Listings from a shop's results page: pass ranking = the user's criteria and OMuse \
+picks and orders the listings from the page (options then only need the page as source_url).",
+            json!({"question": s, "kind": {"type": "string", "enum": ["comparison", "clarify"]}, "picked": s,
+             "ranking": {"type": "object", "description": "the user's criteria for listings on a results page; OMuse ranks them",
+                 "properties": {"by": {"type": "string", "enum": ["rating", "price", "ratings"]},
+                 "max_price": {"type": "number"}, "min_price": {"type": "number"}, "min_stars": {"type": "number"},
+                 "min_ratings": {"type": "integer"}, "title_has": {"type": "array", "items": s,
+                     "description": "words every chosen name has, e.g. [\"case\", \"iPhone 17 Pro Max\"]"},
+                 "title_not": {"type": "array", "items": s}, "count": {"type": "integer"}, "url": s}},
              "options": {"type": "array", "items": {"type": "object", "properties": {
                  "label": s, "details": {"type": "array", "items": s}, "source_url": s, "note": s}}}}),
             &["question", "options"]),
@@ -515,15 +527,21 @@ fields (name, phone, email, address… → profile_suggest) and never for ID / m
 said by the user) is kept as 'to confirm' until the user OKs it on the Memory page — it is still used meanwhile.",
             json!({"fact": s, "category": s, "entity": s, "domain": s}), &["fact"]),
         fn_("profile_get", "读取用户档案 Read the user's profile (name as on passport, phone, emails, addresses, company, title, \
-birthday, nationality, further addresses as address:<label>…). Call it ONLY when filling in a form or writing an email/message that needs these details; \
+birthday, gender, nationality, further addresses as address:<label>…). Call it ONLY when filling in a form or writing an email/message that needs these details; \
 use just the fields you need.", json!({"fields": {"type": "array", "items": s, "description": "optional: only these fields; \"address:*\" = every further address"}}), &[]),
         fn_("profile_suggest", "建议修改档案 Propose a change to a profile field when the user told you a new value (e.g. a new phone \
 number). It is NOT applied until the user confirms it on the Memory page. field = one of: name_zh, name_en, \
 preferred_name, phone, email_personal, email_work, address_home, address_work, company, job_title, birthday, \
-nationality, address:<label> (another address of the user's own, e.g. address:Singapore flat), or custom:<label>.", json!({"field": s, "value": s, "reason": s}), &["field", "value"]),
+gender (Male, Female or X), nationality, address:<label> (another address of the user's own, e.g. address:Singapore flat), or custom:<label>.", json!({"field": s, "value": s, "reason": s}), &["field", "value"]),
         fn_("vault_list", "列出保险箱条目 List the items in the user's Sentinel vault (ID documents, membership numbers, payment \
 cards) — labels and the last 4 characters only, never the values. Use with browser_fill_secret to fill one into a \
-web form; each fill needs the user's approval.", json!({}), &[]),
+web form; each fill needs the user's approval. A card added by its name only shows its number, expiry and CVC as \
+UNKNOWN: it cannot be filled or paid with until the user adds them in Memory → Vault.", json!({}), &[]),
+        fn_("vault_add_card", "把用户说的信用卡（卡名，发卡国家可选）存进保险箱 Add a credit card the user told you they hold to the Vault: \
+name = issuer and product as printed on the card (e.g. \"Citi Prestige\"), country = the country that issued it if known \
+(e.g. \"USA\"; optional, leave empty when not said) — one call per card. Its number, expiry and CVC stay UNKNOWN until \
+the user adds them in Memory → Vault; never pass a number. The same card is not added twice.",
+            json!({"name": s, "country": {"type": "string", "description": "optional: the issuing country, e.g. USA, Singapore"}}), &["name"]),
         fn_("memory_forget", "删除一条记忆 Forget a memory by id (from memory_search).", json!({"id": s}), &["id"]),
         fn_("orders_list", "交易账本：OMuse 替用户下过的订单（商家、订单号、金额、卡尾号、状态、谁批准的）。用户说「取消/退货/查一下那个订单」时先查这里，\
 用账本里那一单的商家和订单号去操作，不要凭邮件或别的网站猜。\

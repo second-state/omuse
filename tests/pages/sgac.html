@@ -1,19 +1,243 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>SG Arrival Card (test)</title></head>
+<!-- SG Arrival Card, after the real ICA form (mapped from the live site on 2026-10-31): /sgarrivalcard/ redirects to
+     /arrivalcard/sgac (two "Fill in Manually", resident and visitor); the visitor's opens /arrivalcard/sgac/fvipa/submit,
+     a three-step stepper on one URL (Traveller Details, Visit Details, Review). Radios are mat-radio-button elements
+     with generated ids, dates three key-typed boxes per field, lookups take only a listed value (type, then click a
+     mat-option). Review has the declaration and Submit (the user's); Submit writes the chosen values into the hidden
+     named fields read on /sgac_done.html. -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICA | SG Arrival Card</title><style>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#1b1b1b;background:#f3f4f6}
+header{background:#b5121b;color:#fff;padding:12px 32px;display:flex;align-items:center;gap:14px}
+header .crest{width:38px;height:38px;border-radius:50%;background:#fff;color:#b5121b;font-weight:bold;display:flex;align-items:center;justify-content:center;font-size:13px}
+main{max-width:980px;margin:18px auto;background:#fff;padding:20px 32px 28px;border:1px solid #d7d9dd}
+h1{font-size:24px;margin:4px 0 6px;color:#b5121b}h2{font-size:18px;color:#b5121b;margin:18px 0 8px}
+.tiles{display:flex;gap:20px}.tile{flex:1;border:1px solid #d7d9dd;padding:16px}.tile h3{margin:0 0 10px}
+.stepper{display:flex;gap:8px;margin:0 0 14px;font-size:13px}.stepper span{padding:4px 10px;border-radius:12px;background:#e8eaee}.stepper span.on{background:#b5121b;color:#fff}
+.form-title-content{margin:0 0 12px}.form-title-content>.t{font-size:13px;font-weight:bold;margin-bottom:4px;display:block}
+.row{display:flex;gap:16px;flex-wrap:wrap}.row>.form-title-content{flex:1;min-width:260px}
+input[type=text]{height:32px;border:1px solid #9aa0a6;border-radius:3px;padding:4px 8px;font-size:15px;width:100%}
+.date input{width:64px}.date input.y{width:84px}.date{display:flex;gap:6px;align-items:center}
+mat-radio-group{display:flex;gap:16px;flex-wrap:wrap}mat-radio-button{display:inline-flex;gap:6px;align-items:center;cursor:pointer}
+mat-checkbox{display:inline-flex;gap:6px;align-items:center;cursor:pointer;font-size:14px}
+.ac{position:relative}.panel{position:absolute;z-index:5;left:0;right:0;background:#fff;border:1px solid #9aa0a6;max-height:180px;overflow:auto}
+mat-option{display:block;padding:7px 10px;cursor:pointer}mat-option:hover{background:#f2f2f2}
+.err{font-size:12px;color:#c00;min-height:15px}.hidden{display:none}
+.actions{display:flex;justify-content:flex-end;gap:12px;margin-top:10px}
+button{height:40px;padding:0 26px;border:0;border-radius:4px;font-size:15px;cursor:pointer;background:#b5121b;color:#fff}
+button.sec{background:#e8eaee;color:#222}button[disabled]{opacity:.5;cursor:not-allowed}
+.review dt{font-weight:bold;font-size:13px}.review dd{margin:0 0 6px}
+/* Review's declaration and Submit sit in a bar fixed to the bottom of the window (the test user finds them the same
+   way in any copy of the page, whatever the review lists) */
+.submitbar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:2px solid #b5121b;padding:12px 32px;display:flex;justify-content:space-between;align-items:center;z-index:9}
+</style></head>
 <body>
-<h1>SG Arrival Card — Foreign Visitors</h1>
-<p>Submit within 3 days before arrival. Free of charge.</p>
-<form action="/sgac_done.html" method="get">
-  <label>Full name (as in passport) <input type="text" name="name"></label>
-  <label>Date of birth <input type="text" name="dob" placeholder="YYYY-MM-DD"></label>
-  <label>Nationality <input type="text" name="nationality"></label>
-  <label>Passport number <input type="text" name="passport"></label>
-  <label>Passport expiry <input type="text" name="expiry"></label>
-  <label>Arrival flight <input type="text" name="flight"></label>
-  <label>Arrival date <input type="text" name="arrival"></label>
-  <label>Accommodation <input type="text" name="hotel"></label>
-  <label>Fever, cough or rash in the last days? <select name="health"><option>No</option><option>Yes</option></select></label>
-  <label>Visited Africa or South America in the last 6 days? <select name="yf"><option>No</option><option>Yes</option></select></label>
-  <button type="submit">Submit declaration</button>
+<header><div class="crest">ICA</div><div><b>Immigration &amp; Checkpoints Authority</b><br>Singapore Government Agency Website</div></header>
+<main>
+<section id="landing">
+  <h1>SG Arrival Card</h1>
+  <p>Submit your SG Arrival Card with the electronic health declaration within <b>3 days before arrival</b>. Submission is free of charge.</p>
+  <div class="tiles">
+    <div class="tile"><h3>I am a Resident</h3><p>Singapore Citizens, Permanent Residents and Long-Term Pass holders.</p>
+      <button type="button" class="sec">Autofill with Passport/Visa</button> <button type="button" data-who="resident">Fill in Manually</button></div>
+    <div class="tile"><h3>I am a Visitor</h3><p>Foreign visitors to Singapore.</p>
+      <button type="button" data-who="visitor">Fill in Manually</button></div>
+  </div>
+</section>
+
+<form id="sgac" class="hidden" action="/sgac_done.html" method="get" autocomplete="off" novalidate>
+  <div class="stepper"><span data-s="1" class="on">Traveller Details</span><span data-s="2">Visit Details</span><span data-s="3">Review</span></div>
+
+  <section data-step="1">
+    <h2>Traveller Details</h2>
+    <div class="form-title-content"><span class="t">Date of Arrival</span><mat-radio-group id="arrivalDates"></mat-radio-group></div>
+    <div class="row">
+      <div class="form-title-content"><span class="t">Full Name (In Passport)</span><input type="text" id="traveller-0-input-fullName"></div>
+      <div class="form-title-content"><span class="t">Passport Number</span><input type="text" id="traveller-0-input-passportNumber"></div>
+    </div>
+    <div class="form-title-content"><span class="t">Date of Passport Expiry</span><div class="date" data-date="dateOfPassportExpiry"></div></div>
+    <div class="form-title-content"><span class="t">Sex as indicated in Passport</span>
+      <mat-radio-group data-radio="sex" data-opts="F:FEMALE,M:MALE,O:OTHERS"></mat-radio-group></div>
+    <div class="form-title-content"><span class="t">Date of Birth</span><div class="date" data-date="dateOfBirth"></div></div>
+    <div class="row">
+      <div class="form-title-content ac"><span class="t">Nationality/Citizenship</span><input type="text" id="traveller-0-input-nationality" data-list="nationality"></div>
+      <div class="form-title-content ac"><span class="t">Country/Place of Birth</span><input type="text" id="traveller-0-input-placeOfBirth" data-list="country"></div>
+      <div class="form-title-content ac"><span class="t">Place of Residence</span><input type="text" id="traveller-0-input-placeOfResidence" data-list="city"></div>
+    </div>
+    <div class="row">
+      <div class="form-title-content"><span class="t">Email Address</span><input type="text" id="traveller-0-input-emailAddress"></div>
+      <div class="form-title-content ac"><span class="t">Country Code</span>+<input type="text" id="traveller-0-input-countryCode" data-list="code" style="width:90px"></div>
+      <div class="form-title-content"><span class="t">Mobile Number</span><input type="text" id="traveller-0-input-mobileNumber"></div>
+    </div>
+    <div class="row">
+      <div class="form-title-content ac"><span class="t">Last City/Port of Embarkation before Singapore</span><input type="text" id="traveller-0-input-lastCity" data-list="city"></div>
+      <div class="form-title-content ac"><span class="t">Purpose of Travel</span><input type="text" id="traveller-0-input-purposeOfTravel" data-list="purpose"></div>
+    </div>
+    <div class="form-title-content"><span class="t">Date of Departure from Singapore</span><div class="date" data-date="dateOfDeparture"></div></div>
+    <div class="form-title-content ac"><span class="t">Next City/ Port of Disembarkation after Singapore</span><input type="text" id="traveller-0-input-nextCity" data-list="city">
+      <mat-checkbox><input type="checkbox" id="sameAsLast"><span>Same as Last City</span></mat-checkbox></div>
+    <div class="form-title-content"><span class="t">Have you ever used a passport under different name to enter Singapore?</span>
+      <mat-radio-group data-radio="differentName" data-opts="Y:YES,N:NO"></mat-radio-group></div>
+    <div class="form-title-content"><span class="t">Health Declaration: Do you currently have fever, cough, shortness of breath, rash or diarrhoea?</span>
+      <mat-radio-group data-radio="q44" data-opts="Y:YES,N:NO"></mat-radio-group></div>
+    <div class="form-title-content hidden" id="q45"><span class="t">In the past 6 days, have you visited any yellow fever endemic country?</span>
+      <mat-radio-group data-radio="q45" data-opts="Y:YES,N:NO"></mat-radio-group></div>
+    <div class="form-title-content hidden" id="q46"><span class="t">In the past 21 days, have you visited Bangladesh, India, Africa, the Middle East or Latin America?</span>
+      <mat-radio-group data-radio="q46" data-opts="Y:YES,N:NO"></mat-radio-group></div>
+    <div class="err" id="err1"></div>
+    <div class="actions"><button type="button" class="sec" title="More information about Next City">?</button><button type="button" id="next1">Next</button></div>
+  </section>
+
+  <section data-step="2" class="hidden">
+    <h2>Visit Details</h2>
+    <div class="form-title-content"><span class="t">Mode of Travel</span><mat-radio-group data-radio="mode" data-opts="A:AIR,L:LAND,S:SEA"></mat-radio-group></div>
+    <div class="form-title-content hidden" id="air"><span class="t">Mode of Transport</span>
+      <mat-radio-group data-radio="airType" data-opts="CA:COMMERCIAL FLIGHT,PA:PRIVATE/CARGO AIRLINE/OTHERS"></mat-radio-group></div>
+    <div class="row hidden" id="commercial">
+      <div class="form-title-content ac"><span class="t">Flight Code</span><input type="text" id="traveller-0-input-flightCode" data-list="airline"></div>
+      <div class="form-title-content"><span class="t">Flight Number</span><input type="text" id="traveller-0-input-flightNumber"></div>
+    </div>
+    <div class="form-title-content"><span class="t">Type of Accommodation in Singapore</span>
+      <mat-radio-group data-radio="accommodation" data-opts="H:HOTEL,P:RESIDENTIAL,TRANSIT:TRANSIT,DAY_TRIP:DAY TRIP"></mat-radio-group></div>
+    <div class="form-title-content ac hidden" id="hotel"><span class="t">Name of Hotel</span><input type="text" id="traveller-0-input-nameOfHotel" data-list="hotel"></div>
+    <div class="row hidden" id="residential">
+      <div class="form-title-content"><span class="t">Postal Code</span><input type="text" id="traveller-0-input-postalCode"></div>
+      <div class="form-title-content"><span class="t">Block Number</span><input type="text" id="traveller-0-input-blockNumber"></div>
+      <div class="form-title-content"><span class="t">Street Name</span><input type="text" id="traveller-0-input-streetName"></div>
+    </div>
+    <div class="err" id="err2"></div>
+    <div class="actions"><button type="button" class="sec" id="back2">Back</button><button type="button" id="next2">Next</button></div>
+  </section>
+
+  <section data-step="3" class="hidden">
+    <h2>Review</h2>
+    <dl class="review" id="review"></dl>
+    <div style="height:90px"></div>
+    <div class="submitbar">
+      <mat-checkbox><input type="checkbox" name="declaration" id="declaration"><span>I have read and agreed to the declaration.</span></mat-checkbox>
+      <span><button type="button" class="sec" id="edit">Edit</button> <button type="submit" id="submit" disabled>Submit</button></span>
+    </div>
+  </section>
+
+  <!-- what the tests read on /sgac_done.html, written on Submit -->
+  <div class="hidden">
+    <input name="name"><input name="sex"><input name="dob"><input name="nationality"><input name="passport_no"><input name="passport_expiry">
+    <input name="email"><input name="phone"><input name="mode"><input name="flight_no"><input name="arrival_date"><input name="last_city">
+    <input name="next_city"><input name="departure_date"><input name="purpose"><input name="accom_type"><input name="accommodation">
+    <input name="h_symptoms"><input name="h_travel"><input name="d_names">
+  </div>
 </form>
+</main>
+<script>
+(function () {
+  const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+  const show = (el, on) => el.classList.toggle('hidden', !on);
+  // the real site: /sgarrivalcard/ → /arrivalcard/sgac; the visitor's form on /arrivalcard/sgac/fvipa/submit
+  if (/^\/sgarrivalcard\/?$/.test(location.pathname) || location.pathname === '/') history.replaceState(null, '', '/arrivalcard/sgac');
+  const openForm = () => { show($('#landing'), false); show($('#sgac'), true); step(1); };
+  $$('#landing button[data-who]').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.who !== 'visitor') { alert('Resident submissions: please use the resident form.'); return; }
+    history.pushState(null, '', '/arrivalcard/sgac/fvipa/submit'); openForm();
+  }));
+
+  const LISTS = {
+    nationality: ['AMERICAN', 'AUSTRALIAN', 'BRITISH', 'CANADIAN', 'CHINESE', 'FILIPINO', 'FRENCH', 'GERMAN', 'INDIAN', 'INDONESIAN',
+                  'JAPANESE', 'KOREAN, SOUTH', 'MALAYSIAN', 'NEW ZEALANDER', 'THAI', 'VIETNAMESE'],
+    country: ['AUSTRALIA', 'CANADA', 'CHINA', 'INDIA', 'INDONESIA', 'JAPAN', 'MALAYSIA', 'NEW ZEALAND', 'UNITED KINGDOM', 'UNITED STATES'],
+    city: ['AUSTRALIA, NEW SOUTH WALES, SYDNEY', 'AUSTRALIA, VICTORIA, MELBOURNE', 'AUSTRALIA, QUEENSLAND, BRISBANE',
+           'MALAYSIA, KUALA LUMPUR, KUALA LUMPUR', 'THAILAND, BANGKOK, BANGKOK', 'JAPAN, TOKYO, TOKYO', 'UNITED KINGDOM, ENGLAND, LONDON',
+           'INDONESIA, BALI, DENPASAR', 'HONG KONG, HONG KONG, HONG KONG'],
+    code: ['1', '44', '60', '61', '62', '63', '64', '65', '66', '81', '82', '84', '86', '852', '886', '91'],
+    purpose: ['BUSINESS', 'EDUCATION', 'HOLIDAY', 'MEDICAL', 'TRANSIT', 'VISIT FAMILY', 'WORK'],
+    airline: ['AIR NEW ZEALAND (NZ)', 'BRITISH AIRWAYS (BA)', 'CATHAY PACIFIC (CX)', 'JETSTAR ASIA (3K)', 'MALAYSIA AIRLINES (MH)',
+              'QANTAS AIRWAYS (QF)', 'SCOOT (TR)', 'SINGAPORE AIRLINES (SQ)', 'THAI AIRWAYS (TG)'],
+    hotel: ['CONRAD SINGAPORE MARINA BAY', 'MARINA BAY SANDS SINGAPORE', 'MARINA BAYFRONT HOTEL', 'RAFFLES HOTEL SINGAPORE',
+            'SHANGRI-LA SINGAPORE', 'THE FULLERTON HOTEL SINGAPORE'],
+  };
+  // lookups: only a value picked from the list counts (data-picked); typing shows the matching options
+  $$('input[data-list]').forEach(inp => {
+    const panel = document.createElement('div'); panel.className = 'panel hidden'; inp.after(panel);
+    const render = () => {
+      const q = inp.value.trim().toUpperCase(); inp.dataset.picked = '';
+      const hits = q ? LISTS[inp.dataset.list].filter(o => o.includes(q)).slice(0, 5) : [];
+      panel.innerHTML = ''; hits.forEach(o => { const m = document.createElement('mat-option'); m.textContent = o; m.setAttribute('role', 'option');
+        m.addEventListener('mousedown', e => e.preventDefault());
+        m.addEventListener('click', () => { inp.value = o; inp.dataset.picked = o; show(panel, false); inp.dispatchEvent(new Event('change')); });
+        panel.appendChild(m); });
+      show(panel, hits.length > 0);
+    };
+    inp.addEventListener('input', render);
+    inp.addEventListener('blur', () => setTimeout(() => show(panel, false), 200));
+  });
+  // radios: mat-radio-button with generated ids
+  let rid = Math.floor(Math.random() * 900) + 100;
+  const radios = (group, opts) => { group.innerHTML = ''; opts.forEach(([v, t]) => {
+    const b = document.createElement('mat-radio-button'); const id = 'mat-radio-' + (rid++) + '-input';
+    b.innerHTML = `<input type="radio" id="${id}" value="${v}"><label for="${id}">${t}</label>`;
+    b.querySelector('input').name = 'r_' + (group.dataset.radio || 'arrival');   // not the summary's names
+    b.addEventListener('click', e => { if (e.target.tagName !== 'INPUT') b.querySelector('input').click(); });
+    b.querySelector('input').addEventListener('change', () => group.dispatchEvent(new CustomEvent('pick', {detail: v})));
+    group.appendChild(b); }); };
+  $$('mat-radio-group[data-radio]').forEach(g => radios(g, g.dataset.opts.split(',').map(x => x.split(':'))));
+  const MON = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
+  const dmy = d => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  radios($('#arrivalDates'), [0, 1, 2].map(n => { const d = new Date(); d.setDate(d.getDate() + n);
+    return [dmy(d), `${String(d.getDate()).padStart(2, '0')} ${MON[d.getMonth()]} ${d.getFullYear()}`]; }));
+  const picked = name => { const r = $$(`input[type=radio][name="r_${name}"]`).find(x => x.checked); return r ? r.value : ''; };
+  // dates: three boxes that take key presses (digits only); the value is d/m/yyyy in a hidden aggregate
+  $$('.date[data-date]').forEach(box => {
+    box.innerHTML = `<input type="text" id="traveller-0-input-day" maxlength="2" placeholder="DD"> /
+      <input type="text" id="traveller-0-input-month" maxlength="2" placeholder="MM"> /
+      <input type="text" class="y" id="traveller-0-input-year" maxlength="4" placeholder="YYYY">
+      <input type="hidden" id="traveller-0-input-${box.dataset.date}">`;
+    box.querySelectorAll('input[type=text]').forEach(i => i.addEventListener('keydown', e => {
+      if (e.key.length === 1 && !/\d/.test(e.key)) e.preventDefault(); }));
+  });
+  const dateOf = key => { const b = $(`.date[data-date="${key}"]`); const [d, m, y] = [...b.querySelectorAll('input[type=text]')].map(i => i.value.trim());
+    return d && m && y.length === 4 ? `${d.padStart(2, '0')}/${m.padStart(2, '0')}/${y}` : ''; };
+  // fields that appear after a choice
+  document.querySelector('[data-radio="q44"]').addEventListener('pick', e => { show($('#q45'), e.detail === 'N'); show($('#q46'), e.detail === 'Y'); });
+  document.querySelector('[data-radio="mode"]').addEventListener('pick', e => { show($('#air'), e.detail === 'A'); if (e.detail !== 'A') show($('#commercial'), false); });
+  document.querySelector('[data-radio="airType"]').addEventListener('pick', e => show($('#commercial'), e.detail === 'CA'));
+  document.querySelector('[data-radio="accommodation"]').addEventListener('pick', e => { show($('#hotel'), e.detail === 'H'); show($('#residential'), e.detail === 'P'); });
+  $('#sameAsLast').addEventListener('change', e => { if (e.target.checked) { const l = $('#traveller-0-input-lastCity');
+    const n = $('#traveller-0-input-nextCity'); n.value = l.value; n.dataset.picked = l.dataset.picked || ''; } });
+  $('#traveller-0-input-flightNumber').addEventListener('keydown', e => { if (e.key.length === 1 && !/\d/.test(e.key)) e.preventDefault(); });
+
+  const step = n => { $$('section[data-step]').forEach(s => show(s, +s.dataset.step === n)); $$('.stepper span').forEach(s => s.classList.toggle('on', +s.dataset.s === n));
+    history.replaceState(null, '', location.pathname + (n === 3 ? '#review' : '')); };
+  const atReview = location.hash === '#review';   // read before step(1) rewrites the address
+  if (/\/fvipa\/submit$/.test(location.pathname)) { openForm(); if (atReview) step(3); }
+  // Next never blocks (the real form shows its errors; the user fixes them before Submit)
+  $('#next1').addEventListener('click', () => step(2));
+  $('#back2').addEventListener('click', () => step(1));
+  $('#next2').addEventListener('click', () => { review(); step(3); });
+  $('#edit').addEventListener('click', () => step(1));
+  $('#declaration').addEventListener('change', e => { $('#submit').disabled = !e.target.checked; });
+
+  const ADJ = {AUSTRALIAN: 'AUS', BRITISH: 'GBR', AMERICAN: 'USA', CANADIAN: 'CAN', CHINESE: 'CHN', MALAYSIAN: 'MYS', JAPANESE: 'JPN',
+               'NEW ZEALANDER': 'NZL', INDIAN: 'IND', INDONESIAN: 'IDN', THAI: 'THA', FILIPINO: 'PHL', VIETNAMESE: 'VNM', FRENCH: 'FRA', GERMAN: 'DEU'};
+  const val = id => ($('#traveller-0-input-' + id) || {}).value || '';
+  const lookup = id => ($('#traveller-0-input-' + id) || {dataset: {}}).dataset.picked || '';
+  const city = v => (v.split(',').pop() || '').trim();
+  const summary = () => {
+    const acc = picked('accommodation'), code = lookup('flightCode').match(/\(([A-Z0-9]{2})\)/);
+    return {
+      name: val('fullName').toUpperCase(), sex: {F: 'F', M: 'M', O: 'X'}[picked('sex')] || '', dob: dateOf('dateOfBirth'),
+      nationality: ADJ[lookup('nationality')] || '', passport_no: val('passportNumber'), passport_expiry: dateOf('dateOfPassportExpiry'),
+      email: val('emailAddress').toLowerCase(), phone: lookup('countryCode') ? '+' + lookup('countryCode') + ' ' + val('mobileNumber') : val('mobileNumber'),
+      mode: {A: 'AIR', L: 'LAND', S: 'SEA'}[picked('mode')] || '', flight_no: code ? code[1] + ' ' + val('flightNumber') : '',
+      arrival_date: picked('arrival'), last_city: city(lookup('lastCity')), next_city: city(lookup('nextCity')),
+      departure_date: dateOf('dateOfDeparture'), purpose: lookup('purposeOfTravel'),
+      accom_type: {H: 'HOTEL', P: 'OWN', TRANSIT: 'TRANSIT', DAY_TRIP: 'DAY_TRIP'}[acc] || '',
+      accommodation: acc === 'H' ? lookup('nameOfHotel') : acc === 'P' ? [val('postalCode'), val('blockNumber'), val('streetName')].filter(Boolean).join(' ') : '',
+      h_symptoms: {Y: 'Yes', N: 'No'}[picked('q44')] || '', h_travel: {Y: 'Yes', N: 'No'}[picked('q45') || picked('q46')] || '',
+      d_names: {Y: 'Yes', N: 'No'}[picked('differentName')] || '',
+    };
+  };
+  const review = () => { const s = summary(); $('#review').innerHTML = Object.entries(s).filter(([k]) => k !== 'passport_no')
+    .map(([k, v]) => `<dt>${k.replace(/_/g, ' ')}</dt><dd>${v || '—'}</dd>`).join(''); };
+  $('#sgac').addEventListener('submit', () => { const s = summary(); for (const [k, v] of Object.entries(s)) { const i = document.querySelector(`input[name="${k}"]`); if (i) i.value = v; } });
+})();
+</script>
 </body></html>

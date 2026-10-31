@@ -1,8 +1,10 @@
 ---
 name: csr-trip-claim
-description: 用 Chase Sapphire Reserve（或 Preferred）刷的机票/酒店/行程，因生病、受伤等原因没去成或中途中断：判断该报行程取消还是行程中断、20 天/90 天时限、先向航空公司要退款和书面说明、医生证明、在 chasecardbenefits.com 立案（登录和最终提交交给用户）、整理理赔材料包 PDF、设提醒 Trip cancellation / interruption claim on the Chase Sapphire Reserve (or Preferred) card — you fell sick or were hurt and missed a flight, hotel or tour paid with the card: which benefit applies, the 20-day and 90-day clocks, the airline refund and letter first, the physician statement, the claim started at chasecardbenefits.com (login and final submit are the user's), a claim packet PDF, and reminders until it is paid.
+description: 用 Chase Sapphire Reserve（或 Preferred）刷的机票/酒店/行程，因生病、受伤等原因没去成或中途中断：判断该报行程取消还是行程中断、20 天/90 天时限、先向航空公司要退款和书面说明、医生证明、在理赔管理方的 eClaimsLine（www.eclaimsline.com）立案（登录和最终提交交给用户）、整理理赔材料包 PDF、设提醒 Trip cancellation / interruption claim on the Chase Sapphire Reserve (or Preferred) card — you fell sick or were hurt and missed a flight, hotel or tour paid with the card: which benefit applies, the 20-day and 90-day clocks, the airline refund and letter first, the physician statement, the claim started on the administrator's eClaimsLine portal, www.eclaimsline.com (login and final submit are the user's), a claim packet PDF, and reminders until it is paid.
 
 plan: on
+form: on
+form_kind: claim
 ---
 # Chase Sapphire trip cancellation / interruption claim / Sapphire 卡行程保险理赔
 
@@ -42,7 +44,10 @@ Say which one applies in the first line of the answer and file only that one.
   the card pays what the others do not).
 - calendar_list_events around the departure; profile_get (name, address, phone, email as the administrator wants them).
 - Then the arithmetic with `calculate`: paid − refunded or credited = the amount to claim, per traveller; cap
-  $10,000 per traveller, $20,000 per trip, $40,000 per 12 months.
+  $10,000 per traveller, $20,000 per trip, $40,000 per 12 months. Trip Interruption: the unrefunded prepaid nights and
+  fares **plus** a change fee or fare difference already charged to fly home early — claimed now, in the form's amount,
+  even while a waiver or the original ticket's refund is still being asked for (a later refund is reported to the
+  administrator).
 
 ## 4. The airline (or hotel / tour) first
 The insurance pays only what the supplier does not refund. Before or alongside the claim:
@@ -67,13 +72,20 @@ The insurance pays only what the supplier does not refund. Before or alongside t
 - For a companion or family member: their physician statement and the relationship.
 
 ## 6. Start the claim (the administrator's portal or the phone)
-- Online: browser_navigate to **chasecardbenefits.com** (Card Benefit Services' eClaims). Flow: register or sign in
-  with the card → "File a claim" → the card → "Trip Cancellation" (or "Trip Interruption") → the questions (loss date,
-  reason, travellers, suppliers, amounts) → a **claim number** → upload the documents (or email / fax them later with the
-  claim number on every page). Fill what is known from step 3; the card number only through browser_fill_secret from
-  the Vault (approval). **The sign-in and the final submission are the user's**: when the form is complete, or when
-  the portal asks for a login, password, one-time code or the card's security code, browser_request_takeover with
-  the reason ("review the claim and press Submit"; "sign in"). Never press Submit yourself.
+- Online: browser_navigate to **https://www.eclaimsline.com** (Card Benefit Services' eClaimsLine, where
+  chasecardbenefits.com sends Chase cardholders). The "File a claim" form: cardholder name, email, phone, the card
+  (product) and its last 4 digits (from the charge in mail — not a secret), the benefit (Trip Cancellation or Trip
+  Interruption — the one from step 1), the date of loss, the amount claimed (the `calculate` result, plain digits like
+  1753.60), the reason in general terms ("sickness of the cardholder", never the diagnosis) and the supplier and booking
+  reference. Fill every field you know from step 3 and choose the selects with browser_select; a full card number only
+  through browser_fill_secret from the Vault (a card saved by name only has none — leave it to the user). **The
+  sign-in and the final submission are the user's**: once the form is filled, or when the portal asks for a login,
+  password, one-time code or the card's security code, browser_request_takeover with the reason ("review the claim and
+  press Submit"; "sign in"). This hand-over is required, not optional: a filled form the user is only told about in
+  the answer cannot be found by them — call browser_request_takeover on the filled page and write the answer after
+  the hand-back. Never press Submit yourself, and never say the claim was submitted — after the hand-back,
+  say the form is filled and waiting for the user's Submit (or, if the page now shows a claim number, that the user
+  submitted it and what the number is).
 - By phone, or when the portal blocks automation: Sapphire Reserve 1-800-350-1697, Sapphire Preferred 1-800-350-1362
   (US; collect from abroad at the number in the Guide to Benefits). The administrator asks a few questions and sends
   the claim form and the physician statement. phone_call only if configured and the user asks.
@@ -100,6 +112,8 @@ Send it to the chat; the user attaches it when uploading.
   pre-existing condition, trip over 60 days, missing airline letter) and draft the appeal with the missing proof.
 
 ## 9. Answer
+Only after the portal step ended in browser_request_takeover and the user handed the browser back (or the portal
+could not be reached — then say so and give the phone number).
 First line: the benefit that applies and the two dates (notify by …, documents by …). Then the amount to claim and how
 it was computed, what the airline is being asked for, the documents the user must get (doctor, airline) with the
 status of each, how the claim is being started (portal step reached / phone), the claim number if any, the packet,
@@ -112,6 +126,8 @@ before booking), voluntary changes of plan, travel against medical advice and tr
 - Covered: prepaid non-refundable fares, hotels, tours and other common-carrier travel paid wholly or partly with the
   card or with Ultimate Rewards from the account; newer Guides limit the payout to the amount actually charged to the
   card / redeemed in points.
+- Trip Interruption also covers the change fee or fare difference paid to return home early (the airline's charge to
+  move the flight): add it to the claimed amount with the unrefunded prepaid nights and fares.
 - Covered reasons include sickness, injury or death of the cardholder, a travelling companion or an immediate family
   member; physician-imposed quarantine; severe weather; jury duty or a subpoena; a terrorist action or hijacking.
 - Excluded: pre-existing conditions (advice, diagnosis or treatment in the 60 days before the booking), a change of

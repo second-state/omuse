@@ -632,12 +632,21 @@ impl ICalFeed {
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or("(无标题 no title)");
-        json!({
+        let mut v = json!({
             "id": format!("{}@{}", e.uid.as_deref().unwrap_or(""), b.astimezone(PyTz::UTC).strftime("%Y%m%dT%H%M%SZ")),
             "title": title, "start": self.fmt(b, e.all_day), "end": self.fmt(f, e.all_day), "all_day": e.all_day,
             "location": e.text("location"), "status": e.text("status").to_lowercase(), "organizer": e.text("organizer"),
             "attendees": e.attendees, "meeting_link": "", "description": take_chars(e.text("description"), 1500), "link": e.text("url"),
-        })
+        });
+        // an event kept in its own zone (DTSTART;TZID=Asia/Tokyo) also gives its local time there: start / end are in
+        // the calendar's zone, and a Tokyo meeting at 16:30 must not read as 15:30 (2026-10-30, trip_hotel_real)
+        let own = b.tz().name();
+        if !e.all_day && own != self.z().name() {
+            v["event_time_zone"] = json!(own);
+            v["local_start"] = json!(format!("{} {own}", b.strftime("%Y-%m-%d %H:%M")));
+            v["local_end"] = json!(format!("{} {own}", f.strftime("%Y-%m-%d %H:%M")));
+        }
+        v
     }
 
     /// Events between `time_min` (default now) and `time_max` (default +7 days); cancelled ones dropped.
@@ -664,7 +673,12 @@ impl ICalFeed {
             end = start.add(Duration::days(1));
         }
         let (_, events) = self.load().await?;
-        let q = query.to_lowercase();
+        // any of the words ("Tokyo OR 東京 meeting"): a plain substring of the whole query matched nothing
+        let lowq = query.to_lowercase();
+        let terms: Vec<&str> = lowq
+            .split(|c: char| c.is_whitespace() || c == '|' || c == ',')
+            .filter(|w| !w.is_empty() && *w != "or" && *w != "and")
+            .collect();
         let cap = clamp_results(max_results);
         let mut items = Vec::new();
         for (b, f, i) in expand(events, start, end, 2000) {
@@ -672,16 +686,14 @@ impl ICalFeed {
             if e.text("status").to_uppercase() == "CANCELLED" {
                 continue;
             }
-            if !q.is_empty()
-                && !format!(
-                    "{} {} {}",
-                    e.text("summary"),
-                    e.text("location"),
-                    e.text("description")
-                )
-                .to_lowercase()
-                .contains(&q)
-            {
+            let hay = format!(
+                "{} {} {}",
+                e.text("summary"),
+                e.text("location"),
+                e.text("description")
+            )
+            .to_lowercase();
+            if !terms.is_empty() && !terms.iter().any(|t| hay.contains(t)) {
                 continue;
             }
             items.push(self.event(&b, &f, e));
@@ -911,6 +923,49 @@ END:VCALENDAR\r\n";
         assert!(titles.contains(&("2026-10-07".into(), "Public holiday".into())));
         assert_eq!(r["events"][0]["id"], json!("wk1@20261005T020000Z"));
         assert_eq!(r["calendar"], json!("iCal (read-only)"));
+        // any word of the query: "Tokyo OR dentist" finds the dentist (a plain substring found nothing)
+        let q = f
+            .list_events(
+                &json!("2026-10-05"),
+                &json!("2026-10-20"),
+                "Tokyo OR dentist",
+                "primary",
+                25,
+            )
+            .await
+            .unwrap();
+        let qt: Vec<&str> = q["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(qt, ["Dentist"]);
+        // an event in its own zone keeps its local time beside the calendar's: the Singapore sync read from Tokyo
+        let tokyo = feed(FEED, "Asia/Tokyo");
+        let r = tokyo
+            .list_events(
+                &json!("2026-10-05"),
+                &json!("2026-10-06"),
+                "sync",
+                "primary",
+                25,
+            )
+            .await
+            .unwrap();
+        let ev = &r["events"][0];
+        assert_eq!(
+            (
+                ev["start"].as_str(),
+                ev["local_start"].as_str(),
+                ev["event_time_zone"].as_str()
+            ),
+            (
+                Some("2026-10-05 11:00"),
+                Some("2026-10-05 10:00 Asia/Singapore"),
+                Some("Asia/Singapore")
+            )
+        );
         let fs = f
             .free_slots(
                 &json!("2026-10-05 09:00"),

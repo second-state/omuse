@@ -15,7 +15,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 79500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "other": 1.0,
@@ -57,7 +57,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/rewards-credit-cards/sapphire/reserve",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -71,7 +73,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "gas": 3.0,
@@ -111,7 +113,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -123,7 +127,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "dining": 3.0,
     "drugstore": 3.0,
@@ -148,7 +152,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://sites.chase.com/services/creatives/pricingandterms.html/content/dam/pricingandterms/LGC61498.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -160,7 +166,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "drugstore": 3.0,
@@ -204,7 +210,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/cash-back-credit-cards/freedom/flex",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -216,7 +224,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "dining": 3.0,
     "other": 1.5,
@@ -239,7 +247,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://sites.chase.com/services/creatives/pricingandterms.html/content/dam/pricingandterms/LGC65397.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -254,7 +264,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "gas": 2.0,
@@ -287,7 +297,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -299,7 +311,7 @@
    "unit": "miles",
    "point_value_cents": 1.2,
    "annual_fee_cents": 15000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "other": 1.0,
@@ -322,7 +334,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -334,7 +348,7 @@
    "unit": "miles",
    "point_value_cents": 1.2,
    "annual_fee_cents": 35000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "other": 1.0,
@@ -359,7 +373,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -373,7 +389,7 @@
    "unit": "points",
    "point_value_cents": 1.25,
    "annual_fee_cents": 22900,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "gas": 2.0,
@@ -402,7 +418,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -416,7 +434,7 @@
    "unit": "points",
    "point_value_cents": 1.2,
    "annual_fee_cents": 9900,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "gas": 2.0,
     "groceries": 2.0,
@@ -454,7 +472,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://sites.chase.com/services/creatives/pricingandterms.html/content/dam/pricingandterms/LGC64433.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -466,7 +486,7 @@
    "unit": "points",
    "point_value_cents": 0.7,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "gas": 3.0,
@@ -506,7 +526,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -518,7 +540,7 @@
    "unit": "points",
    "point_value_cents": 0.8,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "groceries": 2.0,
@@ -549,7 +571,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -561,7 +585,7 @@
    "unit": "points",
    "point_value_cents": 1.6,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "entertainment": 2.0,
@@ -588,7 +612,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -600,7 +626,7 @@
    "unit": "points",
    "point_value_cents": 0.6,
    "annual_fee_cents": 9900,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 5.0,
     "gas": 5.0,
@@ -627,7 +653,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -639,7 +667,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "online_retail": 3.0,
     "other": 1.0,
@@ -679,7 +707,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -691,7 +721,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "dining": 2.0,
     "gas": 2.0,
@@ -737,7 +767,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://sites.chase.com/services/creatives/pricingandterms.html/content/dam/pricingandterms/LGC63827.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -749,7 +781,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "other": 1.5,
     "transit": 5.0
@@ -770,7 +802,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://sites.chase.com/services/creatives/pricingandterms.html/content/dam/pricingandterms/LGC63749.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Chase",
@@ -782,7 +816,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 4900,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "dining": 2.0,
     "entertainment": 2.0,
@@ -811,7 +845,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://disneyrewards.com/faq/general-questions/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -826,7 +862,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 89500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 1.0,
     "travel": 5.0
@@ -852,7 +888,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.americanexpress.com/us/credit-cards/card/platinum/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -867,7 +905,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 32500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 4.0,
     "groceries": 4.0,
@@ -901,7 +939,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.americanexpress.com/us/credit-cards/card/gold-card/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -915,7 +955,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 15000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "other": 1.0,
@@ -940,7 +980,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.americanexpress.com/us/credit-cards/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -954,7 +996,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 2.7,
    "rules": {
     "gas": 3.0,
     "groceries": 6.0,
@@ -986,7 +1028,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Blue_Cash_Preferred_Card_Cardmember_Agreement-255457.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1000,7 +1044,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 2.7,
    "rules": {
     "gas": 3.0,
     "groceries": 3.0,
@@ -1038,7 +1082,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Blue_Cash_Everyday_Card_Cardmember_Agreement-255458.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1052,7 +1098,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 2.7,
    "rules": {
     "groceries": 2.0,
     "other": 1.0,
@@ -1080,7 +1126,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Amex_EveryDay_Card_Cardmember_Agreement-255461.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1094,7 +1142,7 @@
    "unit": "miles",
    "point_value_cents": 1.0,
    "annual_fee_cents": 15000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "groceries": 2.0,
@@ -1119,7 +1167,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Delta_Skymiles_Gold_American_Express_Card_Cardmember_Agreement-255455.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1133,7 +1183,7 @@
    "unit": "miles",
    "point_value_cents": 1.2,
    "annual_fee_cents": 35000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "groceries": 2.0,
@@ -1158,7 +1208,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Delta_SkyMiles_Platinum_American_Express_Card_Cardmember_Agreement-255454.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1172,7 +1224,7 @@
    "unit": "miles",
    "point_value_cents": 1.2,
    "annual_fee_cents": 65000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 1.0,
     "travel": 3.0
@@ -1193,7 +1245,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Delta_SkyMiles_Reserve_American_Express_Card_Cardmember_Agreement-255453.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1207,7 +1261,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 5.0,
     "gas": 5.0,
@@ -1234,7 +1288,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.americanexpress.com/us/credit-cards/card/hilton-honors/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1246,7 +1302,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 15000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 6.0,
     "gas": 6.0,
@@ -1275,7 +1331,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.americanexpress.com/us/credit-cards/card/hilton-honors-surpass/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1287,7 +1345,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 55000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 7.0,
     "other": 3.0,
@@ -1310,7 +1368,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.americanexpress.com/us/credit-cards/card/hilton-honors-aspire/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1322,7 +1382,7 @@
    "unit": "points",
    "point_value_cents": 0.75,
    "annual_fee_cents": 65000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "other": 2.0,
@@ -1345,7 +1405,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.americanexpress.com/us/credit-cards/card/marriott-bonvoy-brilliant/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1357,7 +1419,7 @@
    "unit": "points",
    "point_value_cents": 0.7,
    "annual_fee_cents": 25000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 4.0,
     "groceries": 4.0,
@@ -1391,7 +1453,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.americanexpress.com/us/credit-cards/card/marriott-bonvoy-bevy/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1406,7 +1470,7 @@
    "unit": "points",
    "point_value_cents": 0.79,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 2.0,
     "travel": 6.0
@@ -1427,7 +1491,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Marriott_Bonvoy_American_Express_Card_Cardmember_Agreement-255449.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1441,7 +1507,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 2.7,
    "rules": {
     "other": 2.0
    },
@@ -1465,7 +1531,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.americanexpress.com/us/credit-cards/business/business-credit-cards/american-express-blue-business-plus-credit-card-amex/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1477,7 +1545,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 37500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 4.0,
     "gas": 4.0,
@@ -1529,7 +1597,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.americanexpress.com/us/credit-cards/business/business-credit-cards/american-express-business-gold-card-amex/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -1541,7 +1611,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 2.7,
    "rules": {
     "other": 1.5
    },
@@ -1560,7 +1630,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/American_Express_Cash_Magnet_Card_Cardmember_Agreement-255462.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -1574,7 +1646,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "other": 2.0,
     "travel": 2.0
@@ -1595,7 +1667,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./Citi_Double_Cash_Pricing_and_Information_Table-256158.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -1607,7 +1681,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "dining": 5.0,
     "drugstore": 5.0,
@@ -1675,7 +1749,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://wallethub.com/edu/cc/citi-custom-cash-review/93984",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -1691,7 +1767,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "gas": 3.0,
@@ -1718,7 +1794,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./Citi_Strata_Premier_Pricing_and_Information_Table-256156.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -1732,7 +1810,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 49500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 5.0,
     "entertainment": 1.0,
@@ -1757,7 +1835,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://upgradedpoints.com/credit-cards/reviews/citi-prestige-card/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -1769,7 +1849,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "dining": 2.0,
     "entertainment": 3.0,
@@ -1805,7 +1885,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://upgradedpoints.com/credit-cards/reviews/citi-rewards-card-review",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -1817,7 +1899,7 @@
    "unit": "miles",
    "point_value_cents": 1.4,
    "annual_fee_cents": 9900,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "gas": 2.0,
@@ -1842,7 +1924,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./AAdvantage_Platinum_Select_World_Elite_Pricing_and_Information_Table-256182.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -1854,7 +1938,7 @@
    "unit": "miles",
    "point_value_cents": 1.7,
    "annual_fee_cents": 69500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 1.0,
     "travel": 4.0
@@ -1875,7 +1959,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./AAdvantage_Executive_World_Elite_Pricing_and_Information_Table-256184.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -1889,7 +1975,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "gas": 4.0,
@@ -1921,7 +2007,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./Costco_Anywhere_Visa_Pricing_and_Information_Table-256178.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -1933,7 +2021,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "other": 0.01
    },
@@ -1952,7 +2040,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./Citi_Simplicity_Pricing_and_Information_Table-256162.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -1964,7 +2054,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "other": 0.01
    },
@@ -1983,7 +2073,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./Citi_Diamond_Preferred_Pricing_and_Information_Table-256166.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Capital One",
@@ -1997,7 +2089,7 @@
    "unit": "miles",
    "point_value_cents": 1.0,
    "annual_fee_cents": 39500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 2.0,
     "travel": 2.0
@@ -2018,7 +2110,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.capitalone.com/credit-cards/venture-x/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Capital One",
@@ -2032,7 +2126,7 @@
    "unit": "miles",
    "point_value_cents": 1.0,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 2.0
    },
@@ -2051,7 +2145,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.capitalone.com/credit-cards/venture/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Capital One",
@@ -2063,7 +2159,7 @@
    "unit": "miles",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 1.25
    },
@@ -2082,7 +2178,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.capitalone.com/credit-cards/ventureone/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Capital One",
@@ -2097,7 +2195,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "entertainment": 3.0,
@@ -2124,7 +2222,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.capitalone.com/credit-cards/savor/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Capital One",
@@ -2138,7 +2238,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "entertainment": 1.5,
     "other": 1.5,
@@ -2161,7 +2261,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.capitalone.com/credit-cards/quicksilver/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Capital One",
@@ -2173,7 +2275,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 0.01
    },
@@ -2192,7 +2294,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.capitalone.com/credit-cards/platinum/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Capital One",
@@ -2204,7 +2308,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 15000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 2.0
    },
@@ -2223,7 +2327,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.capitalone.com/small-business/credit-cards/spark-cash-plus/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Bank of America",
@@ -2237,7 +2343,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "dining": 3.0,
     "drugstore": 3.0,
@@ -2305,7 +2411,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://wallethub.com/d/bankamericard-cash-back-credit-card-128c",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Bank of America",
@@ -2319,7 +2427,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "other": 1.5
    },
@@ -2338,7 +2446,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://wallethub.com/edu/cc/bank-of-america-unlimited-cash-rewards-credit-card-review/96055",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Bank of America",
@@ -2350,7 +2460,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 1.5,
     "travel": 1.5
@@ -2371,7 +2481,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.bankofamerica.com/credit-cards/no-foreign-transaction-fee-credit-cards/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Bank of America",
@@ -2383,7 +2495,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "entertainment": 2.0,
@@ -2410,7 +2522,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.bankofamerica.com/credit-cards/no-foreign-transaction-fee-credit-cards/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Bank of America",
@@ -2422,7 +2536,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "entertainment": 2.0,
@@ -2449,7 +2563,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.bankofamerica.com/credit-cards/no-foreign-transaction-fee-credit-cards/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Bank of America",
@@ -2463,7 +2579,7 @@
    "unit": "points",
    "point_value_cents": 1.55,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "gas": 2.0,
     "other": 1.0,
@@ -2492,7 +2608,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.bankofamerica.com/credit-cards/no-foreign-transaction-fee-credit-cards/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Wells Fargo",
@@ -2506,7 +2624,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "other": 2.0
    },
@@ -2525,7 +2643,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.wellsfargo.com/credit-cards/active-cash/terms/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Wells Fargo",
@@ -2539,7 +2659,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "gas": 3.0,
@@ -2570,7 +2690,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://wallethub.com/answers/cc/wells-fargo-foreign-transaction-fee-1000339-2140661946/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Wells Fargo",
@@ -2582,7 +2704,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "other": 1.0,
@@ -2605,7 +2727,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://wallethub.com/answers/cc/wells-fargo-foreign-transaction-fee-1000339-2140661946/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Wells Fargo",
@@ -2617,7 +2741,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "other": 0.01
    },
@@ -2636,47 +2760,9 @@
    ],
    "verified_at": "2026-08-25",
    "verified": true,
-   "source": ""
-  },
-  {
-   "issuer": "Wells Fargo",
-   "product": "Bilt Mastercard",
-   "aliases": [
-    "Bilt",
-    "Bilt World Elite Mastercard"
-   ],
-   "region": "US",
-   "currency": "USD",
-   "network": "Mastercard",
-   "unit": "points",
-   "point_value_cents": 1.25,
-   "annual_fee_cents": 0,
-   "fx_fee_pct": null,
-   "rules": {
-    "dining": 3.0,
-    "other": 1.0,
-    "transit": 3.0,
-    "travel": 2.0
-   },
-   "caps": {},
-   "merchant_rules": [],
-   "rule_notes": {
-    "dining": "Former 3x dining rule; card retired after 2026-02-06. Required at least 5 transactions per statement period for normal earnings. 1.25 cents/point is a fair working estimate; Bilt says value varies by redemption and publi",
-    "other": "Former 1x base rate on other qualifying purchases; card retired after 2026-02-06. Normal earnings required at least 5 transactions per statement period; otherwise the statement period earned only a flat 250 points for an",
-    "transit": "Former 3x card earn applied only to eligible Lyft rides, bikes, and scooters; folded into transit. Linked Bilt+Lyft accounts could separately earn 2x more on eligible rideshare (up to 5x total). This Lyft card earn did n",
-    "travel": "Former 2x direct-travel rule for airlines, hotels, motels, resorts, cruise lines, and car-rental agencies; several travel-like MCCs were excluded. Card retired after 2026-02-06; normal earnings required at least 5 transa"
-   },
-   "benefits": [
-    "FORMER BENEFIT — ended when the Wells Fargo Bilt Mastercard was retired after 2026-02-06: 1 Bilt Point per $1 of eligible rent paid through Bilt, capped at 100,",
-    "FORMER BENEFIT — ended with card retirement after 2026-02-06: cellular telephone protection when the monthly wireless bill was paid with the card; up to $800 pe",
-    "FORMER BENEFIT — ended with card retirement after 2026-02-06: purchase security for eligible items damaged or stolen within 90 days, up to $10,000 per item and ",
-    "FORMER BENEFIT — ended with card retirement after 2026-02-06: auto rental collision damage waiver up to $50,000 for eligible rentals of at most 31 consecutive d",
-    "FORMER BENEFIT — ended with card retirement after 2026-02-06: trip cancellation/interruption reimbursement for covered reasons, up to $5,000 per covered travele",
-    "FORMER BENEFIT — ended with card retirement after 2026-02-06: secondary trip-delay reimbursement after a delay of at least 6 hours; up to $200 per day per cover"
-   ],
-   "verified_at": "2026-08-26",
-   "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://wallethub.com/answers/cc/wells-fargo-foreign-transaction-fee-1000339-2140661946/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Discover",
@@ -2691,7 +2777,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "drugstore": 5.0,
     "gas": 5.0,
@@ -2735,7 +2821,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://cardcritics.com/credit-cards/card-issuer/discover/does-the-discover-card-have-foreign-transaction-fees",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Discover",
@@ -2749,7 +2837,7 @@
    "unit": "miles",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 1.5
    },
@@ -2768,7 +2856,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://cardcritics.com/credit-cards/card-issuer/discover/does-the-discover-card-have-foreign-transaction-fees",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Discover",
@@ -2780,7 +2870,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "entertainment": 1.0,
@@ -2816,7 +2906,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://cardcritics.com/credit-cards/card-issuer/discover/does-the-discover-card-have-foreign-transaction-fees",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "U.S. Bank",
@@ -2830,7 +2922,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 40000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 1.0,
     "transit": 3.0,
@@ -2853,7 +2945,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://mybanktracker.com/credit-cards/expert-reviews/us-bank-altitude-reserve-card-review-292003",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "U.S. Bank",
@@ -2867,7 +2961,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "dining": 4.0,
     "gas": 2.0,
@@ -2899,7 +2993,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://wallethub.com/d/u-s-bank-altitude-go-visa-signature-card-3275c",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "U.S. Bank",
@@ -2911,7 +3007,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "gas": 4.0,
@@ -2947,7 +3043,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.usbank.com/credit-cards/altitude-connect-visa-signature-credit-card.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "U.S. Bank",
@@ -2962,7 +3060,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "dining": 5.0,
     "entertainment": 5.0,
@@ -3022,7 +3120,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://wallethub.com/answers/cc/us-bank-foreign-transaction-fee-2140666964/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "U.S. Bank",
@@ -3036,7 +3136,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "insurance": 2.0,
     "other": 2.0
@@ -3056,7 +3156,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.bankrate.com/credit-cards/reviews/us-bank-smartly-visa-signature-card",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Barclays",
@@ -3068,7 +3170,7 @@
    "unit": "points",
    "point_value_cents": 1.4,
    "annual_fee_cents": 9900,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "groceries": 2.0,
@@ -3093,7 +3195,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.gobankingrates.com/credit-cards/airline/jetblue-plus-card-review/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Barclays",
@@ -3107,7 +3211,7 @@
    "unit": "miles",
    "point_value_cents": 1.4,
    "annual_fee_cents": 9900,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 1.0,
     "travel": 2.0
@@ -3128,7 +3232,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://creditcards.aa.com/barclay-credit-card-aviator-red-american-airlines-aadvantage",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Barclays",
@@ -3140,7 +3246,7 @@
    "unit": "points",
    "point_value_cents": 0.7,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 4.0,
     "gas": 4.0,
@@ -3169,7 +3275,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://awardwallet.com/credit-cards/wyndham-rewards/earner-plus-credit-card/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Barclays",
@@ -3181,7 +3289,7 @@
    "unit": "points",
    "point_value_cents": 1.55,
    "annual_fee_cents": 9900,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "gas": 2.0,
@@ -3208,7 +3316,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://yourmileagemayvary.com/2026/10/01/hawaiian-airlines-card-atmos-rewards/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Goldman Sachs",
@@ -3222,7 +3332,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 1.0
    },
@@ -3241,7 +3351,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://learn.applecard.apple/transition",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Synchrony",
@@ -3255,7 +3367,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "groceries": 5.0,
     "online_retail": 5.0,
@@ -3277,7 +3389,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "Google search via SerpApi, 2026-10-31: Smart Card Rewards 'Amazon Store Card Review 2026' — closed-loop card usable only at Amazon, so no foreign transaction fee applies",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Synchrony",
@@ -3291,7 +3405,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "other": 1.5
    },
@@ -3310,7 +3424,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://finance.yahoo.com/personal-finance/paypal-credit-card-review-203755628.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Synchrony",
@@ -3322,7 +3438,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "gas": 5.0,
@@ -3354,7 +3470,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.supermoney.com/reviews/personal-credit-cards/sams-club-mastercard?prodpage=1",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Navy Federal",
@@ -3368,7 +3486,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 1.5
    },
@@ -3387,7 +3505,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.navyfederal.org/loans-cards/credit-cards.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Navy Federal",
@@ -3401,7 +3521,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "gas": 3.0,
@@ -3428,7 +3548,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.navyfederal.org/loans-cards/credit-cards.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Navy Federal",
@@ -3440,7 +3562,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 4900,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "entertainment": 3.0,
     "other": 2.0,
@@ -3465,7 +3587,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.navyfederal.org/loans-cards/credit-cards.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "USAA",
@@ -3477,7 +3601,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 1.5
    },
@@ -3496,7 +3620,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.visa.com/en-us/card-finder/credit-card/usaa",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "USAA",
@@ -3508,7 +3634,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 0.01
    },
@@ -3527,7 +3653,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.visa.com/en-us/card-finder/credit-card/usaa",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "PenFed",
@@ -3541,7 +3669,7 @@
    "unit": "points",
    "point_value_cents": 0.85,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 3.0,
     "gas": 5.0,
@@ -3570,7 +3698,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://dealspoints.com/penfed-platinum-rewards/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "PenFed",
@@ -3582,7 +3712,7 @@
    "unit": "points",
    "point_value_cents": 0.85,
    "annual_fee_cents": 9500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "other": 1.5,
@@ -3605,7 +3735,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://maxrewards.com/credit-cards/penfed-pathfinder-rewards-visa",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Fidelity",
@@ -3620,7 +3752,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 2.0
    },
@@ -3639,7 +3771,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.fidelity.com/cash-management/visa-signature-card",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Robinhood",
@@ -3653,7 +3787,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "other": 3.0
    },
@@ -3672,7 +3806,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.doctorofcredit.com/robinhood-adds-3-foreign-transaction-fee/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "SoFi",
@@ -3686,7 +3822,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.2,
    "rules": {
     "other": 2.0,
     "travel": 2.0
@@ -3707,7 +3843,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://support.sofi.com/hc/en-us/articles/360051246592-SoFi-Credit-Card-Using-Your-Card-Worldwide-Even-Abroad",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Target",
@@ -3722,7 +3860,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "online_retail": 5.0,
     "other": 0.01
@@ -3743,7 +3881,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://digitalcontent.target.com/vault/1769580000/CLOUD_d7063cdc-709f-4802-a0ed-65ebf66fc34d.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "TD Bank",
@@ -3755,7 +3895,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 3.0,
    "rules": {
     "other": 2.0
    },
@@ -3774,7 +3914,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.td.com/us/en/personal-banking/credit-cards/double-up/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "HSBC",
@@ -3788,7 +3930,7 @@
    "unit": "points",
    "point_value_cents": 1.0,
    "annual_fee_cents": 49500,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 2.0,
     "other": 1.0,
@@ -3813,7 +3955,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.us.hsbc.com/credit-cards/products/premier-elite/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -3827,7 +3971,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 2.0,
     "other": 1.0,
@@ -3850,7 +3994,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -3864,7 +4010,7 @@
    "unit": "points",
    "point_value_cents": 0.37037,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "entertainment": 8.1,
     "online_retail": 8.1,
@@ -3902,7 +4048,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -3914,7 +4062,7 @@
    "unit": "points",
    "point_value_cents": 0.37037,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "entertainment": 8.1,
     "online_retail": 8.1,
@@ -3939,7 +4087,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -3953,7 +4103,7 @@
    "unit": "miles",
    "point_value_cents": 10.0,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "other": 0.125,
     "travel": 0.25
@@ -3974,7 +4124,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -3988,7 +4140,7 @@
    "unit": "miles",
    "point_value_cents": 7.27,
    "annual_fee_cents": 380000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "other": 0.1667,
     "travel": 0.25
@@ -4009,7 +4161,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -4021,7 +4175,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "other": 5.0,
     "transit": 15.0
@@ -4042,7 +4196,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Standard Chartered",
@@ -4057,7 +4213,7 @@
    "unit": "miles",
    "point_value_cents": 10.0,
    "annual_fee_cents": 200000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 0.25,
     "other": 0.25,
@@ -4085,7 +4241,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://dcmdev.sc.com/content/dam/sc/hk/en/promotions/documents/hk-cc-cathaycard-kfs.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Standard Chartered",
@@ -4097,7 +4255,7 @@
    "unit": "miles",
    "point_value_cents": 10.0,
    "annual_fee_cents": 400000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 0.25,
     "other": 0.25,
@@ -4125,7 +4283,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://dcmdev.sc.com/content/dam/sc/hk/en/promotions/documents/hk-cc-cathaycard-kfs.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Standard Chartered",
@@ -4137,7 +4297,7 @@
    "unit": "miles",
    "point_value_cents": 10.0,
    "annual_fee_cents": 800000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 0.25,
     "other": 0.5,
@@ -4165,7 +4325,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://dcmdev.sc.com/content/dam/sc/hk/en/promotions/documents/hk-cc-cathaycard-kfs.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Standard Chartered",
@@ -4179,7 +4341,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "groceries": 0.56,
     "other": 5.0
@@ -4205,7 +4367,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://av.sc.com/hk/content/docs/hk-credit-card-key-facts-statement.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Standard Chartered",
@@ -4219,7 +4383,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 200000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "other": 1.5,
     "travel": 2.0
@@ -4240,7 +4404,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://av.sc.com/hk/content/docs/hk-credit-card-key-facts-statement.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "DBS",
@@ -4252,7 +4418,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 5.0,
     "drugstore": 5.0,
@@ -4294,7 +4460,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "DBS",
@@ -4306,7 +4474,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 200000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 5.0,
     "drugstore": 5.0,
@@ -4348,7 +4516,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "DBS",
@@ -4362,7 +4532,7 @@
    "unit": "miles",
    "point_value_cents": 10.0,
    "annual_fee_cents": 360000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "other": 0.1667,
     "travel": 0.5
@@ -4388,7 +4558,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "DBS",
@@ -4402,7 +4574,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "groceries": 8.0,
     "other": 3.0
@@ -4432,7 +4604,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "DBS",
@@ -4446,7 +4620,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 19620,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "online_retail": 6.0,
     "other": 0.3,
@@ -4481,7 +4655,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "DBS",
@@ -4493,7 +4669,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "entertainment": 5.4,
     "online_retail": 6.0,
@@ -4541,7 +4717,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "CNCBI",
@@ -4556,7 +4734,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 6.0,
     "online_retail": 6.0,
@@ -4598,7 +4776,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.cncbinternational.com/_document/personal/credit-cards/tc/Credit-Card-Fee-Schedules.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "CNCBI",
@@ -4610,7 +4790,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "online_retail": 0.4,
     "other": 0.4,
@@ -4638,7 +4818,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.cncbinternational.com/_document/personal/credit-cards/tc/Credit-Card-Fee-Schedules.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "CNCBI",
@@ -4650,7 +4832,7 @@
    "unit": "miles",
    "point_value_cents": 10.0,
    "annual_fee_cents": 200000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "online_retail": 0.25,
     "other": 0.1666667,
@@ -4673,7 +4855,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.cncbinternational.com/_document/personal/credit-cards/tc/Credit-Card-Fee-Schedules.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Mox",
@@ -4688,7 +4872,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "groceries": 3.0,
     "other": 1.0
@@ -4709,7 +4893,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://mox.com/static/260130_Mox_Credit_Key_Facts_Statement.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Mox",
@@ -4723,7 +4909,7 @@
    "unit": "miles",
    "point_value_cents": 10.0,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 0.1
    },
@@ -4742,7 +4928,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://mox.com/faqs/faq-mox-card",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "sim",
@@ -4757,7 +4945,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 80000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "drugstore": 6.0,
     "entertainment": 6.0,
@@ -4784,7 +4972,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://thesim.com/en/tnc-agreement/key-facts-statement",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "sim",
@@ -4796,7 +4986,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "online_retail": 4.0,
     "other": 8.0
@@ -4824,7 +5014,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://thesim.com/en/tnc-agreement/key-facts-statement",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "HSBC",
@@ -4838,7 +5030,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "online_retail": 4.0,
     "other": 0.4
@@ -4864,7 +5056,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "HSBC",
@@ -4878,7 +5072,7 @@
    "unit": "miles",
    "point_value_cents": 10.0,
    "annual_fee_cents": 200000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 0.5,
     "gas": 0.5,
@@ -4910,7 +5104,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "HSBC",
@@ -4922,7 +5118,7 @@
    "unit": "cashback_pct",
    "point_value_cents": 10.0,
    "annual_fee_cents": 30000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.0,
    "rules": {
     "dining": 2.4,
     "other": 2.4,
@@ -4958,7 +5154,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "HSBC",
@@ -4972,7 +5170,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 2.4,
     "drugstore": 2.4,
@@ -5052,7 +5250,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "HSBC",
@@ -5064,7 +5264,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 60000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 2.4,
     "drugstore": 2.4,
@@ -5148,7 +5348,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "HSBC",
@@ -5160,7 +5362,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 2.4,
     "other": 2.4,
@@ -5196,7 +5398,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "HSBC",
@@ -5210,7 +5414,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.0,
    "rules": {
     "dining": 2.4,
     "other": 2.4,
@@ -5246,7 +5450,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "HSBC",
@@ -5258,7 +5464,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 200000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 3.6,
     "other": 3.6,
@@ -5294,7 +5500,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Hang Seng",
@@ -5308,7 +5516,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 0.4,
     "entertainment": 8.0,
@@ -5334,7 +5542,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.hangseng.com/content/dam/hase/rwd/personal/cards/pdfs/Credit_Card_KFS.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Hang Seng",
@@ -5348,7 +5558,7 @@
    "unit": "points",
    "point_value_cents": 0.5,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "groceries": 1.0,
     "other": 2.0
@@ -5369,7 +5579,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.hangseng.com/content/dam/hase/rwd/personal/cards/pdfs/Credit_Card_KFS.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Hang Seng",
@@ -5383,7 +5595,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 5.0,
     "other": 0.4,
@@ -5406,7 +5618,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.hangseng.com/content/dam/hase/rwd/personal/cards/pdfs/Credit_Card_KFS.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Airwallex",
@@ -5418,7 +5632,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "dining": 1.0,
     "drugstore": 1.0,
@@ -5453,7 +5667,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.airwallex.com/en-hk/spend-management/cards",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -5468,7 +5684,7 @@
    "unit": "points",
    "point_value_cents": 0.3333,
    "annual_fee_cents": 950000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 2.0,
    "rules": {
     "drugstore": 9.0,
     "gas": 9.0,
@@ -5516,7 +5732,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.americanexpress.com/content/dam/amex/hk/en/staticassets/pdf/The_Platinum_KFS.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -5530,7 +5748,7 @@
    "unit": "points",
    "point_value_cents": 0.333333,
    "annual_fee_cents": 220000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 2.0,
    "rules": {
     "other": 1.0,
     "travel": 10.75
@@ -5560,7 +5778,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.americanexpress.com/content/dam/amex/hk/en/staticassets/pdf/cardmember-agreement-and-fees-and-charges/Explorer_KFS_FnC_ENG.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -5574,7 +5794,7 @@
    "unit": "points",
    "point_value_cents": 0.56,
    "annual_fee_cents": 950000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 2.0,
    "rules": {
     "other": 9.0,
     "travel": 9.0
@@ -5604,7 +5824,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.americanexpress.com/content/dam/amex/hk/en/staticassets/pdf/cardmember-agreement-and-fees-and-charges/PGRCC_fees_charges.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -5618,7 +5840,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 98000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 2.0,
    "rules": {
     "other": 1.2
    },
@@ -5637,7 +5859,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.americanexpress.com/content/dam/amex/hk/en/staticassets/pdf/cardmember-agreement-and-fees-and-charges/BlueCash_KFS_FnC_EN.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -5651,7 +5875,7 @@
    "unit": "points",
    "point_value_cents": 0.33,
    "annual_fee_cents": 98000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 2.0,
    "rules": {
     "other": 1.0,
     "travel": 3.0
@@ -5677,7 +5901,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.americanexpress.com/content/dam/amex/hk/shared/Forms/Prop_KFS.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "BOC",
@@ -5691,7 +5917,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 380000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 1.0,
     "online_retail": 10.0,
@@ -5721,7 +5947,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "BOC",
@@ -5733,7 +5961,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "online_retail": 4.0,
     "other": 0.4,
@@ -5769,7 +5997,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "BOC",
@@ -5781,7 +6011,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 200000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "online_retail": 5.0,
     "other": 10.0,
@@ -5799,7 +6029,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "BOC",
@@ -5811,7 +6043,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 200000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 8.0,
     "other": 8.0,
@@ -5847,7 +6079,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "BOC",
@@ -5859,7 +6093,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 380000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 10.0,
     "other": 10.0,
@@ -5895,7 +6129,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "BOC",
@@ -5907,7 +6143,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 380000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.0,
    "rules": {
     "other": 5.0,
     "travel": 2.0
@@ -5933,7 +6169,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "BOC",
@@ -5945,7 +6183,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 160000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.0,
    "rules": {
     "other": 5.0,
     "travel": 2.0
@@ -5971,7 +6209,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Fubon",
@@ -5983,7 +6223,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 170000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "online_retail": 8.0,
     "other": 0.4
@@ -6009,7 +6249,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.fubonbank.com.hk/web/doc/sh_feekfs_e.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "PrimeCredit",
@@ -6023,7 +6265,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 150000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "entertainment": 0.4,
     "other": 4.0,
@@ -6055,7 +6297,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.moneyhero.com.hk/en/credit-card/products/primecredit-wewa-visa-signature-card",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "PrimeCredit",
@@ -6067,7 +6311,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 150000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "entertainment": 4.0,
     "other": 0.4,
@@ -6090,7 +6334,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.moneyhero.com.hk/en/credit-card/products/primecredit-wewa-visa-signature-card-for-university-student",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "PrimeCredit",
@@ -6104,7 +6350,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 150000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.0,
    "rules": {
     "other": 2.0,
     "travel": 5.0
@@ -6134,7 +6380,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.moneyhero.com.hk/en/credit-card/products/primecredit-earnmore-unionpay-diamond-card",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "PrimeCredit",
@@ -6146,7 +6394,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.0,
    "rules": {
     "other": 2.0,
     "travel": 5.0
@@ -6176,7 +6424,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.moneyhero.com.hk/en/credit-card/products/primecredit-earnmore-unionpay-card-for-university-student",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Dah Sing",
@@ -6190,7 +6440,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "other": 0.5
    },
@@ -6208,7 +6458,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.dahsing.com/pdf/credit_card/credit_card_kfs_en.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Dah Sing",
@@ -6220,7 +6472,7 @@
    "unit": "miles",
    "point_value_cents": 8.0,
    "annual_fee_cents": 200000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "other": 0.4375,
     "travel": 0.5
@@ -6246,7 +6498,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.dahsing.com/pdf/credit_card/credit_card_kfs_en.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Dah Sing",
@@ -6258,7 +6512,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "gas": 8.0,
     "other": 25.0
@@ -6288,7 +6542,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.dahsing.com/pdf/credit_card/credit_card_kfs_en.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Dah Sing",
@@ -6300,7 +6556,7 @@
    "unit": "miles",
    "point_value_cents": 9.4,
    "annual_fee_cents": 200000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "other": 0.583333,
     "travel": 0.2
@@ -6321,7 +6577,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.dahsing.com/pdf/credit_card/credit_card_kfs_en.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Dah Sing",
@@ -6333,7 +6591,7 @@
    "unit": "miles",
    "point_value_cents": 10.0,
    "annual_fee_cents": 180000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "other": 0.5833,
     "travel": 0.25
@@ -6354,7 +6612,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.dahsing.com/pdf/credit_card/credit_card_kfs_en.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "AEON",
@@ -6366,7 +6626,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 15.0,
     "groceries": 1.0,
@@ -6404,7 +6664,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "AEON",
@@ -6416,7 +6678,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 5.0,
     "groceries": 5.0,
@@ -6454,7 +6716,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "AEON",
@@ -6466,7 +6730,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.0,
    "rules": {
     "dining": 5.0,
     "groceries": 1.0,
@@ -6516,7 +6780,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "AEON",
@@ -6528,7 +6794,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 5.0,
     "groceries": 1.0,
@@ -6566,7 +6832,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "AEON",
@@ -6580,7 +6848,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 1.0,
     "online_retail": 6.0,
@@ -6605,7 +6873,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "AEON",
@@ -6617,7 +6887,7 @@
    "unit": "miles",
    "point_value_cents": 10.0,
    "annual_fee_cents": 48000,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "dining": 0.1666667,
     "other": 0.125,
@@ -6645,7 +6915,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "AEON",
@@ -6657,7 +6929,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "other": 2.0
    },
@@ -6676,7 +6948,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "AEON",
@@ -6688,7 +6962,7 @@
    "unit": "points",
    "point_value_cents": 0.4,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 1.95,
    "rules": {
     "other": 3.0
    },
@@ -6707,7 +6981,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": "moneyhero-hk"
+   "source": "moneyhero-hk",
+   "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Coinbase",
@@ -6722,7 +6998,7 @@
    "unit": "cashback_pct",
    "point_value_cents": null,
    "annual_fee_cents": 0,
-   "fx_fee_pct": null,
+   "fx_fee_pct": 0.0,
    "rules": {
     "other": 2.0
    },
@@ -6741,7 +7017,9 @@
    ],
    "verified_at": "2026-08-26",
    "verified": true,
-   "source": ""
+   "source": "",
+   "fx_source": "https://upgradedpoints.com/credit-cards/reviews/coinbase-one-card/",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "DBS",
@@ -6771,7 +7049,9 @@
    "benefits": [],
    "verified_at": "",
    "verified": false,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.dbs.com.sg/personal/cards/cards-rates-fees.page",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -6798,7 +7078,9 @@
    "benefits": [],
    "verified_at": "",
    "verified": false,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.citibank.com.sg/pdf/0122/credit-card/citi-premiermiles-card-info-sheet.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "UOB",
@@ -6828,7 +7110,9 @@
    "benefits": [],
    "verified_at": "",
    "verified": false,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.uob.com.sg/personal/customer-service/credit-card.page",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "OCBC",
@@ -6855,7 +7139,9 @@
    "benefits": [],
    "verified_at": "",
    "verified": false,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.ocbc.com/iwov-resources/sg/ocbc/personal/pdf/cards/cards-fee-charge.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "HSBC",
@@ -6886,7 +7172,9 @@
    "benefits": [],
    "verified_at": "",
    "verified": false,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.hsbc.com.sg/content/dam/hsbc/sg/documents/retail-banking-wealth-management-bank-tariffs.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "UOB",
@@ -6914,7 +7202,9 @@
    "benefits": [],
    "verified_at": "",
    "verified": false,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.uob.com.sg/personal/customer-service/credit-card.page",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "American Express",
@@ -6941,7 +7231,9 @@
    "benefits": [],
    "verified_at": "",
    "verified": false,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.americanexpress.com/content/dam/amex/sg/campaigns/pdfs/krisflyer-credit-card.pdf",
+   "fx_checked": "2026-10-31"
   },
   {
    "issuer": "Citi",
@@ -6970,7 +7262,9 @@
    "benefits": [],
    "verified_at": "",
    "verified": false,
-   "source": ""
+   "source": "",
+   "fx_source": "https://www.citibank.com.sg/credit-cards/rewards/pdf/citibank-rewards-info.pdf",
+   "fx_checked": "2026-10-31"
   }
  ]
 }

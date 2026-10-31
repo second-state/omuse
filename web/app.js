@@ -47,14 +47,28 @@ function biZh(s) {
   return t.replace(/\s+([，。；：、）」])/g, '$1').trim();
 }
 // Fallback for dynamic bilingual text from the server, e.g. "发送邮件 Send email" or "已拒绝 (user denied)".
+// split on ；/; only outside brackets: an English part "(moves 2 files to the Bin; recoverable for 30 days)" stays whole
+// (the drive_trash reason showed Chinese in the English UI, 2026-10-30)
+function splitTop(s) {
+  const out = []; let depth = 0, cur = '';
+  for (const ch of s) {
+    if (ch === '(' || ch === '（') depth++;
+    else if ((ch === ')' || ch === '）') && depth > 0) depth--;
+    if ((ch === ';' || ch === '；') && depth === 0) { out.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  out.push(cur.trim());
+  return out.filter(Boolean);
+}
 function biEn(s) {
   if (typeof s !== 'string' || !CJK_RE.test(s)) return s;
-  const parts = s.split(/[；;]\s*/);
+  const parts = splitTop(s);
   if (parts.length > 1) return parts.map(biEn).join('; ');
   // "中文说明 (english explanation)" -> the part in brackets
   // (the Chinese may end in its own bracket: "…输入框（每次使用都需要你批准）(fills a vault value)")
   let m = s.match(/^(.*[\u4e00-\u9fff][）」》]?[^()（）]*?)\s*[(（]([^()（）\u4e00-\u9fff]*[A-Za-z][^()（）\u4e00-\u9fff]*)[)）]\s*([^\u4e00-\u9fff]*)$/);
-  if (m) { const t = m[2].charAt(0).toUpperCase() + m[2].slice(1); return m[3] ? `${t} ${m[3]}` : t; }
+  // (the rest follows the bracket as it is, with no space before its punctuation: "Key refused: SerpApi HTTP 401…")
+  if (m) { const t = m[2].charAt(0).toUpperCase() + m[2].slice(1); return m[3] ? (/^[:;,.!?]/.test(m[3]) ? t + m[3] : `${t} ${m[3]}`) : t; }
   // "中文标签 English label" -> the trailing English
   m = s.match(/^([^\w\u4e00-\u9fff]*)\S.*[\u4e00-\u9fff](?:[）)」》]\s*|\s+)([A-Za-z][^\u4e00-\u9fff]*)$/);
   if (m) return (m[1] || '') + m[2];
@@ -194,23 +208,23 @@ async function loadBots() {
 }
 
 // Every view the router knows. The navigation shows them in NAV order, in four named sections (Bots, Tools, Trust, Config); `tasks` (the task list and
-// detail, reached from Audit's task links, chat cards and #tasks/<id>) and `schedules` (the Automations page, kept
-// reachable at #schedules while timer tasks are rethought — see KNOWLEDGE.md) are not listed.
+// detail, reached from Audit's task links, chat cards and #tasks/<id>) and `schedules` (the full Automations page, kept
+// reachable at #schedules) are not listed; `timers` is the simple Tasks page (the user's scheduled tasks).
 const VIEWS = [
   ['chat', '💬', T('对话'), 'Chat'], ['browser', '🌐', T('浏览器'), 'Browser'], ['connections', '🔌', T('连接'), 'Connections'],
   ['memory', '🧠', T('记忆'), 'Memory'], ['trust', '📈', T('状态'), 'Status'], ['activity', '📜', T('活动审计'), 'Audit'],
   ['skills', '🎓', T('技能'), 'Skills'], ['settings', '⚙️', T('设置'), 'Settings'],
-  ['tasks', '🗂', T('任务'), 'Tasks'], ['schedules', '⚡', T('自动化'), 'Automations'],
+  ['tasks', '🗂', T('任务'), 'Tasks'], ['schedules', '⚡', T('自动化'), 'Automations'], ['timers', '⏰', T('任务'), 'Tasks'],
 ];
 // the sections: [Chinese title, English title, views] ('chat' = the bots)
-const NAV = [[T('助手'), 'Bots', ['chat']], [T('工具'), 'Tools', ['browser', 'connections', 'memory']],
+const NAV = [[T('助手'), 'Bots', ['chat']], [T('工具'), 'Tools', ['timers', 'browser', 'connections', 'memory']],
   [T('可信'), 'Trust', ['trust', 'activity']], [T('配置'), 'Config', ['skills', 'settings']]];
 
 // A bot's icon: a robot head with a badge for what the bot does (bots/<id>.md `badge`). Fixed markup, no user data.
 const BOT_BADGES = {   // each drawn in a 10 × 10 box, placed on the badge
   chat: '<rect class="bg" x="1" y="1.4" width="8" height="5.6" rx="1.6"/><path class="bg" d="M2.6 6.6 2.2 9.4 5.2 6.9Z"/>',
   plane: '<rect class="bg" x=".4" y="4.35" width="9.2" height="1.3" rx=".65"/><path class="bg" d="M5.4 5 2.9.5h1.6L7.6 5ZM5.4 5 2.9 9.5h1.6L7.6 5ZM1.5 5 .5 2.4h1.1L2.9 5ZM1.5 5 .5 7.6h1.1L2.9 5Z"/>',
-  shield: '<path class="bg" d="M5 .5 9 2v3.2c0 2.4-1.7 3.8-4 4.4-2.3-.6-4-2-4-4.4V2Z"/>',
+  dollar: '<path class="bgs" d="M7.1 2.7C6.6 2 5.8 1.7 5 1.7c-1.3 0-2.1.7-2.1 1.6 0 2.2 4.3 1.2 4.3 3.4 0 .9-.9 1.6-2.2 1.6-.9 0-1.7-.4-2.2-1M5 .4v9.2"/>',
   card: '<rect class="bg" x=".5" y="1.8" width="9" height="6.4" rx="1.1"/><rect class="bb-fill" x=".5" y="3.2" width="9" height="1.4"/>',
   camera: '<rect class="bg" x=".5" y="2.6" width="9" height="6.4" rx="1.3"/><rect class="bg" x="3.2" y="1.1" width="3.6" height="2.2" rx=".5"/><circle class="bb-fill" cx="5" cy="5.8" r="1.9"/>',
 };
@@ -265,7 +279,7 @@ function route() {
   $('#viewTitle').textContent = S.view === 'chat' && botOf(S.bot) ? botName(botOf(S.bot)) : LANG === 'en' ? meta[3] : ZH(meta[2]);
   renderNav();
   const view = $('#view'); view.innerHTML = '';
-  ({ chat: viewChat, tasks: viewTasks, browser: viewBrowser, schedules: viewSchedules, connections: viewConnections,
+  ({ chat: viewChat, tasks: viewTasks, browser: viewBrowser, schedules: viewSchedules, timers: viewTimers, connections: viewConnections,
      memory: viewMemory, trust: viewTrust, skills: viewSkills, activity: viewActivity, settings: viewSettings })[S.view](view);
 }
 
@@ -386,7 +400,7 @@ function renderConvList(list) {
     if (chats.length) el.append(h('h4', null, T('对话 Chats')), ...chats.map(mk));
     else el.append(h('p', { class: 'small muted', style: 'padding:4px 8px' }, T('还没有对话')));
     if (research.length) el.append(h('h4', null, T('研究 Research')), ...research.map(mk));
-    if (scheds.length) el.append(h('h4', null, T('自动化 Automations')), ...scheds.map(mk));
+    if (scheds.length) el.append(h('h4', null, T('任务')), ...scheds.map(mk));
   }
 }
 
@@ -419,9 +433,13 @@ async function refreshConv(force) {
   try { r = await api('conversations/' + id); } catch (e) { return; }
   if (S.conv !== id || S.view !== 'chat') return;
   const old = S.convData;
+  // a task that is still waiting for the user and only got a newer timestamp is not redrawn: redrawing replaced the
+  // Review button under the user's click (2026-10-30, gcal_real)
+  const waiting = st => /^WAITING/.test(st || '');
   const changed = force || !old || old.messages.length !== r.messages.length ||
-    Object.values(r.tasks || {}).some(t => { const o = S.tasks[t.id]; return !o || o.status !== t.status || (o.updated_at || 0) < (t.updated_at || 0); });
-  if (!changed) return;
+    Object.values(r.tasks || {}).some(t => { const o = S.tasks[t.id]; return !o || o.status !== t.status
+      || (!waiting(t.status) && (o.updated_at || 0) < (t.updated_at || 0)); });
+  if (!changed) { mergeTasks(r.tasks); S.convData = r; return; }
   mergeTasks(r.tasks);
   S.convData = r;
   const open = [...document.querySelectorAll('.taskcard details[open]')].map(d => d.closest('.taskcard').id);
@@ -842,7 +860,8 @@ function evLine(e) {
     case 'memory_saved': body = h('span', null, [
       (d.facts || []).length ? T('🧠 记住了：') + d.facts.join(T('；')) : '',
       (d.recent || []).length ? ' ' + T('⏳ 近期记忆：') + d.recent.join(T('；')) : '',
-      (d.profile_suggestions || []).length ? ' ' + T('📝 档案修改待你确认（记忆页）：') + d.profile_suggestions.join(T('；')) : ''].join('').trim()); break;
+      (d.profile_suggestions || []).length ? ' ' + T('📝 档案修改待你确认（记忆页）：') + d.profile_suggestions.join(T('；')) : '',
+      (d.vault_cards || []).length ? ' ' + T('🔐 已存入保险箱（只有卡名，卡号请在那里补上）：') + d.vault_cards.join(T('；')) : ''].join('').trim()); break;
     case 'context_used': body = h('details', null, h('summary', null, Tf("🧠 带上了 {0} 条相关记忆", (d.facts || []).length)),
       h('ul', { class: 'small' }, (d.facts || []).map(f => h('li', null, f.fact, f.status === 'pending' ? T('（未确认）') : '', h('span', { class: 'faint' }, f.why ? ' — ' + f.why : ''))))); break;
     case 'context_site': body = h('span', null, Tf("🧠 记得在 {0} 的习惯：{1}", d.site, (d.facts || []).join(T('；')))); break;
@@ -1065,7 +1084,7 @@ async function loadApprovals() {
 
 // approval fields whose values Sentinel writes itself (bilingual labels such as "号码 number"); every other value is the
 // user's own content (a subject, a message) and is shown as it is
-const SERVER_VALUES = new Set(['填写内容 Value', '授权 Approval', '提交 Submit']);   // i18n-ok: server field ids
+const SERVER_VALUES = new Set(['填写内容 Value', '授权 Approval', '提交 Submit', '付款卡 Card', '批准后 After approval']);   // i18n-ok: server field ids
 function approvalForm(a, onDone) {
   const s = a.summary || {};
   const editable = new Set(s.editable || []);
@@ -1394,6 +1413,31 @@ function schedDesc(x) {
   return `cron ${x.spec || ''}`;
 }
 
+// ================================================================== TASKS (the user's scheduled tasks, simply)
+// Each task: when it runs next — "Pending" when that time has passed and it has not run yet (the machine slept or was
+// suspended; /run_pending_tasks runs them) — what it does, a link to its chat (made again if deleted) and Delete.
+async function viewTimers(root) {
+  const r = await api('schedules');
+  const now = Date.now() / 1000;
+  const when = s => {
+    if (!s.enabled) return h('span', { class: 'pill st-PAUSED' }, T('已暂停'));
+    if (s.next_run && s.next_run <= now) return h('span', { class: 'pill st-WAITING_EXTERNAL', title: Tf("应在 {0} 运行", fmtTime(s.next_run)) }, T('待运行 Pending'));
+    return h('span', { class: 'small' }, Tf("下次运行 {0}", fmtTime(s.next_run)));
+  };
+  const row = s => h('div', { class: 'card stack', style: 'gap:6px' },
+    h('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:wrap' },
+      h('b', null, s.name || T('(无标题)')), when(s)),
+    h('div', { class: 'small muted' }, s.describe || ''),
+    h('div', null, s.goal || ''),
+    h('div', { class: 'row', style: 'gap:8px' },
+      s.conv_id ? h('a', { class: 'btn small', href: convHash('main', s.conv_id) }, T('打开对话 Open chat')) : null,
+      h('button', { class: 'btn danger small', onclick: safe(async () => {
+        if (!confirmInline(Tf("删除任务「{0}」？它的对话会保留。", s.name || ''))) return;
+        await api('schedules/' + s.id, { method: 'DELETE' }); route(); }) }, T('删除'))));
+  root.append(r.schedules.length ? h('div', { class: 'stack' }, r.schedules.map(row))
+    : h('p', { class: 'muted' }, T('还没有定时任务。在对话里说「每天早上 8 点总结我的新邮件」就能创建一个。')));
+}
+
 // ================================================================== AUTOMATIONS (goals, triggers, schedules)
 const GOAL_ST = { active: [T('进行中 Active'), 'st-RUNNING'], paused: [T('已暂停 Paused'), 'st-PAUSED'], achieved: [T('已达成 Achieved'), 'st-COMPLETED'],
   failed: [T('未达成 Failed'), 'st-FAILED'], expired: [T('已过期 Expired'), 'st-CANCELLED'], cancelled: [T('已取消 Cancelled'), 'st-CANCELLED'],
@@ -1523,7 +1567,8 @@ async function viewSchedules(root) {
     Object.keys(s.state || {}).length ? h('pre', { class: 'small', style: 'white-space:pre-wrap;margin:0' }, JSON.stringify(s.state, null, 1)) : null,
     h('div', { class: 'row' },
       isTrig ? h('button', { class: 'btn small', onclick: safe(async () => { const p = await api(`schedules/${s.id}/poll`, { method: 'POST', body: {} });
-        toast(p.error ? '⚠️ ' + p.error : p.fired ? T('发现新事件，已开始运行') : T('没有新事件 Nothing new'), !!p.error); route(); }) }, T('🔍 立即检查 Check now'))
+        // a notify-only watch starts no run: it notifies (task_id is set only when a run started)
+        toast(p.error ? '⚠️ ' + p.error : p.fired && p.task_id ? T('发现新事件，已开始运行') : p.fired ? T('发现新事件，已通知你') : T('没有新事件 Nothing new'), !!p.error); route(); }) }, T('🔍 立即检查 Check now'))
         : h('button', { class: 'btn small', onclick: safe(async () => { await api(`schedules/${s.id}/run`, { method: 'POST', body: {} }); toast(T('已开始运行')); }) }, T('▶ 立即运行 Run now')),
       h('button', { class: 'btn small', onclick: () => { location.hash = 'chat'; setTimeout(() => openConv(s.conv_id), 50); } }, T('查看结果 Results')),
       h('button', { class: 'btn danger small', onclick: safe(async () => { await api('schedules/' + s.id, { method: 'DELETE' }); route(); }) }, T('删除 Delete'))));
@@ -1699,8 +1744,8 @@ async function viewConnections(root) {
   const travel = tokenCard(byName.travel, {
     title: T('✈️ 机票与酒店搜索 Flights & hotels'), ph: 'SerpApi key', label: T('SerpApi 密钥 API key'),
     who: c => c.plan ? Tf("{0} · 本月剩余 {1} 次搜索", c.plan, c.searches_left) : '',
-    freeChip: T('机票：Kiwi.com 免费数据（仅供参考）· 酒店和餐厅：有密钥用 Google 数据，没有就用网页搜索'),
-    desc: T('机票搜索开箱即用：flights_search 先用 Kiwi.com 的免费航班数据（只取航班信息，不用它的链接；订票在航空公司官网或你选的代理商）。填入 SerpApi 密钥后，Kiwi.com 查不到或出错时改用 Google Flights 作为后备；酒店用 Google Hotels 数据，餐厅和地点用 Google Maps 数据。这个密钥不用于网页搜索。免费密钥每月 250 次搜索。'),
+    freeChip: T('机票：Kiwi.com 免费数据，带预订链接 · 酒店和餐厅：有密钥用 Google 数据，没有就用网页搜索'),
+    desc: T('机票搜索开箱即用：没有密钥时，flights_search 用 Kiwi.com 的免费航班数据，每个结果带 Kiwi.com 的预订链接。填入 SerpApi 密钥后，单个日期用 Google Flights（能找到航空公司自己出的一张票，比如含国航航段的美联航机票；每个结果带 Google Flights 上这个行程的预订页），出错时才改用 Kiwi.com；日期范围和自行中转用 Kiwi.com 一次查完。每个请求只搜一次。酒店用 Google Hotels 数据（带酒店官网链接），餐厅和地点用 Google Maps 数据。这个密钥不用于网页搜索。免费密钥每月 250 次搜索。'),
     steps: [h('span', null, T('打开 '), h('a', { href: 'https://serpapi.com/users/sign_up', target: '_blank', rel: 'noopener' }, 'serpapi.com'), T('，注册一个免费账户')),
       T('在 Dashboard 复制 API 密钥，粘贴到下面'),
       T('每次搜索算一次调用；机票的预订选项和酒店详情各算一次')],
@@ -2212,13 +2257,15 @@ const CAT_LABEL = { preference: T('偏好'), person: T('人物'), company: T('�
 
 async function viewMemory(root) {
   const [r, v] = await Promise.all([api('memory'), sapi('vault').catch(() => ({ items: [], kinds: {}, field_labels: {} }))]);
+  // the pending changes across the top, then the profile with the Vault beside it (ID documents, memberships, cards)
   root.append(
-    h('div', { class: 'grid2' }, memProfileCard(r, v), h('div', { class: 'stack' }, memLearnedCard(r), memPendingCard(r), memTidyCard(r))),
+    h('div', { id: 'memPending' }, memPendingCard(r)),
+    h('div', { class: 'grid2', id: 'memProfileVault', style: 'margin-top:16px' }, memProfileCard(r, v), memVaultCard(v)),
+    h('div', { class: 'grid2', style: 'margin-top:16px' }, memLearnedCard(r), memTidyCard(r)),
     h('div', { style: 'margin-top:16px' }, memLibraryCard(r)),
     h('div', { style: 'margin-top:16px' }, memFactsCard(r)),
     h('div', { class: 'grid2', style: 'margin-top:16px' }, memTryCard(r), memEntitiesCard(r)),
-    h('div', { class: 'grid2', style: 'margin-top:16px' }, memRecentCard(r), memVaultCard(v)),
-    h('div', { style: 'margin-top:16px' }, memEpisodesCard(r)));
+    h('div', { class: 'grid2', style: 'margin-top:16px' }, memRecentCard(r), memEpisodesCard(r)));
   if ((location.hash.split('/')[1] || '') === 'profile') {   // #memory/profile (the first-login nudge, the chat banner)
     const card = document.getElementById('profile');
     if (card) { card.scrollIntoView({ block: 'start' }); card.classList.add('flash'); card.querySelector('input')?.focus({ preventScroll: true }); }
@@ -2306,6 +2353,7 @@ const PROFILE_CHOICES = {
   preferred_airline: () => [[T('航空联盟 Alliances'), ALLIANCES], [T('航空公司 Airlines'), AIRLINES]],
   preferred_hotel_brand: () => [[T('酒店集团 / 会员计划 Hotel groups'), HOTEL_GROUPS], [T('酒店品牌 Brands'), HOTEL_BRANDS]],
   preferred_car_rental: () => [[T('租车公司 Rental companies'), CAR_RENTALS]],
+  gender: () => [[T('如护照所示 As on the passport'), ['Male', 'Female', 'X']]],   // stored as the passport has it
 };
 
 function memProfileCard(r, v) {
@@ -2346,7 +2394,7 @@ function memProfileCard(r, v) {
   // ID documents: the ones in the Vault are listed (label and masked number) with a button to add another; a photo read
   // by the vision model fills the empty profile fields at once (a field that already holds something else is only
   // prefilled for review), and the document goes into the Vault — the picture itself is not kept
-  const required = ['name_en', 'birthday', 'nationality'];
+  const required = ['name_en', 'birthday', 'gender', 'nationality'];
   const incomplete = required.some(k => !(prof[k] || '').trim());
   let ids = ((v && v.items) || []).filter(x => x.kind === 'id_document');
   const idList = h('div', { class: 'stack', id: 'idDocs', style: 'gap:4px' });
@@ -2425,7 +2473,7 @@ function memProfileCard(r, v) {
     toast(n ? Tf("已保存 {0} 项", n) : T('没有改动 No changes')); S.profileNudge = undefined; route();
   });
   return h('div', { class: 'card stack', id: 'profile' }, h('h3', null, T('🪪 档案 Profile')),
-    h('p', { class: 'sub' }, T('填表、写邮件时才会用到的固定信息。Agent 只在需要时读取；它发现的新信息会先放到「待确认」，你同意后才会修改。证件号、会员号、卡号请放进下面的保险箱。')),
+    h('p', { class: 'sub' }, T('填表、写邮件时才会用到的固定信息。Agent 只在需要时读取；它发现的新信息会先放到「待确认」，你同意后才会修改。证件号、会员号、信用卡请放进旁边的保险箱。')),
     ocrBox,
     h('div', { class: 'grid2', style: 'gap:4px 12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))' }, rows),
     h('div', { class: 'small muted', id: 'pref-hint' }, T('常用航空公司可以选一家航空公司或一个航空联盟（如星空联盟）；常用酒店品牌可以选一个品牌（如假日酒店）或一个酒店集团；常用租车公司选一家（如赫兹）。不在列表里？用下面的「添加自定义字段」填写，Agent 同样会照顾到。')),
@@ -2578,11 +2626,15 @@ function memRecentCard(r) {
 function memVaultCard(v) {
   const kinds = v.kinds || {}; const FL = v.field_labels || {};
   const form = h('div', { class: 'stack', style: 'display:none;border:1px solid var(--line);border-radius:10px;padding:10px' });
-  const openForm = (it) => {
+  const openForm = (it, newKind) => {
     form.replaceChildren(); form.style.display = '';
     const kind = h('select', { 'aria-label': T('类型'), disabled: !!it }, Object.entries(kinds).map(([k, x]) => h('option', { value: k }, T(x.label))));
-    if (it) kind.value = it.kind;
-    const label = h('input', { type: 'text', value: it ? it.label : '', placeholder: T('名称，如：护照、新航会员、Visa 卡') });
+    if (it) kind.value = it.kind; else if (newKind) kind.value = newKind;
+        const label = h('input', { type: 'text', value: it ? it.label : '', placeholder: kind.value === 'card' ? T('卡名（发卡银行和卡种），如：招商银行经典白金卡；不要填卡号') : T('名称，如：护照、新航会员、Visa 卡') });
+    // a card's issuing country: its own field beside the name, optional (the card picker reads the market from it)
+    const country = h('input', { type: 'text', class: 'cardcountry', value: it ? (it.country || '') : '', placeholder: T('发卡国家（可选），如：美国'), style: 'max-width:220px' });
+    // a card may be saved by its name alone: its number, expiry and CVC stay UNKNOWN until filled in here
+    const cardHint = h('div', { class: 'small muted' }, T('信用卡可以只存卡名：卡号、有效期、安全码先记为「未知」，之后在这里补上。'));
     const domains = h('input', { type: 'text', value: it ? (it.domains || []).join(', ') : '', placeholder: T('只允许在这些网站使用（可选），如 singaporeair.com') });
     const vals = h('div', { class: 'grid2', style: 'gap:8px' }); const inputs = {};
     const drawFields = () => {
@@ -2592,18 +2644,22 @@ function memVaultCard(v) {
         vals.append(h('label', { class: 'field' }, h('span', null, T(FL[f] || f)), i));
       }
     };
-    kind.onchange = drawFields; drawFields();
+        const cardOnly = () => { cardHint.hidden = country.hidden = kind.value !== 'card';
+      label.placeholder = kind.value === 'card' ? T('卡名（发卡银行和卡种），如：招商银行经典白金卡；不要填卡号') : T('名称，如：护照、新航会员、Visa 卡'); };
+    kind.onchange = () => { drawFields(); cardOnly(); };
+    drawFields(); cardOnly();
     const show = h('label', { class: 'toggle small' }, h('input', { type: 'checkbox', onchange: e => Object.values(inputs).forEach(i => i.type = e.target.checked ? 'text' : 'password') }), T('显示内容'));
     const saveBtn = h('button', { class: 'btn primary', onclick: safe(async () => {
       const values = {}; for (const [k, i] of Object.entries(inputs)) values[k] = i.value;
-      await sapi(it ? 'vault/' + it.id : 'vault', { method: it ? 'PUT' : 'POST', body: { kind: kind.value, label: label.value, domains: domains.value, values } });
+      await sapi(it ? 'vault/' + it.id : 'vault', { method: it ? 'PUT' : 'POST', body: { kind: kind.value, label: label.value, country: kind.value === 'card' ? country.value : '', domains: domains.value, values } });
       toast(T('已存入保险箱 Saved')); route();
     }) }, T('保存 Save'));
-    form.append(h('div', { class: 'row' }, kind, label), domains, vals, h('div', { class: 'row' }, show, h('span', { style: 'flex:1' }),
+    form.append(h('div', { class: 'row' }, kind, label, country), cardHint, domains, vals, h('div', { class: 'row' }, show, h('span', { style: 'flex:1' }),
       h('button', { class: 'btn', onclick: () => { form.style.display = 'none'; } }, T('取消')), saveBtn));
   };
-  const items = (v.items || []).map(it => h('div', { class: 'row', style: 'border-bottom:1px solid var(--line-2);padding-bottom:6px' },
-    h('div', { style: 'flex:1;min-width:0' }, h('b', null, it.label), h('span', { class: 'muted small' }, ` · ${T(it.kind_label || it.kind)} · ${it.masked}`),
+  const items = (v.items || []).map(it => h('div', { class: 'row vaultitem', 'data-id': it.id, 'data-kind': it.kind, style: 'border-bottom:1px solid var(--line-2);padding-bottom:6px' },
+    h('div', { style: 'flex:1;min-width:0' }, h('b', null, it.label), it.country ? h('span', { class: 'small cardcountry' }, ` · ${it.country}`) : null, h('span', { class: 'muted small' }, ` · ${T(it.kind_label || it.kind)} · ${it.masked}`),
+      (it.missing || []).length ? h('div', null, h('span', { class: 'chip warn small namedcard' }, T('只有卡名：补上卡号、有效期、安全码才能用来付款'))) : null,
       h('div', { class: 'small muted' }, (it.domains || []).length ? Tf("仅限：{0}", it.domains.join(', ')) : T('任何网站（每次都要你批准）'),
         it.uses ? ' · ' + Tf("已用 {0} 次，最近 {1}", it.uses, fmtTime(it.last_used)) : '')),
     h('button', { class: 'btn small', onclick: () => openForm(it) }, T('改')),
@@ -2611,7 +2667,8 @@ function memVaultCard(v) {
   return h('div', { class: 'card stack' }, h('h3', null, T('🔐 保险箱 Vault')),
     h('p', { class: 'sub' }, T('证件号、会员号、信用卡加密保存在 Sentinel 里。Agent 看不到内容，只能请求「把某一项填进某个输入框」，每一次都要你批准；填完后页面文字里的号码也会被遮住。')),
     items.length ? items : h('div', { class: 'muted small' }, T('保险箱是空的。')),
-    h('div', null, h('button', { class: 'btn', onclick: () => openForm(null) }, T('＋ 添加 Add'))), form);
+    h('div', { class: 'row', style: 'gap:6px' }, h('button', { class: 'btn', onclick: () => openForm(null) }, T('＋ 添加 Add')),
+      h('button', { class: 'btn', id: 'addCardBtn', onclick: () => openForm(null, 'card') }, T('＋ 添加信用卡 Add credit card'))), form);
 }
 
 function memEpisodesCard(r) {
@@ -2706,7 +2763,7 @@ async function viewSettings(root) {
   try { const cc = await sapi('connections'); const bc = (cc.connections || []).find(x => x.name === 'browser'); brAuto = !bc || !bc.config || bc.config.auto_approve !== false; } catch (e) { /* offline */ }
   const autoBr = h('input', { type: 'checkbox', checked: brAuto, onchange: safe(async e => {
     await sapi('connections/browser', { method: 'PUT', body: { config: { auto_approve: e.target.checked } } });
-    toast(e.target.checked ? T('浏览器操作将自动批准（登录、保险箱、付款除外）') : T('浏览器操作将需要你审批'));
+    toast(e.target.checked ? T('浏览器操作将自动批准') : T('浏览器操作将需要你审批'));
   }) });
   const s = r.settings;
   const f = {};
@@ -2771,7 +2828,7 @@ async function viewSettings(root) {
         const body = { model_override: f.model_override.checked };
         if (body.model_override) { for (const k of MODEL_FIELDS) body[k] = f[k].value; for (const k of ['model_api_key', ...MEDIA_KEYS]) if (f[k].value) body[k] = f[k].value; }
         const t = await api('settings/test-models', { method: 'POST', body });
-        const label = { llm: 'LLM', planner: T('规划 Planner'), vision: T('视觉 Vision'), stt: T('语音转文字 STT'), image: T('图像 Image'), video: T('视频 Video') };
+        const label = { llm: 'LLM', planner: T('规划 Planner'), vision: T('视觉 Vision'), form: T('填表 Form filling'), stt: T('语音转文字 STT'), image: T('图像 Image'), video: T('视频 Video') };
         testOut.replaceChildren(...t.results.map(x => h('div', { class: 'small' }, (x.ok ? '✓ ' : '✕ ') + (label[x.kind] || x.kind) + (x.model ? ` (${x.model})` : '') + ': ',
           x.same_as ? T('同 LLM') : x.ok ? `${x.latency_s}s — ${x.reply || ''}` : (x.error || ''))));
       }) }, T('测试所有模型 Test models'))),
@@ -2784,8 +2841,8 @@ async function viewSettings(root) {
       field('user_name', T('你的名字'), 'Your name'), field('timezone', T('时区（定时任务）'), 'Timezone'),
       field('max_steps', T('每个任务最多步数'), 'Max steps', 'number'),
       field('max_minutes', T('每个任务最长用时（分钟）'), 'Time limit (minutes)', 'number'),
-      h('label', { class: 'toggle' }, autoBr, T('自动批准浏览器操作（打开网页、点击、输入、提交）Auto-approve browser actions')),
-      h('div', { class: 'small muted', style: 'font-weight:400;margin-top:-6px' }, T('仍会先问你：需要登录等接管的情况、填写保险箱里的证件或银行卡、付款或更改订单的点击、上传文件，以及疑似提示注入之后的操作。关闭后，所有有风险的浏览器操作都会弹出审批。')),
+      h('label', { class: 'toggle' }, autoBr, T('自动批准所有操作（只有最后提交和付款由你来）Auto-approve actions')),
+      h('div', { class: 'small muted', style: 'font-weight:400;margin-top:-6px' }, T('默认开启：所有操作都不再问你——浏览器里的打开网页、点击、输入、上传、从保险箱填入证件号，以及发邮件、建日程、整理云端硬盘、打电话、确认购买。每一项仍记入审批历史和审计（标为「自动」）。只有最后的提交和付款由你自己点：页面会交给你接管；需要登录时也一样。关闭后，所有有风险的操作都会弹出审批。')),
       tog('memory_extraction', T('任务结束后自动提取长期记忆 Auto memory extraction')),
       tog('memory_consolidation', T('每天自动整理记忆并发送报告到 Telegram Daily memory tidy')),
       field('memory_consolidate_at', T('每天整理时间（HH:MM）'), 'Tidy at'),
@@ -3006,7 +3063,7 @@ function onEvent(ev) {
   } else if (ev.kind === 'notification') {
     toast('🔔 ' + ev.notification.title + T('：') + ev.notification.body);
   } else if (ev.kind === 'memory_update' && S.view === 'memory') { const a = document.activeElement; if (!(a && /INPUT|TEXTAREA|SELECT/.test(a.tagName) && a.closest('#view'))) route(); }
-  else if ((ev.kind === 'schedule_update' || ev.kind === 'goal_update') && S.view === 'schedules') route();
+  else if ((ev.kind === 'schedule_update' || ev.kind === 'goal_update') && (S.view === 'schedules' || S.view === 'timers')) route();
   else if (ev.kind === 'library_update' && S.view === 'memory') { const a = document.activeElement; if (!(a && /INPUT|TEXTAREA/.test(a.tagName))) route(); }
 }
 

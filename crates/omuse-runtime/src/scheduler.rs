@@ -406,6 +406,21 @@ fn is_terminal(status: &str) -> bool {
     matches!(status, "COMPLETED" | "FAILED" | "CANCELLED")
 }
 
+/// What [`Scheduler::fire`] did with a due schedule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fired {
+    /// a run started (its task id)
+    Started(String),
+    /// the previous run (its task id) is still going: this one was skipped
+    Busy(String),
+    /// an event trigger was polled and nothing new came in
+    NoEvents,
+    /// another pass claimed it first (the background loop, or another request)
+    Taken,
+    /// its spec no longer gives a next time: switched off
+    Disabled,
+}
+
 /// The background scheduler loop.
 pub struct Scheduler {
     rt: Arc<dyn RuntimeApi>,
@@ -430,16 +445,17 @@ impl Scheduler {
         self.store().settings().unwrap_or_else(|_| json!({}))
     }
 
-    /// Start the loop (`tick` every 20 s).
-    pub fn start(self: &Arc<Self>) {
+    /// Start the loop (`tick` every 20 s). `fire_due` false (`[server] scheduler_loop = false`): the loop keeps the
+    /// goal deadlines and the memory tidy, and due tasks wait, pending, for `GET /run_pending_tasks`.
+    pub fn start(self: &Arc<Self>, fire_due: bool) {
         let me = self.clone();
-        let h = tokio::spawn(async move { me.run_loop().await });
+        let h = tokio::spawn(async move { me.run_loop(fire_due).await });
         *self.task.lock() = Some(h);
     }
 
-    async fn run_loop(&self) {
+    async fn run_loop(&self, fire_due: bool) {
         loop {
-            if let Err(e) = self.tick().await {
+            if let Err(e) = self.tick_with(fire_due).await {
                 eprintln!("[scheduler] tick failed: {:?}", e);
             }
             tokio::time::sleep(std::time::Duration::from_secs(20)).await;
@@ -448,10 +464,27 @@ impl Scheduler {
 
     /// One pass: deadlines, memory tidy, then every due schedule.
     pub async fn tick(&self) -> Result<()> {
-        let store = self.store();
+        self.tick_with(true).await
+    }
+
+    async fn tick_with(&self, fire_due: bool) -> Result<()> {
         let now = now_ts();
         crate::goals::check_deadlines(self.rt.as_ref()).await?;
         self.memory_tidy(now);
+        if !fire_due {
+            return Ok(());
+        }
+        for sch in self.pending(now)? {
+            self.fire(&sch, now).await?;
+        }
+        Ok(())
+    }
+
+    /// The schedules due at `now` that have not run yet: enabled, `next_run` passed (a machine that slept or was
+    /// suspended leaves them here), and for a goal's check, the goal still active.
+    pub fn pending(&self, now: f64) -> Result<Vec<Value>> {
+        let store = self.store();
+        let mut out = Vec::new();
         for sch in store.schedules()? {
             let next = as_f64(&sch["next_run"]);
             if !get_truthy(&sch, "enabled") || next.is_none_or(|n| n == 0.0 || n > now) {
@@ -464,59 +497,75 @@ impl Scheduler {
                     continue;
                 }
             }
-            let sid = get_str(&sch, "id");
-            let nxt = match next_run(
-                &get_str(&sch, "kind"),
-                &get_str(&sch, "spec"),
-                &get_str(&sch, "tz"),
-                Some(now),
-            ) {
-                Ok(n) => n,
-                Err(_) => {
-                    store.db.execute(
-                        "UPDATE schedules SET enabled=0 WHERE id=?",
-                        params![sid.as_str()],
-                    )?;
-                    continue;
-                }
-            };
-            store.db.execute(
-                "UPDATE schedules SET next_run=? WHERE id=?",
-                params![nxt, sid.as_str()],
-            )?;
-            // don't pile up runs: skip if the previous run is still active — unless it is stale
-            let last_id = get_str(&sch, "last_task");
-            let last = if last_id.is_empty() {
-                None
-            } else {
-                store.task(&last_id)?
-            };
-            let mut busy = last
-                .as_ref()
-                .is_some_and(|l| !is_terminal(&get_str(l, "status")));
-            if busy {
-                let l = last.as_ref().unwrap();
-                if self.is_stale(l, now) {
-                    self.supersede(&sch, l, false).await?;
-                    busy = false;
-                }
-            }
-            if busy {
-                // for events: cursor unchanged, so nothing is lost — picked up on the next poll
-                self.note_skip(&sch, last.as_ref().unwrap()).await?;
-                continue;
-            }
-            if get_str(&sch, "kind") == "event" {
+            out.push(sch);
+        }
+        Ok(out)
+    }
+
+    /// Run one due schedule: claim it by moving `next_run` on (compare-and-set, so the loop and
+    /// `/api/run_pending_tasks` never both run it), then start its run — or, for an event trigger, poll it.
+    pub async fn fire(&self, sch: &Value, now: f64) -> Result<Fired> {
+        let store = self.store();
+        let sid = get_str(sch, "id");
+        let nxt = match next_run(
+            &get_str(sch, "kind"),
+            &get_str(sch, "spec"),
+            &get_str(sch, "tz"),
+            Some(now),
+        ) {
+            Ok(n) => n,
+            Err(_) => {
                 store.db.execute(
-                    "UPDATE schedules SET last_run=? WHERE id=?",
-                    params![now, sid.as_str()],
+                    "UPDATE schedules SET enabled=0 WHERE id=?",
+                    params![sid.as_str()],
                 )?;
-                self.poll_event(&sch).await?;
+                return Ok(Fired::Disabled);
+            }
+        };
+        let claimed = store.db.execute(
+            "UPDATE schedules SET next_run=? WHERE id=? AND next_run=?",
+            params![nxt, sid.as_str(), as_f64(&sch["next_run"]).unwrap_or(0.0)],
+        )?;
+        if claimed == 0 {
+            return Ok(Fired::Taken);
+        }
+        // its next run moved on: an open Tasks page shows it (no longer Pending)
+        self.rt.publish(json!({"kind": "schedule_update"})).await;
+        // don't pile up runs: skip if the previous run is still active — unless it is stale
+        let last_id = get_str(sch, "last_task");
+        let last = if last_id.is_empty() {
+            None
+        } else {
+            store.task(&last_id)?
+        };
+        if let Some(l) = last
+            .as_ref()
+            .filter(|l| !is_terminal(&get_str(l, "status")))
+        {
+            if self.is_stale(l, now) {
+                self.supersede(sch, l, false).await?;
             } else {
-                self.run_now(&sid, None, None, "").await?;
+                // for events: cursor unchanged, so nothing is lost — picked up on the next poll
+                self.note_skip(sch, l).await?;
+                return Ok(Fired::Busy(last_id));
             }
         }
-        Ok(())
+        if get_str(sch, "kind") == "event" {
+            store.db.execute(
+                "UPDATE schedules SET last_run=? WHERE id=?",
+                params![now, sid.as_str()],
+            )?;
+            self.poll_event(sch).await?;
+            let after = store.schedule(&sid)?.unwrap_or_else(|| json!({}));
+            let tid = get_str(&after, "last_task");
+            return Ok(if tid != last_id && !tid.is_empty() {
+                Fired::Started(tid)
+            } else {
+                Fired::NoEvents
+            });
+        }
+        let t = self.run_now(&sid, None, None, "").await?;
+        Ok(Fired::Started(get_str(&t, "id")))
     }
 
     /// Once a day after Settings → memory_consolidate_at (retry at most hourly if it fails).
@@ -922,7 +971,7 @@ impl Scheduler {
         let body = lines.join("\n");
         self.tell(&title, &body, "", "info").await?;
         let store = self.store();
-        let conv_id = get_str(sch, "conv_id");
+        let conv_id = self.ensure_conv(sch, None)?;
         store.add_msg(
             &conv_id,
             "assistant",
@@ -943,6 +992,30 @@ impl Scheduler {
             )
             .await;
         Ok(())
+    }
+
+    /// The schedule's chat, made again when the user deleted it: a run's message always lands in a chat the user can
+    /// open (the same id, so the Tasks page's link keeps working).
+    pub fn ensure_conv(&self, sch: &Value, goal: Option<&Value>) -> Result<String> {
+        let store = self.store();
+        let sid = get_str(sch, "id");
+        let mut cid = get_str(sch, "conv_id");
+        if cid.is_empty() {
+            cid = format!("conv_{sid}");
+            store.db.execute(
+                "UPDATE schedules SET conv_id=? WHERE id=?",
+                params![cid.as_str(), sid.as_str()],
+            )?;
+        }
+        if store.conv(&cid)?.is_none() {
+            let title = match goal {
+                Some(g) => format!("🎯 {}", get_str(g, "title")),
+                None if get_str(sch, "kind") == "event" => format!("⚡ {}", get_str(sch, "name")),
+                None => format!("⏰ {}", get_str(sch, "name")),
+            };
+            store.create_conv(&title, "schedule", Some(&cid))?;
+        }
+        Ok(cid)
     }
 
     /// Start a run of a schedule now (optionally with the events that triggered it). Returns the task.
@@ -1025,7 +1098,7 @@ impl Scheduler {
                 };
             (label, shown)
         };
-        let conv_id = get_str(&sch, "conv_id");
+        let conv_id = self.ensure_conv(&sch, goal.as_ref())?;
         let msg = if goal.is_some() || !events.is_empty() {
             shown
         } else {
@@ -1314,5 +1387,124 @@ mod tests {
         assert!(goal.starts_with("TRIGGERTEST summarize\n\n---\n⚡ 触发事件 Trigger: Slack 新消息 New Slack message（1 条）"));
         assert!(goal.contains("<untrusted_content source=\"trigger slack.new_message\">"));
         assert!(rt.calls.lock().iter().any(|(p, _)| p == "/internal/taint"));
+    }
+
+    #[tokio::test]
+    async fn a_deleted_schedule_chat_is_made_again_by_the_next_run() {
+        let rt = FakeRt::new();
+        let sch = create_schedule(
+            &rt.store,
+            "Daily mail",
+            "summarise my new emails",
+            "cron",
+            &json!("0 8 * * *"),
+            "UTC",
+            "",
+            "",
+        )
+        .unwrap();
+        let (sid, cid) = (get_str(&sch, "id"), get_str(&sch, "conv_id"));
+        rt.store.delete_conv(&cid).unwrap();
+        assert!(rt.store.conv(&cid).unwrap().is_none());
+        let sc = Scheduler::new(rt.clone());
+        sc.run_now(&sid, None, None, "").await.unwrap();
+        let c = rt.store.conv(&cid).unwrap().expect("the chat is back");
+        assert_eq!(c["title"], "⏰ Daily mail");
+        assert_eq!(c["kind"], "schedule");
+        let msgs = rt.store.msgs(&cid, 10).unwrap();
+        assert_eq!(
+            msgs.last().unwrap()["content"],
+            "⏰ 定时运行 Scheduled run: summarise my new emails"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_due_task_is_pending_and_runs_once() {
+        let rt = FakeRt::new();
+        let sch = create_schedule(
+            &rt.store,
+            "Daily mail",
+            "summarise",
+            "cron",
+            &json!("0 8 * * *"),
+            "UTC",
+            "",
+            "",
+        )
+        .unwrap();
+        let sid = get_str(&sch, "id");
+        let sc = Scheduler::new(rt.clone());
+        let now = now_ts();
+        assert!(sc.pending(now).unwrap().is_empty());
+        // the machine slept through 08:00: due, not run
+        rt.store
+            .db
+            .execute(
+                "UPDATE schedules SET next_run=? WHERE id=?",
+                params![now - 3600.0, sid.as_str()],
+            )
+            .unwrap();
+        let due = sc.pending(now).unwrap();
+        assert_eq!(due.len(), 1);
+        // a paused task is not pending
+        rt.store
+            .db
+            .execute(
+                "UPDATE schedules SET enabled=0 WHERE id=?",
+                params![sid.as_str()],
+            )
+            .unwrap();
+        assert!(sc.pending(now).unwrap().is_empty());
+        rt.store
+            .db
+            .execute(
+                "UPDATE schedules SET enabled=1 WHERE id=?",
+                params![sid.as_str()],
+            )
+            .unwrap();
+        let fired = sc.fire(&due[0], now).await.unwrap();
+        let submitted = rt.submitted.lock().clone();
+        assert_eq!(fired, Fired::Started(submitted[0].clone()));
+        // the Tasks page is told (it shows the next run instead of Pending)
+        assert!(rt
+            .published
+            .lock()
+            .iter()
+            .any(|e| e["kind"] == "schedule_update"));
+        // the same due row a second time (the loop and /run_pending_tasks at once): claimed already, no second run
+        assert_eq!(sc.fire(&due[0], now).await.unwrap(), Fired::Taken);
+        assert_eq!(rt.submitted.lock().len(), 1);
+        assert!(sc.pending(now).unwrap().is_empty());
+        assert!(as_f64(&rt.store.schedule(&sid).unwrap().unwrap()["next_run"]).unwrap() > now);
+    }
+
+    #[tokio::test]
+    async fn with_the_loop_off_a_due_task_waits_for_run_pending_tasks() {
+        let rt = FakeRt::new();
+        let sch = create_schedule(
+            &rt.store,
+            "Daily mail",
+            "summarise",
+            "cron",
+            &json!("0 8 * * *"),
+            "UTC",
+            "",
+            "",
+        )
+        .unwrap();
+        let sid = get_str(&sch, "id");
+        rt.store
+            .db
+            .execute(
+                "UPDATE schedules SET next_run=? WHERE id=?",
+                params![now_ts() - 60.0, sid.as_str()],
+            )
+            .unwrap();
+        let sc = Scheduler::new(rt.clone());
+        sc.tick_with(false).await.unwrap();
+        assert!(rt.submitted.lock().is_empty());
+        assert_eq!(sc.pending(now_ts()).unwrap().len(), 1);
+        sc.tick().await.unwrap();
+        assert_eq!(rt.submitted.lock().len(), 1);
     }
 }

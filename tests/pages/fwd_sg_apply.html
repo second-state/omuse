@@ -1,24 +1,38 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Travel insurance application — FWD Singapore (test)</title></head>
+<html lang="en"><head><meta charset="utf-8"><title>Travel insurance application | FWD Singapore</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{font-family:Arial,Helvetica,sans-serif;margin:0;color:#183028}
+header{background:#e87722;color:#fff;padding:14px 32px} header b{font-size:22px;letter-spacing:1px}
+main{max-width:760px;margin:20px auto;padding:0 24px} label{display:block;margin:8px 0} input{padding:6px;border:1px solid #999;border-radius:4px;width:260px}
+#summary{background:#fdf1e7;padding:10px;border-radius:4px} button{background:#e87722;color:#fff;border:0;border-radius:4px;padding:10px 22px;font-size:16px;margin-top:10px}
+footer{margin:40px 0 0;padding:16px 32px;background:#183028;color:#ddd;font-size:12px}
+</style></head>
 <body>
+<header><b>FWD</b> &nbsp; Travel insurance — application</header>
+<main>
 <h1>Your details</h1>
-<p class="note">Test stand-in for FWD Singapore's application page. Nothing is charged or sent anywhere.</p>
 <p id="summary"></p>
 <script>
   const q = new URLSearchParams(location.search);
   document.getElementById('summary').textContent = 'Plan: ' + (q.get('plan') || '?') + ' — premium SGD ' + (q.get('premium') || '?');
 </script>
 <form id="apply" action="/fwd_sg_done.html" method="get">
-  <label>Full name (as in passport) <input name="name" id="name"></label><br>
-  <label>Date of birth <input name="dob" id="dob" placeholder="YYYY-MM-DD"></label><br>
-  <label>Email <input name="email" id="email"></label><br>
-  <label>Mobile number <input name="mobile" id="mobile"></label><br>
-  <label>Passport number <input name="passport" id="passport"></label><br>
+  <input type="hidden" name="plan" id="plan_h">
+  <script>document.getElementById('plan_h').value = q.get('plan') || '';</script>
+  <label>Full name (as in passport) <input name="name" id="name"></label>
+  <label>Date of birth <input name="dob" id="dob" placeholder="YYYY-MM-DD"></label>
+  <label>Email <input name="email" id="email"></label>
+  <label>Mobile number <input name="mobile" id="mobile"></label>
+  <label>Passport number <input name="passport" id="passport"></label>
   <h2>Payment</h2>
-  <label>Card number <input name="card" id="card" autocomplete="cc-number"></label><br>
-  <label>Expiry <input name="exp" id="exp" placeholder="MM/YY" autocomplete="cc-exp"></label><br>
-  <label>CVC <input name="cvc" id="cvc" autocomplete="cc-csc"></label><br>
-  <label>Name on card <input name="holder" id="holder" autocomplete="cc-name"></label><br>
+  <label>Card number <input name="card" id="card" autocomplete="cc-number"></label>
+  <label>Expiry <input name="exp" id="exp" placeholder="MM/YY" autocomplete="cc-exp"></label>
+  <label>CVC <input name="cvc" id="cvc" autocomplete="cc-csc"></label>
+  <label>Name on card <input name="holder" id="holder" autocomplete="cc-name"></label>
+  <p><label style="display:inline"><input type="checkbox" name="agree" id="agree" style="width:auto"> I have read the policy wording and the declarations.</label></p>
   <button type="submit" id="pay">Pay now</button>
 </form>
+</main>
+<footer>FWD Singapore Pte. Ltd. · Payments are processed securely.</footer>
 </body></html>

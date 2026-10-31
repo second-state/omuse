@@ -66,9 +66,9 @@ def ask(message: str, *, conv: str | None = None, attachments: list | None = Non
     r = c.post(B + "/api/chat", json=body, headers=H).json()
     tid, cid = r["task_id"], r.get("conversation_id")
     approvals, excluded, takeover = [], [], None
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     t = {}
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         t = task(tid)
         st = t.get("status")
         kid = (t.get("waiting") or {}).get("task_id") if st == "WAITING_BOT" else None

@@ -1,5 +1,15 @@
-"""0.2.7 end-to-end on the local stack: step budget keeps the last steps for the PDF, bot walls stop retries,
-Excel export, Google Calendar OAuth connect + free slots + invite (approval)."""
+"""Scripted (fake-model) remainder of the 0.2.7 suite: only what a real-model run cannot do.
+
+The use cases are tested from the user's side by real-model suites: a research brief PDF within a low step limit, the
+same data as an Excel sheet and a site behind a bot wall in tests/brief_real.py; signing in to Google Calendar, a free
+slot and an invitation the user approves (and edits) in tests/gcal_real.py. What stays here needs a forced condition
+or checks an internal guarantee the user cannot see:
+* step budget: a model that would browse forever (scripted) still gets the last steps kept for the PDF, so the task
+  completes with the file instead of failing at the limit — a real model cannot be made to ignore the budget;
+* bot wall: after the first wall the second URL on that site is not even opened and a site_blocked event is recorded
+  (internal: the user only sees the answer);
+* Google Calendar OAuth security: a malformed client id is rejected, a forged or replayed callback (wrong state) is
+  refused, the refresh token never reaches the UI, the Test button works, Disconnect removes the credential."""
 import os
 import sys
 import time
@@ -61,21 +71,6 @@ check("blocked: site_blocked event recorded", len(ev) == 1 and ev[0]["data"]["ki
 bnav = [e for e in t["events"] if e["type"] == "tool_result" and e["data"]["name"] == "browser_navigate"]
 check("blocked: 3 navigate results", len(bnav) == 3, len(bnav))
 
-# ------------------------------------------------------------------ 3. Excel
-r = chat("XLSXOUT 把航班做成 Excel 发给我")
-t = wait(r["task_id"])
-p = WS + "/reports/flights.xlsx"
-check("xlsx: task completed", t["status"] == "COMPLETED", (t["status"], t.get("result")))
-ok = os.path.isfile(p)
-if ok:
-    from openpyxl import load_workbook
-    ws = load_workbook(p).active
-    ok = ws.title == "直飞航班" and ws["C4"].value == 1085 and ws["A1"].value == "航空公司"
-check("xlsx: workbook has the rows with numbers as numbers", ok)
-raw = c.get(B + "/api/files/raw", params={"path": "reports/flights.xlsx", "download": "1"})
-check("xlsx: downloadable from the chat", raw.status_code == 200 and raw.content[:2] == b"PK", raw.status_code)
-fr = c.post(B + "/api/chat", json={"message": "hi"}, headers=H)  # keep the stack warm
-
 # ------------------------------------------------------------------ 4. Google Calendar
 c.post("http://127.0.0.1:8094/_g/reset")
 cat = c.get(B + "/sentinel/api/connections", headers=H).json()
@@ -103,26 +98,6 @@ check("calendar: connected, time zone read from Google", cal["has_credential"] a
 tst = c.post(B + "/sentinel/api/connections/calendar/test", json={}, headers=H).json()
 check("calendar: test button works", tst.get("ok") and tst.get("upcoming") == 1, tst)
 
-r = chat("CALBOOK 周六晚上帮我把订位放进日历，并邀请 Eva")
-t = wait(r["task_id"], until=("WAITING_APPROVAL", "COMPLETED", "FAILED"))
-check("calendar: invite needs approval", t["status"] == "WAITING_APPROVAL", (t["status"], t.get("result"), t.get("error")))
-fs = [e for e in t["events"] if e["type"] == "tool_result" and e["data"]["name"] == "calendar_free_slots"]
-check("calendar: free slots skip the 18:00 board meeting", fs and "2026-10-03 Sat 18:45–22:00" in fs[0]["data"]["preview"], fs and fs[0]["data"]["preview"])
-aps = c.get(B + "/sentinel/api/approvals", params={"status": "pending"}, headers=H).json()
-ap = next(a for a in aps["approvals"] if a["task_id"] == r["task_id"])
-fields = dict(tuple(x) for x in ap["summary"]["fields"])
-check("calendar: approval shows the invitee and time", "eva@example.com" in str(fields) and fields.get("开始 Start") == "2026-10-03 19:00"
-      and "start" in ap["summary"]["editable"], ap["summary"])
-res = c.post(f"{B}/sentinel/api/approvals/{ap['id']}/resolve", json={"decision": "approve", "scope": "ONCE",
-                                                                    "args": {"start": "2026-10-03 19:30"}}, headers=H)
-t = wait(r["task_id"])
-gs = c.get("http://127.0.0.1:8094/_g").json()
-made = [x for x in gs["log"] if "create" in x]
-check("calendar: event created with the edited time and invites sent", t["status"] == "COMPLETED" and made
-      and made[0]["create"]["start"]["dateTime"] == "2026-10-03T19:30:00+08:00" and made[0]["sendUpdates"] == "all"
-      and made[0]["create"]["attendees"] == [{"email": "eva@example.com"}], (t["status"], made, t.get("result")))
-tok_log = [x for x in gs["log"] if "token" in x]
-check("calendar: access token reused (no refresh per call)", sum(1 for x in tok_log if x["token"].get("grant_type") == "refresh_token") <= 1, tok_log)
 d = c.delete(B + "/sentinel/api/connections/calendar/credential", headers=H)
 cal = next(x for x in c.get(B + "/sentinel/api/connections", headers=H).json()["connections"] if x["name"] == "calendar")
 check("calendar: disconnect removes the credential", d.status_code == 200 and not cal["has_credential"] and not cal["enabled"], cal)

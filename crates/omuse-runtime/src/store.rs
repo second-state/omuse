@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS entities (id TEXT PRIMARY KEY, type TEXT, name TEXT, 
 CREATE TABLE IF NOT EXISTS relations (src TEXT, rel TEXT, dst TEXT, source TEXT, created_at REAL);
 CREATE TABLE IF NOT EXISTS goals (
   id TEXT PRIMARY KEY, title TEXT, objective TEXT, criteria TEXT, status TEXT, deadline REAL, schedule_id TEXT,
-  conv_id TEXT, progress TEXT, result TEXT, created_at REAL, updated_at REAL, finished_at REAL
+  conv_id TEXT, progress TEXT, result TEXT, created_at REAL, updated_at REAL, finished_at REAL, ask TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS profile (key TEXT PRIMARY KEY, value TEXT, updated_at REAL, source TEXT);
 CREATE TABLE IF NOT EXISTS profile_pending (
@@ -224,8 +224,29 @@ pub fn redacted(s: &Value) -> Value {
     Value::Object(out)
 }
 
+/// The profile key a model means by a common other name of a field (`date_of_birth`, `dob` → `birthday`, `sex` →
+/// `gender`, `email` → `email_personal` …); anything else is returned as given.
+pub fn profile_alias(name: &str) -> String {
+    let n = name.trim().to_lowercase().replace([' ', '-'], "_");
+    match n.as_str() {
+        "date_of_birth" | "dob" | "birth_date" | "birthdate" | "date_birth" => "birthday",
+        "sex" => "gender",
+        "email" | "email_address" | "personal_email" => "email_personal",
+        "work_email" => "email_work",
+        "mobile" | "mobile_phone" | "phone_number" | "mobile_number" | "tel" => "phone",
+        "name" | "full_name" | "passport_name" | "legal_name" | "name_on_passport" => "name_en",
+        "home_address" | "address" => "address_home",
+        "work_address" | "office_address" => "address_work",
+        "citizenship" | "country_of_citizenship" => "nationality",
+        "employer" => "company",
+        "occupation" | "title" | "position" => "job_title",
+        _ => return name.trim().to_string(),
+    }
+    .to_string()
+}
+
 /// `PROFILE_FIELDS`: key, 中文, English.
-pub const PROFILE_FIELDS: [(&str, &str, &str); 15] = [
+pub const PROFILE_FIELDS: [(&str, &str, &str); 16] = [
     ("name_en", "英文姓名（证件拼写）", "Name as on passport"),
     // the key stays `name_zh` (profiles saved before keep their value); it holds any other name: Chinese, Japanese, a
     // married or former name
@@ -239,6 +260,8 @@ pub const PROFILE_FIELDS: [(&str, &str, &str); 15] = [
     ("company", "公司", "Company"),
     ("job_title", "职位", "Job title"),
     ("birthday", "生日", "Date of birth"),
+    // as on the passport (Male, Female or X): arrival cards and bookings ask for it; read from the ID photo
+    ("gender", "性别", "Gender"),
     ("nationality", "国籍", "Nationality"),
     ("preferred_airline", "常用航空公司", "Preferred airline"),
     (
@@ -311,12 +334,25 @@ pub fn profile_value_ok(key: &str, value: &str) -> bool {
     if key.starts_with("email") {
         return EMAIL.is_match(v);
     }
+    if key == "gender" {
+        return gender_of(v).is_some();
+    }
     if key == "phone" {
         let digits = NON_DIGIT.replace_all(v, "");
         let n = digits.chars().count();
         return (6..=15).contains(&n) && PHONE.is_match(v);
     }
     true
+}
+
+/// The profile's gender as on the passport ("Male", "Female", "X") from the ways it is written ("M", "f", "男", "female").
+pub fn gender_of(v: &str) -> Option<&'static str> {
+    match v.trim().to_lowercase().as_str() {
+        "m" | "male" | "man" | "男" | "男性" => Some("Male"),
+        "f" | "female" | "woman" | "女" | "女性" => Some("Female"),
+        "x" | "<" | "unspecified" | "non-binary" | "nonbinary" => Some("X"),
+        _ => None,
+    }
 }
 
 /// Card / ID / passport-looking numbers and passwords never go into memory — they belong in the vault.
@@ -497,8 +533,8 @@ pub const INTENTS: [(&str, &str, &str); 13] = [
     ("pen", r"笔|钢笔|\bpens?\b", r"笔|\bpens?\b"),
     (
         "dining",
-        r"餐厅|吃饭|晚饭|午饭|晚餐|午餐|订位|订座|订台|饭店|\b(restaurant|dinner|lunch|brunch|book a table|cuisine)\b",
-        r"菜|cuisine|口味|吃|餐|restaurant|dining|chope|饮食|素食|vegetarian|辣|spicy|japanese|日本|湘|hunan",
+        r"餐厅|吃饭|晚饭|午饭|晚餐|午餐|订位|订座|订台|饭店|饮食|食物|喝的|吃的|\b(restaurant|dinner|lunch|brunch|book a table|cuisine|food|foods|drinks?|diet|dietary|eat|meals?)\b",
+        r"菜|cuisine|口味|吃|餐|restaurant|dining|chope|饮食|素食|vegetarian|vegan|辣|spicy|japanese|日本|湘|hunan|酒|alcohol|drinks?|allerg|过敏|halal|清真",
     ),
     (
         "travel",
@@ -756,6 +792,13 @@ impl Store {
             // proof that a consequential task really finished (app/runtime/outcome.py)
             db.execute(
                 "ALTER TABLE tasks ADD COLUMN outcome TEXT DEFAULT ''",
+                params![],
+            )?;
+        }
+        if !cols("goals")?.contains("ask") {
+            // the user's own request a goal came from (crate::goals::set_ask)
+            db.execute(
+                "ALTER TABLE goals ADD COLUMN ask TEXT DEFAULT ''",
                 params![],
             )?;
         }
@@ -1816,7 +1859,12 @@ impl Store {
         if key.is_empty() {
             return Err(anyhow!("unknown profile field"));
         }
-        let value = take_chars(value.trim(), 500).to_string();
+        let mut value = take_chars(value.trim(), 500).to_string();
+        if key == "gender" && !value.is_empty() {
+            value = gender_of(&value)
+                .ok_or_else(|| anyhow!("invalid value"))?
+                .to_string();
+        }
         if !value.is_empty() {
             self.db.execute(
                 "INSERT OR REPLACE INTO profile(key, value, updated_at, source) VALUES (?,?,?,?)",
@@ -1845,6 +1893,10 @@ impl Store {
     ) -> Result<Option<Value>> {
         let key = profile_key(key);
         let value = take_chars(value.trim(), 500).to_string();
+        let value = match (key.as_str(), gender_of(&value)) {
+            ("gender", Some(g)) => g.to_string(),
+            _ => value,
+        };
         if key.is_empty()
             || value.is_empty()
             || looks_sensitive(&value)
@@ -2094,6 +2146,25 @@ mod tests {
         st.set_profile("phone", "+65 8000 0000", "user").unwrap();
         assert_eq!(st.profile().unwrap()["phone"], "+65 8000 0000");
         assert!(st.set_profile("passport", "x", "user").is_err());
+    }
+
+    #[test]
+    fn gender_is_as_on_the_passport() {
+        let (_d, st) = store();
+        for (given, saved) in [
+            ("M", "Male"),
+            ("female", "Female"),
+            ("女", "Female"),
+            ("X", "X"),
+        ] {
+            st.set_profile("gender", given, "user").unwrap();
+            assert_eq!(st.profile().unwrap()["gender"], saved);
+        }
+        assert!(st.set_profile("gender", "maybe", "user").is_err());
+        assert!(profile_value_ok("gender", "F") && !profile_value_ok("gender", "tall"));
+        st.set_profile("gender", "", "user").unwrap();
+        let p = st.suggest_profile("gender", "m", "", "").unwrap().unwrap();
+        assert_eq!(p["value"], "Male");
     }
 
     #[test]

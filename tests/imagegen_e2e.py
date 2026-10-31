@@ -1,4 +1,8 @@
-"""Image generation and editing get only the Images API fields: fast mode (service_tier) and reasoning_effort are chat
+"""Image generation and editing: the exact Images API requests, which a real-model run cannot see (scripted model). The
+use case — a picture made in the chat, shown, downloadable, then edited into a second picture — is tested from the
+user's side by tests/media_real.py. What stays here is the request bodies:
+
+Image generation and editing get only the Images API fields: fast mode (service_tier) and reasoning_effort are chat
 options and must never reach /images/generations or /images/edits, while the chat requests of the same task carry them.
 Runs with the user's own model (fast mode on, reasoning high, an image model on the fake endpoint)."""
 import sys

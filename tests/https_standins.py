@@ -19,14 +19,48 @@ from urllib.parse import urlsplit
 
 PAGES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages")
 DIR = "/tmp/claude-0/standins"
-HOSTS = ["eservices.ica.gov.sg", "www.fwd.com.sg"]
-# the real sites' paths (what the skills navigate to) → the stand-in pages; any other path is the same-named file
+# the real sites' paths (what the skills navigate to) → the stand-in pages; any other path is the same-named file in
+# tests/pages (a site's next steps, its confirmation page). Every host here also needs its `--add-host` line in
+# tests/run_in_docker.sh (STANDIN_HOSTS there).
 ROUTES = {
-    "eservices.ica.gov.sg": {"/": "sgac.html", "/sgarrivalcard": "sgac.html", "/sgarrivalcard/": "sgac.html"},
+    "eservices.ica.gov.sg": {"/": "sgac.html", "/sgarrivalcard": "sgac.html", "/sgarrivalcard/": "sgac.html",
+                             "/arrivalcard/sgac": "sgac.html", "/arrivalcard/sgac/fvipa/submit": "sgac.html"},
     "www.fwd.com.sg": {"/": "fwd_sg_quote.html", "/travel-insurance/online-quote/": "fwd_sg_quote.html",
                        "/travel-insurance/online-quote": "fwd_sg_quote.html",
                        "/claim-online/travel.html": "fwd_sg_claim.html"},
+    # the arrival cards' official sites (skills/*-arrival-card, jp-visit-japan-web, ph-etravel, uk-eta)
+    "tdac.immigration.go.th": {"/": "tdac.html"},
+    "imigresen-online.imi.gov.my": {"/": "mdac.html", "/mdac/main": "mdac.html", "/mdac/main/": "mdac.html"},
+    "www.e-arrivalcard.go.kr": {"/": "kr_landing.html", "/portal/main/index.do": "kr_landing.html",
+                                "/portal/apply/agreementPolicy.do": "kr_terms.html", "/portal/apply/individual.do": "kr_arrival.html"},
+    "vjw-lp.digital.go.jp": {"/": "vjw.html"},
+    "s.nia.gov.cn": {"/ArrivalCardFillingPC/": "cn_arrival.html", "/ArrivalCardFillingPC": "cn_arrival.html",
+                     **{f"/ArrivalCardFillingPC/{p}": "cn_arrival.html" for p in (
+                         "entry-registation-home", "entry-registation-notice", "entry-registation-form")}},
+    "niaspeedy.immigration.gov.tw": {"/webacard": "tw_redirect.html", "/webacard/": "tw_redirect.html"},
+    "twac.immigration.gov.tw": {"/": "tw_home.html", "/notice": "tw_home.html", "/submit": "twac.html"},
+    "allindonesia.imigrasi.go.id": {"/": "id_arrival.html", **{f"/arrival-card-submission/{p}": "id_arrival.html" for p in (
+        "personal-information", "travel-details/individual", "mode-of-transport/foreigner", "declaration/individual")}},
+    "etravel.gov.ph": {"/": "etravel.html"},
+    "arrival.gov.kh": {"/": "kh_arrival.html"},
+    "www.gov.uk": {"/eta": "uk_eta.html", "/eta/": "uk_eta.html"},
+    # Hong Kong's air passenger departure tax refund (skills/hk-apdt-refund)
+    "app.apdtrefund.hk": {"/hkTaxMobile/": "apdt.html", "/hkTaxMobile": "apdt.html"},
+    # insurance, claims and refunds: FWD Hong Kong's claim form, an airline's flight status, WorldTracer baggage
+    # tracing, an embassy, Japan's tax-free rules, the Chase card-benefit claims site
+    "www.fwd.com.hk": {"/": "fwd_hk.html"},
+    "www.singaporeair.com": {"/": "sq_home.html"},
+    "wtrweb.worldtracer.aero": {"/": "bagtrace.html"},
+    "japan.embassy.gov.au": {"/": "embassy.html"},
+    "www.mlit.go.jp": {"/": "taxfree.html"},
+    "www.eclaimsline.com": {"/": "eclaims.html"},
+    # entry rules and getting around (travel_info_real.py): Thailand's visa exemption, Singapore's visa requirements, JR East's N'EX
+    "www.thaievisa.go.th": {"/": "th_visa_exemption.html", "/visa/visa-exemption": "th_visa_exemption.html"},
+    "www.ica.gov.sg": {"/": "ica_visa.html", "/enter-transit-depart/entering-singapore/visa_requirements": "ica_visa.html"},
+    "www.jreast.co.jp": {"/": "nex.html", "/multi/en/nex/": "nex.html", "/multi/en/nex": "nex.html", "/multi/en/nex/index.html": "nex.html",
+                         "/multi/en/nex/timetable.html": "nex.html", "/en/multi/nex/": "nex.html"},
 }
+HOSTS = list(ROUTES)
 NOTE = re.compile(r'<p class="note">[^<]*(?:test|stand-in)[^<]*</p>\s*', re.I)
 TITLE_TEST = re.compile(r"\s*\(test\)\s*(?=</title>)", re.I)
 
