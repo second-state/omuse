@@ -224,6 +224,90 @@ pub fn paths(subject: &str, issued: DateTime<Local>) -> (String, String) {
     (format!("{stem}.html"), format!("{stem}.pdf"))
 }
 
+/// What the user asked for, as the request extraction gives it (the only part the model decides): the subject, how
+/// far back, how often a new edition comes (`""` = once), the weekday / hour when it does, and whether each edition
+/// is emailed.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Ask {
+    pub subject: String,
+    pub days: i64,
+    pub frequency: String,
+    pub weekday: u32,
+    pub hour: u32,
+    pub email: bool,
+}
+
+impl Ask {
+    /// From the extraction's JSON: unknown values fall back to the defaults (7 days; Monday; 08:00).
+    pub fn from_json(v: &Value) -> Option<Self> {
+        let subject = take_chars(get_str(v, "subject").trim(), 120).to_string();
+        if subject.is_empty() {
+            return None;
+        }
+        let freq = get_str(v, "frequency").trim().to_lowercase();
+        let frequency = match freq.as_str() {
+            "daily" | "weekly" | "monthly" => freq,
+            _ => String::new(),
+        };
+        let n = |k: &str| v.get(k).and_then(Value::as_i64);
+        let days =
+            n("days")
+                .filter(|d| (1..=365).contains(d))
+                .unwrap_or(match frequency.as_str() {
+                    "daily" => 1,
+                    "monthly" => 30,
+                    _ => 7,
+                });
+        Some(Self {
+            subject,
+            days,
+            frequency,
+            weekday: n("weekday").filter(|d| (0..=6).contains(d)).unwrap_or(1) as u32,
+            hour: n("hour").filter(|h| (0..=23).contains(h)).unwrap_or(8) as u32,
+            email: v.get("email").and_then(Value::as_bool).unwrap_or(false),
+        })
+    }
+
+    /// The schedule's cron spec (`None` for a one-off report): daily at the hour, weekly on the weekday (0 = Sunday),
+    /// monthly on the 1st.
+    pub fn cron(&self) -> Option<String> {
+        match self.frequency.as_str() {
+            "daily" => Some(format!("0 {} * * *", self.hour)),
+            "weekly" => Some(format!("0 {} * * {}", self.hour, self.weekday)),
+            "monthly" => Some(format!("0 {} 1 * *", self.hour)),
+            _ => None,
+        }
+    }
+
+    /// The news searches: the subject as given, then with "news" (each once).
+    pub fn queries(&self) -> Vec<String> {
+        let mut q = vec![self.subject.clone()];
+        if !self.subject.to_lowercase().contains("news") {
+            q.push(format!("{} news", self.subject));
+        }
+        q
+    }
+}
+
+/// The articles to read from the searches' results, in the engines' order: http(s) links, each once, at most `n`.
+pub fn pick_articles(results: &[Value], n: usize) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for r in results {
+        let u = get_str(r, "url");
+        if !(u.starts_with("https://") || u.starts_with("http://")) {
+            continue;
+        }
+        if out.iter().any(|x| get_str(x, "url") == u) {
+            continue;
+        }
+        out.push(r.clone());
+        if out.len() >= n {
+            break;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,5 +378,41 @@ mod tests {
         ] {
             assert!(t.contains(k), "{k}");
         }
+    }
+
+    #[test]
+    fn the_request_gives_the_schedule_and_the_searches() {
+        let a =
+            Ask::from_json(&json!({"subject": "PCCW stock", "frequency": "weekly", "email": true}))
+                .unwrap();
+        assert_eq!(
+            (a.days, a.cron().as_deref(), a.email),
+            (7, Some("0 8 * * 1"), true)
+        );
+        assert_eq!(a.queries(), ["PCCW stock", "PCCW stock news"]);
+        let d = Ask::from_json(&json!({"subject": "Lumora news", "frequency": "daily", "hour": 7}))
+            .unwrap();
+        assert_eq!((d.days, d.cron().as_deref()), (1, Some("0 7 * * *")));
+        assert_eq!(d.queries(), ["Lumora news"]);
+        let once = Ask::from_json(&json!({"subject": "x", "frequency": "sometimes", "days": 999}))
+            .unwrap();
+        assert_eq!((once.days, once.cron()), (7, None));
+        assert!(Ask::from_json(&json!({"frequency": "daily"})).is_none());
+    }
+
+    #[test]
+    fn articles_are_kept_once_in_order() {
+        let r = vec![
+            json!({"url": "https://a"}),
+            json!({"url": "ftp://b"}),
+            json!({"url": "https://a"}),
+            json!({"url": "http://c"}),
+        ];
+        let got: Vec<String> = pick_articles(&r, 5)
+            .iter()
+            .map(|x| get_str(x, "url"))
+            .collect();
+        assert_eq!(got, ["https://a", "http://c"]);
+        assert_eq!(pick_articles(&r, 1).len(), 1);
     }
 }

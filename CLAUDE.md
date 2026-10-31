@@ -19,6 +19,22 @@ to do. When you fix a problem, always prefer a fix in code over a change to a sk
   decide it differently (skills must not contradict code).
 - Every fix gets a unit test that reproduces the failure, and the real-model suite that found it is rerun.
 
+## Skills: code decides, the model chooses from JSON, prose only for the user
+
+In each skill, use code tools as much as possible — a web form is filled by a form function per URL, a mail search is
+a fixed query, a default, a deadline, a window, a file name, a schedule and a delivery are computed. A skill should
+need **no model call at all** to decide what happens next (see `agent/driver.rs` for the arrival cards: the model only
+understands the request and loads the skill; code runs every step).
+
+When a decision genuinely needs the model, do not ask it in prose and read its prose back. Send it **JSON with the
+possible choices** and have it return one of them (a decision API: `{"choice": "A"}` out of the listed options). This
+holds even when the input is a picture or a page: the possible decisions are listed in JSON for the model to choose
+from (what field, which option, which button — never "what should I do next?").
+
+Natural language the model writes is used for ONE thing: the reply the user reads. Anything in a test that checks
+the model's words to decide the next step marks a step that belongs in code (or in a JSON choice). The final
+natural-language answer is itself reviewed once by the model, as the user would read it (`Runtime::review_answer`).
+
 ## Repository: second-state/omuse only
 
 This repository is `second-state/omuse`, a fork of `Drlucaslu/locius`. All future commits, pushes, tags, issues and

@@ -453,6 +453,10 @@ async def fill_card(u: U.User, card: Card, *, label: str = "", ask: str = "", fl
 
 def run_cards(keys: list[str]) -> None:
     """A suite of cards: one chat per card, the mailbox holding that trip's e-ticket and hotel booking."""
+    # OMUSE_E2E_ONLY=kr (run_in_docker.sh): only these cards, to rerun one with its trace
+    only = os.environ.get("OMUSE_E2E_ONLY", "").strip()
+    if only:
+        keys = [k for k in keys if k in only.split(",")]
     world(CARDS[keys[0]].mail())
 
     async def main():

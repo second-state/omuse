@@ -317,6 +317,134 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
 
     /// What a final answer means, from one small classification call: three yes / no questions the guards act on
     /// (`guards::AnswerTraits`). The model only reads the text; code decides what to do. Any failure → all false.
+    /// The code driver's turn for a known-form skill (`super::driver`): the next step from the transcript; when the
+    /// regexes found no flight in the bookings, one extraction call (the last resort), recorded in the transcript
+    /// as an `extract_facts` result, then the step again.
+    async fn drive(
+        &self,
+        task_id: &str,
+        card: &'static super::driver::CardSpec,
+        transcript: &mut Vec<Value>,
+        catalog: &Value,
+        lg: &str,
+    ) -> ChatReply {
+        use super::driver::{Step, World};
+        let user_texts: Vec<String> = transcript
+            .iter()
+            .filter(|m| get_str(m, "role") == "user")
+            .map(|m| {
+                let c = content_of(m);
+                // the user's own words, without a system note appended to them
+                match c.find("\n\n(System)").or_else(|| c.find("\n\n（系统）")) {
+                    Some(i) => c[..i].to_string(),
+                    None => c,
+                }
+            })
+            .filter(|c| !c.starts_with("(System)") && !c.starts_with("（系统）"))
+            .collect();
+        let profile = self.store.profile().unwrap_or_else(|_| json!({}));
+        let tz = get_str(&self.settings(), "timezone");
+        let today = tz
+            .parse::<chrono_tz::Tz>()
+            .map(|z| chrono::Utc::now().with_timezone(&z).date_naive())
+            .unwrap_or_else(|_| chrono::Local::now().date_naive());
+        let mail_ready = truthy(&catalog["connections"]["gmail"]["ready"]);
+        let w = World {
+            user_texts: &user_texts,
+            profile: &profile,
+            today,
+            mail_ready,
+            zh: lg != "en",
+        };
+        let mut step = super::driver::next(card, transcript, &w);
+        if let Step::Extract(text) = &step {
+            let n = transcript
+                .iter()
+                .flat_map(tool_calls)
+                .filter(|tc| get_str(tc, "id").starts_with("drv_"))
+                .count()
+                + 1;
+            let o = ChatOpts {
+                max_tokens: Some(300),
+                temperature: Some(0.0),
+                no_think: true,
+                ..opts("classify", task_id)
+            };
+            let msgs = [
+                json!({"role": "system", "content": super::driver::EXTRACT_SYSTEM}),
+                user_msg(text.clone()),
+            ];
+            let facts = match self.llm.chat(&msgs, None, &o).await {
+                Ok(r) => crate::llm::extract_json(&r.content).unwrap_or(json!({})),
+                Err(_) => json!({}),
+            };
+            self.event(task_id, "extract_facts", json!({"facts": facts}))
+                .await;
+            transcript.extend(super::driver::extract_exchange(n, text, &facts));
+            step = super::driver::next(card, transcript, &w);
+        }
+        let (content, tool_calls) = match step {
+            Step::Calls(c) => (String::new(), c),
+            Step::Final(a) if a.is_empty() => (
+                String::new(),
+                vec![ToolCall {
+                    id: "drv_snapshot".into(),
+                    name: "browser_snapshot".into(),
+                    args: json!({"max_chars": 6000}),
+                }],
+            ),
+            Step::Final(a) => (a, vec![]),
+            Step::Extract(_) => (String::new(), vec![]),
+        };
+        self.event(
+            task_id,
+            "driver",
+            json!({"card": card.skill, "calls": tool_calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), "final": !content.is_empty()}),
+        )
+        .await;
+        ChatReply {
+            content,
+            reasoning: String::new(),
+            tool_calls,
+            usage: json!({}),
+            finish_reason: json!("stop"),
+        }
+    }
+
+    /// One reading of the final answer by the model, as the user would read it: `Some(problem)` when it does not hold
+    /// together (it contradicts itself, stops mid-way, answers another question, or claims the opposite of what it
+    /// reports); `None` when it makes sense. JSON only, no judgement of style.
+    async fn review_answer(&self, task_id: &str, request: &str, answer: &str) -> Option<String> {
+        if answer.chars().count() < 40 {
+            return None;
+        }
+        let system = "You check an assistant's final reply to a user. Answer with JSON only: {\"ok\": bool, \"problem\": \"\"}. \
+ok is false ONLY when the reply does not make sense to the user: it contradicts itself, stops in the middle of a sentence or a list, \
+answers a different question than the one asked, or says something was done and also that it was not. Style, length, tone and \
+missing details are NOT problems (ok = true). problem: one short sentence naming the contradiction or gap, empty when ok.";
+        let o = ChatOpts {
+            max_tokens: Some(120),
+            temperature: Some(0.0),
+            no_think: true,
+            ..opts("classify", task_id)
+        };
+        let msgs = [
+            json!({"role": "system", "content": system}),
+            user_msg(format!(
+                "The user's request:\n{}\n\nThe reply:\n{}",
+                take_chars(request, 2000),
+                take_chars(answer, 6000)
+            )),
+        ];
+        let r = self.llm.chat(&msgs, None, &o).await.ok()?;
+        let v = crate::llm::extract_json(&r.content)?;
+        if v.get("ok").and_then(Value::as_bool).unwrap_or(true) {
+            return None;
+        }
+        let problem = get_str(&v, "problem");
+        (!problem.trim().is_empty()).then(|| take_chars(problem.trim(), 300).to_string())
+    }
+
     pub async fn answer_traits(
         &self,
         task_id: &str,
@@ -1747,6 +1875,7 @@ not only what the page shows now.",
         task_id: &str,
         conv_id: &str,
         s: &Value,
+        seen: Vec<String>,
     ) -> (ChatOpts, Option<JoinHandle<()>>) {
         let mut o = opts("executor", task_id);
         if !s.get("stream_answers").map(truthy).unwrap_or(true) {
@@ -1763,7 +1892,10 @@ not only what the page shows now.",
                     d = newer; // only the newest text matters
                 }
                 if last.as_ref() != Some(&d) {
-                    let text = crate::links::decode_answer(&d.text);
+                    // the same links as the final answer will have: repaired against the results, a half-written one
+                    // held back until it is whole
+                    let text =
+                        crate::links::repair_answer(crate::links::trim_open_link(&d.text), &seen);
                     rt.publish(
                         json!({"kind": "answer_delta", "task_id": tid, "conv_id": cid,
                                       "text": text, "calls": d.tool_calls}),
@@ -2074,15 +2206,16 @@ Your own notes and the short explanation around it stay in English.";
             && get_str(&t, "source") == "chat"
             && goal.is_none();
         let route_history = if routing { history.clone() } else { Vec::new() };
+        let mut followup_mail: Option<ToolCall> = None;
         if transcript.is_empty() {
             let mut first = goal_text.clone();
-            // "email it" right after a news report: which edition, which files (the chat's own file cards)
-            if let Some(note) = super::guards::report_followup_note(
+            // "email it" right after a news report: code sends the chat's latest edition (the call below, once the
+            // transcript is in place); the model only writes the answer
+            followup_mail = super::guards::report_followup_call(
                 &goal_text,
                 &self.store.msgs(&conv_id, 60).unwrap_or_default(),
-            ) {
-                first += &note;
-            }
+                &own_mailbox(&catalog),
+            );
             if !arr(&t, "attachments").is_empty() {
                 first += &self.attachment_context(&t).await;
                 self.mark_confidential(task_id, "attachment").await;
@@ -2131,6 +2264,26 @@ yourself; ask_bot is not available for it."
             }
         }
 
+        if let Some(tc) = followup_mail.take() {
+            self.event(task_id, "news_action", json!({"call": tc.name}))
+                .await;
+            transcript.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": tc.id, "type": "function",
+                "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+            if let Err(sp) = self
+                .exec_call(
+                    &t,
+                    &tc,
+                    &mut transcript,
+                    &catalog,
+                    &[],
+                    None,
+                    CallMode::MAIN,
+                )
+                .await
+            {
+                return self.suspend(task_id, sp, transcript).await;
+            }
+        }
         // ---------------------------------------------------------- resume after approval / takeover
         let pend = t.get("pending").cloned().unwrap_or(Value::Null);
         if pend.get("calls").is_some_and(truthy) {
@@ -2223,6 +2376,8 @@ yourself; ask_bot is not available for it."
         let mut cards_compared = false;
         let mut arrival_checked = false;
         let mut auto_handed = false;
+        let mut answer_reviewed = false;
+        let mut news_acted: HashSet<String> = HashSet::new();
         let mut ctx_retries = 0;
         loop {
             if self.cancel_flags.lock().contains(task_id) {
@@ -2383,14 +2538,28 @@ answer you can from what you have — what is done, the findings and what is mis
                     )));
                 }
             }
-            let (exec_opts, live) = self.executor_opts(task_id, &conv_id, &s);
-            let called = self
-                .chat_or_cancel(task_id, &msgs, tools.as_deref(), &exec_opts)
-                .await;
-            drop(exec_opts); // closes the live-text channel …
-            if let Some(live) = live {
-                let _ = live.await; // … and the last text is out before the reply is acted on
-            }
+            // a known-form skill (the arrival cards with a form function): code decides the next step, no model call
+            let driven = match super::driver::active(&transcript) {
+                Some(card) if !force_final => Some(
+                    self.drive(task_id, card, &mut transcript, &catalog, lg)
+                        .await,
+                ),
+                _ => None,
+            };
+            let called = if let Some(r) = driven {
+                Some(Ok(r))
+            } else {
+                let (exec_opts, live) =
+                    self.executor_opts(task_id, &conv_id, &s, crate::links::seen(&transcript));
+                let called = self
+                    .chat_or_cancel(task_id, &msgs, tools.as_deref(), &exec_opts)
+                    .await;
+                drop(exec_opts); // closes the live-text channel …
+                if let Some(live) = live {
+                    let _ = live.await; // … and the last text is out before the reply is acted on
+                }
+                called
+            };
             let resp: ChatReply = match called {
                 None => return Ok(()), // cancelled while waiting for the model (e.g. sleeping on a Retry-After)
                 Some(Ok(r)) => r,
@@ -2850,7 +3019,9 @@ straight with the content: don't mention this check or say \"here is the complet
             // what the answer means, read by a small classification call — only when a guard acts on it (a browser
             // run or an arrival card); the guards decide from these answers, not from the wording
             // (and a reply that asks something: it may re-ask for what the user already asked to have done)
+            let driven_run = super::driver::active(&transcript).is_some();
             let traits = if !final_.is_empty()
+                && !driven_run
                 && (super::guards::arrival_run(&transcript)
                     || super::guards::browser_used(&transcript)
                     || final_.contains('?')
@@ -2860,8 +3031,63 @@ straight with the content: don't mention this check or say \"here is the complet
             } else {
                 super::guards::AnswerTraits::default()
             };
+            // a news report's delivery is code's: the scheduled edition's mail, or the schedule asked for (once each)
+            if !final_.is_empty() && !force_final && !timed_out {
+                let own = own_mailbox(&catalog);
+                if let Some(tc) = super::guards::news_report_action(
+                    &transcript,
+                    &goal_text,
+                    get_str(&t, "source") == "schedule",
+                    &own,
+                    lg != "en",
+                ) {
+                    if !news_acted.contains(&tc.id) {
+                        news_acted.insert(tc.id.clone());
+                        self.event(task_id, "news_action", json!({"call": tc.name}))
+                            .await;
+                        transcript.push(json!({"role": "assistant", "content": final_, "tool_calls": [{"id": tc.id, "type": "function",
+                            "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+                        match self
+                            .exec_call(
+                                &t,
+                                &tc,
+                                &mut transcript,
+                                &catalog,
+                                &[],
+                                None,
+                                CallMode::MAIN,
+                            )
+                            .await
+                        {
+                            Ok(_) => continue,
+                            Err(sp) => return self.suspend(task_id, sp, transcript).await,
+                        }
+                    }
+                }
+            }
+            // the answer read once by the model as the user would: incoherent or self-contradicting → written again
+            if !final_.is_empty()
+                && !answer_reviewed
+                && !force_final
+                && !timed_out
+                && steps < max_steps - 1
+            {
+                answer_reviewed = true;
+                if let Some(problem) = self.review_answer(task_id, &goal_text, &final_).await {
+                    self.event(task_id, "answer_review", json!({"problem": problem}))
+                        .await;
+                    transcript.push(json!({"role": "assistant", "content": final_}));
+                    transcript.push(user_msg(if lg == "en" {
+                        format!("(System) Read as the user would, this answer does not hold together: {problem}. Write the whole answer again — complete, consistent and only what the sources support.")
+                    } else {
+                        format!("（系统）站在用户角度看，这个回答说不通：{problem}。请把完整的回答重写一遍——完整、前后一致、只写来源支持的内容。")
+                    }));
+                    continue;
+                }
+            }
             if !final_.is_empty()
                 && !arrival_checked
+                && !driven_run
                 && !force_final
                 && !timed_out
                 && steps < max_steps - 1
@@ -2882,6 +3108,14 @@ straight with the content: don't mention this check or say \"here is the complet
                 .or_else(|| {
                     super::guards::short_after_handback_hint(&transcript, &final_, lg != "en")
                 })
+                .or_else(|| {
+                    super::guards::proceed_with_pick_hint(
+                        &transcript,
+                        &goal_text,
+                        &final_,
+                        lg != "en",
+                    )
+                })
                 .or_else(|| super::guards::reconfirm_hint(traits.reconfirms, lg != "en"))
                 .or_else(|| {
                     super::guards::page_option_hint(&transcript, traits.asks_option, lg != "en")
@@ -2895,15 +3129,7 @@ straight with the content: don't mention this check or say \"here is the complet
                 })
                 .or_else(|| super::guards::missing_format_hint(&transcript, &goal_text, lg != "en"))
                 .or_else(|| super::guards::visa_days_hint(&transcript, &final_, lg != "en"))
-                .or_else(|| {
-                    super::guards::news_report_hint(
-                        &transcript,
-                        &goal_text,
-                        get_str(&t, "source") == "schedule",
-                        truthy(&catalog["connections"]["gmail"]["ready"]),
-                        lg != "en",
-                    )
-                }) {
+                {
                     self.event(task_id, "arrival_check", json!({"handed_over": false}))
                         .await;
                     transcript.push(json!({"role": "assistant", "content": final_}));
@@ -2917,6 +3143,7 @@ straight with the content: don't mention this check or say \"here is the complet
             if !final_.is_empty()
                 && (arrival_checked || force_final || timed_out || steps >= max_steps - 1)
                 && !auto_handed
+                && !driven_run
                 && super::guards::needs_handover(&transcript, traits)
             {
                 auto_handed = true;
@@ -2978,6 +3205,7 @@ straight with the content: don't mention this check or say \"here is the complet
             final_ = super::guards::with_grounded_numbers(&transcript, &final_, lg != "en");
             final_ = super::guards::with_claim_deadlines(&transcript, &final_, lg != "en");
             final_ = super::guards::with_hours(&final_);
+            final_ = super::guards::with_loan_payment(&goal_text, &final_, lg != "en");
             final_ = super::guards::with_user_edits(&transcript, &final_, lg != "en");
             final_ = super::guards::with_report_links(
                 &transcript,
@@ -3843,4 +4071,19 @@ pub fn browser_policy_allows(name: &str) -> bool {
 /// The model service gave up after its retries (overloaded, unavailable): another model may still answer.
 fn unavailable(e: &LlmError) -> bool {
     e.to_string().contains("model unavailable after retries")
+}
+
+/// The user's own address: the first connected mailbox (the one sends go from), `""` when none.
+fn own_mailbox(catalog: &Value) -> String {
+    let gm = &catalog["connections"]["gmail"];
+    if !truthy(&gm["ready"]) {
+        return String::new();
+    }
+    gm.get("accounts")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .map(|a| get_str(a, "email"))
+        .filter(|e| !e.is_empty())
+        .or_else(|| Some(get_str(gm, "account")).filter(|e| !e.is_empty()))
+        .unwrap_or_default()
 }

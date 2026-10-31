@@ -367,6 +367,7 @@ request — keep it short and leave out what the request does not need. The skil
                 .file_look(&tid, &sget(a, "path"), &sget(a, "question"))
                 .await),
             "make_pdf" => {
+                let r: R = async {
                 if !truthy(a.get("source").unwrap_or(&Value::Null))
                     && !truthy(a.get("markdown").unwrap_or(&Value::Null))
                 {
@@ -439,9 +440,18 @@ NOT in the PDF: {}.",
                 Ok(format!("PDF 已在本机生成 created locally: {} ({} KB{})。{fit} 如果用户要这个文件，用 send_file 发给他 Use send_file to give it to the user. \
 If the user asked for a page count, pass it as pages=N.",
                            get_str(&r, "path"), size / 1024, count))
+                            }
+                .await;
+                self.auto_send(t, r).await
             }
-            "make_xlsx" => self.make_xlsx(a),
-            "make_docx" => self.make_docx(a),
+            "make_xlsx" => {
+                let r = self.make_xlsx(a);
+                self.auto_send(t, r).await
+            }
+            "make_docx" => {
+                let r = self.make_docx(a);
+                self.auto_send(t, r).await
+            }
             "make_chart" => self.make_chart(t, a).await,
             "make_image" => Ok(self.make_image(t, a).await),
             "make_video" => Ok(self.make_video(t, a).await),
@@ -2399,6 +2409,26 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             "{}\nThe files are in the chat as cards. In the answer, give both links as they are (html_url, pdf_url) and a short summary of the edition.",
             omuse_common::pyjson::dumps(&out)
         ))
+    }
+
+    /// A file the run made when the request asks for a file goes to the chat at once (the "use send_file" note was
+    /// ignored at times: travel_receipts_real, chat_real 2026-10-31): the path is read from the result's own line.
+    async fn auto_send(&self, t: &Value, r: R) -> R {
+        static MADE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"created locally: (\S+?) \(").unwrap());
+        let Ok(text) = r else { return r };
+        if !super::guards::wants_file(&get_str(t, "goal")) {
+            return Ok(text);
+        }
+        let Some(path) = MADE.captures(&text).map(|c| c[1].to_string()) else {
+            return Ok(text);
+        };
+        match self.send_file(t, &json!({"path": path})).await {
+            Ok(_) => Ok(format!(
+                "{text}\n(The file is in the chat now; no send_file needed.)"
+            )),
+            Err(_) => Ok(text),
+        }
     }
 
     pub(crate) async fn send_file(&self, t: &Value, a: &Value) -> R {

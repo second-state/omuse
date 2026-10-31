@@ -23,6 +23,7 @@
 //! end-to-end suites (`tests/fake_llm.py`) matches on them.
 
 pub mod bots;
+pub mod driver;
 pub mod exec;
 pub mod ext;
 pub mod guards;

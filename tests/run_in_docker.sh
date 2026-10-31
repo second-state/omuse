@@ -89,6 +89,8 @@ if [ "${1:-}" != "--inside" ]; then
   # edit is tested without rebuilding the image (bots stay compiled in)
   [ -n "${OMUSE_E2E_SKILLS_DIR:-}" ] && EXTRA+=(-e OMUSE_E2E_SKILLS_DIR=/repo/skills)
   [ -n "${OMUSE_E2E_OUT:-}" ] && { mkdir -p "$OMUSE_E2E_OUT"; EXTRA+=(-v "$(cd "$OMUSE_E2E_OUT" && pwd)":/repo-out); }
+  # OMUSE_E2E_ONLY=kr: a suite that runs several cases runs only these (comma-separated keys), e.g. one arrival card
+  [ -n "${OMUSE_E2E_ONLY:-}" ] && EXTRA+=(-e "OMUSE_E2E_ONLY=$OMUSE_E2E_ONLY")
   exec docker run --rm --user 0 ${EXTRA[@]+"${EXTRA[@]}"} ${OMUSE_TEST_NAME:+--name "$OMUSE_TEST_NAME"} \
     --add-host shop.test:127.0.0.1 --add-host opentable.test:127.0.0.1 \
     $(for h in $STANDIN_HOSTS; do printf -- '--add-host %s:127.0.0.1 ' "$h"; done) \

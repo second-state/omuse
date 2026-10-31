@@ -1,5 +1,7 @@
 # Notes for coding agents working on this repo
 
+**Skills are code first.** A skill uses code tools for every step that can be computed; a decision the model must make is a JSON multiple choice; the model's prose is only the reply to the user. The full rule is in `CLAUDE.md` ("Skills: code decides").
+
 ## Releasing (tag `omuse-vX.Y.Z`)
 
 The version shown in the app comes from the release tag: the release workflow

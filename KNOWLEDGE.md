@@ -480,6 +480,43 @@ matches first, and a guard against setting a value on a non-text element. A fiel
 starts-with, contains), radio, click / button / check by selector or by text inside a headed section, `date`
 (datepicker), and in the broker `keys` (real key presses), `pick` (type, then click the listed option) and `wait`.
 
+## Known-form skills driven by code (2026-11-01)
+
+For an arrival card whose page has a form function (`crate::forms::FORMS`: SG, MY, KR, ID, TW, CN, TH), the model's
+only job is to understand the request and load the skill. From there `agent/driver.rs` decides every step — the loop
+asks `driver::next(card, transcript, world)` instead of the model (`Runtime::drive`), and the step is a function of the
+transcript alone, so a run suspended for a takeover carries on where it was:
+
+1. **The bookings**: the two fixed mail searches (the card's `mail_words`), then the first hits of each.
+2. **The facts** (`driver::extract`): the arriving flight, its date, the origin, the arrival airport and the airline
+   from the e-ticket; the stay from the booking's subject and address line, or "staying at …" in the user's words;
+   the purpose from the user's words. Regexes only. When they find no flight in mail that is there (or in the user's
+   answer), ONE extraction call (`EXTRACT_SYSTEM`, JSON) — the last resort — recorded as an `extract_facts` result.
+3. **The own address** (`own_addresses`): one profile address in the country → the stay (kind `own`), several → the
+   question which (answered by label), none → the booking.
+4. **Ask once** for whatever of the flight, the stay and the purpose is still missing (with the mailbox line when no
+   mailbox is connected); the next message of the chat is read the same way.
+5. **The filing window** (`window_days`): too early → `schedule_create` for the morning the window opens, and the
+   answer says so. Nothing is filed.
+6. The official page (`start_url`), `form_fill` with the facts, a hand-over for a step that is the user's (a form
+   function's `require` stop: the photo, the emailed code), `form_fill` again, the review hand-over (the reason names
+   the assumptions — No answers, arrival + 7, the next city — what was left blank, and the card's `user_steps`),
+   `browser_snapshot` after the hand-back, the reference (`ref_re`) and the answer (`driver::answer`).
+
+No classifier call, no hints and no automatic hand-over apply to a driven run (`driven_run` in the loop); its tool
+calls are `drv_<n>`. Tests: `driver::tests` (the step machine on transcripts), `tests/arrival_*_real.py`. Cards
+without a form function (KH, PH, JP, UK ETA, ETIAS) stay on the model path with the arrival guards; the way to move
+one is a form function per URL, then a `CardSpec`.
+
+**Other decisions moved from hints into code the same day:** the news report's delivery (`guards::news_report_action`:
+the scheduled edition's `gmail_send` to the user's own address, the schedule a regular report asks for;
+`report_followup_call` for "email it"), the arrival defaults typed by code (`departure_fix`, `next_city_fix` rewrite
+the `browser_type` text; `clear_guard` and `arrival_mail_guard` refuse), files sent at once when the request asked
+for a file (`Runtime::auto_send` after `make_pdf` / `make_xlsx` / `make_docx`), the live answer text repaired like
+the final (`links::trim_open_link`), and the final answer read once by the model as the user would
+(`Runtime::review_answer`: JSON, ok / problem; one rewrite when it does not hold together — the one place the model
+judges the model, by the user's rule that the final natural-language answer is reviewed).
+
 ## Guarantees in code (2026-10-30)
 
 What the user must always get no longer depends on the model following its instructions. Only two kinds of check stop an

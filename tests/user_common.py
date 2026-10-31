@@ -359,8 +359,15 @@ class User:
         await pg.wait_for_timeout(2500)   # the live picture refreshes for the page now under the user's control
 
     async def view_url(self) -> str:
-        """The address in the browser view's URL bar (the selected tab's page)."""
-        return await self.page.locator(".bview .bbar input.url").input_value()
+        """The address in the browser view's URL bar (the selected tab's page). The bar fills a moment after the view
+        opens: wait for it (up to 15 s), as the user's eye does."""
+        bar = self.page.locator(".bview .bbar input.url")
+        for _ in range(30):
+            v = await bar.input_value() if await bar.count() else ""
+            if v:
+                return v
+            await self.page.wait_for_timeout(500)
+        return ""
 
     async def view_picture(self, path: str | None = None) -> bytes:
         """The live picture of the page as the browser view shows it (PNG), saved to `path` when given."""

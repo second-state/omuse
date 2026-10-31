@@ -298,6 +298,7 @@ const FORMS: &[(&str, &str, &str, FormFn)] = &[
     ("id-arrival-card", "allindonesia.imigrasi.go.id", "/", id_arrival_card),
     ("tw-arrival-card", "twac.immigration.gov.tw", "/", tw_arrival_card),
     ("cn-arrival-card", "s.nia.gov.cn", "/arrivalcardfillingpc", cn_arrival_card),
+    ("th-arrival-card", "tdac.immigration.go.th", "/", th_arrival_card),
 ];
 
 /// The function for the page at `url`, with its name: `None` for a page no function knows (the generic path).
@@ -484,6 +485,80 @@ pub fn my_address(addr: &str) -> (String, String, String) {
             }
         });
     (state.to_string(), city, postcode)
+}
+
+/// The Thailand Digital Arrival Card (TDAC, https://tdac.immigration.go.th), mapped from the form on 2026-11-01: one
+/// page, dates DD/MM/YYYY, selects by ISO alpha-3, Yes / No radios by name. The CAPTCHA and Submit are the user's.
+fn th_arrival_card(i: &Inputs) -> Vec<Op> {
+    let f = i.facts;
+    let (given, family) = i.name_parts();
+    let nat = iso3(&i.nationality());
+    let purpose = match f.purpose.as_str() {
+        "holiday" => "HOLIDAY",
+        "business" => "BUSINESS",
+        "family" => "FAMILY",
+        "study" => "STUDY",
+        "transit" => "TRANSIT",
+        _ => "",
+    };
+    let accom_type = match f.stay_kind.as_str() {
+        "hotel" => "HOTEL",
+        "friends" => "RESIDENCE",
+        "own" => "OWN",
+        "other" => "OTHERS",
+        _ => "",
+    };
+    let mut ops = vec![
+        text("family_name", "#family_name", &family),
+        text("first_name", "#first_name", &given),
+        radio("sex", "sex", &i.sex_code()),
+        text("dob", "#dob", &date(i.birthday(), "%d/%m/%Y")),
+        select("nationality", "#nationality", &nat),
+        select("country_residence", "#country_residence", &nat),
+        vault_as("passport_no", "text", "#passport_no", "number", ""),
+        vault_as(
+            "passport_expiry",
+            "text",
+            "#passport_expiry",
+            "expiry",
+            "%d/%m/%Y",
+        ),
+        select("passport_country", "#passport_country", &nat),
+        text("email", "#email", &i.email()),
+        text("phone", "#phone", &i.phone()),
+        select(
+            "mode",
+            "#mode",
+            if f.flight_no.is_empty() { "" } else { "AIR" },
+        ),
+        text("flight_no", "#flight_no", &f.flight_no),
+        text(
+            "arrival_date",
+            "#arrival_date",
+            &date(i.arrival(), "%d/%m/%Y"),
+        ),
+        text("last_city", "#last_city", &f.origin_city),
+        text("next_city", "#next_city", &i.next_city()),
+        text(
+            "departure_date",
+            "#departure_date",
+            &date(i.departure(), "%d/%m/%Y"),
+        ),
+        select("purpose", "#purpose", purpose),
+        select("accom_type", "#accom_type", accom_type),
+        text("accommodation", "#accommodation", &i.stay()),
+    ];
+    for q in [
+        "h_symptoms",
+        "h_travel",
+        "d_names",
+        "d_refused",
+        "d_criminal",
+        "d_goods",
+    ] {
+        ops.push(radio(q, q, "No"));
+    }
+    ops
 }
 
 /// The Malaysia Digital Arrival Card (MDAC, https://imigresen-online.imi.gov.my/mdac/main → REGISTER =
@@ -1994,5 +2069,60 @@ mod tests {
     fn an_unknown_page_has_no_function() {
         assert!(form_for("https://example.com/form").is_none());
         assert!(form_for("not a url").is_none());
+    }
+
+    #[test]
+    fn the_tdac_plan_fills_every_known_field_and_answers_no() {
+        let facts = Facts {
+            flight_no: "TG 476".into(),
+            arrival_date: "2026-11-03".into(),
+            origin_city: "Sydney".into(),
+            origin_country: "Australia".into(),
+            stay_name: "Siam Riverside Hotel".into(),
+            stay_address: "88 Charoen Krung Road, Bangkok 10500".into(),
+            stay_kind: "hotel".into(),
+            purpose: "holiday".into(),
+            ..Facts::default()
+        };
+        let p = serde_json::json!({"name_en": "JORDAN LU", "gender": "Female", "birthday": "1985-04-12",
+            "nationality": "Australia", "email_personal": "jordan@example.com", "phone": "+61 400 000 000"});
+        let i = Inputs {
+            facts: &facts,
+            profile: &p,
+        };
+        let ops: Vec<Value> = th_arrival_card(&i).iter().filter_map(Op::to_json).collect();
+        let by = |field: &str| {
+            ops.iter()
+                .find(|o| o["field"] == field)
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        assert_eq!(by("family_name")["value"], "LU");
+        assert_eq!(by("first_name")["value"], "JORDAN");
+        assert_eq!(by("sex")["value"], "F");
+        assert_eq!(by("dob")["value"], "12/04/1985");
+        assert_eq!(by("nationality")["value"], "AUS");
+        assert_eq!(by("arrival_date")["value"], "03/11/2026");
+        assert_eq!(by("departure_date")["value"], "10/11/2026");
+        assert_eq!(by("next_city")["value"], "Sydney");
+        assert_eq!(by("purpose")["value"], "HOLIDAY");
+        assert_eq!(by("accom_type")["value"], "HOTEL");
+        assert!(by("accommodation")["value"]
+            .as_str()
+            .unwrap()
+            .starts_with("Siam Riverside Hotel"));
+        assert_eq!(by("passport_no")["vault"]["field"], "number");
+        for q in [
+            "h_symptoms",
+            "h_travel",
+            "d_names",
+            "d_refused",
+            "d_criminal",
+            "d_goods",
+        ] {
+            assert_eq!(by(q)["value"], "No", "{q}");
+        }
+        assert!(form_for("https://tdac.immigration.go.th/")
+            .is_some_and(|(n, _)| n == "th-arrival-card"));
     }
 }

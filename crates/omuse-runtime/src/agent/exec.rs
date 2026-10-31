@@ -257,6 +257,21 @@ impl Runtime {
                     args["purpose"] = json!(fixed);
                 }
             }
+            // an arrival card's defaults are typed by code: departure = arrival + 7 days, next city = the city the flight
+            // came from — the model's other value is replaced (the notes it used to get were ignored)
+            let mut typed_fix: Option<String> = None;
+            if name == "browser_type" {
+                let goal = get_str(t, "goal");
+                if let Some(v) = super::guards::departure_fix(transcript, &goal, call) {
+                    typed_fix = Some(format!(
+                        "departure date typed as {v} (arrival + 7 days, the user's default)"
+                    ));
+                    args["text"] = json!(v);
+                } else if let Some(v) = super::guards::next_city_fix(transcript, call) {
+                    typed_fix = Some(format!("next city typed as {v} (the city the flight came from, the user's default)"));
+                    args["text"] = json!(v);
+                }
+            }
             // a news research run searches in the browser only (the user's rule for the skill): a web search there skips
             // the search APIs, and a news search is the browser's news search (news_demo 2026-11-01: a site: query
             // went to web_search)
@@ -339,6 +354,8 @@ impl Runtime {
                 .or_else(|| retype_guard(transcript, call))
                 .or_else(|| empty_mail_guard(call))
                 .or_else(|| arrival_submit_guard(transcript, call))
+                .or_else(|| arrival_mail_guard(transcript, &goal, call))
+                .or_else(|| clear_guard(transcript, call))
                 .or_else(|| apdt_face_guard(transcript, call))
                 .or_else(|| super::guards::takeover_before_fill_guard(transcript, call))
                 .or_else(|| super::guards::user_edit_guard(transcript, call))
@@ -362,12 +379,9 @@ impl Runtime {
             // (the user's rule, 2026-10-30: auto-approve is the default, so only the hand-over and the Vault's
             // secrets are hard stops)
             let notes: Vec<String> = [
-                clear_guard(transcript, call),
                 super::guards::form_fill_note(transcript, call),
-                arrival_mail_guard(transcript, &goal, call),
                 arrival_ask_first_guard(transcript, &goal, call),
-                departure_date_guard(transcript, call),
-                next_city_note(transcript, call),
+                typed_fix.map(|f| format!("(fixed: {f})")),
             ]
             .into_iter()
             .flatten()

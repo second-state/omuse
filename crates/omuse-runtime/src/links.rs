@@ -203,6 +203,19 @@ pub fn repair_answer(text: &str, seen: &[String]) -> String {
     decode_answer(&repair(text, seen))
 }
 
+/// The streamed text without a markdown link still being written: `[text](https://…` with no closing `)` is cut at
+/// its `[`, so the live bubble never shows a half link and, once the link is complete, the same repair as the final
+/// answer's applies (stream_real 2026-11-01: a half link in the bubble, the whole link turned into text at the end).
+pub fn trim_open_link(text: &str) -> &str {
+    if let Some(i) = text.rfind('[') {
+        let tail = &text[i..];
+        if !tail.contains(')') && (tail.contains("](") || !tail.contains(']')) {
+            return text[..i].trim_end();
+        }
+    }
+    text
+}
+
 /// Every string in `v` repaired (a tool call's arguments).
 pub fn repair_value(v: &mut Value, seen: &[String]) {
     match v {
@@ -307,5 +320,20 @@ mod tests {
         let mut args = json!({"url": old});
         decode_value(&mut args);
         assert_eq!(args, json!({"url": ICA}));
+    }
+
+    #[test]
+    fn a_half_written_link_is_held_back() {
+        assert_eq!(
+            trim_open_link("The tower is 330 m. [Source: key figures](https://www.tour"),
+            "The tower is 330 m."
+        );
+        assert_eq!(
+            trim_open_link("The tower is 330 m. [Source"),
+            "The tower is 330 m."
+        );
+        let whole = "The tower is 330 m. [Source](https://x.example/a) and more";
+        assert_eq!(trim_open_link(whole), whole);
+        assert_eq!(trim_open_link("plain text"), "plain text");
     }
 }

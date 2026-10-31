@@ -2151,7 +2151,7 @@ fn arrival_defaults_are_kept_and_handed_over() {
         2,
         json!({"role": "tool", "tool_call_id": "c0", "content": "# Thailand Digital Arrival Card"}),
     );
-    assert!(clear_guard(&t, &wipe).is_some_and(|e| e.contains("keep the value in e19")));
+    assert!(clear_guard(&t, &wipe).is_some_and(|e| e.contains("e19 keeps its value")));
     // a field the agent never typed may be cleared
     let other = call(
         "c2",
@@ -4084,4 +4084,167 @@ fn email_it_after_a_report_names_the_edition() {
         None
     );
     assert_eq!(report_followup_note("email it", &[]), None);
+}
+
+#[test]
+fn news_delivery_is_a_call_code_makes() {
+    use super::guards::{news_report_action, report_followup_call};
+    let t = report_run(&[]);
+    let weekly = "Research the news on solid-state batteries and send me a weekly report";
+    let c = news_report_action(&t, weekly, false, "me@example.com", false).unwrap();
+    assert_eq!(c.name, "schedule_create");
+    assert_eq!(sget(&c.args, "spec"), "0 8 * * 1");
+    assert!(sget(&c.args, "goal").contains("and email it to me"));
+    let daily =
+        news_report_action(&t, "a daily news report on batteries", false, "", false).unwrap();
+    assert_eq!(sget(&daily.args, "spec"), "0 8 * * *");
+    let goal = "News report on solid-state batteries: … and email it to me";
+    let m = news_report_action(&t, goal, true, "me@example.com", false).unwrap();
+    assert_eq!(
+        (m.name.as_str(), sget(&m.args, "to").as_str()),
+        ("gmail_send", "me@example.com")
+    );
+    assert_eq!(
+        m.args["attachments"],
+        json!([
+            "artifacts/news/solid-state-batteries/2026-11-02-0800.pdf",
+            "artifacts/news/solid-state-batteries/2026-11-02-0800.html"
+        ])
+    );
+    assert_eq!(news_report_action(&t, goal, true, "", false), None); // no mailbox
+    let sent = report_run(&[("g1", "gmail_send", "{\"ok\": true}")]);
+    assert_eq!(
+        news_report_action(&sent, goal, true, "me@example.com", false),
+        None
+    );
+    // the follow-up "email it": the chat's latest edition
+    let card = json!({"role": "system", "content": "{\"type\": \"files\", \"note\": \"The Battery Weekly\", \"items\": [{\"path\": \"artifacts/news/b/x.html\"}, {\"path\": \"artifacts/news/b/x.pdf\"}]}"});
+    let f =
+        report_followup_call("email it", std::slice::from_ref(&card), "me@example.com").unwrap();
+    assert_eq!(
+        (f.name.as_str(), sget(&f.args, "subject").as_str()),
+        ("gmail_send", "The Battery Weekly")
+    );
+    assert_eq!(
+        f.args["attachments"],
+        json!(["artifacts/news/b/x.pdf", "artifacts/news/b/x.html"])
+    );
+    assert_eq!(report_followup_call("email it", &[card], ""), None);
+}
+
+#[test]
+fn an_arrival_cards_defaults_are_typed_by_code() {
+    use super::guards::{departure_fix, next_city_fix, wants_file};
+    let page = r#"{"url": "https://tdac.immigration.go.th/", "snapshot": "  [e12] textbox \"Last city / port of embarkation *\"\n  [e15] textbox \"Date of arrival in Thailand *\"\n  [e18] textbox \"Next city / port after Thailand *\"\n  [e21] textbox \"Intended date of departure from Thailand *\""}"#;
+    let mut t = vec![json!({"role": "system", "content": ""})];
+    t.extend(tool_step(
+        "c0",
+        "load_skill",
+        json!({"name": "th-arrival-card"}),
+        "# TDAC",
+    ));
+    t.extend(tool_step(
+        "c1",
+        "browser_navigate",
+        json!({"url": "https://tdac.immigration.go.th/"}),
+        page,
+    ));
+    t.extend(tool_step(
+        "c2",
+        "browser_type",
+        json!({"ref": "e15", "text": "01/11/2026"}),
+        page,
+    ));
+    t.extend(tool_step(
+        "c3",
+        "browser_type",
+        json!({"ref": "e12", "text": "Sydney (SYD)"}),
+        page,
+    ));
+    let goal = "Please fill in my TDAC — it's a holiday.";
+    let wrong = call(
+        "c4",
+        "browser_type",
+        json!({"ref": "e21", "text": "05/11/2026"}),
+    );
+    assert_eq!(
+        departure_fix(&t, goal, &wrong).as_deref(),
+        Some("08/11/2026")
+    );
+    let right = call(
+        "c4",
+        "browser_type",
+        json!({"ref": "e21", "text": "08/11/2026"}),
+    );
+    assert_eq!(departure_fix(&t, goal, &right), None);
+    // the user named a return date: the model's date stands
+    assert_eq!(
+        departure_fix(&t, "Fill in my TDAC, I fly back on 5 November", &wrong),
+        None
+    );
+    let seoul = call(
+        "c4",
+        "browser_type",
+        json!({"ref": "e18", "text": "Bangkok"}),
+    );
+    assert_eq!(next_city_fix(&t, &seoul).as_deref(), Some("Sydney"));
+    let same = call(
+        "c4",
+        "browser_type",
+        json!({"ref": "e18", "text": "Sydney, Australia"}),
+    );
+    assert_eq!(next_city_fix(&t, &same), None);
+    assert!(wants_file("send me the list as a PDF") && !wants_file("what should I pack?"));
+}
+
+#[test]
+fn a_buy_request_with_a_held_pick_is_not_asked_to_proceed() {
+    use super::guards::proceed_with_pick_hint;
+    let t = tool_step(
+        "p1",
+        "present_choices",
+        json!({"question": "Cheapest is Premium; shall I proceed?", "kind": "comparison", "picked": "Premium", "options": []}),
+        "shown",
+    );
+    let goal = "Buy me FWD's cheapest travel insurance plan for my Tokyo trip";
+    let h = proceed_with_pick_hint(
+        &t,
+        goal,
+        "I found three plans. Cheapest is Premium; shall I proceed with it?",
+        false,
+    );
+    assert!(h.is_some_and(|h| h.contains("\"Premium\"")));
+    assert_eq!(
+        proceed_with_pick_hint(&t, goal, "Premium is bought: reference FWD-1.", false),
+        None
+    );
+    assert_eq!(
+        proceed_with_pick_hint(&t, "Which FWD plans are there?", "Shall I proceed?", false),
+        None
+    );
+    let bought = [
+        t.clone(),
+        tool_step(
+            "p2",
+            "purchase_confirm",
+            json!({}),
+            "{\"status\": \"approved\"}",
+        ),
+    ]
+    .concat();
+    assert_eq!(
+        proceed_with_pick_hint(&bought, goal, "Shall I proceed?", false),
+        None
+    );
+}
+
+#[test]
+fn a_fully_specified_loan_payment_is_computed_by_code() {
+    use super::guards::with_loan_payment;
+    let goal = "What is the monthly payment on a 3,000,000 mortgage over 25 years at 3.5% a year?";
+    let a = with_loan_payment(goal, "The monthly payment is approximately 3,000,000 in the same currency.", false);
+    assert!(a.contains("**15,018.71**"), "{a}");
+    let right = "About 15,018.71 a month.";
+    assert_eq!(with_loan_payment(goal, right, false), right);
+    assert_eq!(with_loan_payment("What is the weather?", "Sunny.", false), "Sunny.");
 }

@@ -224,8 +224,8 @@ written.",
     })
 }
 
-/// An arrival card is a web form: an email while one is being filled, with no email asked for in the request, gets a
-/// note (it still goes to the user's approval as usual) (arrival_cards2_real 2026-10-30: Visit Japan Web ended with a "Send email" approval dialog).
+/// An arrival card is a web form: an email while one is being filled, with no email asked for in the request, is refused
+/// (a refusal since 2026-11-01; a note before) (arrival_cards2_real 2026-10-30: Visit Japan Web ended with a "Send email" approval dialog).
 pub fn arrival_mail_guard(transcript: &[Value], goal: &str, call: &ToolCall) -> Option<String> {
     static ASKED: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i)\b(send|forward)\b|\be-?mail (it|this|that|them|the|a copy|me)\b|发邮件|发给|寄给").unwrap()
@@ -237,7 +237,7 @@ pub fn arrival_mail_guard(transcript: &[Value], goal: &str, call: &ToolCall) -> 
         return None;
     }
     Some(
-        "入境卡是网页表单，不需要发邮件：在页面上填好，然后用 browser_request_takeover 交给用户提交。 An arrival card \
+        "ERROR: 没有发送 — 入境卡是网页表单，不需要发邮件：在页面上填好，然后用 browser_request_takeover 交给用户提交。 Not sent: an arrival card \
 is a web form — nothing needs emailing. Fill it on the page, then hand it over with browser_request_takeover for the \
 user to submit."
             .to_string(),
@@ -706,6 +706,84 @@ Unless the user, a return / onward flight or a check-out date gave the date you 
     })
 }
 
+/// The departure date to type instead of the model's: the arrival date typed on the form + 7 days (in the field's
+/// format) when the text differs and nothing in the trip's sources gives another date (`departure_default`); the
+/// rewrite replaces the old note (arrival_cards_real 2026-10-30: TDAC arrival 01/11/2026, departure typed 05/11/2026).
+pub fn departure_fix(transcript: &[Value], goal: &str, call: &ToolCall) -> Option<String> {
+    static DEPART: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)depart|leaving|离境|出境日期").unwrap());
+    static ARRIVE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)(arriv|入境).*(date|日期)|(date|日期).*(arriv|入境)").unwrap()
+    });
+    if call.name != "browser_type" || !arrival_run(transcript) {
+        return None;
+    }
+    let (r, text) = (sget(&call.args, "ref"), sget(&call.args, "text"));
+    let (typed, fmt) = form_date(&text)?;
+    let label = field_label(transcript, &r)?;
+    if !DEPART.is_match(&label) || ARRIVE.is_match(&label) {
+        return None;
+    }
+    // a return / onward flight, a check-out or the user's words name a date: the model's stands
+    departure_default(transcript, goal)?;
+    let arrival = calls_before(transcript, &call.id)
+        .into_iter()
+        .rev()
+        .filter(|(n, _)| n == "browser_type")
+        .find_map(|(_, a)| {
+            let l = field_label(transcript, &sget(&a, "ref"))?;
+            ARRIVE.is_match(&l).then(|| form_date(&sget(&a, "text")))?
+        })?
+        .0;
+    let want = arrival + chrono::Duration::days(7);
+    (typed != want).then(|| want.format(fmt).to_string())
+}
+
+/// The next city to type instead of the model's: the city the flight came from (the last city typed on the form), when
+/// the text names another (arrival_cards_real 2026-10-31: Korea's next city typed as Seoul, the destination itself).
+pub fn next_city_fix(transcript: &[Value], call: &ToolCall) -> Option<String> {
+    static NEXT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)next (city|port)|after (this|the) (country|trip)|下一(个)?(城市|目的地|港口)",
+        )
+        .unwrap()
+    });
+    static LAST: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)last (city|port)|embark|(city|port) of departure|上一(个)?(城市|港口)|出发(城市|地)").unwrap()
+    });
+    if call.name != "browser_type" || !arrival_run(transcript) {
+        return None;
+    }
+    let (r, text) = (sget(&call.args, "ref"), sget(&call.args, "text"));
+    if text.trim().is_empty() || !NEXT.is_match(&field_label(transcript, &r)?) {
+        return None;
+    }
+    let last = calls_before(transcript, &call.id)
+        .into_iter()
+        .rev()
+        .filter(|(n, _)| n == "browser_type")
+        .find_map(|(_, a)| {
+            let l = field_label(transcript, &sget(&a, "ref"))?;
+            (LAST.is_match(&l) && !NEXT.is_match(&l)).then(|| sget(&a, "text"))
+        })?;
+    let city = last
+        .split([',', '(', '/'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    (!city.is_empty() && !text.to_lowercase().contains(&city.to_lowercase())).then_some(city)
+}
+
+/// Whether the request asks for a file (a download, a PDF, a spreadsheet …): what is made is then sent to the chat at
+/// once.
+pub fn wants_file(goal: &str) -> bool {
+    static WANTS_FILE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(file|download|attachment|pdf|excel|xlsx|spreadsheet|docx|word document|markdown|csv)\b|\.md\b|文件|下载|附件|表格").unwrap()
+    });
+    WANTS_FILE.is_match(goal)
+}
+
 /// The departure date an arrival card's hand-over puts on the form (`browser_request_takeover` with `set_departure`): the
 /// arrival date typed + 7 days, in its format, when nothing in the trip's sources gives another (a return or onward
 /// flight, a check-out date, the user's own words) and the form's departure field does not already hold it — the
@@ -718,7 +796,7 @@ pub fn departure_default(transcript: &[Value], goal: &str) -> Option<String> {
         Regex::new(r"(?i)(arriv|入境).*(date|日期)|(date|日期).*(arriv|入境)").unwrap()
     });
     static OTHER: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)check-?out|return flight|onward|round[- ]trip|leav(e|ing) on|depart(ing|ure)? on|回程|退房|离开").unwrap()
+        Regex::new(r"(?i)check-?out|return flight|onward|round[- ]trip|leav(e|ing) on|depart(ing|ure)? on|fly(ing)? back|back (home )?on|回程|返程|退房|离开|回去").unwrap()
     });
     if !arrival_run(transcript) || OTHER.is_match(goal) {
         return None;
@@ -1018,7 +1096,7 @@ pub fn arrival_run(transcript: &[Value]) -> bool {
     !form_kind_skills(transcript, "arrival").is_empty()
 }
 
-/// On an arrival card, clearing a field the agent typed on this page gets a note (`exec_call` notes): its values are the defaults the user
+/// On an arrival card, clearing a field the agent typed on this page is refused (the field keeps its value): its values are the defaults the user
 /// asked for (departure = arrival + 7 days, next city = the flight's origin), which the user reviews and corrects on
 /// the page after the hand-over (arrival_real 2026-10-30: the TDAC's next city and departure date typed, then wiped,
 /// and the user asked for them in the chat).
@@ -1038,11 +1116,10 @@ pub fn clear_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
         .any(|(nm, a)| nm == "browser_type" && sget(a, "ref") == r && !sget(a, "text").is_empty());
     typed.then(|| {
         format!(
-            "你清空了 {r}：那是用户要的默认值（离境日期 = 入境 + 7 天，下一城市 = 航班出发城市，健康和申报问题「否」），\
-除非用户说过别的，请把它填回去；用户接手后会在页面上核对。 You cleared {r}: keep the value in {r} — it held the default \
-the user asked for (departure = arrival + 7 days, next city = the city the flight comes from, health and declaration \
-questions No). Type it back unless the user said otherwise; the user reviews it on the page after the hand-over, and \
-the browser_request_takeover reason says what you assumed."
+            "ERROR: 没有清空 {r} — 那是用户要的默认值（离境日期 = 入境 + 7 天，下一城市 = 航班出发城市，健康和申报问题「否」），\
+保留原值；用户接手后会在页面上核对。 Not cleared: {r} keeps its value — the default the user asked for (departure = \
+arrival + 7 days, next city = the city the flight comes from, health and declaration questions No). The user reviews \
+it on the page after the hand-over; the browser_request_takeover reason says what you assumed."
         )
     })
 }
@@ -1054,10 +1131,16 @@ the browser_request_takeover reason says what you assumed."
 pub fn arrival_default_hint(transcript: &[Value], asks_defaults: bool, zh: bool) -> Option<String> {
     // the form was being filled (typed into, a Vault value put in): ending without the hand-over is the same mistake,
     // whatever the answer asks (arrival_cards3_real 2026-10-30: eTravel's middle name asked in the chat)
+    // a form function's fill counts too (arrival_address_real 2026-11-01: the SG card filled by form_fill, then the
+    // declarations asked in the chat, never handed over)
     let filled = transcript.iter().flat_map(tool_calls).any(|tc| {
         matches!(
             stored_call(tc).0.as_str(),
-            "browser_type" | "browser_select" | "browser_fill_secret"
+            "browser_type"
+                | "browser_select"
+                | "browser_fill_secret"
+                | "form_fill"
+                | "browser_fill_form"
         )
     });
     let handed = transcript.iter().any(|m| {
@@ -1198,7 +1281,11 @@ pub fn needs_handover(transcript: &[Value], traits: AnswerTraits) -> bool {
     let filled = calls.iter().any(|(_, n)| {
         matches!(
             n.as_str(),
-            "browser_type" | "browser_select" | "browser_fill_secret"
+            "browser_type"
+                | "browser_select"
+                | "browser_fill_secret"
+                | "form_fill"
+                | "browser_fill_form"
         )
     });
     let form_filled = calls
@@ -1508,6 +1595,64 @@ emailed code, a photo) is named in its result: hand the page over for it, then c
     })
 }
 
+/// A loan's monthly payment the request fully specifies (principal, yearly rate, years) is arithmetic, not the model's:
+/// when the answer does not carry the figure, code appends it (market_real 2026-11-01: "approximately 3,000,000" for a
+/// 3,000,000 loan at 3.5% over 25 years; the right figure is 15,018.71).
+pub fn with_loan_payment(goal: &str, answer: &str, zh: bool) -> String {
+    static ASK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(monthly (payment|repayment|instal?lment)|mortgage|home loan|car loan)\b|月供|房贷|按揭").unwrap()
+    });
+    static AMOUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{1,3}(?:,\d{3})+|\d{4,})(?:\.\d+)?").unwrap());
+    static RATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+(?:\.\d+)?)\s?%").unwrap());
+    static YEARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(\d{1,2})[- ]?(?:years?|yrs?)\b|(\d{1,2})\s?年").unwrap());
+    if !ASK.is_match(goal) {
+        return answer.to_string();
+    }
+    let principal: f64 = match AMOUNT.captures(goal).and_then(|c| c[1].replace(',', "").parse().ok()) {
+        Some(p) => p,
+        None => return answer.to_string(),
+    };
+    let rate: f64 = match RATE.captures(goal).and_then(|c| c[1].parse().ok()) {
+        Some(r) => r,
+        None => return answer.to_string(),
+    };
+    let years: f64 = match YEARS
+        .captures(goal)
+        .and_then(|c| c.get(1).or(c.get(2)).and_then(|m| m.as_str().parse().ok()))
+    {
+        Some(y) => y,
+        None => return answer.to_string(),
+    };
+    let (r, n) = (rate / 100.0 / 12.0, years * 12.0);
+    let pmt = if r == 0.0 {
+        principal / n
+    } else {
+        principal * r / (1.0 - (1.0 + r).powf(-n))
+    };
+    let shown = format!("{:.2}", pmt);
+    let with_commas = {
+        let (int, frac) = shown.split_once('.').unwrap_or((&shown, "00"));
+        let mut out = String::new();
+        for (i, ch) in int.chars().enumerate() {
+            if i > 0 && (int.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(ch);
+        }
+        format!("{out}.{frac}")
+    };
+    let plain = answer.replace(',', "");
+    if plain.contains(&shown) || plain.contains(&format!("{:.0}", pmt)) {
+        return answer.to_string();
+    }
+    let line = if zh {
+        format!("月供（按本金 {principal:.0}、年利率 {rate}%、{years:.0} 年等额本息计算）：**{with_commas}**")
+    } else {
+        format!("Monthly payment (principal {principal:.0} at {rate}% a year over {years:.0} years, equal instalments): **{with_commas}**")
+    };
+    format!("{}\n\n{line}", answer.trim_end())
+}
+
 /// A duration of an hour or more given only in minutes gets its hours next to it — "a delay of 435 minutes (7 h 15
 /// min)" — so the user reads it at a glance (insurance_real 2026-10-31: the claim's 7 h 15 min delay as "435 minutes").
 pub fn with_hours(answer: &str) -> String {
@@ -1548,6 +1693,7 @@ pub fn takeover_before_fill_guard(transcript: &[Value], call: &ToolCall) -> Opti
     if call.name != "browser_request_takeover"
         || call.id.starts_with(AUTO_HANDOVER)
         || call.id.ends_with("_handover")
+        || call.id.starts_with("drv_")
     {
         return None;
     }
@@ -1633,6 +1779,35 @@ attachments = {paths:?}."
     ))
 }
 
+/// "email it" after a news report, as a call code makes on the follow-up turn (the same reading as
+/// `report_followup_note`): `gmail_send` of the chat's latest edition to the user's own address.
+pub fn report_followup_call(goal: &str, msgs: &[Value], own_email: &str) -> Option<ToolCall> {
+    if own_email.is_empty() {
+        return None;
+    }
+    let note = report_followup_note(goal, msgs)?;
+    let i = note.find("attachments = ")?;
+    let atts: Vec<String> =
+        serde_json::from_str(note[i + "attachments = ".len()..].trim_end_matches('.')).ok()?;
+    // the edition's title: the file card's note, else the file's name
+    let title = msgs
+        .iter()
+        .rev()
+        .filter(|m| get_str(m, "role") == "system")
+        .filter_map(|m| serde_json::from_str::<Value>(&get_str(m, "content")).ok())
+        .find(|c| matches!(get_str(c, "type").as_str(), "file" | "files"))
+        .map(|c| get_str(&c, "note"))
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "Your news report".to_string());
+    Some(ToolCall {
+        id: "news_mail".into(),
+        name: "gmail_send".into(),
+        args: json!({"to": own_email, "subject": title,
+                     "body": format!("Here is the latest edition of {title}. The PDF and HTML editions are attached."),
+                     "attachments": atts}),
+    })
+}
+
 /// The last news report this run published (`news_report`'s result): `{title, html_url, html_path, pdf_url?, pdf_path?}`.
 pub fn published_report(transcript: &[Value]) -> Option<Value> {
     let ids: Vec<String> = transcript
@@ -1667,7 +1842,7 @@ fn ran_ok(transcript: &[Value], tools: &[&str]) -> bool {
 }
 
 static REPORT_EMAIL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(e-?mail|gmail|mail (it|them|each|every))\b|\bsend (it|them|each|every)[^.\n]{0,40}\bto me\b|邮件|邮箱|发到我的?邮")
+    Regex::new(r"(?i)\b(e-?mail|gmail|mail (it|them|each|every|me))\b|\bsend (it|them|each|every)[^.\n]{0,40}\bto me\b|\bsend me\b|邮件|邮箱|发到我的?邮|发给我")
         .unwrap()
 });
 static REPORT_FREQ: LazyLock<Regex> = LazyLock::new(|| {
@@ -1716,6 +1891,75 @@ attachments = {:?}; then answer.", get_str(&rep, "title"), atts)
             format!("(System) The user asked for this report regularly: create the schedule now with schedule_create \
 (kind=cron; daily '0 8 * * *', weekly '0 8 * * 1', or the time they named), goal \"News report on <subject>: research \
 the latest news with the news-research skill and publish the newspaper report{email}\"; then answer.")
+        });
+    }
+    None
+}
+
+/// The call code makes after a news report, instead of asking the model (the same conditions as `news_report_hint`):
+/// the scheduled edition's mail to the user's own address, or the schedule a regular report asks for. `own_email` is
+/// the first connected mailbox.
+pub fn news_report_action(
+    transcript: &[Value],
+    goal: &str,
+    scheduled: bool,
+    own_email: &str,
+    zh: bool,
+) -> Option<ToolCall> {
+    let rep = published_report(transcript)?;
+    let title = get_str(&rep, "title");
+    let mut atts = vec![get_str(&rep, "pdf_path"), get_str(&rep, "html_path")];
+    atts.retain(|a| !a.is_empty());
+    if scheduled
+        && !own_email.is_empty()
+        && REPORT_EMAIL.is_match(goal)
+        && !ran_ok(transcript, &["gmail_send"])
+    {
+        let n = rep.get("stories").and_then(Value::as_u64).unwrap_or(0);
+        let body = if zh {
+            format!("你的新一期《{title}》已经出来了（{n} 条新闻）。PDF 和 HTML 版见附件。")
+        } else {
+            format!("Your new edition of {title} is ready ({n} stories). The PDF and HTML editions are attached.")
+        };
+        return Some(ToolCall {
+            id: "news_mail".into(),
+            name: "gmail_send".into(),
+            args: json!({"to": own_email, "subject": title, "body": body, "attachments": atts}),
+        });
+    }
+    if !scheduled
+        && REPORT_FREQ.is_match(goal)
+        && !ran_ok(transcript, &["schedule_create", "goal_create"])
+    {
+        let low = goal.to_lowercase();
+        let spec = if low.contains("daily")
+            || low.contains("every day")
+            || low.contains("every morning")
+            || low.contains("每天")
+            || low.contains("每日")
+        {
+            "0 8 * * *"
+        } else if low.contains("month") || low.contains("每月") {
+            "0 8 1 * *"
+        } else {
+            "0 8 * * 1"
+        };
+        let subject = get_str(&rep, "subject");
+        let subject = if subject.is_empty() {
+            title.clone()
+        } else {
+            subject
+        };
+        let email = if REPORT_EMAIL.is_match(goal) {
+            " and email it to me"
+        } else {
+            ""
+        };
+        return Some(ToolCall {
+            id: "news_schedule".into(),
+            name: "schedule_create".into(),
+            args: json!({"name": format!("News report: {subject}"), "kind": "cron", "spec": spec,
+                         "goal": format!("News report on {subject}: research the latest news with the news-research skill and publish the newspaper report{email}")}),
         });
     }
     None
@@ -1784,6 +2028,45 @@ pub fn visa_days_hint(transcript: &[Value], answer: &str, zh: bool) -> Option<St
 visa-free stay in days on an official source (the country's foreign ministry or immigration page — browser_read it); \
 when sources disagree, give the official one with its date. Then write the WHOLE answer again — every part of it \
 (each country, the arrival cards with their links, the reminders) — with the days added.".to_string()
+    })
+}
+
+/// A purchase or booking the user asked for, a comparison whose pick code holds (`present_choices` with `picked`),
+/// nothing bought yet — and the answer asks whether to proceed: the decision is the user's request, so the run is
+/// told once to go on with the pick (cards_pay_real 2026-11-01: "Cheapest is Premium; shall I proceed with it?" as
+/// the final answer; the classifier saw no re-confirmation). Deterministic: regexes on the request and the answer.
+pub fn proceed_with_pick_hint(
+    transcript: &[Value],
+    goal: &str,
+    answer: &str,
+    zh: bool,
+) -> Option<String> {
+    static BUY: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(buy|purchase|book|order|get me|pay for)\b|买|购买|下单|预订|订购")
+            .unwrap()
+    });
+    static ASKS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)shall I (proceed|go ahead|book|buy|order|continue)|(do|would) you (want|like) me to\b|should I (proceed|go ahead|book|buy)|proceed\?|confirm (that|if|whether)|要不要(我)?(继续|下单|购买|预订)|是否(继续|下单|购买)").unwrap()
+    });
+    if !BUY.is_match(goal) || !ASKS.is_match(answer) {
+        return None;
+    }
+    let picked = transcript.iter().flat_map(tool_calls).find_map(|tc| {
+        let (name, args) = stored_call(tc);
+        (name == "present_choices")
+            .then(|| sget(&args, "picked").trim().to_string())
+            .filter(|p| !p.is_empty())
+    })?;
+    if ran_ok(
+        transcript,
+        &["purchase_confirm", "browser_request_takeover"],
+    ) {
+        return None;
+    }
+    Some(if zh {
+        format!("（系统）用户已经要求购买/预订，不用再问：现在就按已选的「{picked}」继续办理（打开它、填写、到付款前交给用户）。不要再问是否继续。")
+    } else {
+        format!("(System) The user already asked to buy / book: do not ask whether to proceed — go on with the pick now, \"{picked}\" (open it, fill in what is needed, hand the final payment to the user). Not a question.")
     })
 }
 
@@ -1992,10 +2275,7 @@ make_xlsx / make_docx), then send it with send_file.")
 /// chat (`send_file`), when the request asks for a file: the runtime sends them before the answer (chat_real
 /// 2026-10-31: "as a Markdown file I can download" — written, never sent, "Download the packing list" led nowhere).
 pub fn unsent_files(transcript: &[Value], goal: &str) -> Vec<String> {
-    static WANTS_FILE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(file|download|attachment|pdf|excel|xlsx|spreadsheet|docx|word document|markdown|csv)\b|\.md\b|文件|下载|附件|表格").unwrap()
-    });
-    if !WANTS_FILE.is_match(goal) {
+    if !wants_file(goal) {
         return Vec::new();
     }
     let calls: Vec<(String, String, Value)> = transcript
