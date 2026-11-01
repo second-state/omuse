@@ -4,7 +4,7 @@
 //! the model's prose never reaches a decision (CLAUDE.md, "Skills: code decides").
 
 use omuse_common::util::take_chars;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::runtime::opts;
 use super::Runtime;
@@ -59,7 +59,7 @@ fn decision_prompt(question: &str, context: &str, choices: &[&str]) -> String {
     format!(
         "Question: {}\n\nContext:\n{}\n\nChoices: {}",
         take_chars(question, 500),
-        take_chars(context, 6000),
+        take_chars(context, 16000),
         json!(choices)
     )
 }
@@ -148,15 +148,34 @@ impl Runtime {
         parse: impl Fn(&str) -> Option<T>,
         default: T,
     ) -> Outcome<T> {
+        let user = json!(decision_prompt(question, context, choices));
+        self.ask_with(task_id, system, user, choices, None, parse, default)
+            .await
+    }
+
+    /// [`Runtime::ask_decision`] with the user message's content given (text, or text and a picture) and a model of
+    /// its own (the vision model).
+    #[allow(clippy::too_many_arguments)]
+    async fn ask_with<T>(
+        &self,
+        task_id: &str,
+        system: &str,
+        user: Value,
+        choices: &[&str],
+        model: Option<String>,
+        parse: impl Fn(&str) -> Option<T>,
+        default: T,
+    ) -> Outcome<T> {
         let o = ChatOpts {
             max_tokens: Some(60),
             temperature: Some(0.0),
             no_think: true,
+            model,
             ..opts("decide", task_id)
         };
         let mut msgs = vec![
             json!({"role": "system", "content": system}),
-            json!({"role": "user", "content": decision_prompt(question, context, choices)}),
+            json!({"role": "user", "content": user}),
         ];
         for attempt in 0..2 {
             let Ok(r) = self.llm.chat(&msgs, None, &o).await else {
@@ -178,6 +197,98 @@ impl Runtime {
             retried: msgs.len() > 2,
             defaulted: true,
         }
+    }
+}
+
+/// A picture for a decision: base64 bytes and their media type.
+pub struct Picture<'a> {
+    pub b64: &'a str,
+    pub mime: &'a str,
+}
+
+/// The `{"<key>": true|false}` flag in a model reply; `None` for anything else.
+pub fn parse_flag(reply: &str, key: &str) -> Option<bool> {
+    extract_json(reply)?.get(key)?.as_bool()
+}
+
+impl Runtime {
+    /// The user message of a decision about a picture: the question and the choices as JSON, then the picture.
+    fn picture_prompt(question: &str, choices: &[&str], pic: &Picture<'_>) -> Value {
+        json!([
+            {"type": "text", "text": format!("Question: {}\n\nChoices: {}", take_chars(question, 500), json!(choices))},
+            {"type": "image_url", "image_url": {"url": format!("data:{};base64,{}", pic.mime, pic.b64)}},
+        ])
+    }
+
+    /// The vision model's one-of choice about a picture (a labelled screenshot): `system` says how the picture is marked
+    /// and that the answer is `{"choice": "<listed>"}`; one of `choices`, else `default` after one retry. A `decision`
+    /// event records it. The model's prose never reaches the caller.
+    pub async fn decide_on_picture(
+        &self,
+        task_id: &str,
+        system: &str,
+        question: &str,
+        pic: &Picture<'_>,
+        choices: &[&str],
+        default: &str,
+    ) -> String {
+        let out = self
+            .ask_with(
+                task_id,
+                system,
+                Self::picture_prompt(question, choices, pic),
+                choices,
+                self.vision_model(),
+                |r| parse_choice(r, choices),
+                default.to_string(),
+            )
+            .await;
+        self.event(
+            task_id,
+            "decision",
+            json!({"question": question, "choices": if choices.len() > 12 { json!(format!("{} choices", choices.len())) } else { json!(choices) },
+                   "picked": out.picked, "retried": out.retried, "defaulted": out.defaulted}),
+        )
+        .await;
+        out.picked
+    }
+
+    /// The vision model's yes / no about a picture as JSON (`{"<key>": true|false}`), `default` after one retry.
+    pub async fn decide_flag_on_picture(
+        &self,
+        task_id: &str,
+        system: &str,
+        question: &str,
+        pic: &Picture<'_>,
+        key: &str,
+        default: bool,
+    ) -> bool {
+        let keys = [key];
+        let out = self
+            .ask_with(
+                task_id,
+                system,
+                Self::picture_prompt(question, &[], pic),
+                &keys,
+                self.vision_model(),
+                |r| parse_flag(r, key),
+                default,
+            )
+            .await;
+        self.event(
+            task_id,
+            "decision",
+            json!({"question": question, "choices": [format!("{key}: true"), format!("{key}: false")],
+                   "picked": out.picked, "retried": out.retried, "defaulted": out.defaulted}),
+        )
+        .await;
+        out.picked
+    }
+
+    /// The vision model of the settings, `None` for the main model.
+    fn vision_model(&self) -> Option<String> {
+        let vm = super::util::sget(&self.settings(), "vision_model");
+        (!vm.is_empty()).then_some(vm)
     }
 }
 
@@ -203,6 +314,19 @@ mod tests {
         assert_eq!(parse_choice("{\"answer\": \"error_page\"}", &c), None);
         assert_eq!(parse_choice("{\"choice\": 1}", &c), None);
         assert_eq!(parse_choice("", &c), None);
+    }
+
+    #[test]
+    fn a_flag_is_read_only_as_a_json_bool() {
+        assert_eq!(parse_flag("{\"on_item\": true}", "on_item"), Some(true));
+        assert_eq!(
+            parse_flag("```json\n{\"on_item\": false}\n```", "on_item"),
+            Some(false)
+        );
+        // prose, a string, another key: nothing
+        assert_eq!(parse_flag("YES, it is on the button", "on_item"), None);
+        assert_eq!(parse_flag("{\"on_item\": \"yes\"}", "on_item"), None);
+        assert_eq!(parse_flag("{\"found\": true}", "on_item"), None);
     }
 
     #[test]

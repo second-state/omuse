@@ -12,4 +12,5 @@ has — the user's request, the profile, the search result that led here — and
 2. Leave a field blank when the run has no value for it; never invent one.
 3. Stop before the final Submit / Pay / Place order / Confirm click: `browser_request_takeover`, naming what was filled
    and what is left. That click is the user's.
-4. After the hand-back, `browser_snapshot` the confirmation and answer with its reference.
+4. After the hand-back, `browser_snapshot` the confirmation, read its order / booking / application number and call
+   `confirm_reference` with it exactly as the page shows it and the page's label for it; answer from its result.

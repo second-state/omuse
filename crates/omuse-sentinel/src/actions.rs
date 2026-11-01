@@ -1680,6 +1680,24 @@ is left for the final hand-over. Then call browser_request_takeover again; it go
             "next": format!("用 send_file 发给用户（多张一起用 paths），或用 file_look 查看 — send_file it to the user (several at once with paths) or file_look it.{shot}"),
         }));
     }
+    if action == "read_elements" {
+        // a known page's elements by a code machine's fixed selectors: the values are page content (untrusted)
+        let res = broker(st, "POST", "/agent/read_elements", Some(&payload), 60.0).await?;
+        let elements = res.get("elements").cloned().unwrap_or_else(|| json!({}));
+        let (text, _n) = guard::redact_secrets(&elements.to_string());
+        let flags = guard::scan_injection(&text);
+        if !flags.is_empty() {
+            store.update_task_ctx(task_id, None, Some(&flags), None)?;
+        }
+        let elements: Value = serde_json::from_str(&text).unwrap_or(elements);
+        let mut out = json!({"trust": "untrusted", "source": format!("web page {}", fstr(&res, "url")),
+            "url": res.get("url").cloned().unwrap_or(Value::Null), "title": res.get("title").cloned().unwrap_or(Value::Null),
+            "elements": elements});
+        if !flags.is_empty() {
+            set(&mut out, "injection_warning", strings_value(&flags));
+        }
+        return Ok(vault::scrub(store, &out));
+    }
     if action == "read" {
         let mut res = broker(st, "POST", "/agent/read", Some(&payload), 120.0).await?;
         // a page with almost no text whose scripts may still be drawing it is read again, longer, in code

@@ -51,7 +51,10 @@ pub struct CardSpec {
     pub window_days: i64,
     /// what the user does after the hand-over (the reason's last part)
     pub user_steps: &'static str,
-    /// the confirmation's reference, on the page after the user's Submit
+    /// the confirmation's reference element on the page after the user's Submit (a CSS selector, read by
+    /// `browser_read_elements`)
+    pub ref_sel: &'static str,
+    /// the reference's format, checked over that element's whole value
     pub ref_re: &'static str,
 }
 
@@ -65,6 +68,7 @@ pub const CARDS: &[CardSpec] = &[
         host: "eservices.ica.gov.sg",
         window_days: 3,
         user_steps: "tick the declaration and press Submit",
+        ref_sel: ".ref",
         ref_re: r"\bDE\d{9,}\b",
     },
     CardSpec {
@@ -76,6 +80,7 @@ pub const CARDS: &[CardSpec] = &[
         host: "imigresen-online.imi.gov.my",
         window_days: 3,
         user_steps: "solve the slider puzzle and press Submit",
+        ref_sel: ".ref",
         ref_re: r"\bMDAC-[A-Z0-9-]{6,}\b",
     },
     CardSpec {
@@ -87,6 +92,7 @@ pub const CARDS: &[CardSpec] = &[
         host: "www.e-arrivalcard.go.kr",
         window_days: 3,
         user_steps: "press Submit and enter the code Korea emails you",
+        ref_sel: ".ref",
         ref_re: r"\bKR-EA-\d{6,}\b",
     },
     CardSpec {
@@ -98,6 +104,7 @@ pub const CARDS: &[CardSpec] = &[
         host: "allindonesia.imigrasi.go.id",
         window_days: 3,
         user_steps: "tick the certification and press Submit",
+        ref_sel: ".ref",
         ref_re: r"\bALLIND-\d{6,}\b|\b[A-Z]{2,4}-?\d{8,}\b",
     },
     CardSpec {
@@ -109,6 +116,7 @@ pub const CARDS: &[CardSpec] = &[
         host: "twac.immigration.gov.tw",
         window_days: 3,
         user_steps: "tick the declaration and press SUBMIT",
+        ref_sel: ".ref",
         ref_re: r"\bTWAC-?[A-Z0-9]{6,}\b",
     },
     CardSpec {
@@ -120,6 +128,7 @@ pub const CARDS: &[CardSpec] = &[
         host: "tdac.immigration.go.th",
         window_days: 3,
         user_steps: "type the CAPTCHA and press Submit",
+        ref_sel: ".ref",
         ref_re: r"\bTH[A-Z0-9]{7,}\b",
     },
     CardSpec {
@@ -131,6 +140,7 @@ pub const CARDS: &[CardSpec] = &[
         host: "s.nia.gov.cn",
         window_days: 0,
         user_steps: "answer the companion question and press Submit",
+        ref_sel: ".ref",
         ref_re: r"\bCN-ARC-[A-Z0-9-]{6,}\b",
     },
     CardSpec {
@@ -143,6 +153,7 @@ pub const CARDS: &[CardSpec] = &[
         // registered any time before the flight: no filing window
         window_days: 0,
         user_steps: "type the security check characters and press Register",
+        ref_sel: ".ref",
         ref_re: r"\bJP-\d{4}-\d{4}\b",
     },
     CardSpec {
@@ -154,6 +165,7 @@ pub const CARDS: &[CardSpec] = &[
         host: "arrival.gov.kh",
         window_days: 7,
         user_steps: "type the CAPTCHA and press Submit",
+        ref_sel: ".ref",
         ref_re: r"\bKH-EAC-\d{6,}\b",
     },
     CardSpec {
@@ -166,6 +178,7 @@ pub const CARDS: &[CardSpec] = &[
         // 72 hours before arrival
         window_days: 3,
         user_steps: "type the CAPTCHA and press Submit",
+        ref_sel: ".ref",
         ref_re: r"\bETRV-PH-\d{6,}\b",
     },
     // The ETA is an authorisation, not an arrival card: the application has no trip or accommodation section, so the
@@ -181,6 +194,7 @@ pub const CARDS: &[CardSpec] = &[
         host: "www.gov.uk",
         window_days: 0,
         user_steps: "upload your face photo, then press Submit and pay the ETA fee",
+        ref_sel: ".ref",
         ref_re: r"\b\d{4}-\d{4}-\d{4}\b",
     },
 ];
@@ -865,25 +879,22 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
                          "nothing has been submitted yet"]}),
         );
     }
-    let snaps = results_of(t, "browser_snapshot");
-    let snap_after_back = snaps
+    // the confirmation's reference: the card's fixed element on the page, its value in the card's format
+    let reads = results_of(t, "browser_read_elements");
+    let read_after_back = reads
         .last()
-        .is_some_and(|(_, msg)| last_back.is_some_and(|b| pos(t, msg) > b));
-    if !snap_after_back {
+        .filter(|(_, msg)| last_back.is_some_and(|b| pos(t, msg) > b));
+    let Some((_, read)) = read_after_back else {
         return Step::Calls(vec![call(
             0,
-            "browser_snapshot",
-            json!({"max_chars": 6000}),
+            "browser_read_elements",
+            super::confirm::read_args(card.ref_sel),
         )]);
-    }
-    let page = snaps
-        .last()
-        .map(|(_, msg)| snapshot_text(msg))
-        .unwrap_or_default();
-    let reference = Regex::new(card.ref_re)
-        .ok()
-        .and_then(|r| r.find(&page).map(|x| x.as_str().to_string()))
-        .or_else(|| crate::outcome::refs_in(&page).into_iter().next());
+    };
+    let reference = crate::outcome::reference_in(
+        &super::confirm::element_values(read, super::confirm::REFERENCE),
+        card.ref_re,
+    );
     Step::Done(match reference {
         Some(r) => {
             json!({"status": "submitted", "card": card.name, "country": card.country, "reference": r,
@@ -948,23 +959,29 @@ pub(crate) fn country_of_city(city: &str) -> &'static str {
     }
 }
 
-/// The profile's addresses in `country`: (label, address).
+/// The profile's addresses in `country` (a card's country, by its English name): (label, address) — by each address's
+/// structured ISO country field (`home_country`, `address_country:<label>`), never by the address's words.
 pub fn own_addresses(profile: &Value, country: &str) -> Vec<(String, String)> {
-    let needle = country.to_lowercase();
+    let iso = crate::places::iso_of(country);
     let mut out = Vec::new();
+    if iso.is_empty() {
+        return out;
+    }
     if let Some(o) = profile.as_object() {
         for (k, v) in o {
-            if !k.starts_with("address") {
+            let ck = crate::places::country_key(k);
+            if ck.is_empty() || !get_str(profile, &ck).eq_ignore_ascii_case(iso) {
                 continue;
             }
             let addr = v.as_str().unwrap_or("").trim();
-            if addr.to_lowercase().contains(&needle) {
-                let label = match k.strip_prefix("address:") {
-                    Some(l) => l.to_string(),
-                    None => k.trim_start_matches("address_").to_string(),
-                };
-                out.push((label, addr.to_string()));
+            if addr.is_empty() {
+                continue;
             }
+            let label = match k.strip_prefix("address:") {
+                Some(l) => l.to_string(),
+                None => k.trim_start_matches("address_").to_string(),
+            };
+            out.push((label, addr.to_string()));
         }
     }
     out
@@ -1294,7 +1311,9 @@ mod tests {
             .retain(|k, _| !k.starts_with("stay"));
         let t = started("Fill in my SG Arrival Card", &first);
         let profile = json!({"address:Singapore flat": "10 Bayfront Avenue, Singapore 018956",
-                             "address:Parents in Singapore": "5 Jalan Kayu, Singapore 799487"});
+                             "address_country:Singapore flat": "SG",
+                             "address:Parents in Singapore": "5 Jalan Kayu, Singapore 799487",
+                             "address_country:Parents in Singapore": "SG"});
         let v = valid(
             json!({"country": "Singapore", "own_address": "parents in singapore"}),
             &profile,
@@ -1326,8 +1345,9 @@ mod tests {
 
     #[test]
     fn the_users_own_address_is_the_stay_and_several_are_a_choice() {
-        let one = json!({"address_home": "12 Harbour St, Sydney NSW 2000, Australia",
-                         "address:Singapore flat": "10 Bayfront Avenue, Singapore 018956"});
+        let one = json!({"address_home": "12 Harbour St, Sydney NSW 2000, Australia", "home_country": "AU",
+                         "address:Singapore flat": "10 Bayfront Avenue, Singapore 018956",
+                         "address_country:Singapore flat": "SG"});
         let mut a = sg_facts();
         for k in ["stay_name", "stay_address", "stay_kind"] {
             a.as_object_mut().unwrap().remove(k);
@@ -1338,7 +1358,9 @@ mod tests {
             (Some("10 Bayfront Avenue, Singapore 018956"), Some("own"))
         );
         let two = json!({"address:Singapore flat": "10 Bayfront Avenue, Singapore 018956",
-                         "address:Parents in Singapore": "5 Jalan Kayu, Singapore 799487"});
+                         "address_country:Singapore flat": "SG",
+                         "address:Parents in Singapore": "5 Jalan Kayu, Singapore 799487",
+                         "address_country:Parents in Singapore": "SG"});
         let v = valid(a.clone(), &two, false, &[]);
         assert_eq!(v["choose_address"], true);
         // the choice card, then the turn ends with the question as data
@@ -1422,7 +1444,7 @@ mod tests {
             "browser_navigate" => "<untrusted_content source=\"web page https://eservices.ica.gov.sg/arrivalcard/sgac\">{}</untrusted_content>".into(),
             "form_fill" => "{\"url\": \"x\", \"filled\": [{\"op\": \"text\", \"field\": \"flight\", \"ok\": true}], \"skipped\": [{\"field\": \"phone\", \"why\": \"no value\"}]}".into(),
             "browser_request_takeover" => BACK.into(),
-            "browser_snapshot" => "<untrusted_content source=\"web page https://eservices.ica.gov.sg/sgac_done\">Submitted. DE Number: DE202611020123 Thank you.</untrusted_content>".into(),
+            "browser_read_elements" => "<untrusted_content source=\"web page https://eservices.ica.gov.sg/sgac_done\">{\"elements\": {\"reference\": [\"DE202611020123\"]}}</untrusted_content>".into(),
             other => panic!("{other}"),
         }
         });
@@ -1466,7 +1488,8 @@ mod tests {
     fn the_mail_read_result_leaves_the_stay_to_the_users_own_address() {
         // arrival_address_real 2026-11-01: the result listed the stay as missing, and the model asked the user for a
         // hotel instead of calling again (the profile's one Singapore address is the stay)
-        let p = json!({"address:Singapore flat": "10 Bayfront Avenue, Singapore 018956"});
+        let p = json!({"address:Singapore flat": "10 Bayfront Avenue, Singapore 018956",
+                       "address_country:Singapore flat": "SG"});
         let m = Machine {
             profile: &p,
             mail_ready: true,
@@ -1509,17 +1532,35 @@ mod tests {
     }
 
     #[test]
-    fn every_cards_reference_is_read_from_its_confirmation_page() {
-        // arrival_cards3_real 2026-11-01: All Indonesia's "ALLIND-332190" was not read
-        for (skill, page) in [
-            ("id-arrival-card", "Submitted. Reference ALLIND-332190"),
-            ("sg-arrival-card", "DE Number: DE202611020123"),
-            ("th-arrival-card", "TDAC No. TH7D3K9Q2"),
+    fn every_cards_reference_is_its_elements_value_in_the_cards_format() {
+        // arrival_cards3_real 2026-11-01: All Indonesia's "ALLIND-332190" was not read; the value of the card's
+        // reference element (`.ref` on each confirmation page) is checked against the card's format, whole
+        for (skill, value) in [
+            ("id-arrival-card", "ALLIND-332190"),
+            ("sg-arrival-card", "DE202611020123"),
+            ("th-arrival-card", "TH7D3K9Q2"),
             ("kr-arrival-card", "KR-EA-77120934"),
-            ("uk-eta", "Application reference 4402-1187-6631"),
+            ("my-arrival-card", "MDAC-2611-48213"),
+            ("tw-arrival-card", "TWAC-90417736"),
+            ("cn-arrival-card", "CN-ARC-20261102-6613"),
+            ("jp-visit-japan-web", "JP-5521-9087"),
+            ("kh-arrival-card", "KH-EAC-640219"),
+            ("ph-etravel", "ETRV-PH-55820117"),
+            ("uk-eta", "4402-1187-6631"),
         ] {
-            let r = Regex::new(card(skill).ref_re).unwrap();
-            assert!(r.is_match(page), "{skill}");
+            let c = card(skill);
+            assert_eq!(c.ref_sel, ".ref", "{skill}");
+            assert_eq!(
+                crate::outcome::reference_in(&[value.to_string()], c.ref_re).as_deref(),
+                Some(value),
+                "{skill}"
+            );
+            // the element holding prose around it is no reference
+            assert_eq!(
+                crate::outcome::reference_in(&[format!("Reference {value} issued")], c.ref_re),
+                None,
+                "{skill}"
+            );
         }
     }
 

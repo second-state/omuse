@@ -59,7 +59,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/rewards-credit-cards/sapphire/reserve",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-sapphire-reserve"
   },
   {
    "issuer": "Chase",
@@ -115,7 +116,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-sapphire-preferred"
   },
   {
    "issuer": "Chase",
@@ -154,7 +156,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://sites.chase.com/services/creatives/pricingandterms.html/content/dam/pricingandterms/LGC61498.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-freedom-unlimited"
   },
   {
    "issuer": "Chase",
@@ -212,7 +215,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/cash-back-credit-cards/freedom/flex",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-freedom-flex"
   },
   {
    "issuer": "Chase",
@@ -249,7 +253,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://sites.chase.com/services/creatives/pricingandterms.html/content/dam/pricingandterms/LGC65397.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-freedom-rise"
   },
   {
    "issuer": "Chase",
@@ -299,7 +304,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-amazon-prime-visa"
   },
   {
    "issuer": "Chase",
@@ -336,7 +342,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-united-explorer"
   },
   {
    "issuer": "Chase",
@@ -375,7 +382,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-united-quest"
   },
   {
    "issuer": "Chase",
@@ -420,7 +428,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-southwest-rapid-rewards-priority"
   },
   {
    "issuer": "Chase",
@@ -474,7 +483,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://sites.chase.com/services/creatives/pricingandterms.html/content/dam/pricingandterms/LGC64433.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-southwest-rapid-rewards-plus"
   },
   {
    "issuer": "Chase",
@@ -528,7 +538,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-marriott-bonvoy-boundless"
   },
   {
    "issuer": "Chase",
@@ -573,7 +584,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-marriott-bonvoy-bold"
   },
   {
    "issuer": "Chase",
@@ -614,7 +626,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-world-of-hyatt"
   },
   {
    "issuer": "Chase",
@@ -655,7 +668,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-ihg-one-rewards-premier"
   },
   {
    "issuer": "Chase",
@@ -709,7 +723,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.chase.com/no-foreign-transaction-fee-credit-cards",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-ink-business-preferred"
   },
   {
    "issuer": "Chase",
@@ -769,7 +784,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://sites.chase.com/services/creatives/pricingandterms.html/content/dam/pricingandterms/LGC63827.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-ink-business-cash"
   },
   {
    "issuer": "Chase",
@@ -804,7 +820,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://sites.chase.com/services/creatives/pricingandterms.html/content/dam/pricingandterms/LGC63749.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-ink-business-unlimited"
   },
   {
    "issuer": "Chase",
@@ -847,7 +864,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://disneyrewards.com/faq/general-questions/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-chase-disney-premier-visa"
   },
   {
    "issuer": "American Express",
@@ -890,7 +908,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.americanexpress.com/us/credit-cards/card/platinum/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-platinum-card"
   },
   {
    "issuer": "American Express",
@@ -941,7 +960,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.americanexpress.com/us/credit-cards/card/gold-card/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-gold-card"
   },
   {
    "issuer": "American Express",
@@ -982,7 +1002,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.americanexpress.com/us/credit-cards/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-green-card"
   },
   {
    "issuer": "American Express",
@@ -1030,7 +1051,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Blue_Cash_Preferred_Card_Cardmember_Agreement-255457.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-blue-cash-preferred"
   },
   {
    "issuer": "American Express",
@@ -1084,7 +1106,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Blue_Cash_Everyday_Card_Cardmember_Agreement-255458.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-blue-cash-everyday"
   },
   {
    "issuer": "American Express",
@@ -1128,7 +1151,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Amex_EveryDay_Card_Cardmember_Agreement-255461.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-everyday-card"
   },
   {
    "issuer": "American Express",
@@ -1169,7 +1193,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Delta_Skymiles_Gold_American_Express_Card_Cardmember_Agreement-255455.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-delta-skymiles-gold"
   },
   {
    "issuer": "American Express",
@@ -1210,7 +1235,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Delta_SkyMiles_Platinum_American_Express_Card_Cardmember_Agreement-255454.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-delta-skymiles-platinum"
   },
   {
    "issuer": "American Express",
@@ -1247,7 +1273,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Delta_SkyMiles_Reserve_American_Express_Card_Cardmember_Agreement-255453.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-delta-skymiles-reserve"
   },
   {
    "issuer": "American Express",
@@ -1290,7 +1317,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.americanexpress.com/us/credit-cards/card/hilton-honors/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-hilton-honors-card"
   },
   {
    "issuer": "American Express",
@@ -1333,7 +1361,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.americanexpress.com/us/credit-cards/card/hilton-honors-surpass/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-hilton-honors-surpass"
   },
   {
    "issuer": "American Express",
@@ -1370,7 +1399,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.americanexpress.com/us/credit-cards/card/hilton-honors-aspire/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-hilton-honors-aspire"
   },
   {
    "issuer": "American Express",
@@ -1407,7 +1437,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.americanexpress.com/us/credit-cards/card/marriott-bonvoy-brilliant/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-marriott-bonvoy-brilliant"
   },
   {
    "issuer": "American Express",
@@ -1455,7 +1486,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.americanexpress.com/us/credit-cards/card/marriott-bonvoy-bevy/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-marriott-bonvoy-bevy"
   },
   {
    "issuer": "American Express",
@@ -1493,7 +1525,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/Marriott_Bonvoy_American_Express_Card_Cardmember_Agreement-255449.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-marriott-bonvoy-amex-card"
   },
   {
    "issuer": "American Express",
@@ -1533,7 +1566,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.americanexpress.com/us/credit-cards/business/business-credit-cards/american-express-blue-business-plus-credit-card-amex/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-blue-business-plus"
   },
   {
    "issuer": "American Express",
@@ -1599,7 +1633,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.americanexpress.com/us/credit-cards/business/business-credit-cards/american-express-business-gold-card-amex/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-business-gold"
   },
   {
    "issuer": "American Express",
@@ -1632,7 +1667,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/AMERICAN_EXPRESS_NATIONAL_BANK/American_Express_Cash_Magnet_Card_Cardmember_Agreement-255462.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-american-express-cash-magnet"
   },
   {
    "issuer": "Citi",
@@ -1669,7 +1705,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./Citi_Double_Cash_Pricing_and_Information_Table-256158.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-citi-double-cash"
   },
   {
    "issuer": "Citi",
@@ -1751,7 +1788,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://wallethub.com/edu/cc/citi-custom-cash-review/93984",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-citi-custom-cash"
   },
   {
    "issuer": "Citi",
@@ -1796,7 +1834,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./Citi_Strata_Premier_Pricing_and_Information_Table-256156.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-citi-strata-premier"
   },
   {
    "issuer": "Citi",
@@ -1837,7 +1876,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://upgradedpoints.com/credit-cards/reviews/citi-prestige-card/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-citi-prestige"
   },
   {
    "issuer": "Citi",
@@ -1887,7 +1927,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://upgradedpoints.com/credit-cards/reviews/citi-rewards-card-review",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-citi-rewards"
   },
   {
    "issuer": "Citi",
@@ -1926,7 +1967,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./AAdvantage_Platinum_Select_World_Elite_Pricing_and_Information_Table-256182.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-citi-aadvantage-platinum-select"
   },
   {
    "issuer": "Citi",
@@ -1961,7 +2003,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./AAdvantage_Executive_World_Elite_Pricing_and_Information_Table-256184.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-citi-aadvantage-executive"
   },
   {
    "issuer": "Citi",
@@ -2009,7 +2052,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./Costco_Anywhere_Visa_Pricing_and_Information_Table-256178.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-citi-costco-anywhere-visa"
   },
   {
    "issuer": "Citi",
@@ -2042,7 +2086,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./Citi_Simplicity_Pricing_and_Information_Table-256162.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-citi-simplicity"
   },
   {
    "issuer": "Citi",
@@ -2075,7 +2120,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://files.consumerfinance.gov/a/assets/credit-card-agreements/pdf/Q22026/CITIBANK_N.A./Citi_Diamond_Preferred_Pricing_and_Information_Table-256166.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-citi-diamond-preferred"
   },
   {
    "issuer": "Capital One",
@@ -2112,7 +2158,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.capitalone.com/credit-cards/venture-x/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-capital-one-venture-x"
   },
   {
    "issuer": "Capital One",
@@ -2147,7 +2194,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.capitalone.com/credit-cards/venture/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-capital-one-venture"
   },
   {
    "issuer": "Capital One",
@@ -2180,7 +2228,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.capitalone.com/credit-cards/ventureone/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-capital-one-ventureone"
   },
   {
    "issuer": "Capital One",
@@ -2224,7 +2273,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.capitalone.com/credit-cards/savor/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-capital-one-savor"
   },
   {
    "issuer": "Capital One",
@@ -2263,7 +2313,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.capitalone.com/credit-cards/quicksilver/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-capital-one-quicksilver"
   },
   {
    "issuer": "Capital One",
@@ -2296,7 +2347,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.capitalone.com/credit-cards/platinum/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-capital-one-platinum"
   },
   {
    "issuer": "Capital One",
@@ -2329,7 +2381,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.capitalone.com/small-business/credit-cards/spark-cash-plus/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-capital-one-spark-cash-plus"
   },
   {
    "issuer": "Bank of America",
@@ -2413,7 +2466,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://wallethub.com/d/bankamericard-cash-back-credit-card-128c",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-bank-of-america-customized-cash-rewards"
   },
   {
    "issuer": "Bank of America",
@@ -2448,7 +2502,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://wallethub.com/edu/cc/bank-of-america-unlimited-cash-rewards-credit-card-review/96055",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-bank-of-america-unlimited-cash-rewards"
   },
   {
    "issuer": "Bank of America",
@@ -2483,7 +2538,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.bankofamerica.com/credit-cards/no-foreign-transaction-fee-credit-cards/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-bank-of-america-travel-rewards"
   },
   {
    "issuer": "Bank of America",
@@ -2524,7 +2580,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.bankofamerica.com/credit-cards/no-foreign-transaction-fee-credit-cards/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-bank-of-america-premium-rewards"
   },
   {
    "issuer": "Bank of America",
@@ -2565,7 +2622,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.bankofamerica.com/credit-cards/no-foreign-transaction-fee-credit-cards/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-bank-of-america-premium-rewards-elite"
   },
   {
    "issuer": "Bank of America",
@@ -2610,7 +2668,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.bankofamerica.com/credit-cards/no-foreign-transaction-fee-credit-cards/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-bank-of-america-alaska-airlines-visa-signature"
   },
   {
    "issuer": "Wells Fargo",
@@ -2645,7 +2704,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.wellsfargo.com/credit-cards/active-cash/terms/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-wells-fargo-active-cash"
   },
   {
    "issuer": "Wells Fargo",
@@ -2692,7 +2752,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://wallethub.com/answers/cc/wells-fargo-foreign-transaction-fee-1000339-2140661946/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-wells-fargo-autograph"
   },
   {
    "issuer": "Wells Fargo",
@@ -2729,7 +2790,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://wallethub.com/answers/cc/wells-fargo-foreign-transaction-fee-1000339-2140661946/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-wells-fargo-autograph-journey"
   },
   {
    "issuer": "Wells Fargo",
@@ -2762,7 +2824,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://wallethub.com/answers/cc/wells-fargo-foreign-transaction-fee-1000339-2140661946/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-wells-fargo-reflect"
   },
   {
    "issuer": "Discover",
@@ -2823,7 +2886,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://cardcritics.com/credit-cards/card-issuer/discover/does-the-discover-card-have-foreign-transaction-fees",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-discover-it-cash-back"
   },
   {
    "issuer": "Discover",
@@ -2858,7 +2922,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://cardcritics.com/credit-cards/card-issuer/discover/does-the-discover-card-have-foreign-transaction-fees",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-discover-it-miles"
   },
   {
    "issuer": "Discover",
@@ -2908,7 +2973,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://cardcritics.com/credit-cards/card-issuer/discover/does-the-discover-card-have-foreign-transaction-fees",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-discover-it-chrome"
   },
   {
    "issuer": "U.S. Bank",
@@ -2947,7 +3013,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://mybanktracker.com/credit-cards/expert-reviews/us-bank-altitude-reserve-card-review-292003",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-u-s-bank-altitude-reserve"
   },
   {
    "issuer": "U.S. Bank",
@@ -2995,7 +3062,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://wallethub.com/d/u-s-bank-altitude-go-visa-signature-card-3275c",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-u-s-bank-altitude-go"
   },
   {
    "issuer": "U.S. Bank",
@@ -3045,7 +3113,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.usbank.com/credit-cards/altitude-connect-visa-signature-credit-card.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-u-s-bank-altitude-connect"
   },
   {
    "issuer": "U.S. Bank",
@@ -3122,7 +3191,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://wallethub.com/answers/cc/us-bank-foreign-transaction-fee-2140666964/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-u-s-bank-cash"
   },
   {
    "issuer": "U.S. Bank",
@@ -3158,7 +3228,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.bankrate.com/credit-cards/reviews/us-bank-smartly-visa-signature-card",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-u-s-bank-smartly-visa"
   },
   {
    "issuer": "Barclays",
@@ -3197,7 +3268,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.gobankingrates.com/credit-cards/airline/jetblue-plus-card-review/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-barclays-jetblue-plus"
   },
   {
    "issuer": "Barclays",
@@ -3234,7 +3306,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://creditcards.aa.com/barclay-credit-card-aviator-red-american-airlines-aadvantage",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-barclays-aadvantage-aviator-red"
   },
   {
    "issuer": "Barclays",
@@ -3277,7 +3350,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://awardwallet.com/credit-cards/wyndham-rewards/earner-plus-credit-card/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-barclays-wyndham-rewards-earner-plus"
   },
   {
    "issuer": "Barclays",
@@ -3318,7 +3392,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://yourmileagemayvary.com/2026/10/01/hawaiian-airlines-card-atmos-rewards/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-barclays-hawaiian-airlines-world-elite"
   },
   {
    "issuer": "Goldman Sachs",
@@ -3353,7 +3428,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://learn.applecard.apple/transition",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-goldman-sachs-apple-card"
   },
   {
    "issuer": "Synchrony",
@@ -3391,7 +3467,8 @@
    "verified": true,
    "source": "",
    "fx_source": "Google search via SerpApi, 2026-10-31: Smart Card Rewards 'Amazon Store Card Review 2026' — closed-loop card usable only at Amazon, so no foreign transaction fee applies",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-synchrony-amazon-store-card"
   },
   {
    "issuer": "Synchrony",
@@ -3426,7 +3503,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://finance.yahoo.com/personal-finance/paypal-credit-card-review-203755628.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-synchrony-paypal-cashback-mastercard"
   },
   {
    "issuer": "Synchrony",
@@ -3472,7 +3550,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.supermoney.com/reviews/personal-credit-cards/sams-club-mastercard?prodpage=1",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-synchrony-sam-s-club-mastercard"
   },
   {
    "issuer": "Navy Federal",
@@ -3507,7 +3586,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.navyfederal.org/loans-cards/credit-cards.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-navy-federal-cashrewards"
   },
   {
    "issuer": "Navy Federal",
@@ -3550,7 +3630,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.navyfederal.org/loans-cards/credit-cards.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-navy-federal-more-rewards-american-express"
   },
   {
    "issuer": "Navy Federal",
@@ -3589,7 +3670,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.navyfederal.org/loans-cards/credit-cards.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-navy-federal-flagship-rewards"
   },
   {
    "issuer": "USAA",
@@ -3622,7 +3704,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.visa.com/en-us/card-finder/credit-card/usaa",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-usaa-preferred-cash-rewards"
   },
   {
    "issuer": "USAA",
@@ -3655,7 +3738,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.visa.com/en-us/card-finder/credit-card/usaa",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-usaa-rate-advantage"
   },
   {
    "issuer": "PenFed",
@@ -3700,7 +3784,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://dealspoints.com/penfed-platinum-rewards/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-penfed-platinum-rewards"
   },
   {
    "issuer": "PenFed",
@@ -3737,7 +3822,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://maxrewards.com/credit-cards/penfed-pathfinder-rewards-visa",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-penfed-pathfinder-rewards"
   },
   {
    "issuer": "Fidelity",
@@ -3773,7 +3859,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.fidelity.com/cash-management/visa-signature-card",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-fidelity-rewards-visa-signature"
   },
   {
    "issuer": "Robinhood",
@@ -3808,7 +3895,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.doctorofcredit.com/robinhood-adds-3-foreign-transaction-fee/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-robinhood-gold-card"
   },
   {
    "issuer": "SoFi",
@@ -3845,7 +3933,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://support.sofi.com/hc/en-us/articles/360051246592-SoFi-Credit-Card-Using-Your-Card-Worldwide-Even-Abroad",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-sofi-credit-card"
   },
   {
    "issuer": "Target",
@@ -3883,7 +3972,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://digitalcontent.target.com/vault/1769580000/CLOUD_d7063cdc-709f-4802-a0ed-65ebf66fc34d.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-target-circle-card"
   },
   {
    "issuer": "TD Bank",
@@ -3916,7 +4006,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.td.com/us/en/personal-banking/credit-cards/double-up/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-td-bank-double-up"
   },
   {
    "issuer": "HSBC",
@@ -3957,7 +4048,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://www.us.hsbc.com/credit-cards/products/premier-elite/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-hsbc-elite"
   },
   {
    "issuer": "Citi",
@@ -3996,7 +4088,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-citi-cash-back-card"
   },
   {
    "issuer": "Citi",
@@ -4050,7 +4143,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-citi-rewards-card"
   },
   {
    "issuer": "Citi",
@@ -4089,7 +4183,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-citi-rewards-unionpay-card"
   },
   {
    "issuer": "Citi",
@@ -4126,7 +4221,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-citi-premiermiles-card"
   },
   {
    "issuer": "Citi",
@@ -4163,7 +4259,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-citi-prestige-card"
   },
   {
    "issuer": "Citi",
@@ -4198,7 +4295,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://citibank.com.hk/english/credit-cards/pdf/Fee_Schedule.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-citi-octopus-platinum-card"
   },
   {
    "issuer": "Standard Chartered",
@@ -4243,7 +4341,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://dcmdev.sc.com/content/dam/sc/hk/en/promotions/documents/hk-cc-cathaycard-kfs.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-standard-chartered-cathay-mastercard"
   },
   {
    "issuer": "Standard Chartered",
@@ -4285,7 +4384,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://dcmdev.sc.com/content/dam/sc/hk/en/promotions/documents/hk-cc-cathaycard-kfs.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-standard-chartered-cathay-mastercard-priority-banking"
   },
   {
    "issuer": "Standard Chartered",
@@ -4327,7 +4427,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://dcmdev.sc.com/content/dam/sc/hk/en/promotions/documents/hk-cc-cathaycard-kfs.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-standard-chartered-cathay-mastercard-priority-private"
   },
   {
    "issuer": "Standard Chartered",
@@ -4369,7 +4470,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://av.sc.com/hk/content/docs/hk-credit-card-key-facts-statement.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-standard-chartered-smart-credit-card"
   },
   {
    "issuer": "Standard Chartered",
@@ -4406,7 +4508,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://av.sc.com/hk/content/docs/hk-credit-card-key-facts-statement.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-standard-chartered-simply-cash-visa-card"
   },
   {
    "issuer": "DBS",
@@ -4462,7 +4565,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-dbs-eminent-visa-platinum-card"
   },
   {
    "issuer": "DBS",
@@ -4518,7 +4622,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-dbs-eminent-visa-signature-card"
   },
   {
    "issuer": "DBS",
@@ -4560,7 +4665,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-dbs-black-world-mastercard"
   },
   {
    "issuer": "DBS",
@@ -4606,7 +4712,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-dbs-compass-visa"
   },
   {
    "issuer": "DBS",
@@ -4657,7 +4764,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-dbs-live-fresh-card"
   },
   {
    "issuer": "DBS",
@@ -4719,7 +4827,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.dbs.com.hk/personal/credit-cards/key-statement-tnc.htm",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-dbs-live-fresh-tertiary-student-card"
   },
   {
    "issuer": "CNCBI",
@@ -4778,7 +4887,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.cncbinternational.com/_document/personal/credit-cards/tc/Credit-Card-Fee-Schedules.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-cncbi-motion-credit-card"
   },
   {
    "issuer": "CNCBI",
@@ -4820,7 +4930,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.cncbinternational.com/_document/personal/credit-cards/tc/Credit-Card-Fee-Schedules.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-cncbi-gba-dual-currency-credit-card"
   },
   {
    "issuer": "CNCBI",
@@ -4857,7 +4968,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.cncbinternational.com/_document/personal/credit-cards/tc/Credit-Card-Fee-Schedules.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-cncbi-hong-kong-airlines-mastercard"
   },
   {
    "issuer": "Mox",
@@ -4895,7 +5007,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://mox.com/static/260130_Mox_Credit_Key_Facts_Statement.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-mox-credit-card-cashback"
   },
   {
    "issuer": "Mox",
@@ -4930,7 +5043,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://mox.com/faqs/faq-mox-card",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-mox-credit-card-asia-miles"
   },
   {
    "issuer": "sim",
@@ -4974,7 +5088,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://thesim.com/en/tnc-agreement/key-facts-statement",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-sim-credit-card"
   },
   {
    "issuer": "sim",
@@ -5016,7 +5131,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://thesim.com/en/tnc-agreement/key-facts-statement",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-sim-world-mastercard"
   },
   {
    "issuer": "HSBC",
@@ -5058,7 +5174,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-hsbc-red-credit-card"
   },
   {
    "issuer": "HSBC",
@@ -5106,7 +5223,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-hsbc-everymile-credit-card"
   },
   {
    "issuer": "HSBC",
@@ -5156,7 +5274,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-hsbc-unionpay-dual-currency-card"
   },
   {
    "issuer": "HSBC",
@@ -5252,7 +5371,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-hsbc-easy-credit-card"
   },
   {
    "issuer": "HSBC",
@@ -5350,7 +5470,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-hsbc-visa-gold-card"
   },
   {
    "issuer": "HSBC",
@@ -5400,7 +5521,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-hsbc-visa-gold-card-for-students"
   },
   {
    "issuer": "HSBC",
@@ -5452,7 +5574,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-hsbc-pulse-unionpay-dual-currency-diamond-credit-card"
   },
   {
    "issuer": "HSBC",
@@ -5502,7 +5625,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/key-fact-statement.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-hsbc-visa-signature-card"
   },
   {
    "issuer": "Hang Seng",
@@ -5544,7 +5668,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.hangseng.com/content/dam/hase/rwd/personal/cards/pdfs/Credit_Card_KFS.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-hang-seng-mmpower-world-mastercard"
   },
   {
    "issuer": "Hang Seng",
@@ -5581,7 +5706,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.hangseng.com/content/dam/hase/rwd/personal/cards/pdfs/Credit_Card_KFS.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-hang-seng-enjoy-card"
   },
   {
    "issuer": "Hang Seng",
@@ -5620,7 +5746,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.hangseng.com/content/dam/hase/rwd/personal/cards/pdfs/Credit_Card_KFS.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-hang-seng-travel-visa-signature-card"
   },
   {
    "issuer": "Airwallex",
@@ -5669,7 +5796,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.airwallex.com/en-hk/spend-management/cards",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-airwallex-borderless-card"
   },
   {
    "issuer": "American Express",
@@ -5734,7 +5862,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.americanexpress.com/content/dam/amex/hk/en/staticassets/pdf/The_Platinum_KFS.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-american-express-the-platinum-card-hk"
   },
   {
    "issuer": "American Express",
@@ -5780,7 +5909,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.americanexpress.com/content/dam/amex/hk/en/staticassets/pdf/cardmember-agreement-and-fees-and-charges/Explorer_KFS_FnC_ENG.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-american-express-explorer-credit-card"
   },
   {
    "issuer": "American Express",
@@ -5826,7 +5956,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.americanexpress.com/content/dam/amex/hk/en/staticassets/pdf/cardmember-agreement-and-fees-and-charges/PGRCC_fees_charges.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-american-express-platinum-credit-card-hk"
   },
   {
    "issuer": "American Express",
@@ -5861,7 +5992,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.americanexpress.com/content/dam/amex/hk/en/staticassets/pdf/cardmember-agreement-and-fees-and-charges/BlueCash_KFS_FnC_EN.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-american-express-blue-cash-credit-card"
   },
   {
    "issuer": "American Express",
@@ -5903,7 +6035,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.americanexpress.com/content/dam/amex/hk/shared/Forms/Prop_KFS.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-american-express-gold-business-card-hk"
   },
   {
    "issuer": "BOC",
@@ -5949,7 +6082,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-boc-bliss-card"
   },
   {
    "issuer": "BOC",
@@ -5999,7 +6133,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-boc-chill-platinum-mastercard"
   },
   {
    "issuer": "BOC",
@@ -6031,7 +6166,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-boc-chill-world-mastercard"
   },
   {
    "issuer": "BOC",
@@ -6081,7 +6217,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-boc-cheers-visa-signature-card"
   },
   {
    "issuer": "BOC",
@@ -6131,7 +6268,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-boc-cheers-visa-infinite-card"
   },
   {
    "issuer": "BOC",
@@ -6171,7 +6309,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-boc-go-unionpay-diamond-card"
   },
   {
    "issuer": "BOC",
@@ -6211,7 +6350,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.bochk.com/creditcard/bocci/agt/key_facts_statement_eng.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-boc-go-unionpay-platinum-card"
   },
   {
    "issuer": "Fubon",
@@ -6251,7 +6391,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.fubonbank.com.hk/web/doc/sh_feekfs_e.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-fubon-in-shopback-visa-platinum-card"
   },
   {
    "issuer": "PrimeCredit",
@@ -6299,7 +6440,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.moneyhero.com.hk/en/credit-card/products/primecredit-wewa-visa-signature-card",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-primecredit-wewa-visa-signature-card"
   },
   {
    "issuer": "PrimeCredit",
@@ -6336,7 +6478,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.moneyhero.com.hk/en/credit-card/products/primecredit-wewa-visa-signature-card-for-university-student",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-primecredit-wewa-visa-platinum-card-for-university-student"
   },
   {
    "issuer": "PrimeCredit",
@@ -6382,7 +6525,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.moneyhero.com.hk/en/credit-card/products/primecredit-earnmore-unionpay-diamond-card",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-primecredit-earnmore-unionpay-diamond-card"
   },
   {
    "issuer": "PrimeCredit",
@@ -6426,7 +6570,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.moneyhero.com.hk/en/credit-card/products/primecredit-earnmore-unionpay-card-for-university-student",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-primecredit-earnmore-unionpay-card-for-university-student"
   },
   {
    "issuer": "Dah Sing",
@@ -6460,7 +6605,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.dahsing.com/pdf/credit_card/credit_card_kfs_en.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-dah-sing-one-credit-card"
   },
   {
    "issuer": "Dah Sing",
@@ -6500,7 +6646,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.dahsing.com/pdf/credit_card/credit_card_kfs_en.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-dah-sing-ana-world-mastercard"
   },
   {
    "issuer": "Dah Sing",
@@ -6544,7 +6691,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.dahsing.com/pdf/credit_card/credit_card_kfs_en.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-dah-sing-myauto-credit-card"
   },
   {
    "issuer": "Dah Sing",
@@ -6579,7 +6727,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.dahsing.com/pdf/credit_card/credit_card_kfs_en.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-dah-sing-united-mileageplus-world-mastercard"
   },
   {
    "issuer": "Dah Sing",
@@ -6614,7 +6763,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.dahsing.com/pdf/credit_card/credit_card_kfs_en.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-dah-sing-british-airways-platinum-card"
   },
   {
    "issuer": "AEON",
@@ -6666,7 +6816,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-aeon-visa-credit-card"
   },
   {
    "issuer": "AEON",
@@ -6718,7 +6869,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-aeon-mastercard-credit-card"
   },
   {
    "issuer": "AEON",
@@ -6782,7 +6934,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-aeon-unionpay-credit-card"
   },
   {
    "issuer": "AEON",
@@ -6834,7 +6987,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-aeon-jcb-credit-card"
   },
   {
    "issuer": "AEON",
@@ -6875,7 +7029,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-aeon-card-wakuwaku"
   },
   {
    "issuer": "AEON",
@@ -6917,7 +7072,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-aeon-card-jal-mastercard"
   },
   {
    "issuer": "AEON",
@@ -6950,7 +7106,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-aeon-spca-mastercard-kitten"
   },
   {
    "issuer": "AEON",
@@ -6983,7 +7140,8 @@
    "verified": true,
    "source": "moneyhero-hk",
    "fx_source": "https://www.aeon.com.hk/en/useful-info/fee-schedule.html",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "hk-aeon-spca-mastercard-puppy"
   },
   {
    "issuer": "Coinbase",
@@ -7019,7 +7177,8 @@
    "verified": true,
    "source": "",
    "fx_source": "https://upgradedpoints.com/credit-cards/reviews/coinbase-one-card/",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "us-coinbase-one-card"
   },
   {
    "issuer": "DBS",
@@ -7051,7 +7210,8 @@
    "verified": false,
    "source": "",
    "fx_source": "https://www.dbs.com.sg/personal/cards/cards-rates-fees.page",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "sg-dbs-altitude-visa-signature"
   },
   {
    "issuer": "Citi",
@@ -7080,7 +7240,8 @@
    "verified": false,
    "source": "",
    "fx_source": "https://www.citibank.com.sg/pdf/0122/credit-card/citi-premiermiles-card-info-sheet.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "sg-citi-premiermiles"
   },
   {
    "issuer": "UOB",
@@ -7112,7 +7273,8 @@
    "verified": false,
    "source": "",
    "fx_source": "https://www.uob.com.sg/personal/customer-service/credit-card.page",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "sg-uob-prvi-miles-visa"
   },
   {
    "issuer": "OCBC",
@@ -7141,7 +7303,8 @@
    "verified": false,
    "source": "",
    "fx_source": "https://www.ocbc.com/iwov-resources/sg/ocbc/personal/pdf/cards/cards-fee-charge.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "sg-ocbc-90-n-visa"
   },
   {
    "issuer": "HSBC",
@@ -7174,7 +7337,8 @@
    "verified": false,
    "source": "",
    "fx_source": "https://www.hsbc.com.sg/content/dam/hsbc/sg/documents/retail-banking-wealth-management-bank-tariffs.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "sg-hsbc-revolution"
   },
   {
    "issuer": "UOB",
@@ -7204,7 +7368,8 @@
    "verified": false,
    "source": "",
    "fx_source": "https://www.uob.com.sg/personal/customer-service/credit-card.page",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "sg-uob-one-card"
   },
   {
    "issuer": "American Express",
@@ -7233,7 +7398,8 @@
    "verified": false,
    "source": "",
    "fx_source": "https://www.americanexpress.com/content/dam/amex/sg/campaigns/pdfs/krisflyer-credit-card.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "sg-american-express-krisflyer-credit-card"
   },
   {
    "issuer": "Citi",
@@ -7264,7 +7430,8 @@
    "verified": false,
    "source": "",
    "fx_source": "https://www.citibank.com.sg/credit-cards/rewards/pdf/citibank-rewards-info.pdf",
-   "fx_checked": "2026-10-31"
+   "fx_checked": "2026-10-31",
+   "id": "sg-citi-rewards-card"
   }
  ]
 }

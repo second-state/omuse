@@ -106,7 +106,7 @@ must_say.",
             "passport_file": file("the photo / scan of the passport photo page the user attached"),
             "refund_method": {"type": "string", "enum": ["card", "cash", "alipay", "wechat", "alipayHK", "wechatHK"], "description": "how the user wants the refund"},
             "wallet_account": {"type": "string", "description": "the e-wallet account the refund goes to (Alipay / WeChat Pay)"},
-            "card": {"type": "string", "description": "the Vault card the user named for the refund"},
+            "card": {"type": "string", "description": "the Vault card the user named for the refund: its id from vault_list (id=…), its card_id, or its label exactly as listed"},
             "address": s
         }),
         &[],
@@ -568,22 +568,13 @@ pub fn site_errors(snapshot: &str) -> Vec<String> {
     out
 }
 
-/// The reference the platform issued, read from the page: the `bizId` its address carries, else the 6 letters and
-/// digits it shows.
-pub fn reference_on(url: &str, snapshot: &str) -> Option<String> {
-    static BIZ: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"[?&]bizId=([A-Za-z0-9]{4,12})").unwrap());
-    static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[A-Z0-9]{6}\b").unwrap());
-    if let Some(c) = BIZ.captures(url) {
-        return Some(c[1].to_string());
-    }
-    TOKEN
-        .find_iter(snapshot)
-        .map(|m| m.as_str())
-        .find(|t| {
-            t.chars().any(|c| c.is_ascii_digit()) && t.chars().any(|c| c.is_ascii_uppercase())
-        })
-        .map(str::to_string)
+/// The reference the platform issued: the `bizId` parameter the submit page's address carries (a fixed part of the
+/// known page), in its format (4–12 letters and digits); nothing is looked for in the page's text.
+pub fn reference_on(url: &str) -> Option<String> {
+    let u = url::Url::parse(url).ok()?;
+    let (_, v) = u.query_pairs().find(|(k, _)| k == "bizId")?;
+    let ok = (4..=12).contains(&v.len()) && v.chars().all(|c| c.is_ascii_alphanumeric());
+    ok.then(|| v.to_string())
 }
 
 /// The first result of `tool` after position `after` (and its position).
@@ -727,20 +718,12 @@ pub struct Card {
     pub holder: bool,
 }
 
-/// The card of a `vault_list` result: the one whose label the user's named card matches (either way, any case), else
-/// the first with its details, else the first.
+/// The card of a `vault_list` result: the one the tool argument names exactly (its Vault id, its card_id or its whole
+/// label — `claims::pick_card`), else the first with its details, else the first.
 fn vault_card(text: &str, named: &str) -> Option<Card> {
     static L4: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"•+\s*(\d{4})").unwrap());
     let cards = vault_cards(text);
-    let n = named.trim().to_lowercase();
-    let c = cards
-        .iter()
-        .find(|c| {
-            let l = c.label.to_lowercase();
-            !n.is_empty() && (l.contains(&n) || n.contains(&l))
-        })
-        .or_else(|| cards.iter().find(|c| !c.name_only))
-        .or_else(|| cards.first())?;
+    let c = super::claims::pick_card(&cards, &[named.to_string()])?;
     let line = text
         .lines()
         .find(|l| l.contains(&format!("id={} ", c.id)))
@@ -1151,7 +1134,7 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     if page_of(&url) != "apdt_submit" {
         return stuck(&url, &text, "face recognition");
     }
-    Step::Done(result(&f, reference_on(&url, &text).as_deref(), &url, card))
+    Step::Done(result(&f, reference_on(&url).as_deref(), &url, card))
 }
 
 /// The machine's JSON result once the application is confirmed: the reference, the trip, what was uploaded, the
@@ -1709,13 +1692,12 @@ the photo page of my passport. Refund it to my Visa card.";
         let errs = site_errors("  Flight Departure Date *\n  Departure date has exceeded the application deadline (28 calendar days from the departure date).\n  Please check the items marked above.\n[e3] button \"Next Step\"");
         assert_eq!(errs.len(), 2);
         assert!(errs[0].starts_with("Departure date has exceeded"));
-        assert_eq!(reference_on(SUBMIT_URL, ""), Some("K7P2QD".into()));
+        assert_eq!(reference_on(SUBMIT_URL), Some("K7P2QD".into()));
+        // the page's text is never searched for a reference: no bizId in the address, no reference
+        assert_eq!(reference_on("https://app.apdtrefund.hk/x?lang=en"), None);
         assert_eq!(
-            reference_on(
-                "https://app.apdtrefund.hk/x",
-                "  Submit your application Q3WX8Z Proceed"
-            ),
-            Some("Q3WX8Z".into())
+            reference_on("https://app.apdtrefund.hk/x?bizId=K7%20P2"),
+            None
         );
         assert_eq!(
             passport_default(&[PASSPORT.into(), "uploads/x.pdf".into()]),

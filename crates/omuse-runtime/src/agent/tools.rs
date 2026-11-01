@@ -244,6 +244,9 @@ fn local_tools() -> Vec<Value> {
     tools.extend(super::driver::tool_schemas());
     tools.extend(super::apdt::tool_schemas());
     tools.extend(super::trains::tool_schemas());
+    tools.extend(super::flightstatus::tool_schemas());
+    // an unknown site's confirmation reference, read by the model after the hand-back and passed as JSON
+    tools.push(super::confirm::schema());
     tools
 }
 
@@ -413,7 +416,8 @@ sent to the chat automatically; to change it, call again with a new prompt.",
              "size": {"type": "string", "description": "或明确尺寸 or an explicit size like 1024x1024 / 1536x1024 / 1024x1536"},
              "n": {"type": "integer", "description": "张数 1-4（默认 1）how many variations"},
              "quality": {"type": "string", "enum": ["low", "medium", "high"], "description": "质量（支持时）quality when the model supports it"},
-             "style": {"type": "string", "description": "风格（中英皆可，会展开成具体提示词）：写实 photorealistic / 电影感 cinematic / 动漫 anime / 水彩 watercolor / 油画 oil painting / 3D render / 扁平矢量 flat vector / 像素 pixel art / 素描 sketch / 水墨 ink wash / 线稿 line art / 等距 isometric / 极简 minimalist / logo / 产品图 product"},
+             "style": {"type": "string", "enum": ["photorealistic", "cinematic", "anime", "watercolor", "oil painting", "3d render", "flat vector", "pixel art", "sketch", "ink wash", "line art", "isometric", "low poly", "pop art", "minimalist", "logo", "product"],
+                       "description": "风格（展开成具体提示词）the style, expanded into concrete prompt words: 写实 photorealistic / 电影感 cinematic / 动漫 anime / 水彩 watercolor / 油画 oil painting / 3D render / 扁平矢量 flat vector / 像素 pixel art / 素描 sketch / 水墨 ink wash / 线稿 line art / 等距 isometric / 极简 minimalist / logo / 产品图 product"},
              "negative_prompt": {"type": "string", "description": "不想出现的东西（支持的模型才生效）things to avoid, e.g. 'text, watermark, blurry, extra fingers'"},
              "background": {"type": "string", "enum": ["transparent", "opaque"], "description": "透明背景（logo/贴纸/产品抠图；支持的模型才生效）transparent background when the model supports it"},
              "output_format": {"type": "string", "enum": ["png", "jpeg", "webp"], "description": "输出格式，默认 png"},
@@ -576,16 +580,21 @@ use just the fields you need.", json!({"fields": {"type": "array", "items": s, "
         fn_("profile_suggest", "建议修改档案 Propose a change to a profile field when the user told you a new value (e.g. a new phone \
 number). It is NOT applied until the user confirms it on the Memory page. field = one of: name_zh, name_en, \
 preferred_name, phone, email_personal, email_work, address_home, address_work, company, job_title, birthday, \
-gender (Male, Female or X), nationality, address:<label> (another address of the user's own, e.g. address:Singapore flat), or custom:<label>.", json!({"field": s, "value": s, "reason": s}), &["field", "value"]),
+gender (Male, Female or X), nationality, address:<label> (another address of the user's own, e.g. address:Singapore flat), \
+home_city (the home address's city as a code: TYO, OSA, SEL, SIN, HKG, BKK, TPE, SHA, BJS, KUL, SYD, MEL, LON, PAR, NYC …), \
+home_country (the home address's country, ISO 3166-1 alpha-2: SG, HK, AU, US …), address_country:<label> (the ISO country of \
+address:<label>), or custom:<label>. With an address, also propose its country field.", json!({"field": s, "value": s, "reason": s}), &["field", "value"]),
         fn_("vault_list", "列出保险箱条目 List the items in the user's Sentinel vault (ID documents, membership numbers, payment \
 cards) — labels and the last 4 characters only, never the values. Use with browser_fill_secret to fill one into a \
 web form; each fill needs the user's approval. A card added by its name only shows its number, expiry and CVC as \
 UNKNOWN: it cannot be filled or paid with until the user adds them in Memory → Vault.", json!({}), &[]),
         fn_("vault_add_card", "把用户说的信用卡（卡名，发卡国家可选）存进保险箱 Add a credit card the user told you they hold to the Vault: \
 name = issuer and product as printed on the card (e.g. \"Citi Prestige\"), country = the country that issued it if known \
-(e.g. \"USA\"; optional, leave empty when not said) — one call per card. Its number, expiry and CVC stay UNKNOWN until \
-the user adds them in Memory → Vault; never pass a number. The same card is not added twice.",
-            json!({"name": s, "country": {"type": "string", "description": "optional: the issuing country, e.g. USA, Singapore"}}), &["name"]),
+(e.g. \"USA\"; optional, leave empty when not said), card_id = the ID column of the card catalog's row for this card \
+(credit-card-picker tables; empty when the catalog has no row for it) — one call per card. Its number, expiry and CVC stay UNKNOWN until \
+the user adds them in Memory → Vault; never pass a number. The same card is not added twice (a card_id given again is kept with it).",
+            json!({"name": s, "country": {"type": "string", "description": "optional: the issuing country, e.g. USA, Singapore"},
+                   "card_id": {"type": "string", "description": "the catalog row's ID (e.g. sg-dbs-altitude-visa-signature); empty when not in the catalog"}}), &["name"]),
         fn_("memory_forget", "删除一条记忆 Forget a memory by id (from memory_search).", json!({"id": s}), &["id"]),
         fn_("orders_list", "交易账本：OMuse 替用户下过的订单（商家、订单号、金额、卡尾号、状态、谁批准的）。用户说「取消/退货/查一下那个订单」时先查这里，\
 用账本里那一单的商家和订单号去操作，不要凭邮件或别的网站猜。\

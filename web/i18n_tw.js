@@ -1,6 +1,8 @@
 // Traditional Chinese (Taiwan usage) for the UI strings in app.js, keyed by the Simplified source string (like i18n.js).
 // Hand-translated; keep every key of i18n.js that contains Chinese (tests/i18n_check.py checks).
 window.OMUSE_TW = {
+"国家/地区 Country": "國家/地區",
+"国家/地区 · {0}": "國家/地區 · {0}",
 "下次运行 {0}": "下次執行 {0}",
 "删除任务「{0}」？它的对话会保留。": "刪除任務「{0}」？它的對話會保留。",
 "应在 {0} 运行": "應在 {0} 執行",

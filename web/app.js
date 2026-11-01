@@ -2349,13 +2349,30 @@ const PROFILE_CHOICES = {
   gender: () => [[T('如护照所示 As on the passport'), ['Male', 'Female', 'X']]],   // stored as the passport has it
 };
 
+// the place fields hold codes of the server's tables (home_city: a city code; home_country and each further address's
+// address_country:<label>: an ISO country) — code reads these, never the address's words
+function placeSelect(list, cur, aria) {
+  const known = list.some(([v]) => v === cur);
+  const i = h('select', aria ? { 'aria-label': aria } : {}, h('option', { value: '' }, '—'),
+    ...(cur && !known ? [h('option', { value: cur }, cur)] : []),
+    ...list.map(([v, name]) => h('option', { value: v }, `${name} (${v})`)));
+  i.value = cur || '';
+  return i;
+}
+
 function memProfileCard(r, v) {
   const prof = r.profile || {};
   const inputs = {};
+  const places = r.places || {};
+  const cities = (places.cities || []).map(c => [c.code, c.name]);
+  const countries = (places.countries || []).map(c => [c.iso, c.name]);
   const rows = (r.profile_fields || []).map(f => {
     const groups = PROFILE_CHOICES[f.key] && PROFILE_CHOICES[f.key]();
     let i;
-    if (groups) {
+    if (f.key === 'home_city' || f.key === 'home_country') {
+      i = placeSelect(f.key === 'home_city' ? cities : countries, prof[f.key] || '');
+      i.setAttribute('data-key', f.key);
+    } else if (groups) {
       // a dropdown in two groups; a value saved earlier that is on neither list stays selectable
       const cur = prof[f.key] || '';
       const known = groups.some(([, l]) => l.includes(cur));
@@ -2382,13 +2399,23 @@ function memProfileCard(r, v) {
     }) : null }), T('始终参考 Always use'));
   const removable = (k, name) => {
     const i = h('input', { type: 'text', value: prof[k], autocomplete: 'off', style: 'flex:2', 'aria-label': name }); inputs[k] = i;
+    // a further address has its country beside it (address_country:<label>)
+    let country = null;
+    if (k.startsWith('address:')) {
+      const ck = 'address_country:' + k.slice(8);
+      country = placeSelect(countries, prof[ck] || '', T('国家/地区 Country'));
+      country.style.flex = '1';
+      inputs[ck] = country;
+    }
     const del = h('button', { class: 'btn small danger', type: 'button', title: T('删除这个字段 Remove this field'), onclick: safe(async () => {
       if (!confirmInline(Tf("删除字段 {0}？", name))) return;
-      await api('profile', { method: 'PUT', body: { key: k, value: '' } }); route();
+      await api('profile', { method: 'PUT', body: { key: k, value: '' } });
+      if (k.startsWith('address:')) await api('profile', { method: 'PUT', body: { key: 'address_country:' + k.slice(8), value: '' } });
+      route();
     }) }, '🗑');
     return h('div', { class: 'row removable', 'data-key': k, style: 'align-items:center' },
       h('span', { class: 'fieldname', title: name, style: 'flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name), i,
-      k.startsWith('custom:') ? standingBox(k, standing.has(k)) : null, del);
+      country, k.startsWith('custom:') ? standingBox(k, standing.has(k)) : null, del);
   };
   const savedAddr = Object.keys(prof).filter(k => k.startsWith('address:')).map(k => removable(k, k.slice(8)));
   const savedCustom = Object.keys(prof).filter(k => k.startsWith('custom:')).map(k => removable(k, k.slice(7)));
@@ -2455,9 +2482,10 @@ function memProfileCard(r, v) {
     const label = h('input', { type: 'text', placeholder: kind === 'address' ? T('再加一个地址：名称，如：新加坡的家') : T('自定义字段名，如：常用航空公司'), style: 'flex:1' });
     const val = h('input', { type: 'text', placeholder: kind === 'address' ? T('完整地址（含邮编）') : T('内容'), style: 'flex:1' });
     const tick = kind === 'custom' ? standingBox('', false) : null;
-    const row = h('div', { class: 'row newfield', 'data-kind': kind }, label, val, tick,
+    const country = kind === 'address' ? placeSelect(countries, '', T('国家/地区 Country')) : null;
+    const row = h('div', { class: 'row newfield', 'data-kind': kind }, label, val, country, tick,
       h('button', { class: 'btn small', type: 'button', title: T('删除这个字段 Remove this field'), onclick: () => { row.remove(); newRows[kind] = newRows[kind].filter(x => x.row !== row); } }, '✕'));
-    newRows[kind].push({ row, label, val, tick: tick && tick.querySelector('input') });
+    newRows[kind].push({ row, label, val, country, tick: tick && tick.querySelector('input') });
     return row;
   };
   const addrBox = h('div', { class: 'stack', style: 'gap:6px' }, savedAddr.length ? h('b', { class: 'small' }, T('其他地址 Other addresses')) : null, ...savedAddr, addRow('address'));
@@ -2468,11 +2496,12 @@ function memProfileCard(r, v) {
       if ((el.value || '').trim() !== (prof[k] || '')) { await api('profile', { method: 'PUT', body: { key: k, value: el.value } }); n++; }
     }
     for (const [kind, prefix] of [['address', 'address:'], ['custom', 'custom:']]) {
-      for (const { label, val, tick } of newRows[kind]) {
+      for (const { label, val, country, tick } of newRows[kind]) {
         if (label.value.trim() && val.value.trim()) {
           const body = { key: prefix + label.value.trim(), value: val.value };
           if (tick) body.standing = tick.checked;
           await api('profile', { method: 'PUT', body }); n++;
+          if (country && country.value) await api('profile', { method: 'PUT', body: { key: 'address_country:' + label.value.trim(), value: country.value } });
         }
       }
     }
@@ -2490,7 +2519,7 @@ function memProfileCard(r, v) {
 
 function memPendingCard(r) {
   const list = r.pending || [];
-  const label = (k) => { const f = (r.profile_fields || []).find(x => x.key === k); return f ? (LANG === 'en' ? f.en : ZH(f.zh)) : k.startsWith('address:') ? Tf("地址 · {0}", k.slice(8)) : k.replace(/^custom:/, ''); };
+  const label = (k) => { const f = (r.profile_fields || []).find(x => x.key === k); return f ? (LANG === 'en' ? f.en : ZH(f.zh)) : k.startsWith('address:') ? Tf("地址 · {0}", k.slice(8)) : k.startsWith('address_country:') ? Tf("国家/地区 · {0}", k.slice(16)) : k.replace(/^custom:/, ''); };
   return h('div', { class: 'card stack' },
     h('div', { class: 'row' }, h('h3', { style: 'flex:1' }, T('📝 待确认的档案修改 Pending')), list.length ? h('span', { class: 'chip bad' }, String(list.length)) : h('span', { class: 'chip ok' }, T('无 None'))),
     list.length ? list.map(p => {

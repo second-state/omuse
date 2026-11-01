@@ -130,9 +130,11 @@ ff = results(t, "pdf_form_fields")
 check("fields are listed with types and options", ff and '"lunch"' in ff[0]["preview"] and '"radio"' in ff[0]["preview"]
       and "vegetarian" in ff[0]["preview"], ff[:1])
 fl = results(t, "pdf_form_fill")
+# the slip has no /Sig field: a value for "signature" is an unknown field and is never written (a /Sig field would be
+# listed as left_for_the_user_to_sign — decided by the PDF field type, never by a name)
 check("a filled copy is written; the signature is left for the user, never written",
-      fl and fl[0]["ok"] and "permission_slip-filled.pdf" in fl[0]["preview"] and "left_for_the_user_to_sign" in fl[0]["preview"]
-      and "signature" in fl[0]["preview"], fl[:1])
+      fl and fl[0]["ok"] and "permission_slip-filled.pdf" in fl[0]["preview"] and "unknown field 'signature'" in fl[0]["preview"],
+      fl[:1])
 check("required/empty fields are pointed out (emergency phone)", fl and "emergency_phone" in fl[0]["preview"], fl[:1])
 from pypdf import PdfReader  # noqa: E402
 

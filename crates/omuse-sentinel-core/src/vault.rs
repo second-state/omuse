@@ -69,7 +69,8 @@ pub const SCRUB_FIELDS: &[&str] = &["number", "value"];
 pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS vault_items (
   id TEXT PRIMARY KEY, label TEXT, kind TEXT, masked TEXT, fields TEXT, domains TEXT,
-  created_at REAL, updated_at REAL, last_used REAL, uses INTEGER DEFAULT 0, country TEXT DEFAULT ''
+  created_at REAL, updated_at REAL, last_used REAL, uses INTEGER DEFAULT 0, country TEXT DEFAULT '',
+  card_id TEXT DEFAULT ''
 );
 ";
 
@@ -127,6 +128,18 @@ pub fn init(store: &Store) -> Result<()> {
     if !has_country {
         store.db.execute(
             "ALTER TABLE vault_items ADD COLUMN country TEXT DEFAULT ''",
+            params![],
+        )?;
+    }
+    // a card's catalog id (the credit-card picker's `card_id`): a table from before it gets the column
+    let has_card_id = store
+        .db
+        .all("PRAGMA table_info(vault_items)", params![])?
+        .iter()
+        .any(|r| get_str(r, "name") == "card_id");
+    if !has_card_id {
+        store.db.execute(
+            "ALTER TABLE vault_items ADD COLUMN card_id TEXT DEFAULT ''",
             params![],
         )?;
     }
@@ -189,6 +202,7 @@ fn row(r: &Value) -> Value {
     json!({
         "id": r["id"], "label": r["label"], "kind": r["kind"], "kind_label": kind_label(&kind),
         "masked": r["masked"], "fields": fields, "missing": missing, "domains": loads_field(r, "domains", json!([])), "country": field_str(r, "country"),
+        "card_id": field_str(r, "card_id"),
         "created_at": r["created_at"], "updated_at": r["updated_at"], "last_used": r["last_used"],
         "uses": if truthy(&r["uses"]) { r["uses"].clone() } else { json!(0) },
     })
@@ -355,6 +369,11 @@ pub fn save_item(
     } else {
         String::new()
     };
+    let card_id = if kind == "card" {
+        clean_card_id(&get_str(data, "card_id"))
+    } else {
+        String::new()
+    };
     let old = match iid {
         Some(id) => store
             .get_secret(&format!("vault_{id}"))?
@@ -389,6 +408,7 @@ pub fn save_item(
             "请填写号码 the number is required".into(),
         ));
     }
+    let is_new = iid.is_none();
     let iid = iid.map(str::to_string).unwrap_or_else(|| new_id("vlt"));
     let vals = Value::Object(vals);
     store.put_secret("vault", &vals, Some(&format!("vault_{iid}")))?;
@@ -404,6 +424,10 @@ pub fn save_item(
         "label": label, "kind": kind, "masked": masked, "fields": dumps(&json!(present)),
         "domains": dumps(&json!(clean_domains(data.get("domains")))), "updated_at": now_ts(), "country": country,
     });
+    // an update that does not name the catalog card keeps the one saved
+    if !card_id.is_empty() || is_new {
+        rec["card_id"] = json!(card_id);
+    }
     if store
         .db
         .one("SELECT id FROM vault_items WHERE id=?", params![&iid])?
@@ -432,6 +456,17 @@ pub fn add_card(
     name: &str,
     country: &str,
 ) -> std::result::Result<(Value, bool), VaultError> {
+    add_card_with_id(store, name, country, "")
+}
+
+/// [`add_card`] with the card's catalog id (`card_id`, checked against the catalog by the runtime; here only its shape):
+/// kept with the card, and filled into a card already there that has none.
+pub fn add_card_with_id(
+    store: &Store,
+    name: &str,
+    country: &str,
+    card_id: &str,
+) -> std::result::Result<(Value, bool), VaultError> {
     static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
     static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{5,}").unwrap());
     let name = WS.replace_all(name.trim(), " ").into_owned();
@@ -446,27 +481,49 @@ pub fn add_card(
         ));
     }
     let country = clean_country(country)?;
+    let card_id = clean_card_id(card_id);
     let key = card_key(&name);
     if let Some(it) = list_items(store)?
         .into_iter()
         .find(|it| field_str(it, "kind") == "card" && card_key(&field_str(it, "label")) == key)
     {
+        let id = field_str(&it, "id");
+        let mut changed = false;
         if field_str(&it, "country").is_empty() && !country.is_empty() {
-            let id = field_str(&it, "id");
             store.db.execute(
                 "UPDATE vault_items SET country=? WHERE id=?",
                 params![country, id.as_str()],
             )?;
+            changed = true;
+        }
+        if field_str(&it, "card_id").is_empty() && !card_id.is_empty() {
+            store.db.execute(
+                "UPDATE vault_items SET card_id=? WHERE id=?",
+                params![card_id, id.as_str()],
+            )?;
+            changed = true;
+        }
+        if changed {
             return Ok((item(store, &id)?.unwrap_or(it), false));
         }
         return Ok((it, false));
     }
     let it = save_item(
         store,
-        &json!({"kind": "card", "label": name, "country": country}),
+        &json!({"kind": "card", "label": name, "country": country, "card_id": card_id}),
         None,
     )?;
     Ok((it, true))
+}
+
+/// A catalog card id as stored: lower-case letters, digits and dashes, at most 80 characters; "" for anything else.
+fn clean_card_id(v: &str) -> String {
+    let v = v.trim().to_lowercase();
+    if v.len() <= 80 && !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        v
+    } else {
+        String::new()
+    }
 }
 
 /// A card's name as one key for "is this the same card": lower-case words, punctuation and the words any card name
@@ -767,6 +824,12 @@ mod tests {
         }
         assert!(add_card(&store, "Chase Sapphire", "USA").unwrap().1); // another card than Sapphire Reserve
         assert!(add_card(&store, "Visa 4111 1111 1111 1111", "").is_err());
+        // the catalog id is kept with the card, filled into one that had none, and only in its shape
+        let (with_id, new) =
+            add_card_with_id(&store, "Citi Prestige", "", "US-Citi-Prestige").unwrap();
+        assert!(!new && with_id["card_id"] == "us-citi-prestige");
+        let (bad, new) = add_card_with_id(&store, "UOB One", "Singapore", "sg uob one!").unwrap();
+        assert!(new && bad["card_id"] == "");
         assert!(add_card(&store, "Amex Gold", "4111").is_err());
         assert!(add_card(&store, "", "USA").is_err());
         // "UNKNOWN" is no vault value: it is never scrubbed from a page

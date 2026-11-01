@@ -891,7 +891,7 @@ async def book_submit(kind: str, bid: str, req: Request):
     LOG["bookings"].append(rec)
     amount = _money(info["amount"], info["cur"]) if info["amount"] else "nothing charged"
     paid = "Total paid" if info.get("card") and info["amount"] and not info.get("card_optional") else "Total"
-    body = (f"<h1>Booking confirmed</h1><div class='sum'><p><b>Booking reference: {ref}</b></p>"
+    body = (f"<h1>Booking confirmed</h1><div class='sum'><p><b>Booking reference: <span id='booking-ref'>{ref}</span></b></p>"
             + "".join(f"<p>{html.escape(x)}</p>" for x in info["lines"])
             + f"<p>Booked for: {html.escape(vals['full_name'])}</p><p>{paid}: {html.escape(amount)}</p>"
             + (f"<p>Card: ending {digits[-4:]}</p>" if digits else "")

@@ -235,31 +235,13 @@ fn arrival_country(skill: &str) -> &'static [&'static str] {
     }
 }
 
-/// The reference the confirmation page showed after the user's hand-back, as a fact the reply must carry
-/// ("<label>: <code>", `agent/facts.rs`): when the user submitted a form in a takeover and a page read afterwards shows
-/// "<label> No. / ID / PIN / Number / reference: <code>" (arrival_cards2_real 2026-10-30: Visit Japan Web's
-/// Registration ID left out of "Your registration is complete").
+/// The reference of the confirmation page after the user's hand-back on a site no code knows, as a fact the reply must
+/// carry ("<label>: <code>", `agent/facts.rs`): the model read it on the page and passed it as JSON
+/// (`confirm_reference`, checked in `agent/confirm.rs`). A known site's reference is in its machine's result; no
+/// page's text is scanned for one (arrival_cards2_real 2026-10-30: Visit Japan Web's Registration ID left out of the
+/// reply — now the arrival-card machine's `must_say`).
 pub fn confirmation_ref_fact(transcript: &[Value]) -> Option<String> {
-    static REF: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b((?:[A-Z][\w-]*\s){0,2}(?:No\.|Number|ID|PIN|reference(?: number)?))\s*[:：]\s*([A-Z0-9][A-Z0-9-]{5,})\b").unwrap()
-    });
-    let after = transcript.iter().position(|m| {
-        get_str(m, "role") == "tool" && {
-            let c = content_of(m);
-            c.contains(TAKEOVER_DONE_MARK) || c.contains(TAKEOVER_DONE_EN)
-        }
-    })?;
-    transcript[after + 1..]
-        .iter()
-        .filter(|m| get_str(m, "role") == "tool")
-        .rev()
-        .find_map(|m| {
-            let c = content_of(m).replace("\\n", "\n");
-            REF.captures_iter(&c)
-                .filter(|x| x[2].chars().any(|ch| ch.is_ascii_digit()))
-                .map(|x| format!("{}: {}", x[1].trim(), &x[2]))
-                .next()
-        })
+    super::confirm::fact(transcript)
 }
 
 /// The label the newest page snapshot gives a field ref (`[e17] textbox "Intended date of departure"`).
@@ -291,6 +273,7 @@ pub fn code_call(call: &ToolCall) -> bool {
         "bkg_",
         "nws_",
         "trn_",
+        "fst_",
         "auto_handover_",
         "news_",
         "handback_snapshot_",
@@ -763,8 +746,9 @@ pub fn takeover_before_fill_guard(transcript: &[Value], call: &ToolCall) -> Opti
 }
 
 /// After the user handed the browser back, the page is read by code: `true` when no `browser_snapshot` followed the
-/// last hand-back (the loop then takes one before the answer, so `with_confirmation_ref` and the outcome check find
-/// the reference; arrival_cards2_real 2026-11-01: Visit Japan Web answered without looking at the page, no reference).
+/// last hand-back (the loop then takes one before the answer, and the model reads the reference on it and passes it
+/// as JSON, `confirm_reference`; arrival_cards2_real 2026-11-01: Visit Japan Web answered without looking at the page,
+/// no reference — now the arrival-card machine reads it by the page's element).
 pub fn needs_handback_snapshot(transcript: &[Value]) -> bool {
     let last_back = transcript.iter().rposition(|m| {
         get_str(m, "role") == "tool" && {
@@ -809,38 +793,6 @@ fn purchase_approved(transcript: &[Value], calls: &[(String, String)]) -> bool {
             })
             && content_of(m).contains("\"status\": \"approved\"")
     })
-}
-
-/// A delayed flight's original time next to the new one, as a fact the reply must carry: a page the run read shows
-/// "Scheduled HH:MM … Estimated HH:MM" with different times (an airline's status page, its fixed labels) →
-/// "Scheduled departure 09:25, now estimated 17:10." (claims_real 2026-10-31).
-pub fn flight_times_fact(transcript: &[Value], zh: bool) -> Option<String> {
-    static SCHED: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)\bscheduled\b[^0-9\n]{0,20}(\d{1,2}:\d{2})").unwrap());
-    static EST: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(estimated|expected|revised|new time)\b[^0-9\n]{0,20}(\d{1,2}:\d{2})")
-            .unwrap()
-    });
-    for m in transcript
-        .iter()
-        .rev()
-        .filter(|m| get_str(m, "role") == "tool")
-    {
-        let text = content_of(m).replace("\\n", "\n");
-        let (Some(s), Some(e)) = (SCHED.captures(&text), EST.captures(&text)) else {
-            continue;
-        };
-        let (old, new) = (s[1].to_string(), e[2].to_string());
-        if old == new {
-            return None;
-        }
-        return Some(if zh {
-            format!("原定起飞 {old}，现在预计 {new}。")
-        } else {
-            format!("Scheduled departure {old}, now estimated {new}.")
-        });
-    }
-    None
 }
 
 /// The files the run wrote for the user to receive (`files_write`, `make_pdf`, `make_xlsx`, `make_docx` with
@@ -1402,24 +1354,21 @@ pub fn catalog_date_fact(transcript: &[Value], zh: bool) -> Option<String> {
 
 /// Which of the user's cards (the Vault cards this run saw) are only unverified seeds in the shipped catalog
 /// (`verified: false`), as a fact the reply must carry (cards_markets_real 2026-10-31: Singapore picks with seed rates,
-/// nothing said). Judged against the shipped catalog's `verified`.
+/// nothing said). Judged against the catalog row of each card's `card_id`.
 pub fn unverified_cards_fact(transcript: &[Value], zh: bool) -> Option<String> {
-    let card_run = transcript
-        .iter()
-        .any(|m| get_str(m, "role") == "tool" && content_of(m).contains("# Credit cards — "));
-    if !card_run {
+    if !card_run(transcript) {
         return None;
     }
     let mut named: Vec<String> = Vec::new();
-    for label in vault_cards(transcript) {
-        let Some(c) = catalog_card_whole(&label) else {
+    for card in vault_cards(transcript) {
+        let Some(c) = catalog_card(&card.card_id) else {
             continue;
         };
         if c.get("verified").is_some_and(|v| v.as_bool() == Some(true)) {
             continue;
         }
-        if !named.contains(&label) {
-            named.push(label);
+        if !named.contains(&card.label) {
+            named.push(card.label);
         }
     }
     if named.is_empty() {
@@ -1435,8 +1384,15 @@ pub fn unverified_cards_fact(transcript: &[Value], zh: bool) -> Option<String> {
     })
 }
 
+/// Whether the run read a card catalog table (a credit-card-picker run).
+pub(crate) fn card_run(transcript: &[Value]) -> bool {
+    transcript
+        .iter()
+        .any(|m| get_str(m, "role") == "tool" && content_of(m).contains("# Credit cards — "))
+}
+
 /// The shipped card catalog's cards (`skills/credit-card-picker/cards/catalog.json`), parsed once.
-fn catalog_cards() -> &'static [Value] {
+pub(crate) fn catalog_cards() -> &'static [Value] {
     static CARDS: LazyLock<Vec<Value>> = LazyLock::new(|| {
         crate::skills::BUILTIN
             .get_file("credit-card-picker/cards/catalog.json")
@@ -1448,110 +1404,24 @@ fn catalog_cards() -> &'static [Value] {
     &CARDS
 }
 
-/// The words of a card's name that say nothing about which card it is.
-const CARD_GENERIC: &[&str] = &[
-    "card",
-    "cards",
-    "credit",
-    "debit",
-    "the",
-    "visa",
-    "mastercard",
-    "signature",
-    "infinite",
-    "world",
-    "elite",
-    "american",
-    "express",
-];
-
-/// The catalog row that carries every telling word of the card's name (`catalog_card` with no partial fallback): a
-/// card the catalog lacks gets no row, so a table never shows another card's terms under its name (2026-11-01: Bread
-/// Cashback shown with another cashback card's 1.5% beside "not in the card catalog").
-fn catalog_card_whole(name: &str) -> Option<&'static Value> {
-    let c = catalog_card(name, "")?;
-    let full = std::iter::once(format!("{} {}", sget(c, "issuer"), sget(c, "product")))
-        .chain(arr(c, "aliases").iter().map(omuse_common::util::py_str))
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-    let words: Vec<String> = name
-        .to_lowercase()
-        .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|w| w.chars().count() >= 2 && !CARD_GENERIC.contains(w))
-        .map(str::to_string)
-        .collect();
-    (!words.is_empty() && words.iter().all(|w| full.contains(w.as_str()))).then_some(c)
-}
-
-#[cfg(test)]
-pub fn catalog_card_whole_for_test(name: &str) -> Option<&'static Value> {
-    catalog_card_whole(name)
-}
-
-fn catalog_card(name: &str, market: &str) -> Option<&'static Value> {
-    let word = card_word(name);
-    if word.is_empty() {
+/// The catalog row with this id (`card_id`: the ID column of the tables, kept with a Vault card); `None` for "" or an
+/// id the catalog lacks. Code finds a card's terms by its id only, never by the words of its name.
+pub fn catalog_card(card_id: &str) -> Option<&'static Value> {
+    let id = card_id.trim();
+    if id.is_empty() {
         return None;
     }
-    let names = |c: &Value| -> Vec<String> {
-        std::iter::once(format!("{} {}", sget(c, "issuer"), sget(c, "product")))
-            .chain(arr(c, "aliases").iter().map(omuse_common::util::py_str))
-            .map(|n| n.to_lowercase())
-            .collect()
-    };
-    let hits: Vec<&Value> = catalog_cards()
-        .iter()
-        .filter(|c| names(c).iter().any(|n| n.contains(&word)))
-        .collect();
-    // a card whose name carries every telling word of the user's ("Hang Seng Travel+") before one that shares only
-    // the longest ("Travel")
-    let words: Vec<String> = name
-        .to_lowercase()
-        .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|w| {
-            w.chars().count() >= 2
-                && ![
-                    "card",
-                    "credit",
-                    "visa",
-                    "mastercard",
-                    "signature",
-                    "infinite",
-                    "world",
-                    "elite",
-                    "american",
-                    "express",
-                ]
-                .contains(w)
-        })
-        .map(str::to_string)
-        .collect();
-    let whole = |c: &Value| {
-        let full = names(c).join(" ");
-        words.iter().all(|w| full.contains(w.as_str()))
-    };
-    hits.iter()
-        .find(|c| whole(c) && (market.is_empty() || sget(c, "region") == market))
-        .or_else(|| hits.iter().find(|c| whole(c)))
-        .or_else(|| {
-            hits.iter()
-                .find(|c| market.is_empty() || sget(c, "region") == market)
-        })
-        .or_else(|| hits.first())
-        .copied()
+    catalog_cards().iter().find(|c| get_str(c, "id") == id)
 }
 
 /// The foreign transaction fee of the user's cards issued in another country than the merchant's — the market of the
 /// card table the run read last — from the catalog's structured `fx_fee_pct` (researched per card, with its source), as
-/// facts the reply must carry: a card with a fee above 0 is named with it, a card whose fee the catalog does not know is
-/// said to be unknown (cards_markets_real 2026-10-31: a Hong Kong dinner, the Singapore cards' fee left out).
+/// facts the reply must carry: a card with a fee above 0 is named with it, a card whose fee the catalog does not know
+/// (no `card_id`, or no fee) is said to be unknown (cards_markets_real 2026-10-31: a Hong Kong dinner, the Singapore
+/// cards' fee left out).
 pub fn fx_fees_facts(transcript: &[Value], zh: bool) -> Vec<String> {
     static MARKET: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"# Credit cards — ([A-Z]{2}) ").unwrap());
-    static LISTED: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?m)^- id=\S+ · (.+?) · issued in ([^·]+?) · card · ").unwrap()
-    });
     let country = |c: &str| -> String {
         match c.trim().to_lowercase().as_str() {
             "sg" | "singapore" | "新加坡" => "SG",
@@ -1573,44 +1443,30 @@ pub fn fx_fees_facts(transcript: &[Value], zh: bool) -> Vec<String> {
         }
     };
     let mut market = String::new();
-    let mut cards: Vec<(String, String)> = Vec::new();
-    for m in transcript {
-        if get_str(m, "role") == "tool" {
-            let text = content_of(m).replace("\\n", "\n");
-            if let Some(c) = MARKET.captures_iter(&text).last() {
-                market = c[1].to_string();
-            }
-            for c in LISTED.captures_iter(&text) {
-                cards.push((c[1].trim().to_string(), country(&c[2])));
-            }
-        }
-        for tc in tool_calls(m) {
-            let (name, args) = stored_call(tc);
-            if name == "vault_add_card" && !sget(&args, "country").trim().is_empty() {
-                cards.push((
-                    sget(&args, "name").trim().to_string(),
-                    country(&sget(&args, "country")),
-                ));
-            }
+    for m in transcript.iter().filter(|m| get_str(m, "role") == "tool") {
+        let text = content_of(m).replace("\\n", "\n");
+        if let Some(c) = MARKET.captures_iter(&text).last() {
+            market = c[1].to_string();
         }
     }
     if market.is_empty() {
         return Vec::new();
     }
     let (mut fees, mut unknown): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
-    let mut seen: Vec<&str> = Vec::new();
-    for (card, from) in &cards {
-        if from == &market || seen.contains(&card.as_str()) {
+    let mut seen: Vec<String> = Vec::new();
+    for card in vault_cards(transcript) {
+        if card.country.is_empty() || country(&card.country) == market || seen.contains(&card.label)
+        {
             continue;
         }
-        seen.push(card);
-        match catalog_card(card, from)
+        seen.push(card.label.clone());
+        match catalog_card(&card.card_id)
             .and_then(|c| c.get("fx_fee_pct"))
             .and_then(Value::as_f64)
         {
-            Some(fee) if fee > 0.0 => fees.push(format!("{card} {}%", pyfmt_pct(fee))),
+            Some(fee) if fee > 0.0 => fees.push(format!("{} {}%", card.label, pyfmt_pct(fee))),
             Some(_) => {}
-            None => unknown.push(card.clone()),
+            None => unknown.push(card.label.clone()),
         }
     }
     let mut lines: Vec<String> = Vec::new();
@@ -1648,55 +1504,63 @@ fn pyfmt_pct(v: f64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// The user's cards as this run saw them, by name: the `card` items of `vault_list` results and the cards
-/// `vault_add_card` added or found ("added to the Vault: Citi Prestige (id=…)").
-pub fn vault_cards(transcript: &[Value]) -> Vec<String> {
-    static LISTED: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?m)^- id=\S+ · (.+?)(?: · issued in [^·]+)? · card · ").unwrap()
-    });
-    static ADDED: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?:added to the Vault|already in the Vault): (.+?) \(id=").unwrap()
-    });
-    let mut out: Vec<String> = Vec::new();
-    for t in transcript.iter().filter(|m| get_str(m, "role") == "tool") {
-        let text = content_of(t);
-        for c in LISTED
-            .captures_iter(&text)
-            .chain(ADDED.captures_iter(&text))
-        {
-            let label = c[1].trim().to_string();
-            if !out.iter().any(|x| x.eq_ignore_ascii_case(&label)) {
-                out.push(label);
+/// A Vault card as this run saw it: its label, its catalog id (`none`: checked, no row; "": not matched yet) and its
+/// issuing country.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SeenCard {
+    pub label: String,
+    pub card_id: String,
+    pub country: String,
+}
+
+/// The user's cards as this run saw them: the `card` items of `vault_list` results (the listing's fixed fields:
+/// `card_id=`, `issued in`) and the cards `vault_add_card` added or found (its JSON arguments: name, country, card_id —
+/// with the card_id the tool kept). A card seen twice keeps the fields either sighting gave.
+pub fn vault_cards(transcript: &[Value]) -> Vec<SeenCard> {
+    let mut out: Vec<SeenCard> = Vec::new();
+    let mut add = |c: SeenCard| match out
+        .iter_mut()
+        .find(|x| x.label.eq_ignore_ascii_case(&c.label))
+    {
+        Some(x) => {
+            if x.card_id.is_empty() {
+                x.card_id = c.card_id;
+            }
+            if x.country.is_empty() {
+                x.country = c.country;
+            }
+        }
+        None => out.push(c),
+    };
+    let ok: HashSet<String> = transcript
+        .iter()
+        .filter(|m| get_str(m, "role") == "tool" && !content_of(m).starts_with("ERROR"))
+        .map(|m| get_str(m, "tool_call_id"))
+        .collect();
+    for m in transcript {
+        if get_str(m, "role") == "tool" {
+            for c in crate::agent::local::listed_vault_cards(&content_of(m)) {
+                add(c);
+            }
+        }
+        for tc in tool_calls(m) {
+            let (name, args) = stored_call(tc);
+            if name == "vault_add_card" && ok.contains(&get_str(tc, "id")) {
+                let card_id = sget(&args, "card_id");
+                add(SeenCard {
+                    label: sget(&args, "name").trim().to_string(),
+                    card_id: if card_id == "none" || catalog_card(&card_id).is_some() {
+                        card_id
+                    } else {
+                        String::new()
+                    },
+                    country: sget(&args, "country").trim().to_string(),
+                });
             }
         }
     }
+    out.retain(|c| !c.label.is_empty());
     out
-}
-
-/// The most telling word of a card's name (its longest word that is not generic): how an answer names the card.
-fn card_word(label: &str) -> String {
-    const GENERIC: &[&str] = &[
-        "card",
-        "cards",
-        "credit",
-        "debit",
-        "the",
-        "visa",
-        "mastercard",
-        "signature",
-        "infinite",
-        "world",
-        "elite",
-        "american",
-        "express",
-    ];
-    label
-        .to_lowercase()
-        .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|w| w.chars().count() >= 2 && !GENERIC.contains(w))
-        .max_by_key(|w| w.chars().count())
-        .unwrap_or("")
-        .to_string()
 }
 
 /// A compact table of the user's cards from the catalog (its structured rows: market, base rate, dining, travel,
@@ -1704,11 +1568,8 @@ fn card_word(label: &str) -> String {
 /// more of the user's cards — the comparison the pick is made against, rendered from data (cards_markets_real
 /// 2026-10-30: "Use your Hang Seng Travel+", nothing about the user's two other cards).
 pub fn card_comparison_fact(transcript: &[Value], zh: bool) -> Option<String> {
-    let read_catalog = transcript
-        .iter()
-        .any(|m| get_str(m, "role") == "tool" && content_of(m).contains("# Credit cards — "));
     let cards = vault_cards(transcript);
-    if !read_catalog || cards.len() < 2 {
+    if !card_run(transcript) || cards.len() < 2 {
         return None;
     }
     let rate = |c: &Value, k: &str| {
@@ -1720,8 +1581,8 @@ pub fn card_comparison_fact(transcript: &[Value], zh: bool) -> Option<String> {
     };
     let rows: Vec<String> = cards
         .iter()
-        .filter_map(|name| {
-            let c = catalog_card_whole(name)?;
+        .filter_map(|card| {
+            let c = catalog_card(&card.card_id)?;
             let fx = c
                 .get("fx_fee_pct")
                 .and_then(Value::as_f64)
@@ -1733,7 +1594,8 @@ pub fn card_comparison_fact(transcript: &[Value], zh: bool) -> Option<String> {
                 "seed".to_string()
             };
             Some(format!(
-                "| {name} | {} | {} | {} | {} | {} | {fx} | {verified} |",
+                "| {} | {} | {} | {} | {} | {} | {fx} | {verified} |",
+                card.label,
                 sget(c, "region"),
                 sget(c, "unit"),
                 rate(c, "other"),
@@ -1753,56 +1615,29 @@ pub fn card_comparison_fact(transcript: &[Value], zh: bool) -> Option<String> {
     Some(format!("{head}\n{}", rows.join("\n")))
 }
 
-/// Every market's table of the card catalog the build ships (`skills/credit-card-picker/cards/*.md`).
-fn shipped_card_catalog() -> String {
-    crate::skills::BUILTIN
-        .get_dir("credit-card-picker/cards")
-        .map(|d| {
-            d.files()
-                .filter(|f| f.path().extension().is_some_and(|e| e == "md"))
-                .filter_map(|f| f.contents_utf8())
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
-}
-
 /// Which of the user's cards the card catalog lacks, as facts the reply must carry: when a run read a catalog table, a
-/// Vault card this run saw (`vault_list`, `vault_add_card`) with no row in any shipped table (every telling word of its
-/// name) gets "<card> is not in the card catalog; its terms were not verified there." — a rate given for it was looked
-/// up or assumed, and the user must know (cards_real 2026-10-30: "assuming it earns 2%"). Decided from the run's calls
-/// and the shipped catalog, never from words.
+/// Vault card this run saw (`vault_list`, `vault_add_card`) whose catalog id is `none` (checked: no row) gets
+/// "<card> is not in the card catalog; its terms were not verified there." — a rate given for it was looked up or
+/// assumed, and the user must know (cards_real 2026-10-30: "assuming it earns 2%"). Decided from the cards' `card_id`
+/// and the shipped catalog, never from the words of a name.
 pub fn uncatalogued_cards_facts(transcript: &[Value], zh: bool) -> Vec<String> {
-    let card_run = transcript
-        .iter()
-        .any(|m| get_str(m, "role") == "tool" && content_of(m).contains("# Credit cards — "));
-    if !card_run {
+    if !card_run(transcript) {
         return Vec::new();
     }
-    // the whole shipped catalog, every market — not only the tables this run read (cards_markets_real 2026-10-30:
-    // the Hong Kong card flagged as missing after the agent read another market's table)
-    let catalog: String = shipped_card_catalog().to_lowercase();
-    let mut lines = Vec::new();
-    let mut seen = HashSet::new();
-    for label in vault_cards(transcript) {
-        let words: Vec<String> = label
-            .to_lowercase()
-            .split(|ch: char| !ch.is_alphanumeric())
-            .filter(|w| w.chars().count() >= 2 && !CARD_GENERIC.contains(w))
-            .map(str::to_string)
-            .collect();
-        if words.is_empty() || !seen.insert(words.join(" ")) {
-            continue;
-        }
-        if !words.iter().all(|w| catalog.contains(w.as_str())) {
-            lines.push(if zh {
-                format!("{label} 不在信用卡权益数据库里，它的条款没有核实。")
+    vault_cards(transcript)
+        .into_iter()
+        .filter(|c| c.card_id == "none")
+        .map(|c| {
+            if zh {
+                format!("{} 不在信用卡权益数据库里，它的条款没有核实。", c.label)
             } else {
-                format!("{label} is not in the card catalog; its terms were not verified there.")
-            });
-        }
-    }
-    lines
+                format!(
+                    "{} is not in the card catalog; its terms were not verified there.",
+                    c.label
+                )
+            }
+        })
+        .collect()
 }
 
 /// What a scheduled run notified the user (`notify_user` that went through), as facts the reply must carry — a run's

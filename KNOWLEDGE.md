@@ -522,8 +522,8 @@ mail's or a document's text in these machines (the old `driver::extract`, `user_
   (`forms::Inputs::job_title`: the call's, else the profile's).
 - **The machine** (`driver::next`): the filing window (too early → `schedule_create`, result `scheduled`), the official
   page, `form_fill` with the facts, a hand-over for a step that is the user's (a form function's `require` stop),
-  `form_fill` again, the review hand-over (the reason names the assumptions and the card's `user_steps`), the snapshot
-  after the hand-back and the reference by `ref_re` → `submitted` / `not_confirmed` / `waiting_on_user` (the same
+  `form_fill` again, the review hand-over (the reason names the assumptions and the card's `user_steps`), the card's
+  reference element after the hand-back (`browser_read_elements` at `ref_sel`, its value checked against `ref_re`) → `submitted` / `not_confirmed` / `waiting_on_user` (the same
   user's step undone twice) / `handed_over`.
 - **`apdt_refund{in_flight, in_date, out_flight, out_date, in_pass_file, out_pass_file, receipt_file, tax_hkd,
   passport_file, refund_method, wallet_account, card}`**, `apdt::check`: flight numbers, dates, the files are this
@@ -593,7 +593,7 @@ the reply the user reads; everything else is data or a code action:
 - **The reply carries its facts through the review, never through appended text** (phase 2d, docs/json-tools.md
   "Facts the reply must carry"): `facts::run_facts` collects the trusted tools' `must_say` (a machine's result,
   `emergency_contacts`, `visa_rules`, `fx_convert`, `loan_payment`, an emergency `phone_call` refused in code) and the
-  run's structured facts (`guards::*_fact(s)`: the hand-back reference, approval edits, a delay's times, ETIAS, the card
+  run's structured facts (`guards::*_fact(s)`: the model-read hand-back reference (`confirm_reference`), approval edits, ETIAS, the card
   catalog's date / unverified rows / FX fees / uncatalogued cards / the user's cards, the approved amount, an injection
   notice, notifications, a model-made comparison's options); `review_answer` gets them as `must_say` and
   `reply_with_facts` (the model) adds what the reply left out. Still code on the reply: `with_masked_cards` (secrets), the
@@ -603,9 +603,11 @@ the reply the user reads; everything else is data or a code action:
   emergency-call, visa, FX, medical and consular appenders (now the tools above).
 - **Outcome from events only** (`outcome::assess`; the request's "send" words are no longer read — `asks_send` /
   `with_request` removed): a purchase, send, calendar change or call is verified by its own
-  evidence (the order number on a page read after the click or the hand-back, a message or event id); the answer's
-  words are not read for claims. `outcome::notice` adds the "not confirmed" line when an action ran without its proof;
-  the ledger gets the page's order number.
+  evidence (the order number from structured JSON only — a known site's machine result, read at the page's reference
+  element, or the model's `confirm_reference` on an unknown site — `confirm::confirmed`, its source `known_page` /
+  `model_read` kept in the evidence; a message or event id); neither the answer's words nor a page's text is read for
+  it. `outcome::notice` adds the "not confirmed" line when an action ran without its proof; the ledger gets that order
+  number. A delayed flight's times are the `flight_status` machine's (the airline's status table read by element).
 - **Hard stops stay two**: the final click is the user's (`policy::hand_over_click`, `arrival_submit_guard`,
   `apdt_face_guard`) and the Vault's secrets.
 

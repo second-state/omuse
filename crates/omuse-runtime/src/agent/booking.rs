@@ -175,11 +175,11 @@ pub fn tool_schemas() -> Vec<Value> {
         "airlines": {"type": "array", "items": {"type": "string"}, "description": "airlines or alliances the user prefers (names, 2-letter codes, Star Alliance …)"},
         "brands": {"type": "array", "items": {"type": "string"}, "description": "hotel brands or groups the user prefers (Holiday Inn, IHG …)"},
         "all_airlines": {"type": "boolean", "description": "the user asked for every airline (no standing preference)"},
-        "named": {"type": "array", "items": {"type": "string"}, "description": "options the user named (a hotel, an airline, a flight number)"},
+        "named": {"type": "array", "items": {"type": "string"}, "description": "options the user named, each as its exact name: a hotel's or restaurant's full name, an airline, a flight number (\"SQ 638\")"},
         "contact": {"type": "object", "description": "contact details the user gave in the chat", "properties": {"name": s.clone(), "email": s.clone(), "phone": s.clone()}},
         "mail_results_to": {"type": "string", "description": "an address the user asked the results to be mailed to"},
         "use_connector": {"type": "boolean", "description": "the user named their travel agency / connector to search and book with"},
-        "card": {"type": "string", "description": "the Vault card the user named to pay with"},
+        "card": {"type": "string", "description": "the Vault card the user named to pay with: its id from vault_list (id=…), its card_id, or its label exactly as listed"},
         "next": {"type": "array", "items": {"type": "string", "enum": ["flight", "hotel", "car", "restaurant"]}, "description": "the other searches the same request asks for (offered after this one)"}
     });
     let search = fn_(
@@ -192,7 +192,7 @@ the arguments and call again.",
         travel.clone(),
         &["kind"],
     );
-    travel["pick"] = json!({"type": "string", "description": "the label of the option the user chose (a choice card's \"I choose: …\"); empty = the pick by rule"});
+    travel["pick"] = json!({"type": "string", "description": "the option the user chose: its label exactly as the choice card listed it (the text after \"I choose: \"); empty = the pick by rule"});
     let book = fn_(
         TRAVEL_BOOK,
         "Book a flight, a hotel room or a table — only when the user asks to book. Same arguments as travel_search, plus \
@@ -216,7 +216,7 @@ skill (status browser_use). Write the reply from the JSON result, with every fac
             "min_ratings": {"type": "integer"}, "count": {"type": "integer", "description": "how many to show"},
             "title_has": {"type": "array", "items": s.clone(), "description": "words every chosen name has, e.g. [\"case\", \"iPhone 17 Pro Max\"]"},
             "title_not": strs,
-            "pick": {"type": "string", "description": "the listing the user chose (a choice card's \"I choose: …\")"},
+            "pick": {"type": "string", "description": "the listing the user chose: its title exactly as the choice card listed it (the text after \"I choose: \")"},
             "let_user_choose": {"type": "boolean", "description": "the user wants to pick from the options themselves"},
             "colour": s.clone(),
             "quantity": {"type": "integer"},
@@ -772,43 +772,7 @@ fn check_shop(a: &Value) -> Checked {
 
 // ---------------------------------------------------------------- cities
 
-struct City {
-    code: &'static str,
-    name: &'static str,
-    words: &'static [&'static str],
-}
-
-#[rustfmt::skip]
-const CITIES: &[City] = &[
-    City { code: "TYO", name: "Tokyo", words: &["tokyo", "东京", "東京"] },
-    City { code: "OSA", name: "Osaka", words: &["osaka", "大阪"] },
-    City { code: "SEL", name: "Seoul", words: &["seoul", "首尔", "首爾"] },
-    City { code: "SIN", name: "Singapore", words: &["singapore", "新加坡"] },
-    City { code: "HKG", name: "Hong Kong", words: &["hong kong", "hongkong", "香港"] },
-    City { code: "BKK", name: "Bangkok", words: &["bangkok", "曼谷"] },
-    City { code: "TPE", name: "Taipei", words: &["taipei", "台北", "臺北"] },
-    City { code: "SHA", name: "Shanghai", words: &["shanghai", "上海"] },
-    City { code: "BJS", name: "Beijing", words: &["beijing", "北京"] },
-    City { code: "CTU", name: "Chengdu", words: &["chengdu", "成都"] },
-    City { code: "SZX", name: "Shenzhen", words: &["shenzhen", "深圳"] },
-    City { code: "CAN", name: "Guangzhou", words: &["guangzhou", "广州"] },
-    City { code: "KUL", name: "Kuala Lumpur", words: &["kuala lumpur", "吉隆坡"] },
-    City { code: "DPS", name: "Bali", words: &["bali", "denpasar", "巴厘岛"] },
-    City { code: "JKT", name: "Jakarta", words: &["jakarta", "雅加达"] },
-    City { code: "MNL", name: "Manila", words: &["manila", "马尼拉"] },
-    City { code: "HAN", name: "Hanoi", words: &["hanoi", "河内"] },
-    City { code: "SGN", name: "Ho Chi Minh City", words: &["ho chi minh city", "ho chi minh", "saigon", "胡志明"] },
-    City { code: "FUK", name: "Fukuoka", words: &["fukuoka", "福冈"] },
-    City { code: "CTS", name: "Sapporo", words: &["sapporo", "札幌"] },
-    City { code: "SYD", name: "Sydney", words: &["sydney", "悉尼"] },
-    City { code: "MEL", name: "Melbourne", words: &["melbourne", "墨尔本"] },
-    City { code: "LON", name: "London", words: &["london", "伦敦"] },
-    City { code: "PAR", name: "Paris", words: &["paris", "巴黎"] },
-    City { code: "NYC", name: "New York", words: &["new york", "纽约"] },
-    City { code: "QSF", name: "San Francisco", words: &["san francisco", "旧金山"] },
-    City { code: "QLA", name: "Los Angeles", words: &["los angeles", "洛杉矶"] },
-    City { code: "DXB", name: "Dubai", words: &["dubai", "迪拜"] },
-];
+use crate::places::{City, CITIES};
 
 /// A flight's place as the search takes it: an IATA-shaped code (or a comma list of them) as it is, a city of the
 /// table by its whole name (any case) as its code; anything else `None`. The value is the model's structured argument —
@@ -826,92 +790,24 @@ fn city_code(v: &str) -> Option<String> {
         .map(|c| c.code.to_string())
 }
 
-/// Every city of the table named in a profile address (a structured field of the user's profile, not chat words).
-fn cities_in(text: &str) -> Vec<(usize, &'static City)> {
-    let lc = text.to_lowercase();
-    let mut out = Vec::new();
-    for c in CITIES {
-        for w in c.words {
-            let mut from = 0;
-            while let Some(i) = lc[from..].find(w) {
-                let at = from + i;
-                let end = at + w.len();
-                let before = lc[..at].chars().next_back();
-                let after = lc[end..].chars().next();
-                if !w.is_ascii()
-                    || (!before.is_some_and(char::is_alphanumeric)
-                        && !after.is_some_and(char::is_alphanumeric))
-                {
-                    out.push((at, c));
-                }
-                from = end;
-            }
-        }
-    }
-    out.sort_by_key(|(i, _)| *i);
-    out.dedup_by(|a, b| a.1.code == b.1.code);
-    out
-}
-
-/// The user's home city: the first city of the table in the profile's home address.
+/// The user's home city: the profile's structured `home_city` (a code of the table).
 fn home_city(profile: &Value) -> Option<&'static City> {
-    cities_in(&get_str(profile, "address_home"))
-        .first()
-        .map(|(_, c)| *c)
+    crate::places::home_city(profile)
 }
 
 /// The currency of a city of the table, by its code.
 fn city_currency(code: &str) -> &'static str {
-    match code {
-        "TYO" | "OSA" | "FUK" | "CTS" => "JPY",
-        "SEL" => "KRW",
-        "SIN" => "SGD",
-        "HKG" => "HKD",
-        "BKK" => "THB",
-        "TPE" => "TWD",
-        "SHA" | "BJS" | "CTU" | "SZX" | "CAN" => "CNY",
-        "KUL" => "MYR",
-        "DPS" | "JKT" => "IDR",
-        "MNL" => "PHP",
-        "HAN" | "SGN" => "VND",
-        "SYD" | "MEL" => "AUD",
-        "LON" => "GBP",
-        "PAR" => "EUR",
-        "NYC" | "QSF" | "QLA" => "USD",
-        "DXB" => "AED",
-        _ => "",
-    }
+    crate::places::city(code)
+        .and_then(|c| crate::places::country(c.country))
+        .map(|c| c.currency)
+        .unwrap_or("")
 }
 
-/// The user's home currency: the country of the profile's home address (a city of the table or a country's name),
-/// else the currency where the flight starts (`origin`, a city code), else "".
+/// The user's home currency: the profile's home country (`home_country`, else the home city's), else the currency
+/// where the flight starts (`origin`, a city code), else "".
 pub fn home_currency(profile: &Value, origin: &str) -> String {
-    static COUNTRY: &[(&str, &str)] = &[
-        ("singapore", "SGD"),
-        ("japan", "JPY"),
-        ("malaysia", "MYR"),
-        ("australia", "AUD"),
-        ("united kingdom", "GBP"),
-        ("england", "GBP"),
-        ("united states", "USD"),
-        ("usa", "USD"),
-        ("china", "CNY"),
-        ("korea", "KRW"),
-        ("thailand", "THB"),
-        ("taiwan", "TWD"),
-        ("hong kong", "HKD"),
-        ("indonesia", "IDR"),
-        ("philippines", "PHP"),
-        ("vietnam", "VND"),
-        ("france", "EUR"),
-        ("germany", "EUR"),
-    ];
-    if let Some(c) = home_city(profile) {
-        return city_currency(c.code).to_string();
-    }
-    let lc = get_str(profile, "address_home").to_lowercase();
-    if let Some((_, cur)) = COUNTRY.iter().find(|(w, _)| has_word(&lc, w)) {
-        return cur.to_string();
+    if let Some(c) = crate::places::country(&crate::places::home_country(profile)) {
+        return c.currency.to_string();
     }
     city_currency(origin).to_string()
 }
@@ -1581,88 +1477,34 @@ pub fn offers_in(kind: Kind, result: &Value) -> Vec<Offer> {
 
 // ---------------------------------------------------------------- the pick, by rule
 
-const GENERIC: &[&str] = &[
-    "hotel",
-    "hotels",
-    "grand",
-    "resort",
-    "suites",
-    "suite",
-    "house",
-    "restaurant",
-    "airlines",
-    "airways",
-    "station",
-    "tower",
-    "central",
-    "city",
-    "garden",
-    "palace",
-    "plaza",
-    "park",
-    "royal",
-    "kitchen",
-    "dining",
-    "room",
-    "rooms",
-    "double",
-    "twin",
-    "standard",
-    "deluxe",
-    "superior",
-    "with",
-    "breakfast",
-];
-
 fn has_word(hay_lc: &str, w: &str) -> bool {
     Regex::new(&format!(r"\b{}\b", regex::escape(&w.to_lowercase())))
         .map(|r| r.is_match(hay_lc))
         .unwrap_or(false)
 }
 
-/// Whether one of the names the user named (the model's `named` argument) is this option: its whole name, its airline
-/// (or the airline's code as a capital word), or a distinctive word of its name or area (never a city, never a generic
-/// word like "Hotel").
+/// Whether one of the names the user named (the model's `named` argument) is this option, compared whole with the
+/// option's structured fields: its label or id (any case, spaces aside), and for a flight its airline or one of its
+/// flight codes ("SQ 638" = "SQ638") — never a word searched in a name.
 fn mentioned(kind: Kind, o: &Offer, names: &[String]) -> bool {
-    let text = names.join("\n");
-    if text.trim().is_empty() {
+    let norm = |s: &str| s.split_whitespace().collect::<String>().to_lowercase();
+    let names: Vec<String> = names
+        .iter()
+        .map(|n| norm(n))
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() {
         return false;
     }
-    let lc = text.to_lowercase();
-    if !o.label.is_empty() && lc.contains(&o.label.to_lowercase()) {
-        return true;
-    }
-    if names
-        .iter()
-        .any(|n| !n.trim().is_empty() && o.label.to_lowercase().contains(&n.trim().to_lowercase()))
-    {
-        return true;
-    }
+    let mut own = vec![norm(&o.label), norm(&o.id)];
     if kind == Kind::Flight {
-        if !o.airline.is_empty() && lc.contains(&o.airline.to_lowercase()) {
-            return true;
-        }
         static CODE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"\b([A-Z][A-Z0-9])\s?\d{2,4}\b").unwrap());
-        return CODE.captures(&o.label).is_some_and(|c| {
-            Regex::new(&format!(r"\b{}\b", &c[1]))
-                .unwrap()
-                .is_match(&text)
-        });
+            LazyLock::new(|| Regex::new(r"\b[A-Z][A-Z0-9]\s?\d{2,4}\b").unwrap());
+        own.push(norm(&o.airline));
+        own.extend(CODE.find_iter(&o.label).map(|m| norm(m.as_str())));
     }
-    let city_word = |w: &str| {
-        let wl = w.to_lowercase();
-        CITIES
-            .iter()
-            .any(|c| c.words.contains(&wl.as_str()) || c.name.to_lowercase() == wl)
-    };
-    format!("{} {}", o.label, o.area)
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| {
-            let wl = w.to_lowercase();
-            w.chars().count() >= 4 && !GENERIC.contains(&wl.as_str()) && !city_word(w)
-        })
-        .any(|w| has_word(&lc, w))
+    own.retain(|x| !x.is_empty());
+    names.iter().any(|n| own.contains(n))
 }
 
 /// The options that meet the request's criteria, best first, with the rule that ordered them (the first is the pick).
@@ -1780,21 +1622,22 @@ pub fn ranked(kind: Kind, req: &Req, offers: &[Offer]) -> (Vec<Offer>, String) {
     (keep, rule.join(", "))
 }
 
-/// The option the user picked on a choice card, by its label (the model's `pick` argument).
+/// The option the user picked on a choice card (the model's `pick` argument): its label or id exactly as the card
+/// listed it (any case, spaces aside).
 fn by_label<'a>(offers: &'a [Offer], label: &str) -> Option<&'a Offer> {
-    let l = label.trim().to_lowercase();
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let l = norm(label);
     if l.is_empty() {
         return None;
     }
     offers
         .iter()
-        .find(|o| o.label.to_lowercase() == l)
-        .or_else(|| {
-            offers.iter().find(|o| {
-                let ol = o.label.to_lowercase();
-                l.contains(&ol) || ol.contains(&l)
-            })
-        })
+        .find(|o| norm(&o.label) == l || (!o.id.is_empty() && norm(&o.id) == l))
 }
 
 /// The room to book: the cheapest with free cancellation (the skill's preference), unless the user wants the cheapest
@@ -1927,23 +1770,9 @@ fn on_airline(o: &Offer, airlines: &[String]) -> bool {
         })
 }
 
-/// A web fallback's results (`{"results": [{"title", "url", "snippet"}]}`), the first four, with a price a page shows
-/// ("from" prices, not quotes).
+/// A web fallback's results (`{"results": [{"title", "url", "snippet"}]}`), the first four, as the search gave them:
+/// the snippet is natural language for the model to read (a price in it is the model's to quote, never read by code).
 fn web_pages(result: &Value) -> Vec<Value> {
-    static PRICE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?:S\$|SGD|US\$|USD|HK\$|A\$|¥|JPY|€|EUR|£|GBP|\$)\s?\d[\d,]*(?:\.\d+)?")
-            .unwrap()
-    });
-    let page_text = |url: &str| {
-        result
-            .get("pages")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|p| get_str(p, "url") == url)
-            .map(|p| get_str(p, "text"))
-            .unwrap_or_default()
-    };
     result
         .get("results")
         .and_then(Value::as_array)
@@ -1952,15 +1781,10 @@ fn web_pages(result: &Value) -> Vec<Value> {
         .filter(|r| get_str(r, "url").starts_with("http") && !ad_link(&get_str(r, "url")))
         .take(4)
         .map(|r| {
-            let url = get_str(r, "url");
             let snippet = take_chars(get_str(r, "snippet").trim(), 160).to_string();
-            let mut o = json!({"title": get_str(r, "title"), "url": url});
+            let mut o = json!({"title": get_str(r, "title"), "url": get_str(r, "url")});
             if !snippet.is_empty() {
                 o["snippet"] = json!(snippet);
-            }
-            let page = page_text(&url);
-            if let Some(m) = PRICE.find(&snippet).or_else(|| PRICE.find(&page)) {
-                o["price_from"] = json!(m.as_str());
             }
             o
         })
@@ -2229,6 +2053,9 @@ pub struct Site {
     pub path: &'static str,
     pub fill: SiteFn,
     pub card: &'static [(&'static str, &'static str)],
+    /// the confirmation's reference element (a CSS selector, read by `browser_read_elements`)
+    pub ref_sel: &'static str,
+    /// the reference's format, checked over that element's whole value
     pub ref_re: &'static str,
 }
 
@@ -2297,6 +2124,7 @@ pub const SITES: &[Site] = &[
         path: "/book/flight/",
         fill: traveltest_flight,
         card: TRAVELTEST_CARD,
+        ref_sel: "#booking-ref",
         ref_re: r"\bTRV-[A-Z][A-Z0-9]{6}\b",
     },
     Site {
@@ -2305,6 +2133,7 @@ pub const SITES: &[Site] = &[
         path: "/book/hotel/",
         fill: traveltest_hotel,
         card: TRAVELTEST_CARD,
+        ref_sel: "#booking-ref",
         ref_re: r"\bTRV-[A-Z][A-Z0-9]{6}\b",
     },
     Site {
@@ -2313,6 +2142,7 @@ pub const SITES: &[Site] = &[
         path: "/book/restaurant/",
         fill: traveltest_restaurant,
         card: TRAVELTEST_CARD,
+        ref_sel: "#booking-ref",
         ref_re: r"\bTRV-[A-Z][A-Z0-9]{6}\b",
     },
     Site {
@@ -2325,6 +2155,7 @@ pub const SITES: &[Site] = &[
             ("expiry", "Expiry (MM/YY)"),
             ("cvc", "Security code (CVC)"),
         ],
+        ref_sel: "main p b",
         ref_re: r"\bKM-\d{4,}\b",
     },
     Site {
@@ -2337,6 +2168,7 @@ pub const SITES: &[Site] = &[
             ("expiry", "Expiry"),
             ("cvc", "CVC"),
         ],
+        ref_sel: "main p b",
         ref_re: r"\bSR-\d{4,}\b",
     },
 ];
@@ -2491,22 +2323,10 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
         if !pages.is_empty() {
             let mut must: Vec<String> = pages
                 .iter()
-                .map(|p| {
-                    let price = get_str(p, "price_from");
-                    format!(
-                        "{} — {}{}",
-                        get_str(p, "title"),
-                        get_str(p, "url"),
-                        if price.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" (the page shows prices from {price})")
-                        }
-                    )
-                })
+                .map(|p| format!("{} — {}", get_str(p, "title"), get_str(p, "url")))
                 .collect();
             must.push(
-                "these are web pages about it, their prices are \"from\" prices, not quotes for the dates".into(),
+                "these are web pages about it: any price on them is a \"from\" price, not a quote for the dates".into(),
             );
             if !compare.is_empty() {
                 must.push(format!("compare prices for the dates on Kayak: {compare}"));
@@ -3298,14 +3118,17 @@ fn book_with(
             );
         }
     };
-    let Some((_, snap)) = last_after(t, "browser_snapshot", back) else {
-        return ids.calls("browser_snapshot", json!({"max_chars": 6000}));
+    // the confirmation's reference: the site's fixed element, its value in the site's format
+    let Some((_, read)) = last_after(t, "browser_read_elements", back) else {
+        return ids.calls(
+            "browser_read_elements",
+            super::confirm::read_args(site.ref_sel),
+        );
     };
-    let page = snapshot_text(snap);
-    let reference = Regex::new(site.ref_re)
-        .ok()
-        .and_then(|r| r.find(&page).map(|x| x.as_str().to_string()))
-        .or_else(|| crate::outcome::refs_in(&page).into_iter().next());
+    let reference = crate::outcome::reference_in(
+        &super::confirm::element_values(read, super::confirm::REFERENCE),
+        site.ref_re,
+    );
     let mut booking = item.to_json();
     let paid_with = card
         .filter(|_| card_ok && card_needed)
@@ -3432,18 +3255,11 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     let page = pages_text(read);
     let listings = crate::listings::parse(&page);
     let ranked = sr.ranking.apply(&listings);
-    let pick_lc = sr.pick.to_lowercase();
-    let chosen = (!pick_lc.is_empty())
-        .then(|| {
-            listings
-                .iter()
-                .find(|x| {
-                    x.title.eq_ignore_ascii_case(&sr.pick)
-                        || pick_lc.contains(&x.title.to_lowercase())
-                })
-                .cloned()
-        })
-        .flatten();
+    // the listing the user chose: its title exactly as the choice card listed it (any case)
+    let chosen = listings
+        .iter()
+        .find(|x| !sr.pick.trim().is_empty() && x.title.eq_ignore_ascii_case(sr.pick.trim()))
+        .cloned();
     let wants_choose = sr.let_user_choose && chosen.is_none();
     let read_pos = pos(t, read);
     let shown = calls_of(t, "present_choices")

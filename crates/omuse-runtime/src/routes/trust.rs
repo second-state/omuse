@@ -39,33 +39,15 @@ pub async fn api_health_check(st: St) -> R {
     Ok(Json(h.status()))
 }
 
-/// The tool results kept in a task's transcript.
-fn tool_texts(t: &Value) -> Vec<String> {
-    t.get("transcript")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter(|m| get_str(m, "role") == "tool")
-                .map(|m| {
-                    m.get("content")
-                        .filter(|v| truthy(v))
-                        .map(py_str)
-                        .unwrap_or_default()
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn assess(st: &crate::state::State, tid: &str, t: &Value) -> anyhow::Result<Value> {
-    let texts = tool_texts(t);
+    let transcript = t
+        .get("transcript")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let confirmed = crate::agent::confirm::confirmed(&transcript);
     let events = st.rt.store.events(tid, 0)?;
-    Ok(outcome::assess(
-        &events,
-        &get_str(t, "result"),
-        Some(&texts),
-        Some(&get_str(t, "goal")),
-    ))
+    Ok(outcome::assess(&events, confirmed.as_ref()))
 }
 
 /// Ledger entries for purchases made before the ledger existed, with the order number their task got.

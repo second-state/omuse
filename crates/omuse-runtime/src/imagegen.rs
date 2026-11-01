@@ -72,9 +72,8 @@ pub fn image_budget(cfg: &Config) -> u32 {
     cfg.model.image_budget
 }
 
-// Round 3 — style control. A short style word (English or Chinese) becomes a concrete prompt suffix the image models
-// respond to, like Midjourney's style keywords / DALL·E's style presets. Unknown words are passed through as
-// "<word> style".
+// Round 3 — style control. The model picks a style from this list (`make_image`'s `style` enum); it becomes a concrete
+// prompt suffix the image models respond to, like Midjourney's style keywords / DALL·E's style presets.
 pub const STYLE_PRESETS: &[(&str, &str)] = &[
     ("photorealistic", "photorealistic, ultra-detailed, natural lighting, shot on a DSLR, 85mm lens, shallow depth of field"),
     ("cinematic", "cinematic still, dramatic lighting, anamorphic lens, film grain, moody colour grading"),
@@ -94,81 +93,24 @@ pub const STYLE_PRESETS: &[(&str, &str)] = &[
     ("logo", "clean logo design, flat vector, centred mark, simple shapes, solid background, no text unless asked"),
     ("product", "product photography, white seamless background, soft box lighting, sharp focus, commercial quality"),
 ];
-const STYLE_ZH: &[(&str, &str)] = &[
-    ("写实", "photorealistic"),
-    ("真实", "photorealistic"),
-    ("照片", "photorealistic"),
-    ("摄影", "photorealistic"),
-    ("电影", "cinematic"),
-    ("电影感", "cinematic"),
-    ("动漫", "anime"),
-    ("二次元", "anime"),
-    ("日漫", "anime"),
-    ("水彩", "watercolor"),
-    ("油画", "oil painting"),
-    ("3d", "3d render"),
-    ("三维", "3d render"),
-    ("渲染", "3d render"),
-    ("扁平", "flat vector"),
-    ("矢量", "flat vector"),
-    ("插画", "flat vector"),
-    ("像素", "pixel art"),
-    ("素描", "sketch"),
-    ("铅笔", "sketch"),
-    ("水墨", "ink wash"),
-    ("国画", "ink wash"),
-    ("线稿", "line art"),
-    ("等距", "isometric"),
-    ("低多边形", "low poly"),
-    ("波普", "pop art"),
-    ("极简", "minimalist"),
-    ("简约", "minimalist"),
-    ("logo", "logo"),
-    ("标志", "logo"),
-    ("产品图", "product"),
-    ("商品图", "product"),
-    ("电商", "product"),
-];
-
-fn preset(key: &str) -> &'static str {
-    STYLE_PRESETS
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, v)| *v)
-        .unwrap_or("")
-}
-
-/// The prompt suffix for a style word ('水彩', 'anime', 'oil painting' …); '' when no style was given.
+/// The prompt suffix of a style (`make_image`'s `style`, an enum of [`STYLE_PRESETS`]' keys the model picked); a value
+/// off the list goes to the image model as "<value> style" (code reads nothing in it); '' when no style was given.
 pub fn style_suffix(style: Option<&str>) -> String {
-    let s = style.unwrap_or("").trim().to_lowercase();
+    let s = style.unwrap_or("").trim();
     if s.is_empty() {
         return String::new();
     }
-    if let Some((_, v)) = STYLE_PRESETS.iter().find(|(k, _)| *k == s) {
-        return (*v).to_string();
-    }
-    if let Some((_, en)) = STYLE_ZH.iter().find(|(zh, _)| s.contains(zh)) {
-        return preset(en).to_string();
-    }
-    let s_ns = s.replace(' ', "");
-    for (key, suffix) in STYLE_PRESETS {
-        // 'photo' / 'realistic' / 'water color' …
-        let k = key.replace(' ', "");
-        if s_ns.contains(&k) || k.contains(&s_ns) {
-            return (*suffix).to_string();
-        }
-    }
-    format!("{} style", s)
+    STYLE_PRESETS
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(s))
+        .map(|(_, v)| (*v).to_string())
+        .unwrap_or_else(|| format!("{s} style"))
 }
 
-/// The prompt with the style suffix appended (once).
+/// The prompt with the style's suffix appended.
 pub fn with_style(prompt: &str, style: Option<&str>) -> String {
     let suf = style_suffix(style);
     if suf.is_empty() {
-        return prompt.to_string();
-    }
-    let head = suf.split(',').next().unwrap_or("").to_lowercase();
-    if prompt.to_lowercase().contains(&head) {
         return prompt.to_string();
     }
     format!("{}, {}", prompt.trim_end_matches(['.', ' ']), suf)
@@ -269,8 +211,9 @@ fn dedup(v: &[&str]) -> Vec<String> {
     out
 }
 
-/// Normalise what the model asked for into a shape name and the sizes to try, best first. Accepts '1024x1024',
-/// ratios like '16:9' / '9:16' / '1:1' / '4:3', or words (square / landscape / portrait / wide / tall).
+/// The shape name and the sizes to try, best first, from the call's structured arguments: an explicit `size`
+/// ("1024x1024"), a ratio ("16:9", "9:16", "4:3"), or the `aspect` enum (square / landscape / portrait); anything else
+/// is square.
 pub fn shape_of(size: Option<&str>, aspect: Option<&str>) -> (String, Vec<String>) {
     static SIZE_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^(\d{3,4})\s*[x×*]\s*(\d{3,4})$").unwrap());
@@ -306,36 +249,10 @@ pub fn shape_of(size: Option<&str>, aspect: Option<&str>) -> (String, Vec<String
         let shape = shape_for(a, b);
         return (shape.to_string(), dedup(sizes(shape)));
     }
-    if matches!(s.as_str(), "" | "square" | "1" | "方" | "方形" | "正方形") {
-        return ("square".into(), vec!["1024x1024".into()]);
+    match s.as_str() {
+        "landscape" | "portrait" => (s.clone(), dedup(sizes(&s))),
+        _ => ("square".into(), vec!["1024x1024".into()]),
     }
-    if [
-        "land",
-        "wide",
-        "horizontal",
-        "横",
-        "宽",
-        "banner",
-        "16:9",
-        "cover",
-        "desktop",
-        "桌面",
-        "电脑",
-    ]
-    .iter()
-    .any(|k| s.contains(k))
-    {
-        return ("landscape".into(), dedup(sizes("landscape")));
-    }
-    if [
-        "port", "tall", "vertical", "竖", "phone", "手机", "story", "poster", "海报",
-    ]
-    .iter()
-    .any(|k| s.contains(k))
-    {
-        return ("portrait".into(), dedup(sizes("portrait")));
-    }
-    ("square".into(), vec!["1024x1024".into()])
 }
 
 fn bad_size(text: &str) -> bool {
@@ -1193,8 +1110,11 @@ mod tests {
         assert!(shape_of(Some("9:16"), None)
             .1
             .contains(&"1024x1792".to_string()));
-        assert_eq!(shape_of(None, Some("poster")).0, "portrait");
-        assert_eq!(shape_of(None, Some("桌面壁纸")).0, "landscape");
+        assert_eq!(shape_of(None, Some("portrait")).0, "portrait");
+        assert_eq!(shape_of(None, Some("landscape")).0, "landscape");
+        // words off the enum are not read: square
+        assert_eq!(shape_of(None, Some("poster")).0, "square");
+        assert_eq!(shape_of(None, Some("桌面壁纸")).0, "square");
         let (sh, sz) = shape_of(Some("1792x1024"), None);
         assert_eq!(sh, "landscape");
         assert_eq!(sz[0], "1792x1024");
@@ -1203,20 +1123,18 @@ mod tests {
         assert_eq!(shape_of(Some("3:4"), None).0, "portrait");
         assert_eq!(shape_of(Some("21:9"), None).0, "landscape");
         assert_eq!(shape_of(Some("1:1"), None).1, vec!["1024x1024"]);
-        assert_eq!(shape_of(None, Some("手机壁纸")).0, "portrait");
     }
 
     #[test]
-    fn style_presets_zh_and_en() {
-        assert!(style_suffix(Some("水彩")).contains("watercolor"));
-        assert!(style_suffix(Some("动漫")).contains("anime"));
-        assert!(style_suffix(Some("水墨")).contains("ink wash"));
+    fn style_presets_by_their_key() {
+        assert!(style_suffix(Some("watercolor")).contains("watercolor"));
         assert!(style_suffix(Some("Photorealistic")).starts_with("photorealistic"));
-        assert!(style_suffix(Some("扁平矢量")).contains("flat vector"));
+        assert!(style_suffix(Some("flat vector")).contains("flat vector"));
+        // a value off the list is passed on, never searched for words
         assert_eq!(style_suffix(Some("steampunk")), "steampunk style");
-        let p = with_style("a red fox", Some("油画"));
+        assert_eq!(style_suffix(Some("水彩")), "水彩 style");
+        let p = with_style("a red fox", Some("oil painting"));
         assert!(p.starts_with("a red fox, oil painting"));
-        assert_eq!(with_style(&p, Some("油画")), p);
         assert_eq!(with_style("a cat", Some("")), "a cat");
     }
 

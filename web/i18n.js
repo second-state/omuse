@@ -1,5 +1,7 @@
 /* English strings for the OMuse UI (keys = Chinese source strings in app.js). */
 window.OMUSE_EN = {
+"国家/地区 Country": "Country",
+"国家/地区 · {0}": "Country · {0}",
 "下次运行 {0}": "Next run {0}",
 "删除任务「{0}」？它的对话会保留。": "Delete the task \"{0}\"? Its chat is kept.",
 "应在 {0} 运行": "Was due at {0}",

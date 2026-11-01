@@ -26,6 +26,15 @@ fn page(url: &str, snapshot: &str) -> String {
     )
 }
 
+/// A `browser_read_elements` result as the sentinel returns it: the elements read by their selectors, untrusted.
+fn elements(url: &str, read: Value) -> String {
+    format!(
+        "<untrusted_content source=\"web page {url}\">\n{}\n</untrusted_content>",
+        json!({"trust": "untrusted", "source": format!("web page {url}"), "url": url, "title": "page",
+               "elements": read})
+    )
+}
+
 fn cx<'a>(profile: &'a Value, mail: bool, t: &'a [Value]) -> Ctx<'a> {
     Ctx {
         profile,
@@ -263,7 +272,7 @@ fn the_fwd_market_comes_from_the_argument_the_policy_sender_or_the_profile() {
     let fwd = json!({"insurer": "fwd", "policy_no": "P1", "incident_date": "2026-10-29", "flight_no": "CX 543",
                      "scheduled_departure": "09:05", "actual_departure": "15:20"});
     let sg = json!({});
-    let hk = json!({"address_home": "Flat 12B, 88 Robinson Road, Mid-Levels, Hong Kong"});
+    let hk = json!({"address_home": "Flat 12B, 88 Robinson Road, Mid-Levels, Hong Kong", "home_country": "HK"});
     let market = |a: &Value, p: &Value, t: &[Value]| {
         let Checked::Valid(v) = check(CLAIM_FILE, a, &cx(p, false, t)) else {
             panic!()
@@ -369,7 +378,10 @@ fn csr_answers(confirmation: &'static str) -> impl Fn(&str, &Value) -> String {
         "browser_navigate" => page("https://www.eclaimsline.com/", "[e1] textbox \"Cardholder name\""),
         "form_fill" => "{\"url\": \"https://www.eclaimsline.com/\", \"filled\": [{\"op\": \"text\", \"field\": \"name\", \"ok\": true}]}".into(),
         "browser_request_takeover" => BACK.into(),
-        "browser_snapshot" => page("https://www.eclaimsline.com/", confirmation),
+        "browser_read_elements" => elements(
+            "https://www.eclaimsline.com/",
+            json!({"reference": if confirmation.is_empty() { vec![] } else { vec![confirmation] }}),
+        ),
         "schedule_create" => "created".into(),
         other => panic!("{other}"),
     }
@@ -381,21 +393,14 @@ fn the_csr_claim_is_filled_from_the_arguments_and_handed_over() {
     let profile = json!({"name_en": "LUCAS LU"});
     let args = csr_cancellation();
     let (mut t, from) = started(Vec::new(), "I couldn't take my United flight — claim the trip cancellation insurance on my Sapphire Reserve. I'll press Submit myself.", CLAIM_FILE, &args);
-    let (calls, res) = run(
-        CLAIM_FILE,
-        &args,
-        &mut t,
-        from,
-        &profile,
-        csr_answers("File a claim. Cardholder name LUCAS LU"),
-    );
+    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, csr_answers(""));
     assert_eq!(
         names(&calls),
         [
             "browser_navigate",
             "form_fill",
             "browser_request_takeover",
-            "browser_snapshot",
+            "browser_read_elements",
             "schedule_create",
             "schedule_create"
         ]
@@ -446,7 +451,7 @@ fn the_csr_claim_is_filled_from_the_arguments_and_handed_over() {
         &mut t,
         from,
         &profile,
-        csr_answers("Claim received. Your claim number is CBS-26-118204."),
+        csr_answers("CBS-26-118204"),
     );
     assert_eq!(res["status"], "submitted");
     // cards_interruption_real 2026-11-01: the reply said "I submitted the claim" — the fact says who pressed Submit,
@@ -607,32 +612,26 @@ fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
     );
     let (mut t, from) = started(before, "Please go ahead.", CLAIM_FILE, &args);
     let snaps = std::cell::Cell::new(0);
-    let (calls, res) = run(
-        CLAIM_FILE,
-        &args,
-        &mut t,
-        from,
-        &profile,
-        |name, _| {
-            match name {
+    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, |name, _| {
+        match name {
         "gmail_save_attachment" => "attachment saved: attachments/delay_certificate_SQ636.pdf (12 KB, application/pdf).".into(),
         "browser_navigate" => page("https://www.fwd.com.sg/claim-online/travel.html", "{}"),
         "form_fill" => "{\"url\": \"https://www.fwd.com.sg/claim-online/travel.html\", \"filled\": []}".into(),
         "browser_snapshot" => {
             snaps.set(snaps.get() + 1);
-            if snaps.get() == 1 {
-                "[e3] textbox \"Policy number\"\n[e9] filechooser \"Supporting documents\" (file upload)\n[e10] button \"Submit claim\"".into()
-            } else {
-                page("https://www.fwd.com.sg/fwd_sg_claim_done.html", "We have received your claim. Claim reference: CL-TR-2026-118204.")
-            }
+            "[e3] textbox \"Policy number\"\n[e9] filechooser \"Supporting documents\" (file upload)\n[e10] button \"Submit claim\"".into()
         }
+        // the confirmation's reference element (`main p b`): the reference, and the page's other bold text
+        "browser_read_elements" => elements(
+            "https://www.fwd.com.sg/fwd_sg_claim_done.html",
+            json!({"reference": ["CL-TR-2026-118204"]}),
+        ),
         "browser_upload" => "uploaded".into(),
         "browser_request_takeover" => BACK.into(),
         "schedule_create" => "created".into(),
         other => panic!("{other}"),
     }
-        },
-    );
+    });
     assert_eq!(
         names(&calls),
         [
@@ -642,7 +641,7 @@ fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
             "browser_snapshot",
             "browser_upload",
             "browser_request_takeover",
-            "browser_snapshot",
+            "browser_read_elements",
             "schedule_create"
         ]
     );
@@ -698,7 +697,7 @@ fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
 #[test]
 fn the_hk_delay_claim_fills_bolttechs_pdf_and_drafts_the_email() {
     let profile = json!({"name_en": "CHAN TAI MAN", "email_personal": "taiman@example.com",
-                         "address_home": "Flat 12B, 88 Robinson Road, Mid-Levels, Hong Kong"});
+                         "address_home": "Flat 12B, 88 Robinson Road, Mid-Levels, Hong Kong", "home_country": "HK"});
     let args = valid(
         CLAIM_FILE,
         json!({"insurer": "fwd", "market": "hk", "policy_no": "MT-HK-2026-00881", "plan": "Premium Plan", "incident_date": "2026-10-29",
@@ -786,20 +785,38 @@ fn the_hk_delay_claim_fills_bolttechs_pdf_and_drafts_the_email() {
 
 // ---------------------------------------------------------------- the FWD Singapore purchase
 
-const QUOTE_SNAPSHOT: &str = "# Get a travel insurance quote\n  Single trip cover for Singapore residents.\n[e1] textbox \"Destination\" value=\"Japan\"\n[e5] button \"Get quote\"\n## Your plans\n  Trip: Japan, 2026-11-24 to 2026-12-01, 1 traveller(s)\n  Plan Premium Overseas medical Trip cancellation Travel delay Baggage\n  Premium SGD 34.00 SGD 200,000 SGD 5,000 SGD 100 every 6 hours, up to SGD 1,000 SGD 3,000\n[e6] link \"Select Premium\" → https://www.fwd.com.sg/fwd_sg_apply.html?plan=Premium&premium=34.00\n  Business SGD 47.00 SGD 1,000,000 SGD 10,000 SGD 100 every 6 hours, up to SGD 1,500 SGD 5,000\n[e7] link \"Select Business\" → https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business&premium=47.00\n  First SGD 68.00 SGD 1,500,000 SGD 15,000 SGD 100 every 6 hours, up to SGD 2,000 SGD 7,500\n[e8] link \"Select First\" → https://www.fwd.com.sg/fwd_sg_apply.html?plan=First&premium=68.00\n  Premiums include 9% GST.";
+/// The quote page's plan table as `browser_read_elements` reads it (`#plans tr`, cells and links).
+fn quote_rows() -> Value {
+    let row = |cells: &[&str], link: &str| json!({"cells": cells, "links": if link.is_empty() { vec![] } else { vec![link] }});
+    json!({"plans": [
+        row(&["Plan", "Premium", "Overseas medical", "Trip cancellation", "Travel delay", "Baggage", ""], ""),
+        row(&["Premium", "SGD 34.00", "SGD 200,000", "SGD 5,000", "SGD 100 every 6 hours, up to SGD 1,000", "SGD 3,000", "Select Premium"],
+            "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Premium&premium=34.00"),
+        row(&["Business", "SGD 47.00", "SGD 1,000,000", "SGD 10,000", "SGD 100 every 6 hours, up to SGD 1,500", "SGD 5,000", "Select Business"],
+            "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business&premium=47.00"),
+        row(&["First", "SGD 68.00", "SGD 1,500,000", "SGD 15,000", "SGD 100 every 6 hours, up to SGD 2,000", "SGD 7,500", "Select First"],
+            "https://www.fwd.com.sg/fwd_sg_apply.html?plan=First&premium=68.00"),
+    ]})
+}
 const APPLY_SNAPSHOT: &str = "[e11] textbox \"Card number\" value=[hidden]\n[e12] textbox \"Expiry\" placeholder=\"MM/YY\" value=[hidden]\n[e13] textbox \"CVC\" value=[hidden]\n[e14] textbox \"Name on card\" value=\"\"\n[e15] checkbox \"I have read the policy wording and the declarations.\" [unchecked]\n[e16] button \"Pay now\"";
 
 #[test]
 fn the_plans_are_read_from_the_page_and_picked_by_rule() {
     let url = "https://www.fwd.com.sg/travel-insurance/online-quote/";
-    let m = json!({"role": "tool", "content": page(url, QUOTE_SNAPSHOT)});
-    assert_eq!(snapshot_text(&m), QUOTE_SNAPSHOT);
-    let plans = plans_in(QUOTE_SNAPSHOT);
+    let m = json!({"role": "tool", "content": elements(url, quote_rows())});
+    let plans = plans_in(&super::super::confirm::element_rows(&m, "plans"));
     assert_eq!(
         plans.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
         ["Premium", "Business", "First"]
     );
-    assert_eq!((plans[1].link.as_str(), plans[1].premium), ("e7", 47.0));
+    assert_eq!(
+        (plans[1].link.as_str(), plans[1].premium),
+        (
+            "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business&premium=47.00",
+            47.0
+        )
+    );
+    assert_eq!(plans[1].cover_of("delay"), Some(1_500.0));
     assert_eq!(plans[1].cover_of("cancellation"), Some(10_000.0));
     assert_eq!(plans[1].cover_of("baggage"), Some(5_000.0));
     let (p, rule) = pick_plan(&plans, &Some(("cancellation".into(), 10_000.0)), "").unwrap();
@@ -820,18 +837,35 @@ fn the_plans_are_read_from_the_page_and_picked_by_rule() {
     let (p, rule) = pick_plan(&plans, &Some(("medical".into(), 9_000_000.0)), "").unwrap();
     assert!(p.name == "Premium" && rule.starts_with("no plan has medical cover"));
     // the plan the user chose on the card wins
-    let (p, rule) = pick_plan(&plans, &None, "I choose: First").unwrap();
+    let (p, rule) = pick_plan(&plans, &None, "first").unwrap();
     assert_eq!(
         (p.name.as_str(), rule.as_str()),
         ("First", "the plan you chose")
     );
+    // a phrase around the name is not read: the default rule picks
+    assert_ne!(
+        pick_plan(&plans, &None, "I choose: First").unwrap().1,
+        "the plan you chose"
+    );
     // the Vault's cards, and the one named in the argument
-    let listing = "- id=v1 · DBS Altitude Visa Signature · issued in Singapore · card · •••• UNKNOWN · fields: number, expiry, cvc, holder · number, expiry, cvc UNKNOWN (name only)\n- id=v2 · Visa Wei Ming · card · •••• 1111 · fields: number, expiry, cvc, holder · only on: fwd.com.sg\n- id=v3 · Passport Wei Ming · id_document · •••• 567Z · fields: number, expiry";
+    let listing = "- id=v1 · DBS Altitude Visa Signature · issued in Singapore · card · card_id=sg-dbs-altitude-visa-signature · •••• UNKNOWN · fields: number, expiry, cvc, holder · number, expiry, cvc UNKNOWN (name only)\n- id=v2 · Visa Wei Ming · card · •••• 1111 · fields: number, expiry, cvc, holder · only on: fwd.com.sg\n- id=v3 · Passport Wei Ming · id_document · •••• 567Z · fields: number, expiry";
     let cards = vault_cards(listing);
     assert_eq!(cards.len(), 2);
+    // by its Vault id, its catalog id or its whole label — never by a word of the label
+    for named in [
+        "v1",
+        "sg-dbs-altitude-visa-signature",
+        "dbs altitude visa signature",
+    ] {
+        assert_eq!(
+            pick_card(&cards, &[named.into()]).map(|c| c.id.as_str()),
+            Some("v1"),
+            "{named}"
+        );
+    }
     assert_eq!(
         pick_card(&cards, &["DBS Altitude".into()]).map(|c| c.id.as_str()),
-        Some("v1")
+        Some("v2")
     );
     assert_eq!(
         pick_card(&cards, &[String::new()]).map(|c| c.id.as_str()),
@@ -841,20 +875,27 @@ fn the_plans_are_read_from_the_page_and_picked_by_rule() {
 
 fn buy_answers(vault: &'static str) -> impl Fn(&str, &Value) -> String {
     let snaps = std::cell::Cell::new(0);
-    move |name, _| match name {
+    move |name, args| match name {
         "browser_navigate" => page(
             "https://www.fwd.com.sg/travel-insurance/online-quote/",
             "{}",
         ),
         "form_fill" => "{\"url\": \"https://www.fwd.com.sg/x\", \"filled\": []}".into(),
+        // the plan table after the quote; after the hand-back the policy number's element (none: not paid)
+        "browser_read_elements" => match args["read"][0]["name"].as_str() {
+            Some("plans") => elements(
+                "https://www.fwd.com.sg/travel-insurance/online-quote/",
+                quote_rows(),
+            ),
+            _ => elements(
+                "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business",
+                json!({"reference": []}),
+            ),
+        },
         "browser_snapshot" => {
             snaps.set(snaps.get() + 1);
             match snaps.get() {
                 1 => page(
-                    "https://www.fwd.com.sg/travel-insurance/online-quote/",
-                    QUOTE_SNAPSHOT,
-                ),
-                2 => page(
                     "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business",
                     APPLY_SNAPSHOT,
                 ),
@@ -907,9 +948,9 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
         [
             "browser_navigate",
             "form_fill",
-            "browser_snapshot",
+            "browser_read_elements",
             "present_choices",
-            "browser_click",
+            "browser_navigate",
             "form_fill",
             "vault_list",
             "purchase_confirm",
@@ -919,7 +960,7 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
             "browser_fill_secret",
             "browser_fill_secret",
             "browser_request_takeover",
-            "browser_snapshot"
+            "browser_read_elements"
         ]
     );
     let quote = &calls[1].args;
@@ -934,7 +975,10 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
     );
     assert_eq!(sget(&calls[3].args, "picked"), "Business");
     assert_eq!(calls[3].args["options"][1]["details"][0], "SGD 47");
-    assert_eq!(sget(&calls[4].args, "ref"), "e7");
+    assert_eq!(
+        sget(&calls[4].args, "url"),
+        "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business&premium=47.00"
+    );
     let pc = &calls[7].args;
     assert_eq!(
         (sget(pc, "card_item_id").as_str(), pc["total"].as_f64()),
@@ -1022,7 +1066,7 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
         [
             "browser_navigate",
             "form_fill",
-            "browser_snapshot",
+            "browser_read_elements",
             "present_choices"
         ]
     );

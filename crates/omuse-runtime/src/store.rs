@@ -246,7 +246,7 @@ pub fn profile_alias(name: &str) -> String {
 }
 
 /// `PROFILE_FIELDS`: key, 中文, English.
-pub const PROFILE_FIELDS: [(&str, &str, &str); 16] = [
+pub const PROFILE_FIELDS: [(&str, &str, &str); 18] = [
     ("name_en", "英文姓名（证件拼写）", "Name as on passport"),
     // the key stays `name_zh` (profiles saved before keep their value); it holds any other name: Chinese, Japanese, a
     // married or former name
@@ -257,6 +257,9 @@ pub const PROFILE_FIELDS: [(&str, &str, &str); 16] = [
     ("email_work", "工作邮箱", "Work email"),
     ("address_home", "家庭地址", "Home address"),
     ("address_work", "公司地址", "Work address"),
+    // the places of the home address as codes (places.rs): code reads these, never the address's words
+    ("home_city", "所在城市", "Home city"),
+    ("home_country", "所在国家/地区", "Home country"),
     ("company", "公司", "Company"),
     ("job_title", "职位", "Job title"),
     ("birthday", "生日", "Date of birth"),
@@ -293,7 +296,7 @@ pub fn profile_key(key: &str) -> String {
         return key.to_string();
     }
     let n = key.chars().count();
-    for prefix in ["custom:", "address:"] {
+    for prefix in ["custom:", "address:", "address_country:"] {
         if let Some(rest) = key.strip_prefix(prefix) {
             if n > prefix.len() && n <= 60 && !rest.trim().is_empty() {
                 let label = WS.replace_all(rest, " ");
@@ -330,6 +333,9 @@ pub fn profile_value_ok(key: &str, value: &str) -> bool {
     }
     if key == "gender" {
         return gender_of(v).is_some();
+    }
+    if key == "home_city" || key == "home_country" || key.starts_with("address_country:") {
+        return crate::places::clean_value(key, v).is_some();
     }
     if key == "phone" {
         let digits = NON_DIGIT.replace_all(v, "");
@@ -2130,6 +2136,8 @@ impl Store {
                 .ok_or_else(|| anyhow!("invalid value"))?
                 .to_string();
         }
+        // a place field holds a code of the tables (a city code, an ISO country)
+        value = crate::places::clean_value(&key, &value).ok_or_else(|| anyhow!("invalid value"))?;
         if !value.is_empty() {
             // an upsert, so the field's `standing` flag stays
             self.db.execute(

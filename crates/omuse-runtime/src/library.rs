@@ -100,13 +100,12 @@ pub fn chunks(text: &str) -> Vec<(String, String)> {
     out
 }
 
-/// The report as the user reads it: when it has no Sources section, the research's `library/<slug>/sources.md` is shown
-/// under "## Sources" — the links were written there and the user never saw them (2026-10-30, library_real).
+/// The report as the user reads it: the research's `library/<slug>/sources.md` is always shown under "## Sources" at
+/// its end — the links were written there and the user never saw them (2026-10-30, library_real). The report's own
+/// headings are the model's prose and are not searched for a sources list.
 pub fn with_sources(report: &str, workspace: &Path, slug: &str) -> String {
-    static HEAD: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?im)^#{1,6}\s*(sources|references|来源|参考)").unwrap());
-    if report.is_empty() || HEAD.is_match(report) {
-        return report.to_string();
+    if report.is_empty() {
+        return String::new();
     }
     let p = workspace.join(format!("library/{slug}/sources.md"));
     let src = std::fs::read_to_string(p).unwrap_or_default();
@@ -265,8 +264,9 @@ mod tests {
             shown.ends_with("## Sources\n\n- https://www.synology.com/\n"),
             "{shown}"
         );
+        // the report's own headings are not read: the research's sources are shown all the same
         let own = "# NAS\n\n## Sources\n- a";
-        assert_eq!(with_sources(own, d.path(), "nas"), own); // the report's own list wins
+        assert!(with_sources(own, d.path(), "nas").ends_with("- https://www.synology.com/\n"));
         assert_eq!(with_sources("# x", d.path(), "other"), "# x"); // no sources file
     }
 

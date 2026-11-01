@@ -658,17 +658,11 @@ NOT in the PDF: {}.",
             "library_get" => {
                 let want = sget(a, "subject").trim().to_lowercase();
                 let subs = self.store.subjects().map_err(stores_err)?;
-                let sub = subs
-                    .iter()
-                    .find(|x| {
-                        want == get_str(x, "slug").to_lowercase()
-                            || want == get_str(x, "title").to_lowercase()
-                    })
-                    .or_else(|| {
-                        subs.iter().find(|x| {
-                            !want.is_empty() && get_str(x, "title").to_lowercase().contains(&want)
-                        })
-                    });
+                // the subject by its slug or its whole title (the error lists them for the model to call again)
+                let sub = subs.iter().find(|x| {
+                    want == get_str(x, "slug").to_lowercase()
+                        || want == get_str(x, "title").to_lowercase()
+                });
                 let Some(sub) = sub else {
                     return Ok(format!(
                         "ERROR: 没有这个课题 unknown subject. Known: {}",
@@ -849,11 +843,18 @@ facts hidden; they are only used for forms, check-in or document-expiry checks)"
             }
             "vault_add_card" => {
                 let (name, country) = (sget(a, "name"), sget(a, "country"));
+                // the catalog id the model passed, kept only when the catalog has that row
+                let given = sget(a, "card_id").trim().to_string();
+                let card_id = if given == "none" || super::guards::catalog_card(&given).is_some() {
+                    given.clone()
+                } else {
+                    String::new()
+                };
                 let r = match self
                     .sentinel(
                         "POST",
                         "/internal/vault/card",
-                        Some(json!({"name": name, "country": country, "task_id": tid})),
+                        Some(json!({"name": name, "country": country, "card_id": card_id, "task_id": tid})),
                         20.0,
                     )
                     .await
@@ -867,15 +868,22 @@ facts hidden; they are only used for forms, check-in or document-expiry checks)"
                     }
                 };
                 let it = &r["item"];
+                let kept = match get_str(it, "card_id") {
+                    id if !id.is_empty() => format!("card_id={id}"),
+                    _ if !given.is_empty() => {
+                        format!("card_id=none — \"{given}\" is no ID of the card catalog")
+                    }
+                    _ => "card_id=none".to_string(),
+                };
                 if !get_truthy(&r, "added") {
                     return Ok(format!(
-                        "已经在保险箱里 already in the Vault: {} (id={})",
+                        "已经在保险箱里 already in the Vault: {} (id={}, {kept})",
                         get_str(it, "label"),
                         get_str(it, "id")
                     ));
                 }
                 self.publish(json!({"kind": "memory_update"})).await;
-                Ok(format!("已存入保险箱 added to the Vault: {} (id={}) — by its name only; its number, expiry and CVC are UNKNOWN until \
+                Ok(format!("已存入保险箱 added to the Vault: {} (id={}, {kept}) — by its name only; its number, expiry and CVC are UNKNOWN until \
 the user adds them in Memory → Vault.",
                            get_str(it, "label"), get_str(it, "id")))
             }
@@ -909,17 +917,24 @@ the user adds them in Memory → Vault.",
                                 missing.join(", ")
                             )
                         };
-                                                let country = get_str(i, "country");
+                        let country = get_str(i, "country");
                         let label = if country.is_empty() {
                             get_str(i, "label")
                         } else {
                             format!("{} · issued in {country}", get_str(i, "label"))
                         };
+                        // a card's catalog id, its own field after the kind (code reads the card's terms by it)
+                        // ("none": checked, no catalog row; "unchecked": not matched to the catalog yet)
+                        let kind = match get_str(i, "card_id") {
+                            id if !id.is_empty() && get_str(i, "kind") == "card" => format!("card · card_id={id}"),
+                            _ if get_str(i, "kind") == "card" => "card · card_id=unchecked".to_string(),
+                            _ => get_str(i, "kind"),
+                        };
                         format!(
                             "- id={} · {} · {} · {} · fields: {}{}{missing}",
                             get_str(i, "id"),
                             label,
-                            get_str(i, "kind"),
+                            kind,
                             get_str(i, "masked"),
                             arr(i, "fields")
                                 .iter()
@@ -1225,8 +1240,9 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                                 clean
                                     .iter()
                                     .find(|o| {
-                                        let l = get_str(o, "label").to_lowercase();
-                                        !l.is_empty() && title.to_lowercase().contains(&l)
+                                        let l = get_str(o, "label");
+                                        !l.trim().is_empty()
+                                            && title.trim().eq_ignore_ascii_case(l.trim())
                                     })
                                     .map(|o| get_str(o, "note"))
                                     .unwrap_or_default()
@@ -1777,22 +1793,13 @@ these are listings from a results page, and a comparison of them takes `ranking`
                 "ERROR: 输出不能覆盖原件 output must be a new file (keep the original).".into(),
             );
         }
-        let mut vals = a
+        // a signature is the user's own: a /Sig field is never written (pdfforms::fill refuses it and lists the form's
+        // signature fields as left_for_the_user_to_sign), decided by the field's PDF type, never by its name
+        let vals = a
             .get("values")
             .filter(|v| v.is_object())
             .cloned()
             .unwrap_or_else(|| json!({}));
-        // a signature is the user's own: a value for a signature field is never written (in code, not by instruction)
-        static SIGN: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(?i)sign(ature|ed)?\b|签名|簽名|簽署|签署").unwrap());
-        let mut left_to_sign: Vec<String> = Vec::new();
-        if let Some(m) = vals.as_object_mut() {
-            let keys: Vec<String> = m.keys().filter(|k| SIGN.is_match(k)).cloned().collect();
-            for k in keys {
-                m.remove(&k);
-                left_to_sign.push(k);
-            }
-        }
         let (s2, o2) = (src.clone(), out.clone());
         let mut r =
             match tokio::task::spawn_blocking(move || crate::pdfforms::fill(&s2, &vals, &o2))
@@ -1803,9 +1810,6 @@ these are listings from a results page, and a comparison of them takes `ranking`
                 Err(e) => return Ok(format!("ERROR: {}", e.0)),
             };
         r["output"] = json!(self.rel(std::path::Path::new(&get_str(&r, "output"))));
-        if !left_to_sign.is_empty() {
-            r["left_for_the_user_to_sign"] = json!(left_to_sign);
-        }
         self.event(&tid, "pdf_filled", json!({"path": r.get("output"), "filled": arr(&r, "filled").len(),
                                                "problems": arr(&r, "problems").iter().take(5).collect::<Vec<_>>()})).await;
         Ok(format!(
@@ -2998,6 +3002,35 @@ pub(crate) fn goal_args_from_trigger(a: &Value, success: &str) -> Value {
 /// A code machine's own `present_choices` (`_code`, set only by the run loop for a `bkg_` call).
 fn code_card_of(a: &Value) -> bool {
     a.get("_code").and_then(Value::as_bool) == Some(true)
+}
+
+/// The cards of a `vault_list` result, from the listing's fixed fields (`- id=… · <label>[ · issued in <country>] · card ·
+/// card_id=<id|none|unchecked> · …`): this tool's own output, never prose. `unchecked` is read as "".
+pub fn listed_vault_cards(text: &str) -> Vec<super::guards::SeenCard> {
+    text.lines()
+        .filter_map(|l| {
+            let parts: Vec<&str> = l.strip_prefix("- id=")?.split(" · ").collect();
+            let kind_at = parts.iter().position(|p| *p == "card")?;
+            let label = parts.get(1)?.trim().to_string();
+            let country = parts[2..kind_at]
+                .iter()
+                .find_map(|p| p.strip_prefix("issued in "))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let card_id = parts
+                .get(kind_at + 1)
+                .and_then(|p| p.strip_prefix("card_id="))
+                .filter(|id| *id != "unchecked")
+                .unwrap_or("")
+                .to_string();
+            (kind_at >= 2).then_some(super::guards::SeenCard {
+                label,
+                card_id,
+                country,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -87,6 +87,7 @@ every `EXTRACT_SYSTEM`, `extract_exchange` and code-written answer text.
 | `apdt_refund` | `agent/apdt.rs` | its request regexes |
 | `bag_trace` (file reference, family name) | `agent/bagtrace.rs` | the reference/name patterns over words and mails |
 | `news_gather` (subject, window) → `news_publish` (the model's stories as JSON) | `agent/news.rs` | the subject regexes and the in-code writing call |
+| `flight_status` (flight, date) | `agent/flightstatus.rs` | the prose regex for "Scheduled … Estimated" over any page (`flight_times_fact`): the airline's status page opened by code, its table's rows read by element (`browser_read_elements`, cells) |
 | `train_times` (line, date, after) | `agent/trains.rs` | the model's web searches for a timetable (JR East's Narita Express page read by code, weekday / holiday table from a fixed calendar) |
 
 Mail text is natural language too: a reference or a date inside a mail is read by the model (it passes them as tool
@@ -100,8 +101,37 @@ Order of preference for any data on a page (a reference, a price, a status, a ti
    page, read by the browser service (not by a regex over the page's text).
 2. **The model extracts it into JSON** — when no element rule can find it (an unknown site, data only in running text):
    the page text goes to the model with a JSON schema, the answer goes through the JSON layer above.
+   A confirmation reference on an unknown site (the `browser-use` path) is the model's `confirm_reference{reference,
+   label}` (`agent/confirm.rs`): checked to be on a page read after the hand-back, recorded as `model_read`.
+
+The element rules go through `browser_read_elements{read: [{name, sel, attr?, cells?}]}` (the browser service's
+`/agent/read_elements`; withdrawn from the model like `browser_fill_form`): each selector's visible matches as text, an
+attribute, or with `cells` each row's cells and links, wrapped as untrusted page content. Every known site's confirmation
+reference is read this way — `ref_sel` (the element) and `ref_re` (the format, checked over the whole value) in
+`booking::SITES`, `claims::SPECS`, `driver::CARDS`; APDT's is the `bizId` of the submit page's address — and a page
+without it is `not_confirmed`, never a generic fallback. The FWD quote's plans are its table's cells (`#plans tr`). The
+outcome check and the ledger take the reference from structured JSON only (`confirm::confirmed`: a machine's result →
+`known_page`, `confirm_reference` → `model_read`; the source is kept in the evidence).
 3. **Regex** — only to check a value that is already structured (an ISO date, a reference's format), never to find
    data in a page's text.
+
+## Pictures, places and cards as data
+
+- **Vision decisions are choices.** `browser_locate` lists the choices in code (`agent/locate.rs`: the coarse grid's
+  cell labels + `NONE`, the zoomed grid's numbers + `NONE`) and the vision model picks one as JSON
+  (`Runtime::decide_on_picture`, then `decide_flag_on_picture` for `{"on_item": bool}` on the red marker); code computes
+  the point and returns JSON (`status` found · unsure · not_found, `x`, `y`, the element under the point).
+- **The profile's places are codes.** `home_city` (a city code of `places::CITIES`), `home_country` and
+  `address_country:<label>` (ISO 3166-1 alpha-2), validated by `places::clean_value` wherever a profile field is
+  written (UI, `profile_suggest`, memory extraction). Code reads only these (`booking::home_currency`,
+  `driver::own_addresses`, `claims::market_from_profile`), never an address's words. Addresses saved without them are
+  read once by the model into JSON before a workflow's arguments are checked (`places_fill.rs`, event
+  `profile_places`); the Memory page edits them as dropdowns.
+- **Cards by id.** Each catalog row has an `id` (`build_cards.py`, the tables' ID column); the Vault keeps it with the
+  card (`vault_add_card{name, country, card_id}`, checked against the catalog; `vault_list` shows `card_id=`). The card
+  facts look a card up by that id only (`guards::catalog_card`); a card without one is "not in the card catalog".
+  Tools take a card by its Vault id, its card_id or its whole label (`claims::pick_card`), a plan or an offer by its
+  listed name or id (`pick_plan`, `booking::by_label`, `mentioned`) — never a word of a name.
 
 ## Facts the reply must carry
 
@@ -121,8 +151,8 @@ user did (Submit, Pay, Confirm).
   to}` (the market rate, computed in code), `loan_payment{principal, annual_rate_pct, years}` — and a `phone_call` to an
   emergency number, refused in code before dialling (`facts::emergency_call_refusal`). A page's or a mail's JSON is
   never a source (`facts::FACT_TOOLS`).
-- **The run's structured facts** (`guards::*_fact(s)`): the hand-back page's reference, the approval edits, a delayed
-  flight's scheduled and estimated times (an airline status page's labels), ETIAS's status, the card catalog's date,
+- **The run's structured facts** (`guards::*_fact(s)`): the reference the model read on an unknown site's confirmation
+  page after the hand-back (`confirm_reference`, checked against the page), the approval edits, ETIAS's status, the card catalog's date,
   unverified rows, foreign fees, uncatalogued Vault cards and the user's cards side by side, an approved purchase's
   amount, an injection notice, a scheduled run's notifications, and the options a model-made `present_choices` showed.
 - **What the user asked for, as JSON fields** instead of words: the file formats to receive (`deliver_as` on

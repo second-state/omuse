@@ -279,6 +279,8 @@ async def _chat(req: Request, b: dict):
                          "塩ラーメン Shio ramen ¥900 (wheat, soy); 餃子 Gyoza ¥500 (wheat, soy, garlic)")
         what = "a video contact sheet with numbered frames" if "contact sheet" in txt else "a red square labelled HELLO"
         return reply(f"VISION-SEEN: {what}")
+    if sys.startswith("You read the user's own addresses"):   # places_fill.rs: the profile's place codes, once
+        return reply(fake_places(msgs[-1]["content"]))
     if sys.startswith("You look at a screenshot"):   # the vision helper behind browser_look
         return reply(fake_vision(msgs[-1]["content"]))
     if sys.startswith(("You locate things", "This is a zoomed-in part", "A red circle with a crosshair")):   # browser_locate
@@ -934,18 +936,38 @@ def fake_vision(content):
     return f"I can see the page but not the product list here; scroll down. {info}"
 
 
+def fake_places(content):
+    """Stand-in for the one-time place fill: the city and ISO country codes of the profile's addresses (a fixed table
+    of the test addresses' cities)."""
+    m = re.search(r"Addresses: (\{.*?\})\n", content, re.S)
+    addrs = json.loads(m.group(1)) if m else {}
+    table = [("hong kong", "HKG", "HK"), ("singapore", "SIN", "SG"), ("sydney", "SYD", "AU"), ("tokyo", "TYO", "JP"),
+             ("bangkok", "BKK", "TH"), ("london", "LON", "GB"), ("new york", "NYC", "US")]
+    out = {"home_city": "", "countries": {}}
+    for k, v in addrs.items():
+        hit = next((t for t in table if t[0] in str(v).lower()), None)
+        out["countries"][k] = hit[2] if hit else ""
+        if k == "address_home" and hit:
+            out["home_city"] = hit[1]
+    return json.dumps(out)
+
+
 def fake_locate(sys, content):
     """Stand-in vision model for browser_locate: finds the target by its colour (blue chat bubble / yellow message box)
-    and answers with the grid cell, the zoomed cell number, or YES/NO for the red marker — exercising the real geometry."""
+    and answers the JSON decision — {"choice": <grid cell>}, {"choice": <zoomed cell number>} or {"on_item": bool} for
+    the red marker — exercising the real geometry."""
     import base64, io
     from PIL import Image
     parts = content if isinstance(content, list) else []
-    text = " ".join(p.get("text", "") for p in parts if p.get("type") == "text").lower()
+    text = " ".join(p.get("text", "") for p in parts if p.get("type") == "text")
+    find = text.split("Choices:")[0].lower()
     url = next((p["image_url"]["url"] for p in parts if p.get("type") == "image_url"), "")
     img = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))).convert("RGB")
-    want = (0, 102, 255) if "bubble" in text else (255, 235, 59) if "message" in text else None
+    want = (0, 102, 255) if "bubble" in find else (255, 235, 59) if "message" in find else None
+    marker = sys.startswith("A red circle")
+    none = json.dumps({"on_item": False} if marker else {"choice": "NONE"})
     if not want:
-        return "NONE"
+        return none
     W, H = img.size
     px = img.load()
     xs = ys = cnt = 0
@@ -955,12 +977,12 @@ def fake_locate(sys, content):
             if abs(r - want[0]) < 45 and abs(g - want[1]) < 45 and abs(b - want[2]) < 45:
                 xs += x; ys += y; cnt += 1
     if cnt < 8:
-        return "NONE"
+        return none
     cx, cy = xs / cnt, ys / cnt
     if sys.startswith("You locate things"):
-        return "ABCDEFGH"[min(7, int(cx / (W / 8)))] + str(min(6, int(cy / (H / 6)) + 1))
+        return json.dumps({"choice": "ABCDEFGH"[min(7, int(cx / (W / 8)))] + str(min(6, int(cy / (H / 6)) + 1))})
     if sys.startswith("This is a zoomed-in part"):
-        return str(min(5, int(cy / (H / 6))) * 8 + min(7, int(cx / (W / 8))) + 1)
+        return json.dumps({"choice": str(min(5, int(cy / (H / 6))) * 8 + min(7, int(cx / (W / 8))) + 1)})
     rx = ry = rn = 0
     for y in range(0, H, 2):
         for x in range(0, W, 2):
@@ -968,10 +990,9 @@ def fake_locate(sys, content):
             if r > 210 and g < 50 and b < 50:
                 rx += x; ry += y; rn += 1
     if not rn:
-        return "NO — no red marker visible"
+        return none
     d = ((rx / rn - cx) ** 2 + (ry / rn - cy) ** 2) ** 0.5
-    return f"YES — the marker is on the {'chat bubble' if want[0] == 0 else 'message box'} (off by {d:.0f}px)" if d < 25 \
-        else f"NO — the marker is {d:.0f}px away from it"
+    return json.dumps({"on_item": d < 25})
 
 
 # ---------------------------------------------------------------- travel booking scenarios (travel_*_e2e.py)

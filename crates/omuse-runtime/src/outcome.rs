@@ -35,34 +35,35 @@ fn rx(p: &str) -> Regex {
     Regex::new(p).unwrap()
 }
 
-/// An order / booking / confirmation number as people write it next to its label.
-static REF: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)(?:订单号|订单编号|订单|预订号|确认号|确认码|预约号|参考号|order\s*(?:ref(?:erence)?|no\.?|number|#|id)?|booking\s*(?:ref(?:erence)?|no\.?|number|id|code)?|confirmation\s*(?:no\.?|number|code|#)?|reference\s*(?:no\.?|number)?|ref\.?)[\s*]*[:：#]?[\s*]*([A-Z0-9][A-Z0-9\-]{4,24})",
-    )
-});
+/// Where the model's reference came from: read by the model on a page no code knows and passed as JSON
+/// (`confirm_reference`, `agent/confirm.rs`).
+pub const MODEL_READ: &str = "model_read";
+/// Where a code machine's reference came from: a known site's confirmation page, at its fixed label.
+pub const KNOWN_PAGE: &str = "known_page";
 
-/// Order / booking / confirmation numbers written next to their label. Markdown bold may wrap the label, the number or
-/// both (`**Booking reference:** **TRV-1234**`); the Python version missed the last form and flagged confirmed orders.
-pub fn refs_in(text: &str) -> Vec<String> {
-    static DIGIT: LazyLock<Regex> = LazyLock::new(|| rx(r"\d"));
-    let mut out: Vec<String> = Vec::new();
-    for m in REF.captures_iter(text) {
-        let r = m[1].trim_matches('-').to_string();
-        if DIGIT.is_match(&r) && !out.iter().any(|x| x.to_uppercase() == r.to_uppercase()) {
-            out.push(r);
-        }
-    }
-    out
+/// A confirmation reference from a structured source only: a known site's confirmation page read by a code machine at
+/// its fixed label (`known_page`), or the reference the model read on an unknown site's page and passed as JSON
+/// (`model_read`). A page's prose is never scanned for one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Confirmed {
+    pub reference: String,
+    pub source: &'static str,
 }
 
-/// The reference a page showed after the action: the newest labelled reference in the tool results (`texts`, newest
-/// last) — the page is the proof; the answer's words are never read for it.
-fn confirmed_ref(texts: &[String]) -> Option<String> {
-    texts
+/// A known site's confirmation reference from its page's elements: `values` are what the browser service read at the
+/// site's fixed selector (`browser_read_elements`), `ref_re` the site's reference format, checked over the whole value
+/// (the first value of that format wins). A page without it gives `None` (the machine's `not_confirmed`); there is no
+/// generic fallback and no pattern over the page's text.
+pub fn reference_in(values: &[String], ref_re: &str) -> Option<String> {
+    if ref_re.is_empty() {
+        return None;
+    }
+    let re = Regex::new(&format!("^(?:{ref_re})$")).ok()?;
+    values
         .iter()
-        .rev()
-        .find_map(|t| refs_in(t).into_iter().next())
+        .map(|v| v.trim())
+        .find(|v| re.is_match(v))
+        .map(str::to_string)
 }
 
 fn data_of(e: &Value) -> Value {
@@ -153,29 +154,17 @@ pub fn actions_done(events: &[Value]) -> Vec<Value> {
     out
 }
 
-/// `{status, actions: [...], evidence: [...], missing: [...]}` from the task's events and tool results alone — the
-/// answer's words are never read (`_final`, `_goal` stay in the signature for the trust route). `tool_texts` = the full
-/// tool results of the task (newest last); without them the event previews are used.
-pub fn assess(
-    events: &[Value],
-    _final: &str,
-    tool_texts: Option<&[String]>,
-    _goal: Option<&str>,
-) -> Value {
+/// `{status, actions: [...], evidence: [...], missing: [...]}` from the task's events and the run's confirmed reference
+/// alone — the answer's words and the pages' prose are never read. `confirmed` is the reference a code machine read at
+/// a known site's fixed label, or the one the model read on an unknown site's page and passed as JSON
+/// (`agent::confirm::confirmed`); its `source` goes into the evidence.
+pub fn assess(events: &[Value], confirmed: Option<&Confirmed>) -> Value {
     static MID: LazyLock<Regex> =
         LazyLock::new(|| rx(r#"(?:message_?id|"id")\W{0,4}([A-Za-z0-9_\-]{8,})"#));
     static EID: LazyLock<Regex> =
         LazyLock::new(|| rx(r#"(?:event_?id|"id")\W{0,4}([A-Za-z0-9_\-@.]{6,})"#));
     static CID: LazyLock<Regex> = LazyLock::new(|| rx(r"(?:call_?id)\W{0,4}([A-Za-z0-9_\-]{6,})"));
     let acts = actions_done(events);
-    let mut texts: Vec<String> = tool_texts.map(|t| t.to_vec()).unwrap_or_default();
-    if texts.is_empty() {
-        texts = events
-            .iter()
-            .filter(|e| get_str(e, "type") == "tool_result")
-            .map(|e| get_str(&data_of(e), "preview"))
-            .collect();
-    }
     let mut evidence: Vec<Value> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     let first_cap =
@@ -186,9 +175,12 @@ pub fn assess(
         let preview = get_str(a, "preview");
         match kind.as_str() {
             "purchase" => {
-                // proof = an order number a page read after the order click shows
-                match confirmed_ref(&texts) {
-                    Some(n) => evidence.push(json!({"kind": "purchase", "order_number": n})),
+                // proof = the order number of the confirmation page after the order click (a known shop's fixed label,
+                // or the model's JSON for a shop no code knows)
+                match confirmed {
+                    Some(c) => evidence.push(
+                        json!({"kind": "purchase", "order_number": c.reference, "source": c.source}),
+                    ),
                     None => missing.push("purchase".to_string()),
                 }
             }
@@ -202,7 +194,7 @@ pub fn assess(
     }
     let mut done_kinds: BTreeSet<String> = acts.iter().map(|a| get_str(a, "kind")).collect();
     // a booking made through an approved click on the booking site, or in a takeover the user handed back, with a
-    // reference number on a page read afterwards
+    // confirmed reference (a known site's fixed label, or the model's JSON)
     if !done_kinds.contains("purchase") && !done_kinds.contains("booking") {
         let handed_back = events.iter().any(|e| {
             let d = data_of(e);
@@ -211,8 +203,9 @@ pub fn assess(
                 && (get_truthy(&d, "ok") || get_str(&d, "status") == "ok")
         });
         if approved(events, "browser_click") || handed_back {
-            if let Some(n) = confirmed_ref(&texts) {
-                evidence.push(json!({"kind": "booking", "reference": n}));
+            if let Some(c) = confirmed {
+                evidence
+                    .push(json!({"kind": "booking", "reference": c.reference, "source": c.source}));
                 done_kinds.insert("booking".to_string());
             }
         }
@@ -249,25 +242,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn refs_with_markdown_bold_on_label_and_number() {
-        for t in [
-            "- **Booking reference / order number:** **TRV-FBB71D4**",
-            "- **Booking reference:** **TRV-FBB71D4**",
-            "Booking reference: **TRV-FBB71D4**",
-            "**Order number**: TRV-FBB71D4",
-            "Booking reference TRV-FBB71D4",
-        ] {
-            assert_eq!(refs_in(t), ["TRV-FBB71D4"], "{t}");
-        }
-        assert!(refs_in("**Booking reference:** **pending**").is_empty());
+    fn a_known_sites_reference_is_its_elements_value_in_the_sites_format() {
+        let re = r"\bKM-\d{4,}\b";
+        let v = |x: &[&str]| x.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            reference_in(&v(&["S$24.90", " KM-50731 "]), re).as_deref(),
+            Some("KM-50731")
+        );
+        // an element holding prose around the shape, or another format: not confirmed
+        assert_eq!(
+            reference_in(&v(&["Your order KM-50731 is being processed"]), re),
+            None
+        );
+        assert_eq!(reference_in(&v(&["SG5X42VMKCAG"]), re), None);
+        assert_eq!(reference_in(&v(&[]), re), None);
+        assert_eq!(reference_in(&v(&["KM-50731"]), ""), None);
     }
 
     fn ev(typ: &str, d: Value) -> Value {
         json!({"type": typ, "data": d})
     }
 
-    fn texts(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
+    fn known(r: &str) -> Confirmed {
+        Confirmed {
+            reference: r.into(),
+            source: KNOWN_PAGE,
+        }
     }
 
     #[test]
@@ -308,16 +308,11 @@ mod tests {
                 json!({"call_id": "c3", "name": "browser_click", "ok": true, "preview": "web page https://www.decathlon.sg/order-confirmation"}),
             ),
         ];
-        let page =
-            "Thank you for your order! Order number SG5X42VMKCAG. Estimated delivery Wed 7 Oct";
-        let r = assess(
-            &buy,
-            "whatever the model wrote",
-            Some(&texts(&[page])),
-            None,
-        );
+        let page = known("SG5X42VMKCAG");
+        let r = assess(&buy, Some(&page));
         assert_eq!(r["status"], json!("verified"));
         assert_eq!(r["evidence"][0]["order_number"], json!("SG5X42VMKCAG"));
+        assert_eq!(r["evidence"][0]["source"], json!(KNOWN_PAGE));
         assert_eq!(notice(&r, true), "");
         // the final click is the user's: they press Place order in a takeover; the confirmation read after the
         // hand-back is the proof, and the order is recorded the same way
@@ -326,16 +321,19 @@ mod tests {
             "tool_result",
             json!({"call_id": "c4", "name": "browser_request_takeover", "ok": true, "preview": "the user handed the browser back"}),
         ));
-        let r = assess(&handed, "", Some(&texts(&[page])), None);
+        let r = assess(&handed, Some(&page));
         assert_eq!(r["status"], json!("verified"));
         assert_eq!(r["evidence"][0]["order_number"], json!("SG5X42VMKCAG"));
-        // no page shows a number: unverified, whatever the answer claims
-        let r = assess(
-            &buy,
-            "下单成功！订单号：SG77777777",
-            Some(&texts(&["Processing…"])),
-            None,
-        );
+        // the model's JSON for a shop no code knows: verified, marked as model-read
+        let model = Confirmed {
+            reference: "AB-123456".into(),
+            source: MODEL_READ,
+        };
+        let r = assess(&handed, Some(&model));
+        assert_eq!(r["status"], json!("verified"));
+        assert_eq!(r["evidence"][0]["source"], json!(MODEL_READ));
+        // no confirmed reference: unverified, whatever the answer or a page's prose says
+        let r = assess(&buy, None);
         assert_eq!(r["status"], json!("unverified"));
         assert_eq!(r["missing"], json!(["purchase"]));
         assert!(notice(&r, true).contains("未经确认"));
@@ -346,8 +344,6 @@ mod tests {
                 "tool_result",
                 json!({"name": "browser_read", "ok": true, "preview": "menu"}),
             )],
-            "已预订周六 7 点 2 位。",
-            Some(&[]),
             None,
         );
         assert_eq!(r["status"], json!("none"));
@@ -356,17 +352,14 @@ mod tests {
             "tool_result",
             json!({"name": "gmail_send", "ok": true, "preview": "{\"id\": \"18c2f0a9b1d2e3f4\", \"status\": \"sent\"}"}),
         )];
-        let r = assess(&sent, "邮件已发送给 Jennifer。", Some(&[]), None);
+        let r = assess(&sent, None);
         assert_eq!(r["status"], json!("verified"));
         assert_eq!(r["evidence"][0]["id"], json!("18c2f0a9b1d2e3f4"));
         let cal = vec![ev(
             "tool_result",
             json!({"name": "calendar_create_event", "ok": true, "preview": "{\"event_id\": \"evt_abc123\", \"title\": \"x\"}"}),
         )];
-        assert_eq!(
-            assess(&cal, "已添加到日历。", Some(&[]), None)["evidence"][0]["id"],
-            json!("evt_abc123")
-        );
+        assert_eq!(assess(&cal, None)["evidence"][0]["id"], json!("evt_abc123"));
         // a refused send is not a send
         assert_eq!(
             assess(
@@ -374,15 +367,9 @@ mod tests {
                     "tool_result",
                     json!({"name": "gmail_send", "ok": false, "preview": "denied"})
                 )],
-                "邮件已发送。",
-                Some(&[]),
                 None
             )["status"],
             json!("none")
-        );
-        assert_eq!(
-            refs_in("Booking reference: ABC123, order no. 98-7654"),
-            vec!["ABC123", "98-7654"]
         );
         // a booking through an approved click with a reference the page showed
         let book = vec![
@@ -399,23 +386,10 @@ mod tests {
                 json!({"name": "browser_click", "ok": true, "preview": "Reservation confirmed. Confirmation code: CHOPE8821"}),
             ),
         ];
-        let r = assess(&book, "", None, Some("帮我订周六晚上的餐厅"));
+        let r = assess(&book, Some(&known("CHOPE8821")));
         assert_eq!(r["status"], json!("verified"));
         assert_eq!(r["evidence"][0]["reference"], json!("CHOPE8821"));
-    }
-
-    #[test]
-    fn the_reference_comes_from_the_newest_page_that_shows_one() {
-        // shopping_real 2026-10-31: "Order reference: KM-50731" on the confirmation page
-        let pages = texts(&[
-            "Checkout — Order summary S$24.90",
-            "THANK YOU! Order reference: KM-50731. DELIVERY 2026-11-03, S$24.90",
-        ]);
-        assert_eq!(confirmed_ref(&pages).as_deref(), Some("KM-50731"));
-        assert_eq!(
-            confirmed_ref(&texts(&["Processing… 2026-11-03 24.90"])),
-            None
-        );
-        assert_eq!(refs_in("Order number: SG5X42VMKCAG"), vec!["SG5X42VMKCAG"]);
+        // the same click with no confirmed reference: nothing is claimed (the preview's prose is not read)
+        assert_eq!(assess(&book, None)["status"], json!("none"));
     }
 }

@@ -307,6 +307,18 @@ impl Broker {
                     .unwrap_or_default();
                 return Ok(json!({"url": page.url(), "text": txt}));
             }
+            "read_elements" => {
+                // a known page's data by its HTML elements (a code machine's fixed selectors): for each
+                // `{name, sel, attr?, cells?}` the visible matches' text (or the attribute), or with `cells` each
+                // matched row's cells and its links — never a pattern over the page's text
+                let page = self.page(&task_id).await?;
+                let items = body.get("read").cloned().unwrap_or_else(|| json!([]));
+                let v = page
+                    .eval(None, READ_ELEMENTS_JS, vec![items])
+                    .await
+                    .unwrap_or(Value::Null);
+                return Ok(json!({"url": page.url(), "title": page.title().await, "elements": v}));
+            }
             "empty_fields" => {
                 // the form's visible, enabled fields that are still empty, by label (a radio group counts once):
                 // checked before a hand-over, so the agent fills what it can first
@@ -1137,6 +1149,27 @@ const FILL_ONE_JS: &str = r#"(f) => {
 /// The empty fields of the page's forms: `[{label, kind}]` for each visible, enabled text / date / number / email / tel
 /// input, textarea and select with no value, and each radio group with none chosen (passwords, files and hidden
 /// inputs left out). The label: its `<label>`, aria-label, placeholder, or the text of the field's row.
+/// `read_elements`: `items = [{name, sel, attr?, cells?}]` → `{name: [text | attribute | {cells, links}]}` — up to 40
+/// visible matches per selector, 400 characters each (an invalid selector gives an empty list).
+const READ_ELEMENTS_JS: &str = r#"(items) => {
+  const clean = s => (s || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  const vis = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const out = {};
+  for (const it of (Array.isArray(items) ? items : []).slice(0, 20)) {
+    const name = String(it && it.name || ''); if (!name) continue;
+    let els = [];
+    try { els = Array.from(document.querySelectorAll(String(it.sel || ''))).filter(vis).slice(0, 40); } catch (e) {}
+    out[name] = els.map(e => {
+      if (it.cells) return {cells: Array.from(e.querySelectorAll('th,td')).map(c => clean(c.innerText)),
+                            links: Array.from(e.querySelectorAll('a[href]')).map(a => a.href)};
+      if (it.attr) return clean(it.attr === 'href' && e.href ? e.href : e.getAttribute(String(it.attr)));
+      return clean(e.innerText || e.textContent);
+    });
+  }
+  return out;
+}"#;
+
 const EMPTY_FIELDS_JS: &str = r#"() => {
   const seen = new Set(), out = [];
   const vis = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);

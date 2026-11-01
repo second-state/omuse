@@ -152,19 +152,23 @@ pub async fn internal_vault(State(ctx): State<App>) -> JsonResult {
     Ok(Json(json!({"items": items})))
 }
 
-/// `POST /internal/vault/card {name, country, task_id}`: a credit card the user named (in chat, or to the card bot) goes
+/// `POST /internal/vault/card {name, country, card_id, task_id}`: a credit card the user named (in chat, or to the card bot) goes
 /// into the Vault by its name ("Citi Prestige") with its issuing country when known ("USA", optional), its number,
 /// expiry and CVC `UNKNOWN` until the user adds them (`vault::add_card`; the same card is not added twice). Only a
 /// name: a number is refused.
 pub async fn internal_vault_card(State(ctx): State<App>, body: Bytes) -> JsonResult {
     let b = body_obj(&body)?;
-    let (it, added) =
-        match vault::add_card(&ctx.store, &get_str(&b, "name"), &get_str(&b, "country")) {
-            Ok(x) => x,
-            Err(VaultError::Value(e)) => return Err(ApiError::new(400, e)),
-            Err(VaultError::Key(e)) => return Err(ApiError::new(404, e)),
-            Err(VaultError::Other(e)) => return Err(ierr(e)),
-        };
+    let (it, added) = match vault::add_card_with_id(
+        &ctx.store,
+        &get_str(&b, "name"),
+        &get_str(&b, "country"),
+        &get_str(&b, "card_id"),
+    ) {
+        Ok(x) => x,
+        Err(VaultError::Value(e)) => return Err(ApiError::new(400, e)),
+        Err(VaultError::Key(e)) => return Err(ApiError::new(404, e)),
+        Err(VaultError::Other(e)) => return Err(ierr(e)),
+    };
     if added {
         ctx.audit(
             "agent",

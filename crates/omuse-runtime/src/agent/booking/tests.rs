@@ -10,7 +10,7 @@ fn today() -> NaiveDate {
 
 fn profile() -> Value {
     json!({"name_en": "Jordan Lu", "email_personal": "jordan@example.com", "phone": "+65 9123 4567",
-           "address_home": "10 Anson Road, #12-01, Singapore 079903"})
+           "address_home": "10 Anson Road, #12-01, Singapore 079903", "home_city": "SIN", "home_country": "SG"})
 }
 
 fn names(t: &[Value]) -> Vec<String> {
@@ -31,6 +31,11 @@ fn args_of(t: &[Value], name: &str) -> Vec<Value> {
 
 fn snap(url: &str, body: &str) -> String {
     json!({"trust": "untrusted", "source": format!("web page {url}"), "url": url, "title": "", "snapshot": body}).to_string()
+}
+
+/// A `browser_read_elements` result: the values of the confirmation's reference element.
+fn refs(values: &[&str]) -> String {
+    json!({"trust": "untrusted", "source": "web page x", "url": "x", "elements": {"reference": values}}).to_string()
 }
 
 const BACK: &str = "\"Takeover finished: the user handed browser control back.\"";
@@ -128,11 +133,6 @@ fn run(
         }
     }
     panic!("the run did not end")
-}
-
-fn handed_back_in(t: &[Value]) -> bool {
-    t.iter()
-        .any(|m| get_str(m, "role") == "tool" && content_of(m).contains("Takeover finished"))
 }
 
 fn must(v: &Value) -> String {
@@ -424,7 +424,7 @@ fn a_flight_is_booked_on_a_known_site_with_fixed_ids_and_handed_over() {
         &a,
         started(TRAVEL_BOOK, &a, ask),
         &Env::of(&p),
-        |name, args, t| match name {
+        |name, args, _t| match name {
             "flights_search" => flight_result(),
             "vault_list" => VAULT.into(),
             "purchase_confirm" => "{\"status\": \"approved\", \"purchase_id\": 7}".into(),
@@ -432,10 +432,7 @@ fn a_flight_is_booked_on_a_known_site_with_fixed_ids_and_handed_over() {
             "browser_fill_form" => "{\"url\": \"x\", \"filled\": [], \"skipped\": []}".into(),
             "browser_fill_secret" => "{\"filled\": \"filled: Visa\"}".into(),
             "browser_request_takeover" => BACK.into(),
-            "browser_snapshot" if handed_back_in(t) => snap(
-                &format!("{TT}/book/flight/F-SIN-HND-20261203-1"),
-                "Booking confirmed\nBooking reference: TRV-F1A2B3C\nTotal paid: SGD 380.00",
-            ),
+            "browser_read_elements" => refs(&["TRV-F1A2B3C"]),
             "browser_snapshot" => snap(&format!("{TT}/book/flight/F-SIN-HND-20261203-1"), form),
             _ => "{}".into(),
         },
@@ -457,7 +454,7 @@ fn a_flight_is_booked_on_a_known_site_with_fixed_ids_and_handed_over() {
             "browser_fill_secret",
             "browser_fill_secret",
             "browser_request_takeover",
-            "browser_snapshot"
+            "browser_read_elements"
         ]
     );
     let pc = &args_of(&t, "purchase_confirm")[0];
@@ -1068,15 +1065,13 @@ fn a_hotel_room_is_picked_by_rule_and_a_pay_at_hotel_rate_needs_no_card() {
         &a,
         started(TRAVEL_BOOK, &a, "x"),
         &Env::of(&p),
-        |name, args, t| match name {
+        |name, args, _t| match name {
             "hotels_search" => hotels.to_string(),
             "hotel_rooms" => rooms.to_string(),
             "browser_navigate" => snap(&sget(args, "url"), form),
             "browser_fill_form" => "{\"url\": \"x\", \"filled\": []}".into(),
             "browser_request_takeover" => BACK.into(),
-            "browser_snapshot" if handed_back_in(t) => {
-                snap("x", "Booking confirmed\nBooking reference: TRV-HAB12CD")
-            }
+            "browser_read_elements" => refs(&["TRV-HAB12CD"]),
             _ => "{\"shown\": 2}".into(),
         },
     );
@@ -1201,7 +1196,7 @@ fn a_native_search_with_no_priced_offer_falls_back_to_the_connector() {
 }
 
 #[test]
-fn a_web_fallback_lists_the_pages_with_their_prices_and_the_compare_link() {
+fn a_web_fallback_lists_the_pages_and_the_compare_link_without_reading_prices() {
     let p = profile();
     let a = valid(
         TRAVEL_SEARCH,
@@ -1232,13 +1227,14 @@ fn a_web_fallback_lists_the_pages_with_their_prices_and_the_compare_link() {
     );
     let pages = res["web_pages"].as_array().unwrap();
     assert_eq!(pages.len(), 2, "the ad link is left out: {pages:?}");
-    assert_eq!(pages[0]["price_from"], "S$180");
-    assert_eq!(pages[1]["price_from"], "S$245");
+    // the snippets go to the model as they are; code reads no price out of them
+    assert!(pages.iter().all(|p| p.get("price_from").is_none()));
+    assert_eq!(pages[0]["snippet"], "Brave snippet 1 from S$180");
     assert_eq!(res["next_items"], json!(["car"]));
     let m = must(&res);
     assert!(
         m.contains("https://hotels.example/1")
-            && m.contains("\"from\" prices")
+            && m.contains("\"from\" price")
             && m.contains("Kayak"),
         "{m}"
     );
@@ -1286,7 +1282,7 @@ fn a_michelin_table_takes_the_next_candidate_when_full_and_the_deposit_is_confir
         &a,
         started(TRAVEL_BOOK, &a, "x"),
         &Env::of(&p),
-        |name, args, t| {
+        |name, args, _t| {
             match name {
         "mcp_travel__michelin_search" => found.to_string(),
         "mcp_travel__restaurant_availability" if sget(args, "restaurant_id") == "R-TYO-1" =>
@@ -1301,7 +1297,7 @@ fn a_michelin_table_takes_the_next_candidate_when_full_and_the_deposit_is_confir
         "browser_fill_form" => "{\"filled\": []}".into(),
         "browser_fill_secret" => "{\"filled\": \"ok\"}".into(),
         "browser_request_takeover" => BACK.into(),
-        "browser_snapshot" if handed_back_in(t) => snap("x", "Booking confirmed\nBooking reference: TRV-RZZ9Y8X"),
+        "browser_read_elements" => refs(&["TRV-RZZ9Y8X"]),
         "browser_snapshot" => snap("x", form),
         _ => "{\"shown\": 2}".into(),
     }
@@ -1452,7 +1448,7 @@ fn shop_answer(name: &str, args: &Value, t: &[Value]) -> String {
         "browser_navigate" if sget(args, "url").ends_with("kaya_checkout.html") => snap(&sget(args, "url"), "[e10] textbox \"Full name\""),
         "browser_navigate" => snap(&sget(args, "url"), "[e2] link \"Cart (0)\""),
         "browser_fill_form" => "{\"url\": \"x\", \"filled\": [{\"ok\": true}]}".into(),
-        "browser_snapshot" if handed_back_in(t) => snap(&format!("{SHOP}/kaya_done.html"), "Thank you, your order has been placed.\nOrder number KM-50731"),
+        "browser_read_elements" => refs(&["KM-50731"]),
         "browser_snapshot" if names(t).iter().any(|n| n == "purchase_confirm") => snap(
             &format!("{SHOP}/kaya_checkout.html"),
             "[e10] textbox \"Full name\"\n[e13] textbox \"Card number\"\n[e14] textbox \"Expiry (MM/YY)\"\n[e15] textbox \"Security code (CVC)\"",
@@ -1647,17 +1643,14 @@ fn a_product_page_with_its_checkout_is_bought_by_fixed_ids() {
         &a,
         started(SHOP_ORDER, &a, "x"),
         &Env::of(&p),
-        |name, args, t| match name {
+        |name, args, _t| match name {
             "browser_navigate" => product(&sget(args, "url")),
             "vault_list" => VAULT.into(),
             "purchase_confirm" => "{\"status\": \"approved\"}".into(),
             "browser_fill_form" => "{\"filled\": []}".into(),
             "browser_fill_secret" => "{\"filled\": \"ok\"}".into(),
             "browser_request_takeover" => BACK.into(),
-            "browser_snapshot" if handed_back_in(t) => snap(
-                "x",
-                "Thank you for your order! Order SR-48213. Total paid: S$4.90",
-            ),
+            "browser_read_elements" => refs(&["SR-48213", "S$4.90"]),
             "browser_snapshot" => snap("x", page),
             _ => "{}".into(),
         },
@@ -1745,7 +1738,7 @@ fn the_booking_stage_carries_on_when_the_search_result_was_compressed() {
     );
     let form = "[e10] textbox \"Full name (as in passport)\"\n[e20] textbox \"Card number\"\n[e21] textbox \"Expiry (MM/YY)\"\n\
 [e22] textbox \"CVC\"\n[e23] textbox \"Name on card\"\n[e30] button \"Pay now\"";
-    let answer = |name: &str, args: &Value, t: &[Value]| -> String {
+    let answer = |name: &str, args: &Value, _t: &[Value]| -> String {
         match name {
             "mcp_travel__flights_search" => {
                 enveloped("MCP Travel · flights_search", json!(flight_result()))
@@ -1756,7 +1749,7 @@ fn the_booking_stage_carries_on_when_the_search_result_was_compressed() {
             "browser_fill_form" => "{\"url\": \"x\", \"filled\": []}".into(),
             "browser_fill_secret" => "{\"filled\": \"filled: Visa\"}".into(),
             "browser_request_takeover" => BACK.into(),
-            "browser_snapshot" if handed_back_in(t) => snap("x", "Please complete: Pay now"),
+            "browser_read_elements" => refs(&[]),
             "browser_snapshot" => snap(&format!("{TT}/book/flight/F-SIN-HND-20261203-1"), form),
             _ => "{\"shown\": 4, \"verified\": true}".into(),
         }
@@ -1806,7 +1799,7 @@ fn the_booking_stage_carries_on_when_the_search_result_was_compressed() {
     assert!(
         seq.ends_with(&[
             "browser_request_takeover".to_string(),
-            "browser_snapshot".to_string()
+            "browser_read_elements".to_string()
         ]),
         "{seq:?}"
     );
@@ -2059,7 +2052,7 @@ fn the_rooms_of_a_booking_are_asked_on_the_connector_the_search_ran_on() {
         &a,
         started(TRAVEL_BOOK, &a, "x"),
         &env,
-        |name, args, t| match name {
+        |name, args, _t| match name {
             "hotels_search" => enveloped("web search (duckduckgo): hotels", web.clone()),
             "mcp_travel__hotels_search" => {
                 enveloped("MCP Travel · hotels_search", json!(hotels.to_string()))
@@ -2071,9 +2064,7 @@ fn the_rooms_of_a_booking_are_asked_on_the_connector_the_search_ran_on() {
             "browser_navigate" => snap(&sget(args, "url"), form),
             "browser_fill_form" => "{\"url\": \"x\", \"filled\": []}".into(),
             "browser_request_takeover" => BACK.into(),
-            "browser_snapshot" if handed_back_in(t) => {
-                snap("x", "Booking confirmed\nBooking reference: TRV-HAB12CD")
-            }
+            "browser_read_elements" => refs(&["TRV-HAB12CD"]),
             _ => "{\"shown\": 1, \"verified\": true}".into(),
         },
     );

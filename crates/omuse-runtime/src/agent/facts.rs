@@ -94,7 +94,6 @@ pub fn run_facts(transcript: &[Value], ctx: Ctx) -> Vec<String> {
     let mut out = tool_must_say(transcript);
     out.extend(g::confirmation_ref_fact(transcript));
     out.extend(g::user_edits_fact(transcript, zh));
-    out.extend(g::flight_times_fact(transcript, zh));
     out.extend(g::etias_fact(transcript, zh));
     out.extend(g::catalog_date_fact(transcript, zh));
     out.extend(g::unverified_cards_fact(transcript, zh));

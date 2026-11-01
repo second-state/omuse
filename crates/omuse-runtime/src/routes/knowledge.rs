@@ -323,7 +323,7 @@ pub async fn memory(st: St) -> R {
     Ok(Json(json!({
         "facts": s.facts(500, Some("long"))?, "recent": s.facts(1000, Some("recent"))?, "episodes": s.episodes(50)?,
         "domains": triple(&DOMAINS), "entities": s.entities(None)?,
-        "profile": s.profile()?, "profile_fields": triple(&PROFILE_FIELDS), "profile_standing": s.profile_standing()?,
+        "profile": s.profile()?, "profile_fields": triple(&PROFILE_FIELDS), "places": crate::places::choices(), "profile_standing": s.profile_standing()?,
         "topics": crate::store::topic_keys(),
         "pending": s.profile_pending("pending")?, "runs": runs, "job": mt::job_state(),
         "needs_first_review": mt::needs_first_review(s)?, "library": s.subjects()?,
@@ -559,6 +559,12 @@ pub async fn set_profile(st: St, body: Bytes) -> R {
     }
     if key == "gender" && !val.trim().is_empty() && crate::store::gender_of(&val).is_none() {
         return Err(http(400, "gender: Male, Female or X (as on the passport)"));
+    }
+    if crate::places::clean_value(&key, &val).is_none() {
+        return Err(http(
+            400,
+            "a city code of the table (home_city) or an ISO country code",
+        ));
     }
     st.rt.store.set_profile(&key, &val, "user-ui")?;
     // a custom field the agent always sees (Memory → Profile: the "always use" tick)

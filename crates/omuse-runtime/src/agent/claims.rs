@@ -79,7 +79,10 @@ pub struct ClaimSpec {
     pub documents_days: i64,
     /// what the user does after the review hand-over
     pub user_steps: &'static str,
-    /// the confirmation's reference, on the page after the user's Submit / Pay
+    /// the confirmation's reference element on the page after the user's Submit / Pay (a CSS selector, read by
+    /// `browser_read_elements`); empty = none
+    pub ref_sel: &'static str,
+    /// the reference's format, checked over that element's whole value
     pub ref_re: &'static str,
     pub currency: &'static str,
     /// a delay benefit when the policy's own rule was not read: (amount per block, hours per block, the cap)
@@ -119,6 +122,7 @@ pub const SPECS: &[ClaimSpec] = &[
         notify_days: 20,
         documents_days: 90,
         user_steps: "press Submit claim",
+        ref_sel: "#claimno",
         ref_re: r"\bCBS-\d{2}-\d{6,}\b",
         currency: "USD",
         delay: (0.0, 0, 0.0),
@@ -141,6 +145,7 @@ pub const SPECS: &[ClaimSpec] = &[
         notify_days: 30,
         documents_days: 0,
         user_steps: "press Submit claim",
+        ref_sel: "main p b",
         ref_re: r"\bCL-[A-Z]{2}-\d{4}-\d{4,}\b",
         currency: "SGD",
         delay: (100.0, 6, 1_500.0),
@@ -159,6 +164,7 @@ pub const SPECS: &[ClaimSpec] = &[
         notify_days: 0,
         documents_days: 0,
         user_steps: "read the policy wording and the declarations, tick the box if you agree, and press Pay now",
+        ref_sel: "main p b",
         ref_re: r"\bTI-[A-Z]{2}-\d{4}-\d{4,}\b",
         currency: "SGD",
         delay: (0.0, 0, 0.0),
@@ -177,6 +183,7 @@ pub const SPECS: &[ClaimSpec] = &[
         notify_days: 0,
         documents_days: 0,
         user_steps: "sign the form and send the draft",
+        ref_sel: "",
         ref_re: "",
         currency: "HKD",
         delay: (300.0, 6, 1_500.0),
@@ -195,6 +202,7 @@ pub const SPECS: &[ClaimSpec] = &[
         notify_days: 0,
         documents_days: 0,
         user_steps: "",
+        ref_sel: "",
         ref_re: "",
         currency: "",
         delay: (0.0, 0, 0.0),
@@ -292,8 +300,8 @@ JSON result, with every fact in its must_say.",
             "travellers": {"type": "integer"},
             "cover": {"type": "string", "enum": ["medical", "cancellation", "baggage", "delay"], "description": "the cover the user wants at least an amount of"},
             "cover_at_least": money("that cover's minimum (\"at least SGD 10,000 trip cancellation\" → 10000)"),
-            "plan": {"type": "string", "description": "the plan the user chose (a choice card's \"I choose: …\")"},
-            "card": {"type": "string", "description": "the Vault card the user named to pay with"}
+            "plan": {"type": "string", "description": "the plan the user chose: its name exactly as the plans card listed it"},
+            "card": {"type": "string", "description": "the Vault card the user named to pay with: its id from vault_list (id=…), its card_id, or its label exactly as listed"}
         }),
         &[],
     );
@@ -523,10 +531,9 @@ fn market_from_mail(transcript: &[Value]) -> Option<&'static str> {
     })
 }
 
-/// The market from the profile's home address (structured: the country at its end), else Singapore.
+/// The market from the profile's structured home country (`home_country`, else the home city's), else Singapore.
 fn market_from_profile(profile: &Value) -> &'static str {
-    let addr = get_str(profile, "address_home").to_lowercase();
-    if addr.trim_end().ends_with("hong kong") {
+    if crate::places::home_country(profile) == "HK" {
         "hk"
     } else {
         "sg"
@@ -1332,7 +1339,7 @@ pub fn delay_amount(d: &DelayClaim) -> f64 {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Plan {
     pub name: String,
-    /// the ref of its "Select" link
+    /// the address of its "Select" link
     pub link: String,
     pub premium: f64,
     /// (cover, amount) in the page's column order
@@ -1363,91 +1370,48 @@ impl Plan {
     }
 }
 
-static SELECT_LINK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"^\[(e\d+)\] link "Select ([^"]+)""#).unwrap());
-static DELAY_PHRASE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:SGD|HKD|S\$|HK\$)\s?\d+ (?:for )?every \d+ hours,? up to ").unwrap()
-});
+/// The FWD quote page's plan table: its rows (a CSS selector, read with their cells and links by
+/// `browser_read_elements`), and its fixed columns after the plan's name.
+const PLAN_ROWS: &str = "#plans tr";
+const PLAN_COLS: [&str; 5] = ["premium", "medical", "cancellation", "delay", "baggage"];
 
-/// The plans on the quote page's snapshot (a known page): a table whose rows end in a "Select <plan>" link; the
-/// columns from the header row (premium, medical, cancellation, delay, baggage — whichever the page names, in its
-/// order).
-pub fn plans_in(snapshot: &str) -> Vec<Plan> {
-    const COLS: &[(&str, &str)] = &[
-        ("premium", r"(?i)\bpremium\b|\bprice\b"),
-        ("medical", r"(?i)medical"),
-        ("cancellation", r"(?i)cancell"),
-        ("delay", r"(?i)delay"),
-        ("baggage", r"(?i)baggage|luggage"),
-    ];
-    let default: Vec<String> = COLS.iter().map(|(c, _)| c.to_string()).collect();
-    let mut cols: Vec<String> = Vec::new();
-    let mut last_text = String::new();
-    let mut out = Vec::new();
-    for raw in snapshot.lines() {
-        let line = raw.trim();
-        if let Some(c) = SELECT_LINK.captures(line) {
-            let row = DELAY_PHRASE.replace_all(&last_text, "");
-            let amounts = amounts_in(&row);
-            if amounts.is_empty() {
-                continue;
-            }
-            let names = if cols.is_empty() { &default } else { &cols };
-            let cover: Vec<(String, f64)> =
-                names.iter().cloned().zip(amounts.iter().cloned()).collect();
-            let premium = cover
+/// The plans on the quote page (a known page), from its table's cells: each row with a "Select" link is a plan —
+/// the name, then the premium, medical, cancellation, delay and baggage cells in the page's fixed order. A cell's
+/// amount is the last money value in it (the delay cell "SGD 100 every 6 hours, up to SGD 1,500" → its cap).
+pub fn plans_in(rows: &[(Vec<String>, Vec<String>)]) -> Vec<Plan> {
+    rows.iter()
+        .filter_map(|(cells, links)| {
+            let link = links.first()?.clone();
+            let name = cells.first()?.trim().to_string();
+            let cover: Vec<(String, f64)> = PLAN_COLS
                 .iter()
-                .find(|(c, _)| c == "premium")
-                .map(|(_, v)| *v)
-                .unwrap_or(amounts[0]);
-            out.push(Plan {
-                name: c[2].trim().to_string(),
-                link: c[1].to_string(),
+                .zip(cells.iter().skip(1))
+                .filter_map(|(c, cell)| amounts_in(cell).last().map(|v| (c.to_string(), *v)))
+                .collect();
+            let premium = cover.iter().find(|(c, _)| c == "premium")?.1;
+            (!name.is_empty()).then_some(Plan {
+                name,
+                link,
                 premium,
                 cover,
-            });
-            continue;
-        }
-        if line.starts_with('[') {
-            continue;
-        }
-        if out.is_empty() && cols.is_empty() {
-            let lower = line.to_lowercase();
-            if lower.contains("plan") && lower.contains("premium") && amounts_in(line).is_empty() {
-                let mut found: Vec<(usize, String)> = COLS
-                    .iter()
-                    .filter_map(|(c, r)| {
-                        Regex::new(r)
-                            .ok()?
-                            .find(line)
-                            .map(|m| (m.start(), c.to_string()))
-                    })
-                    .collect();
-                found.sort();
-                cols = found.into_iter().map(|(_, c)| c).collect();
-            }
-        }
-        last_text = line.to_string();
-    }
-    out
+            })
+        })
+        .collect()
 }
 
-/// The plan by the user's rule: the plan they chose by name; else the cheapest plan whose named cover is at least the
+/// The plan by the user's rule: the plan they chose (its listed name, exactly); else the cheapest plan whose named cover is at least the
 /// minimum, else the cheapest. The second value says which rule picked it.
 pub fn pick_plan<'a>(
     plans: &'a [Plan],
     minimum: &Option<(String, f64)>,
     chosen: &str,
 ) -> Option<(&'a Plan, String)> {
-    if !chosen.is_empty() {
-        let c = chosen.to_lowercase();
-        if let Some(p) = plans
-            .iter()
-            .find(|p| p.name.to_lowercase() == c)
-            .or_else(|| plans.iter().find(|p| c.contains(&p.name.to_lowercase())))
-        {
-            return Some((p, "the plan you chose".to_string()));
-        }
+    // the plan the user chose: the name exactly as the choice card listed it (any case), never a word of it
+    if let Some(p) = plans
+        .iter()
+        .find(|p| !chosen.trim().is_empty() && p.name.eq_ignore_ascii_case(chosen.trim()))
+    {
+        return Some((p, "the plan you chose".to_string()));
     }
     let cheapest = |ps: &[&'a Plan]| {
         ps.iter().cloned().min_by(|a, b| {
@@ -1490,6 +1454,8 @@ pub fn pick_plan<'a>(
 pub struct VaultCard {
     pub id: String,
     pub label: String,
+    /// the catalog id kept with the card ("" when none)
+    pub card_id: String,
     /// added by its name only: number, expiry and CVC UNKNOWN
     pub name_only: bool,
 }
@@ -1497,7 +1463,7 @@ pub struct VaultCard {
 static VAULT_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^- id=(\S+) · (.+?) · card · ").unwrap());
 
-/// The cards in a `vault_list` result (a structured listing).
+/// The cards in a `vault_list` result (the tool's own listing, by its fixed fields).
 pub fn vault_cards(text: &str) -> Vec<VaultCard> {
     text.lines()
         .filter_map(|l| {
@@ -1508,32 +1474,34 @@ pub fn vault_cards(text: &str) -> Vec<VaultCard> {
                 .unwrap_or("")
                 .trim()
                 .to_string();
+            let card_id = l
+                .split(" · ")
+                .find_map(|p| p.strip_prefix("card_id="))
+                .filter(|id| *id != "none" && *id != "unchecked")
+                .unwrap_or("")
+                .to_string();
             Some(VaultCard {
                 id: c[1].to_string(),
                 label,
+                card_id,
                 name_only: l.contains("UNKNOWN"),
             })
         })
         .collect()
 }
 
-/// The card named in `names` (a tool argument: a word of its label in the name the model passed), else the first
-/// with its details, else the first.
+/// The card the tool argument names — exactly, by its Vault id, its catalog `card_id` or its whole label (any case) —
+/// else the first with its details, else the first. A name is never matched word by word.
 pub fn pick_card<'a>(cards: &'a [VaultCard], names: &[String]) -> Option<&'a VaultCard> {
-    let words = names.join(" ").to_lowercase();
     cards
         .iter()
         .find(|c| {
-            c.label
-                .split_whitespace()
-                .filter(|w| {
-                    w.len() >= 3
-                        && !matches!(
-                            w.to_lowercase().as_str(),
-                            "visa" | "card" | "mastercard" | "the"
-                        )
-                })
-                .any(|w| words.contains(&w.to_lowercase()))
+            names.iter().map(|n| n.trim()).any(|n| {
+                !n.is_empty()
+                    && (c.id == n
+                        || (!c.card_id.is_empty() && c.card_id == n)
+                        || c.label.eq_ignore_ascii_case(n))
+            })
         })
         .or_else(|| cards.iter().find(|c| !c.name_only))
         .or_else(|| cards.first())
@@ -1637,12 +1605,31 @@ fn review_gate(run: &[Value], ids: &Ids, after: usize, reason: String) -> Result
 }
 
 /// The last snapshot after position `after`: its text, or the step that takes one.
-fn snapshot_after(run: &[Value], ids: &Ids, after: usize) -> Result<String, Step> {
-    results_of(run, "browser_snapshot")
-        .last()
-        .filter(|(_, m)| pos(run, m) > after)
-        .map(|(_, m)| snapshot_text(m))
-        .ok_or_else(|| ids.one("browser_snapshot", json!({"max_chars": 6000})))
+/// The confirmation's reference after the hand-back at `after`: the spec's fixed element read on the page
+/// (`browser_read_elements`), its value in the spec's format; `None` when the page has no such element (not confirmed).
+fn reference_after(
+    run: &[Value],
+    ids: &Ids,
+    after: usize,
+    s: &ClaimSpec,
+) -> Result<Option<String>, Step> {
+    if s.ref_sel.is_empty() {
+        return Ok(None);
+    }
+    let (_, m) = results_of(run, "browser_read_elements")
+        .into_iter()
+        .rev()
+        .find(|(_, m)| pos(run, m) > after)
+        .ok_or_else(|| {
+            ids.one(
+                "browser_read_elements",
+                super::confirm::read_args(s.ref_sel),
+            )
+        })?;
+    Ok(crate::outcome::reference_in(
+        &super::confirm::element_values(m, super::confirm::REFERENCE),
+        s.ref_re,
+    ))
 }
 
 fn opened(run: &[Value], host: &str, path: &str) -> bool {
@@ -1650,17 +1637,6 @@ fn opened(run: &[Value], host: &str, path: &str) -> bool {
         let u = sget(a, "url");
         u.contains(host) && u.contains(path)
     })
-}
-
-/// The reference on a known confirmation page.
-fn reference_in(page: &str, ref_re: &str) -> Option<String> {
-    if ref_re.is_empty() {
-        return None;
-    }
-    Regex::new(ref_re)
-        .ok()
-        .and_then(|r| r.find(page).map(|m| m.as_str().to_string()))
-        .or_else(|| crate::outcome::refs_in(page).into_iter().next())
 }
 
 fn cron_at(d: NaiveDate) -> String {
@@ -1768,11 +1744,10 @@ fn next_csr(s: &ClaimSpec, args: &Value, run: &[Value], ids: &Ids, m: &Machine) 
         Ok(p) => p,
         Err(st) => return finish(st, &base),
     };
-    let page = match snapshot_after(run, ids, back) {
-        Ok(p) => p,
+    let reference = match reference_after(run, ids, back, s) {
+        Ok(r) => r,
         Err(st) => return st,
     };
-    let reference = reference_in(&page, s.ref_re);
     // the reminders: 7 days before the documents deadline, and a mail check every 10 days
     let Some(loss) = t.loss else {
         return Step::Done(csr_result(
@@ -2052,11 +2027,10 @@ fn next_sg_claim(
         Ok(p) => p,
         Err(st) => return finish(st, &base),
     };
-    let page = match snapshot_after(run, ids, back) {
-        Ok(p) => p,
+    let reference = match reference_after(run, ids, back, s) {
+        Ok(r) => r,
         Err(st) => return st,
     };
-    let reference = reference_in(&page, s.ref_re);
     let deadline_reminder = match (&reference, d.deadline()) {
         (None, Some(due)) if m.today <= due - Duration::days(5) => Some(due),
         _ => None,
@@ -2277,15 +2251,22 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
         Ok(p) => p,
         Err(st) => return finish(st, &base),
     };
-    // the plans the page lists, read from a snapshot after the quote
-    let (plan_text, plan_pos) = match results_of(run, "browser_snapshot")
+    // the plans the page lists, read from its table's cells after the quote
+    let (plans, plan_pos) = match results_of(run, "browser_read_elements")
         .iter()
         .find(|(_, x)| pos(run, x) > quote_pos)
     {
-        Some((_, x)) => (snapshot_text(x), pos(run, x)),
-        None => return ids.one("browser_snapshot", json!({"max_chars": 8000})),
+        Some((_, x)) => (
+            plans_in(&super::confirm::element_rows(x, "plans")),
+            pos(run, x),
+        ),
+        None => {
+            return ids.one(
+                "browser_read_elements",
+                json!({"read": [{"name": "plans", "sel": PLAN_ROWS, "cells": true}]}),
+            )
+        }
     };
-    let plans = plans_in(&plan_text);
     let minimum = match (s_arg(args, "cover"), n_arg(args, "cover_at_least")) {
         (c, Some(x)) if !c.is_empty() => Some((c, x)),
         _ => None,
@@ -2334,11 +2315,11 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
         return Step::Done(result);
     }
     // the plan's Select link, then the application
-    let clicked = results_of(run, "browser_click")
+    let opened_plan = results_of(run, "browser_navigate")
         .iter()
-        .any(|(a, x)| sget(a, "ref") == picked.link && pos(run, x) > plan_pos);
-    if !clicked {
-        return ids.one("browser_click", json!({"ref": picked.link}));
+        .any(|(a, x)| sget(a, "url") == picked.link && pos(run, x) > plan_pos);
+    if !opened_plan {
+        return ids.one("browser_navigate", json!({"url": picked.link}));
     }
     let base = {
         let mut b = result.clone();
@@ -2435,11 +2416,11 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
         Ok(p) => p,
         Err(st) => return finish(st, &base),
     };
-    let page = match snapshot_after(run, ids, back) {
-        Ok(p) => p,
+    let reference = match reference_after(run, ids, back, s) {
+        Ok(r) => r,
         Err(st) => return st,
     };
-    match reference_in(&page, s.ref_re) {
+    match reference {
         Some(p) => {
             must.push(format!(
                 "bought — you paid on FWD's page: policy number {p}; the documents come by email"

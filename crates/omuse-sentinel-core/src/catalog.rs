@@ -191,6 +191,11 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
         "按代码算好的填表计划填写已知表格（仅供 form_fill 调用）。Fill a known form from a plan computed in code (called by \
          form_fill only, never offered to the model): fills = [{op: text|select|radio|check|click, sel, value | vault}].",
         obj(json!({"fills": {"type": "array", "items": {"type": "object"}}}), &["fills"])));
+    add("browser_read_elements", tool("browser", "browse", "read", "low", "PUBLIC",
+        "按固定选择器读取已知页面的元素（仅供代码机器调用）。Read a known page's data by its HTML elements (called by the \
+         code machines with their fixed selectors, never offered to the model): read = [{name, sel, attr?, cells?}] → \
+         {elements: {name: [text | attribute | {cells, links}]}}.",
+        obj(json!({"read": {"type": "array", "items": {"type": "object"}}}), &["read"])));
     add("browser_fill_secret", tool("browser", "interact", "type", "high", "PUBLIC",
         "从保险箱填写证件号/会员号/信用卡（每次都要用户批准，你看不到实际内容）。Fill a value stored in the user's \
          vault (ID/passport number, membership number, credit card number/expiry/CVC, holder name) into an input \
@@ -704,7 +709,7 @@ mod tests {
     #[test]
     fn table_shape() {
         let t = builtin_tools();
-        assert_eq!(t.len(), 74); // 55 before the eight Drive tools, 63 before the travel tools (now seven); browser_search became web_search; 70 with news_search, 71 with cars_search, 73 with form_fill and browser_fill_form, 74 with browser_news_search
+        assert_eq!(t.len(), 75); // 75 with browser_read_elements; 55 before the eight Drive tools, 63 before the travel tools (now seven); browser_search became web_search; 70 with news_search, 71 with cars_search, 73 with form_fill and browser_fill_form, 74 with browser_news_search
         let keys: Vec<&String> = t.keys().collect();
         assert_eq!(keys[0], "gmail_search");
         assert_eq!(keys[keys.len() - 1], "phone_hangup");

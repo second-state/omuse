@@ -23,6 +23,7 @@ pub mod metrics;
 pub mod newsreport;
 pub mod outcome;
 pub mod pdfforms;
+pub mod places;
 pub mod prompts;
 pub mod routes;
 pub mod rt_api;

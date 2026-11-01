@@ -82,8 +82,6 @@ pub(crate) struct Inner {
     pub evidence: HashMap<String, Vec<Value>>,
     /// task_id -> sites whose remembered habits were shown
     pub site_noted: HashMap<String, HashSet<String>>,
-    /// task_id -> full tool results, newest last (outcome evidence)
-    pub tool_texts: HashMap<String, Vec<String>>,
     /// task_id -> seconds spent queued for a model slot
     pub llm_wait: HashMap<String, f64>,
     /// task_id -> sub-agent lanes handed out so far (`sub1`, `sub2`, …); seeded from the task's events, reserved
@@ -323,9 +321,12 @@ impl Runtime {
             .chain(super::driver::tool_schemas())
             .chain(super::apdt::tool_schemas())
             .chain(super::trains::tool_schemas())
+            .chain(super::flightstatus::tool_schemas())
             .find(|s| tool_name(s) == tool)
             .map(|s| s["function"]["parameters"].clone())
             .unwrap_or_else(|| json!({}));
+        // the profile's place fields (codes) for addresses saved without them: the model reads them once, as JSON
+        self.fill_places(task_id).await;
         let profile = self.machine_profile(catalog);
         let user_texts = super::driver::user_words(transcript);
         let today = self.user_today();
@@ -375,6 +376,8 @@ impl Runtime {
                 super::apdt::check(tool, &a, &cx)
             } else if super::trains::TOOLS.contains(&tool) {
                 super::trains::check(tool, &a, today)
+            } else if super::flightstatus::TOOLS.contains(&tool) {
+                super::flightstatus::check(tool, &a)
             } else {
                 super::booking::check(tool, &a, &cx)
             };
@@ -568,6 +571,15 @@ impl Runtime {
                     first: first(t, from, super::trains::PREFIX),
                 };
                 super::trains::next(tool, args, &t[from..], &m)
+            }
+            Machine::Workflow { tool, args, from }
+                if super::flightstatus::TOOLS.contains(&tool.as_str()) =>
+            {
+                let from = (*from).min(t.len());
+                let m = super::flightstatus::Machine {
+                    first: first(t, from, super::flightstatus::PREFIX),
+                };
+                super::flightstatus::next(tool, args, &t[from..], &m)
             }
             Machine::Workflow { tool, args, from }
                 if super::claims::TOOLS.contains(&tool.as_str()) =>
@@ -1063,16 +1075,6 @@ message to use as written) stays in that language. Output only the rewritten rep
         cat
     }
 
-    pub(crate) fn note_tool_text(&self, task_id: &str, content: &str) {
-        let mut inner = self.inner.lock();
-        let log = inner.tool_texts.entry(task_id.to_string()).or_default();
-        log.push(take_chars(content, 20000).to_string());
-        let n = log.len();
-        if n > 40 {
-            log.drain(..n - 40);
-        }
-    }
-
     // ================================================================ events
     /// Store a task event and publish it (`{"kind": "task_event", **event}`).
     pub async fn event(&self, task_id: &str, type_: &str, data: Value) {
@@ -1314,7 +1316,6 @@ message to use as written) stays in that language. Output only the rewritten rep
         {
             let mut inner = self.inner.lock();
             inner.evidence.remove(&task_id);
-            inner.tool_texts.remove(&task_id);
             inner.no_browser.remove(&task_id);
             inner.browser_skill.remove(&task_id);
             inner.skill_steps.remove(&task_id);
@@ -2161,6 +2162,8 @@ message to use as written) stays in that language. Output only the rewritten rep
                     && (goal || n != "goal_update")
                     // run by the form functions (crate::forms) with a plan computed in code, never by the model
                     && n != "browser_fill_form"
+                    // read by the code machines with their fixed selectors (a known page's elements)
+                    && n != "browser_read_elements"
                     && allow.is_none_or(|a| a.contains(&n))
             })
             .collect();
@@ -2450,7 +2453,6 @@ yourself; ask_bot is not available for it."
                 let content = self.format_external(&first.name, &result);
                 transcript
                     .push(json!({"role": "tool", "tool_call_id": first.id, "content": content}));
-                self.note_tool_text(task_id, &content);
                 let st = result
                     .get("status")
                     .cloned()
@@ -2594,7 +2596,8 @@ yourself; ask_bot is not available for it."
                                 || super::claims::TOOLS.contains(&tool_name(x))
                                 || super::driver::TOOLS.contains(&tool_name(x))
                                 || super::apdt::TOOLS.contains(&tool_name(x))
-                                || super::trains::TOOLS.contains(&tool_name(x))))
+                                || super::trains::TOOLS.contains(&tool_name(x))
+                                || super::flightstatus::TOOLS.contains(&tool_name(x))))
                             && super::news::offered(&transcript, tool_name(x))
                     })
                     .collect();
@@ -2640,6 +2643,7 @@ yourself; ask_bot is not available for it."
                 .or_else(|| super::workflow::active(&transcript, &super::driver::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::apdt::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::trains::TOOLS))
+                .or_else(|| super::workflow::active(&transcript, &super::flightstatus::TOOLS))
                 .map(|(from, tool, args)| Machine::Workflow { tool, args, from });
             let driven = match &machine {
                 Some(m) if !force_final => {
@@ -3049,9 +3053,10 @@ yourself; ask_bot is not available for it."
                 || super::workflow::active(&transcript, &super::news::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::claims::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::trains::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::flightstatus::TOOLS).is_some()
                 || workflow_reply.is_some();
             // the confirmation after a hand-back is read by code: a snapshot the model skipped is taken here, once,
-            // before the answer (the reference then comes from the page, `with_confirmation_ref`)
+            // before the answer (the model reads it and passes the reference as JSON, `confirm_reference`)
             if !final_.is_empty()
                 && asked.is_none()
                 && !handback_snapped
@@ -3088,8 +3093,11 @@ yourself; ask_bot is not available for it."
             // the facts the reply must carry (agent/facts.rs): the trusted code tools' `must_say` (a machine's result,
             // emergency_contacts, visa_rules, fx_convert, loan_payment …) and the run's structured facts — never read
             // from the reply's prose
+            // a Vault card without its catalog id: the model picks the row as a JSON choice, the facts read it
+            let mut fact_view = transcript.clone();
+            fact_view.extend(self.attach_card_ids(task_id, &transcript).await);
             let must = super::facts::run_facts(
-                &transcript,
+                &fact_view,
                 super::facts::Ctx {
                     zh: lg != "en",
                     scheduled: get_str(&t, "source") == "schedule",
@@ -3215,13 +3223,9 @@ yourself; ask_bot is not available for it."
             final_ = super::guards::with_masked_cards(&final_);
             // the answer's links, repaired against the links the run's results showed (crate::links)
             final_ = crate::links::repair_answer(&final_, &crate::links::seen(&transcript));
-            let texts = self.inner.lock().tool_texts.get(task_id).cloned();
-            let oc = crate::outcome::assess(
-                &self.store.events(task_id, 0)?,
-                &final_,
-                texts.as_deref(),
-                Some(&goal_text),
-            );
+            // the run's confirmed reference: a known site's machine result, or the model's `confirm_reference`
+            let confirmed = super::confirm::confirmed(&transcript);
+            let oc = crate::outcome::assess(&self.store.events(task_id, 0)?, confirmed.as_ref());
             if !arr(&oc, "missing").is_empty() {
                 self.event(
                     task_id,
@@ -3862,6 +3866,8 @@ pub fn compress_with(
                 || (id.starts_with(super::driver::PREFIX) && name == "gmail_get_message")
                 || super::trains::TOOLS.contains(&name.as_str())
                 || id.starts_with(super::trains::PREFIX)
+                || super::flightstatus::TOOLS.contains(&name.as_str())
+                || id.starts_with(super::flightstatus::PREFIX)
                 || super::apdt::TOOLS.contains(&name.as_str())
                 || (id.starts_with(super::apdt::PREFIX)
                     && matches!(name.as_str(), "gmail_get_message" | "files_read"))

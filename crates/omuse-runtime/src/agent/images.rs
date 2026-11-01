@@ -101,8 +101,7 @@ impl Runtime {
             return "ERROR: 需要 prompt（画面描述）prompt required.".into();
         }
         let mut prompt = ig::with_style(&prompt, a.get("style").unwrap_or(&Value::Null));
-        if sget(a, "background") == "transparent" && !prompt.to_lowercase().contains("transparent")
-        {
+        if sget(a, "background") == "transparent" {
             prompt += ", isolated on a transparent background"; // models that ignore the parameter still get the hint
         }
         let n = img_n(a, 1);

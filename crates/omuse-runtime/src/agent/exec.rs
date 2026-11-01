@@ -430,7 +430,8 @@ impl Runtime {
                 || super::claims::TOOLS.contains(&name)
                 || super::driver::TOOLS.contains(&name)
                 || super::apdt::TOOLS.contains(&name)
-                || super::trains::TOOLS.contains(&name))
+                || super::trains::TOOLS.contains(&name)
+                || super::flightstatus::TOOLS.contains(&name))
                 && crate::bots::has_tool(self.bot_of(t), name)
             {
                 // a workflow tool: its arguments checked by the JSON layer (repair, schema, the tool's field checks, the
@@ -529,6 +530,12 @@ times and is not made again.");
                         ok = false;
                     }
                 }
+            } else if name == super::confirm::CONFIRM_REFERENCE {
+                // an unknown site's confirmation reference: the model's JSON, checked against the pages read after
+                // the hand-back and recorded as model-read (agent/confirm.rs)
+                let r = super::confirm::record(transcript, &args);
+                ok = get_str(&r, "status") == "recorded";
+                content = r.to_string();
             } else if is_local(name) {
                 match self.local(t, name, &args).await {
                     Ok(c) => {
@@ -758,7 +765,6 @@ This is a bot-protection wall ({detail}), not the site's content; the site is no
                 }
             }
             transcript.push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
-            self.note_tool_text(&task_id, &content);
             let mut ev = json!({"call_id": call.id, "name": name, "ok": ok, "sub": sub, "preview": truncate(&content, 800)});
             if !mode.lane.is_empty() {
                 ev["lane"] = json!(mode.lane);
@@ -1207,16 +1213,19 @@ again: files_read (documents) or file_look (images, videos, audio, scanned PDFs)
             .to_string())
     }
 
-    /// browser_locate: find something on screen with vision alone (no DOM refs needed) — a coarse lettered grid,
-    /// then a numbered grid on a zoomed region, then a red marker the model must confirm. Returns x/y for browser_click_at.
+    /// browser_locate: find something on screen with vision alone (no DOM refs needed) — a coarse lettered grid, then
+    /// a numbered grid on a zoomed region, then a red marker. Every vision step is a JSON decision over choices code
+    /// lists (`Runtime::decide_on_picture`: a cell label or NONE, a cell number or NONE, `{"on_item": bool}`); code
+    /// computes the point from the choice (`agent/locate.rs`) and returns JSON with x/y for browser_click_at.
     async fn locate(&self, task_id: &str, call_id: &str, target: &str, shot: &Value) -> String {
+        use super::decide::Picture;
+        use super::locate::{Grid, NONE};
         let t = take_chars(target.trim(), 300).to_string();
         let target = if t.is_empty() {
             "the main chat button".to_string()
         } else {
             t
         };
-        let letters = "ABCDEFGHIJKL";
         let again = |extra_key: &'static str, extra: Value| {
             let target = target.clone();
             async move {
@@ -1236,115 +1245,155 @@ again: files_read (documents) or file_look (images, videos, audio, scanned PDFs)
                     } else {
                         "no screenshot".into()
                     };
-                    return Err(LlmError::Failed(why));
+                    return Err(why);
                 }
                 Ok(r)
             }
         };
-        let res: Result<(String, String, String, i64, i64, Value), LlmError> = async {
-            let vp = shot.get("viewport").cloned().unwrap_or_else(|| json!({}));
-            let vw = vp.get("width").and_then(omuse_common::util::as_f64).unwrap_or(1280.0);
-            let vh = vp.get("height").and_then(omuse_common::util::as_f64).unwrap_or(800.0);
-            let cols = shot.get("cols").and_then(omuse_common::util::as_i64).filter(|c| *c > 0).unwrap_or(8);
-            let rows = shot.get("rows").and_then(omuse_common::util::as_i64).filter(|c| *c > 0).unwrap_or(6);
-            let a1 = self.vision(task_id, &format!("You locate things on a screenshot of a web page for an AI agent. A magenta grid is drawn over it; every cell \
-has a label in its top-left corner: a column letter A–{} (left to right) and a row number \
-1–{} (top to bottom), e.g. C4. Reply with ONLY the label of the cell that contains the CENTER of the requested \
-item, e.g. C4. If the item is not visible, reply NONE.{}", &letters[(cols - 1).clamp(0, 11) as usize..(cols).clamp(1, 12) as usize], rows, UNTRUSTED),
-                &format!("Find: {}", target), &sget(shot, "image_b64"), &shot.get("image_type").map(py_str).unwrap_or_else(|| "image/jpeg".into()), 120).await?;
-            static CELL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([A-L])\s*([1-9]|1[0-2])\b").unwrap());
-            let up = a1.to_uppercase();
-            let m = CELL.captures(&up);
-            if m.is_none() || take_chars(&up, 8).contains("NONE") {
-                return Ok((a1, String::new(), String::new(), -1, -1, Value::Null));
-            }
-            let m = m.unwrap();
-            let c = letters.find(&m[1]).unwrap_or(0) as i64;
-            let r: i64 = m[2].parse::<i64>().unwrap_or(1) - 1;
-            let (c, r) = (c.min(cols - 1), r.min(rows - 1));
-            let (cw, ch) = (vw / cols as f64, vh / rows as f64);
-            let (mut x, mut y) = ((c as f64 + 0.5) * cw, (r as f64 + 0.5) * ch);
-            // zoom: the chosen cell plus half a cell around it, with a finer numbered grid
-            let region = vec![(c as f64 * cw - cw / 2.0).max(0.0), (r as f64 * ch - ch / 2.0).max(0.0), cw * 2.0, ch * 2.0];
-            let z = again("region", json!(region)).await?;
-            let reg: Vec<f64> = z.get("region").and_then(Value::as_array).map(|a| a.iter().filter_map(omuse_common::util::as_f64).collect())
-                .filter(|v: &Vec<f64>| v.len() == 4).unwrap_or(region);
-            let zc = z.get("cols").and_then(omuse_common::util::as_i64).filter(|c| *c > 0).unwrap_or(8);
-            let zr = z.get("rows").and_then(omuse_common::util::as_i64).filter(|c| *c > 0).unwrap_or(6);
-            let a2 = self.vision(task_id, &format!("This is a zoomed-in part of a web page with a magenta grid. The cells are numbered 1 to \
-{} (left to right, then top to bottom); the number is in each cell's top-left corner. Reply with ONLY the \
-number of the cell that contains the CENTER of the requested item, e.g. 17. If it is not in this picture, reply NONE.{}", zc * zr, UNTRUSTED),
-                &format!("Find: {}", target), &sget(&z, "image_b64"), &z.get("image_type").map(py_str).unwrap_or_else(|| "image/jpeg".into()), 120).await?;
-            static NUMB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(\d{1,3})\b").unwrap());
-            if let Some(n) = NUMB.captures(&a2).and_then(|c| c[1].parse::<i64>().ok()).filter(|n| (1..=zc * zr).contains(n)) {
-                let k = n - 1;
-                x = reg[0] + ((k % zc) as f64 + 0.5) * reg[2] / zc as f64;
-                y = reg[1] + ((k / zc) as f64 + 0.5) * reg[3] / zr as f64;
-            }
-            let (xi, yi) = (py_round(x), py_round(y));
-            // confirm: red marker on the point; the model must say it is on the item
-            let v = again("mark", json!([xi, yi])).await?;
-            let a3 = self.vision(task_id, &format!("A red circle with a crosshair marks one point on this web page. Is that point on the requested item, so that \
-clicking there would click it? Reply YES or NO first, then a few words about what is under the circle.{}", UNTRUSTED),
-                &format!("Item: {}", target), &sget(&v, "image_b64"), &v.get("image_type").map(py_str).unwrap_or_else(|| "image/jpeg".into()), 80).await?;
-            Ok((a1, a2, a3, xi, yi, v))
-        }.await;
-        let (a1, a2, a3, x, y, v) = match res {
-            Ok(r) => r,
-            Err(e) => return format!("ERROR: 视觉定位失败 visual locate failed: {}. Set a vision-capable model in Settings (Vision model), \
-or continue with browser_look / browser_find.", take_chars(&e.to_string(), 200)),
+        let mime = |v: &Value| {
+            v.get("image_type")
+                .map(py_str)
+                .unwrap_or_else(|| "image/jpeg".into())
         };
-        if x < 0 {
-            self.event(task_id, "vision", json!({"question": format!("locate: {}", target), "answer": truncate(&a1, 300), "marks": 0})).await;
-            return format!("NOT FOUND: the vision model does not see \"{}\" on the visible screen (answer: {}). \
-Scroll, wait for the page to finish loading, describe it differently, or use browser_look to see what is there.", target, truncate(&a1, 120));
-        }
+        let dim = |v: &Value, k: &str, d: i64| {
+            v.get(k)
+                .and_then(omuse_common::util::as_i64)
+                .filter(|c| *c > 0)
+                .unwrap_or(d)
+        };
+        let find = format!("Find: {target}");
+        // 1. the coarse grid over the viewport: which cell holds the item's centre
+        let vp = shot.get("viewport").cloned().unwrap_or_else(|| json!({}));
+        let grid = Grid {
+            x: 0.0,
+            y: 0.0,
+            w: vp
+                .get("width")
+                .and_then(omuse_common::util::as_f64)
+                .unwrap_or(1280.0),
+            h: vp
+                .get("height")
+                .and_then(omuse_common::util::as_f64)
+                .unwrap_or(800.0),
+            cols: dim(shot, "cols", 8).min(12),
+            rows: dim(shot, "rows", 6),
+        };
+        let labels = grid.labels();
+        let choices: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let img = sget(shot, "image_b64");
+        let m1 = mime(shot);
+        let cell = self
+            .decide_on_picture(
+                task_id,
+                &format!("You locate things on a screenshot of a web page for a program. A magenta grid is drawn over it; every cell has a \
+label in its top-left corner: a column letter (left to right) and a row number (top to bottom), e.g. C4. Pick the label of the cell \
+that contains the CENTER of the requested item, or NONE if the item is not visible. Answer with JSON only: {{\"choice\": \"<one of the choices>\"}}.{UNTRUSTED}"),
+                &find,
+                &Picture { b64: &img, mime: &m1 },
+                &choices,
+                NONE,
+            )
+            .await;
+        let Some(((mut x, mut y), region)) = grid.label_point(&cell) else {
+            self.event(
+                task_id,
+                "vision",
+                json!({"question": format!("locate: {}", target), "answer": cell, "marks": 0}),
+            )
+            .await;
+            return locate_reply(
+                &json!({"status": "not_found", "target": target,
+                "next": "Scroll, wait for the page to finish loading, describe the item differently, or use browser_look to see what is there."}),
+                "",
+            );
+        };
+        // 2. the zoomed region with a finer numbered grid: which cell holds it (NONE keeps the coarse point)
+        let zoom = match again("region", json!(region)).await {
+            Ok(z) => {
+                let reg: Vec<f64> = z
+                    .get("region")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(omuse_common::util::as_f64).collect())
+                    .filter(|v: &Vec<f64>| v.len() == 4)
+                    .unwrap_or_else(|| region.to_vec());
+                let zg = Grid {
+                    x: reg[0],
+                    y: reg[1],
+                    w: reg[2],
+                    h: reg[3],
+                    cols: dim(&z, "cols", 8),
+                    rows: dim(&z, "rows", 6),
+                };
+                let numbers = zg.numbers();
+                let choices: Vec<&str> = numbers.iter().map(String::as_str).collect();
+                let (zimg, m2) = (sget(&z, "image_b64"), mime(&z));
+                let zoom = self
+                    .decide_on_picture(
+                        task_id,
+                        &format!("This is a zoomed-in part of a web page with a magenta grid. The cells are numbered (left to right, then top to \
+bottom); the number is in each cell's top-left corner. Pick the number of the cell that contains the CENTER of the requested item, or \
+NONE if it is not in this picture. Answer with JSON only: {{\"choice\": \"<one of the choices>\"}}.{UNTRUSTED}"),
+                        &find,
+                        &Picture { b64: &zimg, mime: &m2 },
+                        &choices,
+                        NONE,
+                    )
+                    .await;
+                if let Some(p) = zg.number_point(&zoom) {
+                    (x, y) = p;
+                }
+                zoom
+            }
+            Err(e) => return locate_error(&e),
+        };
+        let (xi, yi) = (py_round(x), py_round(y));
+        // 3. a red marker on the point: is it on the item
+        let v = match again("mark", json!([xi, yi])).await {
+            Ok(v) => v,
+            Err(e) => return locate_error(&e),
+        };
+        let (vimg, m3) = (sget(&v, "image_b64"), mime(&v));
+        let on_item = self
+            .decide_flag_on_picture(
+                task_id,
+                &format!("A red circle with a crosshair marks one point on this web page. Say whether that point is on the requested item, so \
+that clicking there would click it. Answer with JSON only: {{\"on_item\": true}} or {{\"on_item\": false}}.{UNTRUSTED}"),
+                &format!("Item: {target}"),
+                &Picture { b64: &vimg, mime: &m3 },
+                "on_item",
+                false,
+            )
+            .await;
         let at_ = v.get("at").cloned().unwrap_or_else(|| json!({}));
-        let where_ = if truthy(at_.get("tag").unwrap_or(&Value::Null)) {
+        let mut under = json!({});
+        if truthy(at_.get("tag").unwrap_or(&Value::Null)) {
             let role = if truthy(at_.get("role").unwrap_or(&Value::Null)) {
                 sget(&at_, "role")
-            } else if truthy(at_.get("tag").unwrap_or(&Value::Null)) {
-                sget(&at_, "tag")
             } else {
-                "element".into()
+                sget(&at_, "tag")
             };
-            let frames = arr(&at_, "frames");
-            format!(
-                "{} \"{}\"{}",
-                role,
-                truncate(&sget(&at_, "name"), 80),
-                if frames.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        " inside iframe {}",
-                        frames.iter().map(py_str).collect::<Vec<_>>().join(" › ")
-                    )
-                }
-            )
-        } else {
-            "unknown element".into()
-        };
-        let yes = a3.trim().to_uppercase().starts_with("YES");
-        let flags = scan_injection(&a3);
-        self.event(task_id, "vision", json!({"question": format!("locate: {}", target), "marks": 0,
-            "answer": truncate(&format!("{} → {} → ({},{}) {} | {}", a1, a2, x, y, a3, where_), 800)})).await;
-        let head = if yes {
-            format!("FOUND \"{}\" at x={}, y={} (viewport pixels). Under that point: {}. Vision check: {}", target, x, y, where_, truncate(&a3, 160))
-        } else {
-            format!("UNSURE: best guess for \"{}\" is x={}, y={}, but the check says: {}. Under that point: {}.", target, x, y, truncate(&a3, 160), where_)
-        };
-        let tail = if yes {
-            format!(" → Click it with browser_click_at {{\"x\": {}, \"y\": {}}} (add text + submit=true to type into it and send).", x, y)
-        } else {
-            " → Describe the target more precisely and call browser_locate again, or use browser_look.".to_string()
-        };
-        format!(
-            "<untrusted_content source=\"vision locate\"{}>\n{}\n</untrusted_content>\n{}",
-            warn_attr(&flags),
-            head,
-            tail
+            under = json!({"element": role, "name": truncate(&sget(&at_, "name"), 80)});
+            let frames: Vec<String> = arr(&at_, "frames").iter().map(py_str).collect();
+            if !frames.is_empty() {
+                under["iframe"] = json!(frames.join(" › "));
+            }
+        }
+        self.event(
+            task_id,
+            "vision",
+            json!({"question": format!("locate: {}", target), "marks": 0,
+            "answer": format!("{cell} → {zoom} → ({xi},{yi}) on_item={on_item}")}),
         )
+        .await;
+        let mut out = json!({"status": if on_item { "found" } else { "unsure" }, "target": target, "x": xi, "y": yi,
+                             "cell": cell, "zoom_cell": zoom, "on_item": on_item, "under_point": under});
+        out["next"] = json!(if on_item {
+            format!("Click it with browser_click_at {{\"x\": {xi}, \"y\": {yi}}} (add text + submit=true to type into it and send).")
+        } else {
+            "The check says the point is not on the item: describe the target more precisely and call browser_locate again, or use browser_look.".to_string()
+        });
+        let flags = scan_injection(&sget(&under, "name"));
+        locate_reply(&out, &warn_attr(&flags))
     }
 
     /// gmail_save_attachment / drive_download: Sentinel returns the bytes; write them into workspace/<folder>
@@ -1665,4 +1714,20 @@ pub(crate) fn hand_over_button(result: &str) -> Option<String> {
         Regex::new(r#"^(?:DENIED by Sentinel|ERROR): [\s\S]*?"([^"\n]{1,60})" [^:\n]{0,80}: that click is the user's own"#).unwrap()
     });
     RE.captures(result).map(|c| c[1].to_string())
+}
+
+/// browser_locate's JSON result, in the untrusted envelope (the element under the point is the page's text).
+fn locate_reply(out: &Value, warn: &str) -> String {
+    format!(
+        "<untrusted_content source=\"vision locate\"{warn}>\n{}\n</untrusted_content>",
+        pyjson::dumps(out)
+    )
+}
+
+/// browser_locate when a screenshot could not be taken.
+fn locate_error(why: &str) -> String {
+    format!(
+        "ERROR: 视觉定位失败 visual locate failed: {}. Continue with browser_look / browser_find.",
+        take_chars(why, 200)
+    )
 }
