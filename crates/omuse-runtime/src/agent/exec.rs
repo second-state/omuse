@@ -173,10 +173,7 @@ impl Runtime {
                     .get("reason")
                     .filter(|r| truthy(r))
                     .or_else(|| res.get("error"));
-                format!(
-                    "DENIED by Sentinel: {}. 不要重试相同操作 Do not retry the same action; explain to the user or choose a different approach.",
-                    super::util::pystr_opt(why)
-                )
+                format!("DENIED by Sentinel: {}.", super::util::pystr_opt(why))
             }
             Some("approved") => {
                 let r = res
@@ -193,10 +190,7 @@ impl Runtime {
                     .or_else(|| res.get("reason").filter(|r| truthy(r)))
                     .map(py_str)
                     .unwrap_or_else(|| pyjson::py_repr(res));
-                format!(
-                    "ERROR: {}. 请分析原因并换一种方法 Diagnose the cause and try a different approach (e.g. take a new snapshot).",
-                    why
-                )
+                format!("ERROR: {}.", why)
             }
         }
     }
@@ -258,17 +252,17 @@ impl Runtime {
                 }
             }
             // an arrival card's defaults are typed by code: departure = arrival + 7 days, next city = the city the flight
-            // came from — the model's other value is replaced (the notes it used to get were ignored)
-            let mut typed_fix: Option<String> = None;
+            // came from — the model's other value is replaced, and the result carries the change as `input_fixed`
+            let mut input_fixed: Option<Value> = None;
             if name == "browser_type" {
                 let goal = get_str(t, "goal");
                 if let Some(v) = super::guards::departure_fix(transcript, &goal, call) {
-                    typed_fix = Some(format!(
-                        "departure date typed as {v} (arrival + 7 days, the user's default)"
-                    ));
+                    input_fixed = Some(json!({"text": v, "rule": "departure = arrival + 7 days"}));
                     args["text"] = json!(v);
                 } else if let Some(v) = super::guards::next_city_fix(transcript, call) {
-                    typed_fix = Some(format!("next city typed as {v} (the city the flight came from, the user's default)"));
+                    input_fixed = Some(
+                        json!({"text": v, "rule": "next city = the city the flight came from"}),
+                    );
                     args["text"] = json!(v);
                 }
             }
@@ -359,6 +353,7 @@ impl Runtime {
                 .or_else(|| apdt_face_guard(transcript, call))
                 .or_else(|| super::guards::takeover_before_fill_guard(transcript, call))
                 .or_else(|| super::guards::user_edit_guard(transcript, call))
+                .or_else(|| super::guards::web_budget_guard(transcript, call))
                 .or_else(|| {
                     let (st, tid) = (st.clone(), tid2.clone());
                     one_search_guard(move || st.events(&tid, 0).unwrap_or_default(), call)
@@ -375,30 +370,21 @@ impl Runtime {
                     search_order_guard(&goal, searched, call)
                 })
                 .or_else(|| host_guard(move || st.events(&tid2, 0).unwrap_or_default(), call));
-            // the softer checks never stop the call: what they found goes with its result as a note for the agent
-            // (the user's rule, 2026-10-30: auto-approve is the default, so only the hand-over and the Vault's
-            // secrets are hard stops)
-            let notes: Vec<String> = [
-                super::guards::form_fill_note(transcript, call),
-                arrival_ask_first_guard(transcript, &goal, call),
-                typed_fix.map(|f| format!("(fixed: {f})")),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
             let reread = if repeated.is_some() {
                 None
             } else {
                 reread_guard(transcript, call)
             };
             let mut content: String;
+            // a parked / for-sale domain the agent opened: set below, acted on after the result is recorded
+            let mut parked: Option<String> = None;
             let skill_off = if !super::runtime::browser_policy_allows(name) {
                 self.inner.lock().no_browser.get(&task_id).cloned()
             } else {
                 None
             };
             if let Some(skill) = skill_off {
-                content = format!("ERROR: 浏览器在这个任务里已关闭（技能 {skill} 只用自己的资料和数据工具）。The browser is off for this task: the {skill} skill answers from its own sheet and data tools (market_data, connectors). Answer from what you have and say which facts carry an older date.");
+                content = format!("ERROR: [browser_off] 浏览器在这个任务里已关闭（技能 {skill}）。 The browser is off for this task (the {skill} skill).");
                 ok = false;
                 refused = true;
                 self.audit(
@@ -444,17 +430,14 @@ impl Runtime {
                 .contains(&name)
             {
                 // 2026-10-04 V8-06: a 270-row CSV in one files_write call was cut off every time
-                content = "ERROR: 内容太长，参数被截断了，没有执行。请分几次写：每次不超过约 3000 字，第一次正常写，之后用 append=true 追加\
-（Notion 用 notion_append 分段追加）。\
- The content was too long and got cut off; nothing was written. Write it in parts of about 3,000 characters: \
-the first call normally, then append=true for the rest (notion_append for Notion).".to_string();
+                content = "ERROR: [arguments_cut] 内容太长，参数被截断了，没有执行（分段写入，每段约 3000 字）。 The content was too \
+long and the arguments were cut off; nothing was written (parts of about 3,000 characters go through).".to_string();
                 ok = false;
             } else if args.get("_unparsed").is_some() {
                 // 2026-10-04 V4-07: the model looped ("conference OR conference OR …"), the arguments weren't valid JSON, and
                 // gmail_search ran with no query at all — 50 unrelated emails, so the travel mails were "not found"
-                content = "ERROR: 这次调用的参数不是有效的 JSON（可能重复输出了同一个词或被截断），没有执行。请用简短、不重复的参数重新调用。\
- The arguments were not valid JSON (repeated words or cut off); the call was not run. Call it again \
-with short arguments and no repetition.".to_string();
+                content = "ERROR: [bad_arguments] 这次调用的参数不是有效的 JSON，没有执行。 The arguments were not valid JSON; the \
+call was not run.".to_string();
                 ok = false;
             } else if allow.is_some_and(|a| !a.contains(&name)) {
                 content = format!("ERROR: tool {} is not available to this agent.", name);
@@ -465,11 +448,11 @@ with short arguments and no repetition.".to_string();
                     .iter()
                     .map(|b| format!("{} ({})", b.id, b.name))
                     .collect();
-                content = if self.bot_of(t).is_main() {
-                    format!("ERROR: the tool {name} belongs to the bot(s) {}: hand the request over with ask_bot instead of answering yourself.", owners.join(", "))
-                } else {
-                    format!("ERROR: the tool {name} is not one of the {} bot's: it belongs to {}. Tell the user in one line which bot handles it.", self.bot_of(t).name, owners.join(", "))
-                };
+                content = format!(
+                    "ERROR: [other_bot] the tool {name} belongs to the bot(s) {}, not to the {} bot.",
+                    owners.join(", "),
+                    self.bot_of(t).name
+                );
                 ok = false;
                 refused = true;
             } else if REMAKE_TOOLS.contains(&name)
@@ -482,10 +465,8 @@ with short arguments and no repetition.".to_string();
                     .unwrap_or(0)
                     >= REMAKE_MAX
             {
-                content = format!("ERROR: 这个文件已经生成了 {REMAKE_MAX} 次，不再重做。现在用 send_file 发给用户（图表已在对话里）并写最终回答；\
-如需修改请在回答里说明。\
- This file was already made {REMAKE_MAX} times: stop remaking it. Send it with send_file (charts are already \
-in the chat) and write the final answer.");
+                content = format!("ERROR: [remade] 这个文件已经生成了 {REMAKE_MAX} 次，不再重做。 This file was already made {REMAKE_MAX} \
+times and is not made again.");
                 ok = false;
                 refused = true;
             } else if DRY_RUN_LOCAL.contains(&name) && get_str(t, "source") == "golden" {
@@ -514,8 +495,7 @@ in the chat) and write the final answer.");
                                 *e
                             };
                             if n >= 2 {
-                                content += &format!("\n（第 {n} 次生成同一个文件。内容已经可以用了就不要再重做，直接 send_file 并结束。）\
-(Made {n} times. If it is good enough, don't redo it: send it and finish.)");
+                                content += &format!("\n{{\"made_times\": {n}}}");
                             }
                         }
                     }
@@ -534,11 +514,8 @@ in the chat) and write the final answer.");
                 && !site_blocked(transcript, &sget(&args, "url")).is_empty()
             {
                 let blocked = site_blocked(transcript, &sget(&args, "url"));
-                content = format!("ERROR: [SITE BLOCKED site={blocked}] 这个网站之前已经拦截了自动浏览器，换网址也一样，不再重试。\
-请换一个有同样信息的来源（例如订餐厅：Google 地图、Chope、TableCheck、餐厅官网），\
-或者如果一定要用这个网站，调用 browser_request_takeover 请用户自己通过验证。\
- {blocked} already blocked automated browsing in this task; other URLs on it will be blocked too. \
-Use another source, or browser_request_takeover if this exact site is essential.");
+                content = format!("ERROR: [SITE BLOCKED site={blocked}] 这个网站在本任务里已经拦截了自动浏览器，不再打开。 {blocked} already \
+blocked automated browsing in this task; it is not opened again.");
                 ok = false;
             } else if let Some(m) = form_msg.take() {
                 content = m;
@@ -579,8 +556,7 @@ Use another source, or browser_request_takeover if this exact site is essential.
                 }
                 if mode.batch && !sub && truthy(res.get("needs_approval").unwrap_or(&Value::Null)) {
                     // the user's approval dialog can only wait on a call the task is suspended on: ask for it again alone
-                    res = json!({"status": "denied", "reason": "这个调用需要用户审批，不能和同一轮的其他调用并行执行：下一轮单独调用它（那一轮只放这一个调用），审批对话框才会弹出。\
- This call needs the user's approval, so it cannot run beside the other calls of this turn: call it again on its own next turn (the only call in that turn) and the approval dialog will open."});
+                    res = json!({"status": "denied", "reason": "[needs_approval_alone] 这个调用需要用户审批，不能和同一轮的其他调用并行执行。 This call needs the user's approval and cannot run beside the other calls of a turn"});
                 }
                 let st = sget(&res, "status");
                 if st == "approval_required" && !sub {
@@ -644,6 +620,11 @@ Use another source, or browser_request_takeover if this exact site is essential.
                     }
                 }
                 let st = sget(&res, "status");
+                if let (Some(f), Some(r)) = (input_fixed.take(), res.get_mut("result")) {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("input_fixed".into(), f);
+                    }
+                }
                 let result_obj = res.get("result").filter(|r| r.is_object()).cloned();
                 content = match (name, st == "ok", &result_obj) {
                     ("browser_look", true, Some(r)) => {
@@ -673,32 +654,10 @@ Use another source, or browser_request_takeover if this exact site is essential.
                     if let Some(r0) = &result_obj {
                         let (u, ti, sn) =
                             (sget(r0, "url"), sget(r0, "title"), sget(r0, "snapshot"));
-                        let mut hint = refusal_hint(
-                            &u,
-                            &ti,
-                            take_chars(&sn, 3000),
-                            name != "browser_navigate",
-                        );
-                        if name == "browser_navigate" && hint.is_empty() {
-                            hint = deep_link_hint(&sget(&args, "url"), &u, &ti);
-                        }
-                        if hint.is_empty() && name == "browser_navigate" {
-                            hint = parked_domain_hint(&u, &ti, &sn);
-                        }
-                        if hint.is_empty() {
-                            hint = product_page_hint(&u, &sget(t, "goal"));
-                            let mut inner = self.inner.lock();
-                            let seen_h = inner.product_hinted.entry(task_id.clone()).or_default();
-                            if !hint.is_empty() && seen_h.contains(&u) {
-                                hint = String::new(); // once per product page, not after every click on it
-                            } else if !hint.is_empty() {
-                                seen_h.insert(u.clone());
-                            }
-                        }
-                        if !hint.is_empty() {
-                            content = format!("{}\n{}", hint, content);
-                        }
                         let nurl = if u.is_empty() { sget(&args, "url") } else { u };
+                        if name == "browser_navigate" && super::guards::parked_domain(&ti, &sn) {
+                            parked = Some(nurl.clone());
+                        }
                         let note = self.site_note(&task_id, &nurl).await;
                         if !note.is_empty() {
                             content = format!("{}\n{}", note, content);
@@ -726,11 +685,8 @@ Use another source, or browser_request_takeover if this exact site is essential.
                     };
                     let site = site_brand(&u);
                     let detail = super::util::pystr_opt(blk.get("detail"));
-                    content = format!("[SITE BLOCKED site={site}] 这个页面是反机器人拦截页（{detail}），不是网站的真实内容。\
-整个网站都会拦截自动浏览器：不要再换网址重试。改用其他有同样信息的来源；\
-如果一定要用这个网站，调用 browser_request_takeover，请用户自己完成验证后再继续。不要尝试破解验证码。\
- This is a bot-protection wall ({detail}), not the site's content. Do not retry other URLs \
-on this site; switch to another source, or request a takeover if this site is essential.\n{content}");
+                    content = format!("[SITE BLOCKED site={site}] 这个页面是反机器人拦截页（{detail}），不是网站的真实内容；整个网站在本任务里不再打开。 \
+This is a bot-protection wall ({detail}), not the site's content; the site is not opened again in this task.\n{content}");
                     ok = false;
                     self.event(
                         &task_id,
@@ -757,9 +713,6 @@ on this site; switch to another source, or request a takeover if this site is es
                     ids.extend(IDS.find_iter(&content).map(|m| m.as_str().to_string()));
                 }
             }
-            for n in &notes {
-                content = format!("{content}\n\n(System note) {n}");
-            }
             transcript.push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
             self.note_tool_text(&task_id, &content);
             let mut ev = json!({"call_id": call.id, "name": name, "ok": ok, "sub": sub, "preview": truncate(&content, 800)});
@@ -774,6 +727,29 @@ on this site; switch to another source, or request a takeover if this site is es
             // the last click of a purchase, booking or submission is the user's (Sentinel `hand_over_click`): the page
             // is handed over here, in code, instead of trusting the model to call browser_request_takeover after the
             // refusal (travel_flight_real 2026-10-30: "The payment click was blocked by Sentinel, so I did not retry")
+            // a parked / for-sale domain: code searches for the company's official site and opens it (2026-10-04 V3-07)
+            if !sub {
+                if let Some(url) = parked.take() {
+                    if let Some(real) = self.official_site(&task_id, &url).await {
+                        let tc = ToolCall {
+                            id: format!("{}_official", call.id),
+                            name: "browser_navigate".into(),
+                            args: json!({"url": real}),
+                        };
+                        self.event(
+                            &task_id,
+                            "parked_domain",
+                            json!({"parked": url, "official": tc.args["url"]}),
+                        )
+                        .await;
+                        transcript.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": tc.id, "type": "function",
+                            "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+                        return self
+                            .exec_call(t, &tc, transcript, catalog, remaining, allow, mode)
+                            .await;
+                    }
+                }
+            }
             if !sub {
                 if let Some(button) = hand_over_button(&content) {
                     let tc = ToolCall {
@@ -793,6 +769,45 @@ on this site; switch to another source, or request a takeover if this site is es
             }
             Ok(CallOutcome { ok, refused })
         })
+    }
+
+    /// The official site behind a parked / for-sale domain the agent guessed (`guards::parked_domain`): one web search
+    /// for "<brand> official site", and the first result on another domain. `None` when nothing came back.
+    async fn official_site(&self, task_id: &str, parked_url: &str) -> Option<String> {
+        let brand = site_brand(parked_url);
+        if brand.chars().count() < 3 {
+            return None;
+        }
+        let res = self
+            .sentinel(
+                "POST",
+                "/internal/act",
+                Some(json!({"task_id": task_id, "call_id": format!("parked-{brand}"), "tool": "web_search",
+                    "args": {"query": format!("{brand} official site")}, "no_ask": true})),
+                120.0,
+            )
+            .await
+            .ok()?;
+        if sget(&res, "status") != "ok" {
+            return None;
+        }
+        fn urls(v: &Value, out: &mut Vec<String>) {
+            match v {
+                Value::Object(m) => {
+                    if let Some(u) = m.get("url").and_then(Value::as_str) {
+                        if u.starts_with("http") {
+                            out.push(u.to_string());
+                        }
+                    }
+                    m.values().for_each(|x| urls(x, out));
+                }
+                Value::Array(a) => a.iter().for_each(|x| urls(x, out)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        urls(res.get("result").unwrap_or(&Value::Null), &mut found);
+        found.into_iter().find(|u| site_brand(u) != brand)
     }
 
     /// browser_look: hand the labelled screenshot to the vision model; the agent only gets the text answer.

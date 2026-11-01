@@ -243,8 +243,7 @@ impl Runtime {
         let me = self.bot_of(t);
         if !me.is_main() {
             return Err(format!(
-                "ERROR: only the main bot hands requests to other bots; you are the {} bot. Answer with your own \
-skills, or say which bot the user should ask.",
+                "ERROR: [other_bot] only the main bot hands requests to other bots; this is the {} bot.",
                 me.name
             ));
         }
@@ -256,13 +255,13 @@ skills, or say which bot the user should ask.",
         let want = sget(args, "bot").trim().to_lowercase();
         let Some(bot) = bots::get(&want).filter(|b| !b.is_main()) else {
             return Err(format!(
-                "ERROR: unknown bot {want:?}. Use one of: {}.",
+                "ERROR: [unknown_bot] unknown bot {want:?}; the bots are {}.",
                 ids.join(", ")
             ));
         };
         let question = sget(args, "question").trim().to_string();
         if question.is_empty() {
-            return Err("ERROR: question is empty: give the user's request in full, with what the bot needs from this conversation.".into());
+            return Err("ERROR: [empty_question] question is empty.".into());
         }
         let parent_conv = get_str(t, "conv_id");
         let parent_tid = get_str(t, "id");
@@ -275,7 +274,7 @@ skills, or say which bot the user should ask.",
                 .is_some_and(|c| get_str(&c, "bot_id") == bot.id);
             if !ok {
                 return Err(format!(
-                    "ERROR: {cid} is not a conversation of the {} bot. Leave conversation_id out to start a new one.",
+                    "ERROR: [other_conversation] {cid} is not a conversation of the {} bot.",
                     bot.name
                 ));
             }

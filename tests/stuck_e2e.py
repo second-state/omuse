@@ -74,7 +74,9 @@ check("no give-up when the switch made progress", not any(e["type"] == "gave_up"
 # ---------------------------------------------------------------- 3. prompt-cache friendliness (0.2.23)
 calls = httpx.get("http://127.0.0.1:8090/calls_for", params={"marker": "SWITCHSRC"}, timeout=10).json()
 # the chat-title call and the main bot's router (agent/bots.rs `route`) are not steps
-calls = [x for x in calls if not str(x.get("system", "")).startswith(("You name conversations", "## Route"))]
+# … nor the small JSON calls that read an answer (the classifier, the answer review) or extract facts
+calls = [x for x in calls if not str(x.get("system", "")).startswith(("You name conversations", "## Route", "You classify an assistant",
+                                                                      "You check an assistant", "Read the booking emails"))]
 systems = {x["system"] for x in calls}
 check("system prompt identical on every step (model server can reuse its cache)", len(calls) >= 4 and len(systems) == 1,
       (len(calls), len(systems)))
@@ -105,8 +107,10 @@ check("5th remake of the same file is refused", len(res) == 6 and all(r["ok"] fo
 # ---------------------------------------------------------------- 5. tool-call markup never becomes the answer (0.2.23)
 c.put(B + "/api/settings", json={"max_steps": 3}, headers=H).raise_for_status()
 t = run("MARKUPFINAL 查一下特斯拉的财报")
-check("raw <tool_call> text in a final answer is dropped and the model is asked again",
-      (t.get("result") or "").startswith("MARKUP FIXED") and "<tool_call>" not in (t.get("result") or ""), t.get("result"))
+# the code-side outcome: no tool-call markup reaches the user; the task ends with a plain answer
+check("raw <tool_call> text never becomes the final answer (the task completes with plain text)",
+      t["status"] == "COMPLETED" and bool((t.get("result") or "").strip()) and "<tool_call>" not in (t.get("result") or "")
+      and "<function=" not in (t.get("result") or ""), (t["status"], t.get("result")))
 c.put(B + "/api/settings", json={"max_steps": s0.get("max_steps", 30)}, headers=H)
 print("ALL PASS" if not fails else f"{len(fails)} FAILED: {fails}")
 sys.exit(1 if fails else 0)

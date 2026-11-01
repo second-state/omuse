@@ -225,10 +225,12 @@ def write_files(folder: str) -> dict[str, str]:
 
 async def type_card(u, request: str) -> None:
     """In the browser view the user takes over and types their card number into the focused Card Number field with the
-    view's text box, presses the view's Tab button twice (to Validity Period) and types the expiry, as the request asks."""
+    view's text box, presses the view's Tab button twice (to Validity Period) and types the expiry. What the user does
+    follows the page in front of them (the refund page, where the card goes), never the words of the request."""
     pg = u.page
-    print(f"INFO takeover request: {request!r} url {await u.view_url()!r}")
-    if not re.search(r"card", request, re.I):
+    url = await u.view_url()
+    print(f"INFO takeover request: {request!r} url {url!r}")
+    if "apdt_refund" not in url:
         return
     await u.take_over()
     box = pg.locator(".bview input[type=text]:not(.url)")

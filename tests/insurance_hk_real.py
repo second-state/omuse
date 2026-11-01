@@ -44,8 +44,9 @@ MAIL = [
 
 
 def no_send(dialog: str) -> bool:
-    """The user asked for a draft: they would deny sending the email (auto-approve covers only the browser)."""
-    yes = not re.search(r"send|reply|forward", dialog, re.I)
+    """The user asked for a draft: they deny a dialog about sending mail, by the tool it names (auto-approve covers only
+    the browser)."""
+    yes = U.tool_of(dialog) not in U.MAIL_SEND_TOOLS
     print(f"INFO approval dialog ({'approve' if yes else 'DENY'}): {dialog[:300]}")
     return yes
 

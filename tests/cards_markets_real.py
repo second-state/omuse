@@ -25,8 +25,6 @@ from tests import cards_common as C  # noqa: E402
 from tests import user_common as U  # noqa: E402
 from tests.user_common import check  # noqa: E402
 
-ASKS_CARDS = re.compile(r"(which|what)[^?\n]{0,80}cards?[^?\n]{0,80}\?|cards?[^?\n]{0,60}(do you (hold|have)|you (hold|have))"
-                        r"|(tell|let) me[^.\n]{0,80}cards?|(list|name) (the |your )?cards", re.I)
 SG = re.compile(r"S\$\s?\d|SGD\s?\d|\d[\d,.]*\s?SGD", re.I)
 HK = re.compile(r"HK\$\s?\d|HKD\s?\d|\d[\d,.]*\s?HKD", re.I)
 SG_C = re.compile(r"singapore|\bSG\b", re.I)
@@ -38,10 +36,12 @@ async def main():
         # 1. no cards yet: the bot asks once
         a = await u.ask("Which of my credit cards should I use for a S$180 dinner at a restaurant in Singapore?", label="ask")
         check("ask: answered by the Credit cards bot (its link in the answer)", "Credit cards" in a.bot_link, a.bot_link)
-        check("ask: with no cards on file the answer asks which cards the user holds", bool(ASKS_CARDS.search(a.text)), a.text[:600])
-        wants_no = re.search(r"(send|give|share|provide|tell me|type)[^.?\n]{0,40}\bnumbers?\b", a.text, re.I)
-        says_not = re.search(r"(don't|don’t|do not|never|no need|not)[^.\n]{0,60}\bnumbers?\b", a.text, re.I)
-        check("ask: no card number is asked for", not wants_no or bool(says_not), a.text[:600])
+        # with no cards on file the bot asks (a choice card, or an answer that comes with no takeover, no approval and
+        # no pick made from the Vault): state, never the words of the question
+        asked0 = await u.choices()
+        check("ask: with no cards on file the first turn asks (a choice card, or an answer with no takeover and no approval)",
+              bool(a.text.strip() or asked0) and not a.takeovers and not a.approvals and not a.timed_out, (a.takeovers, a.approvals, a.text[:300]))
+        check("ask: no card number in the question", not C.CARD_NO.search(a.text + " " + U.choice_text(asked0)), a.text[:300])
 
         # 2. the user answers in the same chat
         a = await u.ask("I have a DBS Altitude Visa Signature and a UOB One card, both issued in Singapore, and an HSBC Red Credit Card "
@@ -53,7 +53,8 @@ async def main():
         check("cards: the catalog's date (August 2026)", bool(C.CATALOG_DATE.search(a.text)), a.text[-900:])
         check("cards: the Singapore rows are said to be unverified (or were verified on the issuer's page, with the date)",
               bool(re.search(r"unverified|not (been )?verified|seed|verify (them|it|these|the)|verified on|issuer'?s (page|site)", a.text, re.I)), a.text[-900:])
-        check("cards: the question is not asked again", not ASKS_CARDS.search(a.text), a.text[:600])
+        check("cards: the question is not asked again (no second choice card, no takeover, no approval)",
+              len(await u.choices()) == len(asked0) and not a.takeovers and not a.approvals, (len(asked0), a.takeovers, a.approvals))
         check("cards: no card number in the answer", not C.CARD_NO.search(a.text), a.text[:300])
         # cards named in the chat are saved when the request ends (memory extraction, a few seconds after the answer):
         # the user looks at the Memory page, and again a little later

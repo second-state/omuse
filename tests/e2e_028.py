@@ -137,14 +137,17 @@ check("en: planner told to plan in English", (t.get("plan") or {}).get("objectiv
 check("en: setting wins over a Chinese request", "SYS_CJK=0" in res)
 
 # the model answers in Chinese anyway (memory says the user likes Chinese) -> OMuse asks once for an English rewrite
+cjk = lambda x: any("一" <= ch <= "鿿" for ch in x or "")   # noqa: E731
 r = c.post(B + "/api/chat", json={"message": "ZHANSWER 帮我看看最重要的邮件"}, headers=H).json()
 t = wait(r["task_id"])
-check("en: a Chinese final answer is rewritten in English", (t.get("result") or "").startswith("Here is the most important email")
-      and any(e["type"] == "language_fixed" for e in t["events"]), t.get("result"))
+# the code-side outcome: the language_fixed event, and the answer the user gets holds no Chinese
+check("en: a Chinese final answer is fixed to English (language_fixed event; no Chinese in the result)",
+      any(e["type"] == "language_fixed" for e in t["events"]) and bool((t.get("result") or "").strip()) and not cjk(t.get("result")), t.get("result"))
 c.put(B + "/api/settings", json={"language": "zh"}, headers=H)
 r = c.post(B + "/api/chat", json={"message": "ZHANSWER 帮我看看最重要的邮件"}, headers=H).json()
 t = wait(r["task_id"])
-check("zh: Chinese answers are left alone", (t.get("result") or "").startswith("最重要的邮件"), t.get("result"))
+check("zh: Chinese answers are left alone (no language_fixed event; the result is Chinese)",
+      not any(e["type"] == "language_fixed" for e in t["events"]) and cjk(t.get("result")), t.get("result"))
 
 # 0.2.29: Settings → Reply language = "match": each request is answered in the language it was written in
 c.put(B + "/api/settings", json={"language": "zh", "reply_language": "match"}, headers=H)

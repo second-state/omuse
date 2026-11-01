@@ -76,8 +76,10 @@ while time.time() - t0 < 120:
     if t["status"] in ("COMPLETED", "FAILED", "CANCELLED"):
         break
     time.sleep(0.5)
-check("web budget nudge ends a search loop", t["status"] == "COMPLETED" and (t.get("result") or "").startswith("WRAPPED after 18"),
-      (t["status"], t.get("result")))
+searches = [e for e in t.get("events", []) if e["type"] == "tool_call" and e["data"].get("name") == "web_search"]
+# the code-side outcome: the loop ended at the web budget (guards.rs WEB_NUDGE = 18 web calls) with an answer
+check("the web budget ends a search loop (at most 18 web searches, then the task completes)",
+      t["status"] == "COMPLETED" and 1 <= len(searches) <= 18 and bool((t.get("result") or "").strip()), (t["status"], len(searches), t.get("result")))
 # 0.2.37: figures that no tool produced are sent back for recomputation once
 r = c.post(B + "/api/chat", json={"message": "NUMCHECK coffee savings"}, headers=H).json()
 t0 = time.time()
@@ -87,8 +89,9 @@ while time.time() - t0 < 60:
         break
     time.sleep(0.5)
 ev = [e for e in t.get("events", []) if e["type"] == "number_check"]
-check("made-up figures sent back once", t["status"] == "COMPLETED" and (t.get("result") or "").startswith("FIXED")
-      and ev and ev[0]["data"]["unsupported"] == ["17,016.64"], (t["status"], t.get("result"), ev))
+# the code-side outcome: the number check caught the made-up figure once, and it is not in the answer the user gets
+check("made-up figures caught once (number_check event) and gone from the answer", t["status"] == "COMPLETED"
+      and ev and ev[0]["data"]["unsupported"] == ["17,016.64"] and "17,016.64" not in (t.get("result") or ""), (t["status"], t.get("result"), ev))
 r = c.post(B + "/api/chat", json={"message": "CTXTEST read three big files"}, headers=H).json()
 t0 = time.time()
 while time.time() - t0 < 60:

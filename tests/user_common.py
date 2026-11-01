@@ -1,10 +1,12 @@
 """Shared driver for the real-model e2e suites, from the user's point of view (`tests/run_in_docker.sh real`).
 
-The rule: a real-model suite does what the user does and checks only what the user can see — never what happens inside
-the system (no tool calls, arguments, events, skills, approval records, logs or internal APIs in a check). What the user
-sees is the web UI (the chat, the answer, its links and file cards, the approval dialogs and what they say, a request
-to take over the browser, the browser view), the files they download, and their own accounts and the sites they use
-(the mailbox, Drive, a website's page).
+The rule: a real-model suite does what the user does and checks facts and state — never the model's words to decide or
+to verify a step (CLAUDE.md, "Skills: code decides": no natural language from the model anywhere in a decision flow).
+A check reads the answer's FACTS (a reference number, a date, an amount, a link, a file) or the WORLD: the web UI (the
+approval dialog's tool, a takeover card, the browser view's address, choice cards, file cards), the files the user
+downloads, their accounts and the sites they use (the mailbox, Drive, a website's page), and the task's record (its
+events: tool calls by name, choices, takeovers; its status). Nothing in a suite reads a sentence the model wrote to
+pick the next step or to say a step was taken.
 
 The world is set up first like any user's install (mail in the local IMAP server, the calendar, Drive, the Vault, the
 profile, Settings → Models pointed at the real model through tests/model_proxy.py); then a headless browser opens the
@@ -43,9 +45,20 @@ APP = B + "/"
 check = T.check
 SUITE = os.path.splitext(os.path.basename(sys.argv[0]))[0]
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
-# an answer that asks the user to take over the browser (its card follows)
-TAKEOVER_ASK = re.compile(r"take over the browser|#browser/|接管浏览器", re.I)
 PRICE = re.compile(r"(US\$|S\$|HK\$|NT\$|A\$|\$|USD|SGD|JPY|¥|€|£)\s?\d[\d,]*")
+# the tools an approval dialog can be about that send something in the user's name (the user who asked for drafts
+# denies these; see `tool_of`)
+MAIL_SEND_TOOLS = frozenset({"gmail_send", "gmail_reply", "gmail_forward", "slack_send_message"})
+# the tool calls that mean the agent asked the user into the browser (a takeover card follows in the chat)
+TAKEOVER_CALLS = frozenset({"browser_request_takeover"})
+TAKEOVER_EVENTS = frozenset({"takeover", "takeover_requested", "auto_handover"})
+# the tool calls that write into a web form (the agent filled something before answering)
+FORM_CALLS = frozenset({"browser_fill_form", "browser_type", "browser_fill_secret", "browser_click", "browser_click_at", "browser_upload"})
+
+
+def tool_of(dialog: str) -> str:
+    """The tool an approval dialog is about: `User.ask` puts it first in the dialog's text ("gmail_send 🛡 …")."""
+    return (dialog.split() or [""])[0]
 
 if not T.REAL:
     print(f"{SUITE} needs a real model (OMUSE_E2E_REAL=1, see tests/user_common.py)")
@@ -168,7 +181,11 @@ class User:
                 await pg.wait_for_timeout(500)   # the decision is on its way (its buttons are disabled): not a new dialog
                 continue
             if await modal.count():
-                txt = " ".join((await modal.first.inner_text()).split())
+                # the dialog's text starts with the tool it is about (the mono label in its title): a suite decides on
+                # the tool's name (`tool_of`), never on words in the body
+                mono = modal.first.locator(".ttl .mono")
+                tool = (await mono.first.text_content() or "").strip() if await mono.count() else ""
+                txt = (tool + " " + " ".join((await modal.first.inner_text()).split())).strip()
                 a.approvals.append(txt)
                 yes = approve(txt) if callable(approve) else approve
                 btn = modal.first.locator("button.btn.approve" if yes else "button.btn.danger")
@@ -210,14 +227,14 @@ class User:
             done = await pg.evaluate(
                 f"() => document.querySelectorAll('.msg.assistant:not(.live)').length > {before} && !document.querySelector('.msg.assistant.live')")
             if done:
-                # a message asking the user to take over can come a moment before its card: that is not the answer
-                # yet — wait for the card (up to 30 s), then carry on as the user
-                last_txt = await pg.locator(".msg.assistant:not(.live) .bubble").last.inner_text()
-                if TAKEOVER_ASK.search(last_txt) and await pg.locator(".sys-card.takeover").count() <= handled_takeovers:
-                    if waited_for_card < 30:
-                        waited_for_card += 1
-                        await pg.wait_for_timeout(1000)
-                        continue
+                # a message can come a moment before the takeover card it goes with: that is not the answer yet while
+                # the task is waiting for the user in the browser — wait for the card (up to 30 s), then carry on as
+                # the user (the task's state decides, never the message's words)
+                if await pg.locator(".sys-card.takeover").count() <= handled_takeovers and waited_for_card < 30 \
+                        and await self.takeover_pending():
+                    waited_for_card += 1
+                    await pg.wait_for_timeout(1000)
+                    continue
                 break
             await pg.wait_for_timeout(1000)
         else:
@@ -439,6 +456,114 @@ class User:
     async def thread_text(self) -> str:
         """Everything the open conversation shows: the messages and the cards, as text."""
         return " ".join((await self.page.locator(".msg").all_inner_texts()))
+
+    # ---------------------------------------------------------------- the task's record (state, never the model's words)
+    async def conv_id(self) -> str:
+        """The open conversation's id (the app's own state; "" before the first message)."""
+        try:
+            return await self.page.evaluate("() => (typeof S !== 'undefined' && S.conv) || ''") or ""
+        except Exception:   # noqa: BLE001 — a page in between views
+            return ""
+
+    async def tasks(self) -> list[dict]:
+        """The tasks run for the open conversation (the bots' child tasks included), newest last."""
+        return conv_tasks(await self.conv_id())
+
+    async def events(self) -> list[dict]:
+        """Every event of the open conversation's tasks (tool_call / tool_result / choices / handoff / auto_handover …),
+        the bots' child tasks included, in order."""
+        return [e for t in await self.tasks() for e in t.get("events", [])]
+
+    async def calls(self, *names: str) -> list[dict]:
+        """The tool calls of the open conversation's tasks, by name ({"name", "args", "call_id"}); all when no name."""
+        return tool_calls(await self.events(), *names)
+
+    async def takeover_happened(self) -> bool:
+        """The agent asked the user into the browser in this conversation (a takeover call or an automatic hand-over)."""
+        ev = await self.events()
+        return bool(tool_calls(ev, *TAKEOVER_CALLS)) or any(e.get("type") in TAKEOVER_EVENTS for e in ev)
+
+    async def takeover_pending(self) -> bool:
+        """A task of the open conversation is waiting for the user in the browser right now."""
+        return any(t.get("status") == "WAITING_EXTERNAL" or (t.get("waiting") or {}).get("type") in ("takeover", "takeover_requested")
+                   for t in await self.tasks())
+
+    async def choices(self) -> list[dict]:
+        """The choice cards the open conversation holds (present_choices, as structured data: {"question", "options":
+        [{"label", "details", …}], "kind", "verified"}), oldest first."""
+        return conv_choices(await self.conv_id())
+
+
+def conv_tasks(cid: str) -> list[dict]:
+    """The tasks of conversation `cid` with their events, the bots' child tasks (handoff events) included, in order."""
+    if not cid:
+        return []
+    try:
+        d = c.get(B + f"/api/conversations/{cid}").json()
+    except Exception:   # noqa: BLE001
+        return []
+    ids = [m["task_id"] for m in d.get("messages", []) if m.get("task_id")]
+    ids += list((d.get("tasks") or {}).keys())
+    out, seen = [], set()
+    queue = [i for i in ids if i]
+    while queue:
+        tid = queue.pop(0)
+        if tid in seen:
+            continue
+        seen.add(tid)
+        try:
+            t = c.get(B + f"/api/tasks/{tid}").json()
+        except Exception:   # noqa: BLE001
+            continue
+        if not isinstance(t, dict) or not t.get("id"):
+            continue
+        out.append(t)
+        for e in t.get("events", []):
+            if e.get("type") == "handoff" and (e.get("data") or {}).get("task_id"):
+                queue.append(e["data"]["task_id"])
+    out.sort(key=lambda t: str(t.get("created_at") or ""))
+    return out
+
+
+def tool_calls(events: list[dict], *names: str) -> list[dict]:
+    """The tool_call events' data ({"name", "args", "call_id"}) with one of `names` (all when none is given)."""
+    return [e.get("data") or {} for e in events
+            if e.get("type") == "tool_call" and (not names or (e.get("data") or {}).get("name") in names)]
+
+
+def conv_choices(cid: str) -> list[dict]:
+    """The choice and question cards of conversation `cid` as the app stores them (system messages of type "choices"
+    or "ask")."""
+    import json
+    if not cid:
+        return []
+    try:
+        msgs = c.get(B + f"/api/conversations/{cid}").json().get("messages", [])
+    except Exception:   # noqa: BLE001
+        return []
+    out = []
+    for m in msgs:
+        if m.get("role") != "system":
+            continue
+        try:
+            j = json.loads(m.get("content") or "")
+        except ValueError:
+            continue
+        # a choice card, or a question card (`ask_user`: the agent asked for named fields)
+        if isinstance(j, dict) and j.get("type") in ("choices", "ask"):
+            out.append(j)
+    return out
+
+
+def choice_text(cards: list[dict]) -> str:
+    """The questions, labels and details of choice cards, flattened (to look a value up, never to decide a step)."""
+    parts = []
+    for card in cards:
+        parts.append(str(card.get("question") or ""))
+        for o in card.get("options") or []:
+            parts.append(str(o.get("label") or ""))
+            parts.extend(str(d) for d in (o.get("details") or []))
+    return " ".join(parts)
 
 
 def mailbox(folder: str = "INBOX") -> list[dict]:

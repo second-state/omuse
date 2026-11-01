@@ -114,6 +114,56 @@ pub const CARDS: &[CardSpec] = &[
         user_steps: "answer the companion question and press Submit",
         ref_re: r"\bCN-ARC-[A-Z0-9-]{6,}\b",
     },
+    CardSpec {
+        skill: "jp-visit-japan-web",
+        name: "Visit Japan Web registration",
+        country: "Japan",
+        mail_words: "(Japan OR Tokyo OR NRT OR HND OR Osaka OR KIX OR Nagoya OR Fukuoka OR Sapporo)",
+        start_url: "https://vjw-lp.digital.go.jp/",
+        host: "vjw-lp.digital.go.jp",
+        // registered any time before the flight: no filing window
+        window_days: 0,
+        user_steps: "type the security check characters and press Register",
+        ref_re: r"\bJP-\d{4}-\d{4}\b",
+    },
+    CardSpec {
+        skill: "kh-arrival-card",
+        name: "Cambodia e-Arrival Card",
+        country: "Cambodia",
+        mail_words: "(Cambodia OR \"Phnom Penh\" OR PNH OR \"Siem Reap\" OR SAI OR REP)",
+        start_url: "https://arrival.gov.kh/",
+        host: "arrival.gov.kh",
+        window_days: 7,
+        user_steps: "type the CAPTCHA and press Submit",
+        ref_re: r"\bKH-EAC-\d{6,}\b",
+    },
+    CardSpec {
+        skill: "ph-etravel",
+        name: "Philippines eTravel registration",
+        country: "Philippines",
+        mail_words: "(Philippines OR Manila OR MNL OR Cebu OR CEB OR Clark OR CRK)",
+        start_url: "https://etravel.gov.ph/",
+        host: "etravel.gov.ph",
+        // 72 hours before arrival
+        window_days: 3,
+        user_steps: "type the CAPTCHA and press Submit",
+        ref_re: r"\bETRV-PH-\d{6,}\b",
+    },
+    // The ETA is an authorisation, not an arrival card: the application has no trip or accommodation section, so the
+    // driver's trip facts (the flight, the stay) are optional here — the mail searches still find the trip for the
+    // answer, and `forms::uk_eta` fills the same fields with empty facts (the passport, the home address and the
+    // occupation come from the profile and the Vault). The face photo and the payment are the user's.
+    CardSpec {
+        skill: "uk-eta",
+        name: "UK ETA application",
+        country: "United Kingdom",
+        mail_words: "(London OR LHR OR LGW OR STN OR Manchester OR MAN OR Edinburgh OR EDI OR \"United Kingdom\" OR UK)",
+        start_url: "https://www.gov.uk/eta",
+        host: "www.gov.uk",
+        window_days: 0,
+        user_steps: "upload your face photo, then press Submit and pay the ETA fee",
+        ref_re: r"\b\d{4}-\d{4}-\d{4}\b",
+    },
 ];
 
 /// The card whose skill this run loaded last, when it is one the driver knows.
@@ -254,6 +304,21 @@ pub fn dates_in(text: &str) -> Vec<(usize, NaiveDate)> {
     out
 }
 
+/// The first flight number written in `text` ("SQ 231"): an airline code and 2-4 digits, never a reference like
+/// "DE 123456789" (the SG card's number) or an all-digit code.
+pub(crate) fn flight_no_in(text: &str) -> Option<String> {
+    FLIGHT
+        .captures_iter(text)
+        .find(|c| {
+            let code = &c[1];
+            code.chars()
+                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+                && code != "DE"
+                && !code.chars().all(|ch| ch.is_ascii_digit())
+        })
+        .map(|c| format!("{} {}", &c[1], &c[2]))
+}
+
 fn is_flight_text(t: &str) -> bool {
     static F: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i)\b(flight|e-?ticket|itinerary|departs?|arrives?|boarding)\b").unwrap()
@@ -261,7 +326,7 @@ fn is_flight_text(t: &str) -> bool {
     F.is_match(t)
 }
 
-fn country_of_city(city: &str) -> &'static str {
+pub(crate) fn country_of_city(city: &str) -> &'static str {
     match city.to_lowercase().as_str() {
         "sydney" | "melbourne" | "brisbane" | "perth" | "adelaide" => "Australia",
         "singapore" => "Singapore",
@@ -298,14 +363,8 @@ pub fn extract(
         .collect();
     for text in &flight_texts {
         if t.flight_no.is_empty() {
-            if let Some(c) = FLIGHT.captures_iter(text).find(|c| {
-                let code = &c[1];
-                code.chars()
-                    .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
-                    && code != "DE"
-                    && !code.chars().all(|ch| ch.is_ascii_digit())
-            }) {
-                t.flight_no = format!("{} {}", &c[1], &c[2]);
+            if let Some(f) = flight_no_in(text) {
+                t.flight_no = f;
             }
         }
         if t.arrival_airport.is_empty() {
@@ -453,7 +512,7 @@ pub fn own_addresses(profile: &Value, country: &str) -> Vec<(String, String)> {
 
 // ---------------------------------------------------------------- the transcript, read back
 
-fn results_of<'a>(transcript: &'a [Value], tool: &str) -> Vec<(Value, &'a Value)> {
+pub(crate) fn results_of<'a>(transcript: &'a [Value], tool: &str) -> Vec<(Value, &'a Value)> {
     // (the call's args, the tool message), in order
     let mut out = Vec::new();
     for tc in transcript.iter().flat_map(tool_calls) {
@@ -472,7 +531,7 @@ fn results_of<'a>(transcript: &'a [Value], tool: &str) -> Vec<(Value, &'a Value)
     out
 }
 
-fn json_of(m: &Value) -> Value {
+pub(crate) fn json_of(m: &Value) -> Value {
     let c = content_of(m);
     let (Some(i), Some(j)) = (c.find('{'), c.rfind('}')) else {
         return Value::Null;
@@ -480,7 +539,7 @@ fn json_of(m: &Value) -> Value {
     serde_json::from_str(&c[i..=j]).unwrap_or(Value::Null)
 }
 
-fn walk_messages(v: &Value, out: &mut Vec<Value>) {
+pub(crate) fn walk_messages(v: &Value, out: &mut Vec<Value>) {
     match v {
         Value::Object(m) => {
             if m.contains_key("id") && m.contains_key("subject") {
@@ -494,18 +553,18 @@ fn walk_messages(v: &Value, out: &mut Vec<Value>) {
 }
 
 /// The position in the transcript of a tool message (for "after the last …" questions).
-fn pos(transcript: &[Value], m: &Value) -> usize {
+pub(crate) fn pos(transcript: &[Value], m: &Value) -> usize {
     transcript
         .iter()
         .position(|x| std::ptr::eq(x, m))
         .unwrap_or(0)
 }
 
-fn handed_back(m: &Value) -> bool {
+pub(crate) fn handed_back(m: &Value) -> bool {
     content_of(m).contains(super::guards::TAKEOVER_DONE_EN)
 }
 
-fn stopped(fill: &Value) -> Option<String> {
+pub(crate) fn stopped(fill: &Value) -> Option<String> {
     let v = json_of(fill);
     v.get("filled")
         .and_then(Value::as_array)
@@ -524,7 +583,7 @@ fn call(n: usize, name: &str, args: Value) -> ToolCall {
 }
 
 /// Whether the driver already asked the user (the question is an earlier assistant message of this chat).
-fn asked_before(transcript: &[Value], marker: &str) -> bool {
+pub(crate) fn asked_before(transcript: &[Value], marker: &str) -> bool {
     transcript
         .iter()
         .any(|m| get_str(m, "role") == "assistant" && content_of(m).contains(marker))

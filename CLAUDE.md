@@ -31,7 +31,7 @@ possible choices** and have it return one of them (a decision API: `{"choice": "
 holds even when the input is a picture or a page: the possible decisions are listed in JSON for the model to choose
 from (what field, which option, which button — never "what should I do next?").
 
-Natural language the model writes is used for ONE thing: the reply the user reads. Anything in a test that checks
+**Hard rule: no natural language from the model anywhere in the decision flow** — not as an instruction to it (no "(System)" hints), not as an input read back to decide a step. Natural language the model writes is used for ONE thing: the reply the user reads. Anything in a test that checks
 the model's words to decide the next step marks a step that belongs in code (or in a JSON choice). The final
 natural-language answer is itself reviewed once by the model, as the user would read it (`Runtime::review_answer`).
 

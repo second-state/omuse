@@ -92,7 +92,8 @@ async def buy(u: U.User) -> None:
     check("buy: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
     check("buy: the Insurance & claims bot did it (the link to continue in it)", any("nsurance" in x.bot_link for x in answers),
           [x.bot_link for x in answers])
-    check("buy: the user was asked to take over the browser for Pay", any(re.search(r"\bpay", t, re.I) for t in takeovers), takeovers)
+    check("buy: the user was asked to take over the browser on the application page (a takeover card; Pay is theirs)",
+          bool(takeovers) and "fwd_sg_apply" in seen["url"], (takeovers, seen["url"]))
     q = {k: v[0] for k, v in parse_qs(urlsplit(seen["url"]).query).items()}
     check("buy: the page handed over is FWD's application for the Business plan, not a payment confirmation",
           "fwd.com.sg" in seen["url"] and "fwd_sg_apply" in seen["url"] and q.get("plan") == "Business", seen["url"])
@@ -154,8 +155,8 @@ async def claim(u: U.User) -> None:
     takeovers = [t for x in answers for t in x.takeovers]
     check("claim: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
     check("claim: the Insurance & claims bot did it", any("nsurance" in x.bot_link for x in answers), [x.bot_link for x in answers])
-    check("claim: the user was asked to take over the browser to check and submit",
-          any(re.search(r"submit|check|review", t, re.I) for t in takeovers), takeovers)
+    check("claim: the user was asked to take over the browser on the claim form (a takeover card; Submit is theirs)",
+          bool(takeovers) and "travel.html" in seen["url"], (takeovers, seen["url"]))
     check("claim: the page handed over is FWD's claim form, not its confirmation (nothing submitted for the user)",
           "fwd.com.sg" in seen["url"] and "travel.html" in seen["url"] and "claim_done" not in seen["url"], seen["url"])
     ink = seen["ink"]

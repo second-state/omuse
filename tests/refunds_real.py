@@ -71,10 +71,8 @@ async def order_and_refund(u: U.User) -> None:
     text = "\n".join(x.text for x in answers)
     takeovers = [t for x in answers for t in x.takeovers]
     check("order: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
-    check("order: the user was asked to take over to place the order",
-          any(re.search(r"place|order|pay", t, re.I) for t in takeovers), takeovers)
-    check("order: the page handed over is the shop's checkout (the order was not placed for the user)",
-          "stride_socks" in seen["buy_url"], seen["buy_url"])
+    check("order: the user was asked to take over on the shop's checkout (a takeover card; the order was not placed for the user)",
+          bool(takeovers) and "stride_socks" in seen["buy_url"], (takeovers, seen["buy_url"]))
     q = {k: v[0] for k, v in parse_qs(urlsplit(seen["buy_after"]).query).items()}
     check("order: the user's Place order reaches the confirmation, with the delivery details and the Vault card filled in",
           "stride_done" in seen["buy_after"] and q.get("address") and C.flat(q.get("card", "")) == CARD_NO, q)

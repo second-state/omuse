@@ -57,8 +57,10 @@ fn rt() -> (Arc<Runtime>, tempfile::TempDir) {
 
 // ---------------------------------------------------------------- step budget (test_027.py)
 #[test]
-fn budget_note_once_and_finish_tools_only() {
-    let mut tr = vec![
+fn budget_is_a_tool_list_limit_never_a_message() {
+    // the hard rule: the budget never speaks to the model — it narrows the tools (finishing tools only in the
+    // reserve, the page-reading tools withdrawn after many pages); the transcript is untouched
+    let tr = vec![
         json!({"role": "system", "content": ""}),
         json!({"role": "user", "content": "research X and make a PDF"}),
     ];
@@ -70,19 +72,10 @@ fn budget_note_once_and_finish_tools_only() {
         "files_write",
         "gmail_send",
     ]);
-    let out = Runtime::budget(&mut tr, all.clone(), 20, "zh");
+    let out = Runtime::budget(&tr, all.clone(), 20, 0, false);
     assert_eq!(out, all);
     assert_eq!(tr.len(), 2);
-    let out = Runtime::budget(&mut tr, all.clone(), 5, "zh");
-    assert!(tr.last().unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .contains(BUDGET_MARK));
-    assert_eq!(out.len(), all.len());
-    let n = tr.len();
-    Runtime::budget(&mut tr, all.clone(), 4, "zh");
-    assert_eq!(tr.len(), n); // said only once
-    let out = Runtime::budget(&mut tr, all, 2, "zh");
+    let out = Runtime::budget(&tr, all.clone(), BUDGET_RESERVE, 0, false);
     assert_eq!(
         names(&out),
         ["files_write", "gmail_send", "make_pdf", "send_file"]
@@ -90,38 +83,61 @@ fn budget_note_once_and_finish_tools_only() {
             .map(|s| s.to_string())
             .collect()
     );
+    assert_eq!(tr.len(), 2); // nothing said
     assert!(!FINISH_TOOLS.contains(&"browser_navigate"));
-}
-
-#[test]
-fn budget_research_nudge_after_many_pages() {
+    // many pages read: the page-reading tools go, the rest stays, still nothing said
     let mut tr = vec![
         json!({"role": "system", "content": ""}),
         json!({"role": "user", "content": "news brief"}),
     ];
-    tr.extend((0..10).map(nav_turn));
-    Runtime::budget(&mut tr, tools(&["browser_navigate"]), 25, "zh");
-    let last = tr.last().unwrap()["content"].as_str().unwrap().to_string();
-    assert!(last.contains(BUDGET_MARK_PAGES) && last.contains("10"));
+    tr.extend((0..(RESEARCH_NUDGE_PAGES + 3) as usize).map(nav_turn));
     let n = tr.len();
-    tr.push(nav_turn(11));
-    Runtime::budget(&mut tr, tools(&["browser_navigate"]), 24, "zh");
-    assert_eq!(tr.len(), n + 1); // nudged once
-}
-
-#[test]
-fn budget_nudges_steer_to_delegate_not_quota() {
-    let mut tr = vec![json!({"role": "user", "content": "找 3 个实习岗位"})];
-    Runtime::budget(&mut tr, vec![], BUDGET_RESERVE, "zh");
-    let m = tr.last().unwrap()["content"].as_str().unwrap();
-    assert!(m.contains("delegate") && m.contains("不要向用户提") && m.contains("预算"));
-    let mut tr2 = vec![json!({"role": "user", "content": "find 3 internships"})];
-    Runtime::budget(&mut tr2, vec![], BUDGET_RESERVE, "en");
-    let m2 = tr2.last().unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .to_lowercase();
-    assert!(m2.contains("delegate") && m2.contains("do not mention") && m2.contains("budget"));
+    let out = Runtime::budget(
+        &tr,
+        tools(&["browser_navigate", "browser_read", "make_pdf"]),
+        25,
+        0,
+        false,
+    );
+    assert_eq!(names(&out), ["make_pdf".to_string()].into_iter().collect());
+    assert_eq!(tr.len(), n);
+    // many web calls, or most of the minute budget spent: the same limits, still nothing said (the time and web
+    // "(System)" nudges are gone)
+    let few = vec![json!({"role": "user", "content": "x"})];
+    let out = Runtime::budget(
+        &few,
+        tools(&["browser_navigate", "web_search", "make_pdf"]),
+        25,
+        WEB_NUDGE,
+        false,
+    );
+    assert_eq!(
+        names(&out),
+        ["browser_navigate".to_string(), "make_pdf".to_string()]
+            .into_iter()
+            .collect()
+    );
+    // and a search past the line in the same turn is refused (a result, not a message)
+    let many: Vec<Value> = (0..WEB_NUDGE as usize)
+        .map(|i| {
+            turn(&[(
+                &format!("w{i}"),
+                "web_search",
+                json!({"query": format!("q{i}")}),
+            )])
+        })
+        .collect();
+    assert!(super::guards::web_budget_guard(
+        &many,
+        &call("w99", "web_search", json!({"query": "more"}))
+    )
+    .is_some_and(|e| e.starts_with("ERROR: [web_budget]")));
+    assert_eq!(
+        super::guards::web_budget_guard(&many[..3], &call("w99", "web_search", json!({}))),
+        None
+    );
+    let out = Runtime::budget(&few, all.clone(), 25, 0, true);
+    assert!(!names(&out).contains("browser_navigate") && names(&out).contains("send_file"));
 }
 
 #[test]
@@ -173,27 +189,14 @@ fn site_blocked_until_takeover() {
 
 // ---------------------------------------------------------------- hints and duplicate schedules (test_units.py)
 #[test]
-fn deep_link_hint_and_duplicate_schedules() {
-    let h = deep_link_hint(
-        "https://aswbe.ana.co.jp/webapps/servicing/booking-search?CONNECTION_KIND=SGP&LANG=en",
-        "https://aswbe.ana.co.jp/webapps/servicing/common/system-error",
-        "Information",
-    );
-    assert!(h.contains("home page") && h.contains("NOT mean"));
-    assert_eq!(
-        deep_link_hint("https://shop.test/p/1", "https://shop.test/p/1", "Error"),
-        ""
-    );
-    assert_eq!(
-        deep_link_hint("https://a.test/x", "https://a.test/y", "Welcome"),
-        ""
-    );
-    assert!(!deep_link_hint(
-        "https://a.test/x",
-        "https://a.test/login?session_expired=1",
-        "Sign in"
-    )
-    .is_empty());
+fn a_parked_domain_is_a_fact_and_duplicate_schedules_are_found() {
+    // the page hints (deep link, product page, site refused) are gone: a parked domain is a fact code acts on
+    // (`exec::official_site`), never a hint to the model
+    assert!(parked_domain(
+        "scoot.com",
+        "This domain is for sale. Buy this domain today."
+    ));
+    assert!(!parked_domain("Scoot — Book flights", "Book now"));
     let rows = vec![
         json!({"id": "s1", "enabled": 1, "name": "ANA 选座重试", "goal": "为 ANA 预订 DERKAI 的三位乘客选座。背景：……"}),
         json!({"id": "s2", "enabled": 0, "name": "old", "goal": "something else entirely, long enough"}),
@@ -243,7 +246,7 @@ fn repeat_guard_blocks_streaks_and_plan_loops() {
         .collect();
     assert!(repeat_guard(&tr, &call("p9", "update_plan", json!({})))
         .unwrap()
-        .contains("update_plan"));
+        .starts_with("ERROR: [repeat]"));
     // scrolling repeatedly is normal
     let s = json!({"direction": "down"});
     let tr = vec![
@@ -283,7 +286,7 @@ fn reread_points_back_and_invented_ids_are_refused() {
         None
     )
     .unwrap()
-    .contains("Never invent"));
+    .contains("do not appear in any search result"));
 }
 
 #[test]
@@ -468,7 +471,7 @@ fn a_cut_fallback_result_still_gives_its_pages_and_cards_give_their_prices() {
         a.ends_with("[www.booking.com](https://www.booking.com/ginza.html)"),
         "{a}"
     );
-    let shown = "已显示 2 张选项卡（已逐条核对原文 verified against the pages you read）。 Shown to the user as 2 cards. Finish now.\n\
+    let shown = "{\"shown\": 2, \"verified\": true, \"picked\": \"\"}\n\
 1. WAYPOINT TSUKIJI Tokyo — 9.4; US$210\n2. Hotel Ginza — 9.0; US$250";
     let t = vec![json!({"role": "tool", "tool_call_id": "c2", "content": shown})];
     let a = with_choices_listing(&t, "My pick is WAYPOINT TSUKIJI Tokyo.", false);
@@ -476,8 +479,9 @@ fn a_cut_fallback_result_still_gives_its_pages_and_cards_give_their_prices() {
         a.contains("1. WAYPOINT TSUKIJI Tokyo — 9.4; US$210") && a.contains("2. Hotel Ginza"),
         "{a}"
     );
-    let priced = "WAYPOINT at US$210.";
-    assert_eq!(with_choices_listing(&t, priced, false), priced);
+    // every option named (a structured value): nothing added
+    let named = "WAYPOINT TSUKIJI Tokyo at US$210, or Hotel Ginza at US$250.";
+    assert_eq!(with_choices_listing(&t, named, false), named);
     // the fallback read nothing; the run read the pages itself
     let t = vec![
         json!({"role": "tool", "tool_call_id": "c1", "content": "{\"hotels_fallback\": \"x\", \"results\": []}"}),
@@ -561,29 +565,43 @@ fn ungrounded_numbers_numcheck() {
         "NUMCHECK"
     )
     .is_empty());
-    assert!(self_corrects("……10.5 超过 10？不对，等一下，这里需要修正"));
+    // the repair is done in code: the figure and the code the sources lack are replaced, nothing is said to the model
+    let fixed = with_grounded_figures(
+        &tr,
+        "Saves 1,358.50 a year; after 10 years about 17,016.64",
+        "NUMCHECK",
+        false,
+    );
+    assert_eq!(
+        fixed,
+        "Saves 1,358.50 a year; after 10 years about (figure not in the sources)"
+    );
     let tr2 = vec![json!({"role": "tool", "content": "SQ 638 departs 09:00"})];
     assert_eq!(
         ungrounded_codes(&tr2, "Your flight SQ 637 departs at 11:30", ""),
         vec!["SQ 637"]
     );
+    assert_eq!(
+        with_grounded_codes(&tr2, "Your flight SQ 637 departs at 11:30", "", false),
+        "Your flight (flight not in the sources) departs at 11:30"
+    );
+    assert_eq!(
+        with_grounded_codes(&tr2, "SQ 638 departs 09:00", "", false),
+        "SQ 638 departs 09:00"
+    );
 }
 
 #[test]
-fn cut_off_and_asks_user_and_stranded() {
-    assert!(cut_off_final("Sheng Siong 搜索\"gard", None, 0));
-    assert!(!cut_off_final("完成了。", None, 2));
-    assert!(cut_off_final("anything", Some("length"), 0));
-    assert!(asks_user("我没找到预约记录。请告诉我是哪家诊所？"));
-    assert!(!asks_user("任务失败了。"));
+fn a_stranded_answer_is_merged_by_length_not_wording() {
     let table = "x".repeat(320);
     let tr = vec![
         json!({"role": "user", "content": "bills"}),
         json!({"role": "assistant", "content": table.clone(), "tool_calls": [{"id": "u"}]}),
     ];
-    assert!(
-        merge_stranded_answer(&tr, "The summary table above covers all bills.").starts_with(&table)
-    );
+    assert!(merge_stranded_answer(&tr, "Done — see the table.").starts_with(&table));
+    // a long final answer stands on its own, whatever it says
+    let long = "y".repeat(400);
+    assert_eq!(merge_stranded_answer(&tr, &long), long);
 }
 
 #[test]
@@ -861,10 +879,7 @@ async fn a_pick_or_a_profile_key_written_slightly_off_is_matched_in_code() {
         )
         .await
         .unwrap();
-    assert!(
-        r.contains("already picked \"Hang Seng Travel+ Visa\""),
-        "{r}"
-    );
+    assert!(r.contains("\"picked\": \"Hang Seng Travel+ Visa\""), "{r}");
     let r = rt
         .local(
             &t,
@@ -874,10 +889,7 @@ async fn a_pick_or_a_profile_key_written_slightly_off_is_matched_in_code() {
         )
         .await
         .unwrap();
-    assert!(
-        r.contains("already picked \"Hang Seng Travel+ Visa\""),
-        "{r}"
-    );
+    assert!(r.contains("\"picked\": \"Hang Seng Travel+ Visa\""), "{r}");
     // nothing that close: the user picks
     let r = rt
         .local(
@@ -888,7 +900,7 @@ async fn a_pick_or_a_profile_key_written_slightly_off_is_matched_in_code() {
         )
         .await
         .unwrap();
-    assert!(!r.contains("already picked"), "{r}");
+    assert!(r.contains("\"picked\": \"\""), "{r}");
     rt.store
         .set_profile(
             "address:Singapore flat",
@@ -951,7 +963,7 @@ async fn present_choices_clarify_and_files_roundtrip() {
     let conv = rt.store.create_conv("c", "chat", None).unwrap();
     let t = json!({"id": "t1", "conv_id": conv, "goal": "x"});
     let r = rt.local(&t, "present_choices", &json!({"question": "Which?", "kind": "clarify", "options": [{"label": "A"}, {"label": "B"}]})).await.unwrap();
-    assert!(r.starts_with("已显示 2 张选项卡") && r.contains("1. A"));
+    assert!(r.starts_with("{\"shown\": 2") && r.contains("1. A"), "{r}");
     let w = rt
         .local(
             &t,
@@ -985,7 +997,7 @@ async fn present_choices_clarify_and_files_roundtrip() {
         .send_file(&t, &json!({"path": "notes/a.md"}))
         .await
         .unwrap()
-        .starts_with("已经发过了"));
+        .starts_with("{\"already_sent\""));
 }
 
 #[test]
@@ -1350,7 +1362,7 @@ async fn an_ordinary_skill_is_followed_from_its_sheet_without_a_planner_call() {
         .await
         .unwrap();
     assert!(md.starts_with("---\nname: flight-booking"), "{}", &md[..80]);
-    assert!(!md.contains("(System) Plan") && !md.contains("mark progress with update_plan"));
+    assert!(!md.contains("(System)") && !md.contains("Plan — objective"));
     let task = rt.store.task(&tid).unwrap().unwrap();
     assert!(task
         .get("plan")
@@ -1548,7 +1560,7 @@ async fn a_browser_off_skill_hides_the_browser_until_another_skill_is_loaded() {
         .await
         .unwrap();
     assert!(
-        md.contains("browser tools and sub-agents"),
+        md.contains("{\"browser\": \"off\"}"),
         "{}",
         &md[md.len() - 200..]
     );
@@ -1574,8 +1586,8 @@ async fn a_browser_off_skill_hides_the_browser_until_another_skill_is_loaded() {
         .local(&t, "load_skill", &json!({"name": "restaurant-booking"}))
         .await
         .unwrap();
-    assert!(!md.contains("browser tools and sub-agents"));
-    assert!(md.contains("The browser is available again"));
+    assert!(!md.contains("{\"browser\": \"off\"}"));
+    assert!(md.contains("{\"browser\": \"on\"}"));
     // a request that names a website keeps the browser through a guide (browser_auto_real 2026-10-31)
     let t2 = rt
         .store
@@ -1592,7 +1604,7 @@ async fn a_browser_off_skill_hides_the_browser_until_another_skill_is_loaded() {
         .local(&t2, "load_skill", &json!({"name": "tokyo"}))
         .await
         .unwrap();
-    assert!(!md.contains("browser tools and sub-agents"));
+    assert!(!md.contains("{\"browser\": \"off\"}"));
     assert!(!rt.inner.lock().no_browser.contains_key(&get_str(&t2, "id")));
     for (goal, web) in [
         ("check it on www.navitime.co.jp", true),
@@ -1609,7 +1621,7 @@ async fn a_browser_off_skill_hides_the_browser_until_another_skill_is_loaded() {
         .local(&t, "load_skill", &json!({"name": "tokyo"}))
         .await
         .unwrap();
-    assert!(!md.contains("browser tools and sub-agents"));
+    assert!(!md.contains("{\"browser\": \"off\"}"));
     assert_eq!(rt.without_browser_if_off(&tid, tools).len(), 4);
 }
 
@@ -1756,7 +1768,8 @@ async fn load_skill_stays_inside_the_bot() {
         .await
         .unwrap();
     assert!(
-        r.starts_with("ERROR: the skill flight-booking belongs to") && r.contains("ask_bot"),
+        r.starts_with("ERROR: [other_bot] the skill flight-booking belongs to")
+            && !r.contains("ask_bot"),
         "{r}"
     );
     let r = rt
@@ -1774,7 +1787,7 @@ async fn load_skill_stays_inside_the_bot() {
         .local(&t2, "load_skill", &json!({"name": "news-search"}))
         .await
         .unwrap();
-    assert!(r.contains("is not one of the Photos & videos bot's"), "{r}");
+    assert!(r.contains("not to the Photos & videos bot"), "{r}");
     let r = rt
         .local(&t2, "load_skill", &json!({"name": "drive-video-edit"}))
         .await
@@ -2060,38 +2073,6 @@ fn a_card_missing_from_the_catalog_is_said_so() {
 }
 
 #[test]
-fn a_card_pick_is_compared_with_the_users_other_cards() {
-    let tool = |c: &str| json!({"role": "tool", "content": c});
-    let t = vec![
-        tool("- id=vlt_1 · Hang Seng Travel+ · card · UNKNOWN · fields: \n- id=vlt_2 · DBS Altitude · issued in Singapore · card · UNKNOWN"),
-        tool("已存入保险箱 added to the Vault: UOB One (id=vlt_3) — by its name only"),
-        tool("# Credit cards — HK (40 cards; catalog as of 2026-08)\n| Hang Seng | Travel+ | dining 5% |"),
-    ];
-    assert_eq!(
-        vault_cards(&t),
-        vec!["Hang Seng Travel+", "DBS Altitude", "UOB One"]
-    );
-    let hint = card_comparison_hint(
-        &t,
-        "Use your Hang Seng Travel+: 5% on dining, HK$75.",
-        false,
-    )
-    .unwrap();
-    assert!(
-        hint.contains("DBS Altitude, UOB One") && hint.contains("foreign"),
-        "{hint}"
-    );
-    // two or more cards named, one card held, or no catalog read: no retry
-    assert!(card_comparison_hint(
-        &t,
-        "Travel+ gives HK$75; the DBS Altitude HK$45 minus the 3.25% FX fee.",
-        false
-    )
-    .is_none());
-    assert!(card_comparison_hint(&t[..1], "Use the Travel+.", false).is_none());
-}
-
-#[test]
 fn a_scheduled_runs_answer_carries_what_it_notified() {
     let t = vec![
         turn(&[(
@@ -2118,7 +2099,7 @@ fn a_scheduled_runs_answer_carries_what_it_notified() {
 
 #[test]
 fn arrival_defaults_are_kept_and_handed_over() {
-    use super::guards::{arrival_default_hint, clear_guard};
+    use super::guards::clear_guard;
     let step = |id: &str, name: &str, args: Value, result: &str| {
         vec![
             json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
@@ -2141,7 +2122,6 @@ fn arrival_defaults_are_kept_and_handed_over() {
     );
     // not an arrival card: clearing is the agent's business
     assert_eq!(clear_guard(&t, &wipe), None);
-    assert_eq!(arrival_default_hint(&t, true, false), None);
     t.insert(
         1,
         json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c0", "type": "function",
@@ -2159,12 +2139,10 @@ fn arrival_defaults_are_kept_and_handed_over() {
         json!({"ref": "e21", "text": "", "replace": true}),
     );
     assert_eq!(clear_guard(&t, &other), None);
-    // asking for a default in the chat without a hand-over gets the hint, and so does ending with the form filled but
-    // not handed over, whatever the answer says; after a hand-over neither does
-    assert!(arrival_default_hint(&t, true, false).is_some_and(|h| h.contains("arrival + 7 days")));
-    assert!(arrival_default_hint(&t, false, false).is_some());
-    // before any browser step (asking for the flight and the stay once) there is no hint
-    assert_eq!(arrival_default_hint(&t[..3], false, false), None);
+    // a form typed into and not handed over goes to the runtime's own hand-over (no hint): a refused takeover is no
+    // hand-over, a completed one is
+    assert!(super::guards::needs_handover(&t));
+    assert!(!super::guards::needs_handover(&t[..3]));
     let mut refused = t.clone();
     refused.extend(step(
         "c3",
@@ -2172,14 +2150,14 @@ fn arrival_defaults_are_kept_and_handed_over() {
         json!({"reason": "x"}),
         "ERROR: Not handed over yet",
     ));
-    assert!(arrival_default_hint(&refused, true, false).is_some());
+    assert!(super::guards::needs_handover(&refused));
     t.extend(step(
         "c3",
         "browser_request_takeover",
         json!({"reason": "x"}),
         "handed over",
     ));
-    assert_eq!(arrival_default_hint(&t, true, false), None);
+    assert!(!super::guards::needs_handover(&t));
 }
 
 #[test]
@@ -2247,92 +2225,6 @@ fn an_arrival_card_sends_no_email() {
     .is_some());
     // no arrival skill: not this guard's business
     assert_eq!(arrival_mail_guard(&[], goal, &send), None);
-}
-
-#[test]
-fn an_arrival_card_asks_its_one_question_before_the_form() {
-    use super::guards::arrival_ask_first_guard;
-    let step = |id: &str, name: &str, args: Value, result: &str| {
-        vec![
-            json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
-                   "function": {"name": name, "arguments": args.to_string()}}]}),
-            json!({"role": "tool", "tool_call_id": id, "content": result}),
-        ]
-    };
-    let profile = |addrs: &str| {
-        format!("The user's profile (use only what this form / message needs; never paste it elsewhere):\nName as on passport (name_en): JORDAN LU\nHome address (address_home): 12 Harbour St, Sydney NSW 2000, Australia\n{addrs}")
-    };
-    let open = call(
-        "c9",
-        "browser_navigate",
-        json!({"url": "https://eservices.ica.gov.sg/sgarrivalcard/"}),
-    );
-    let goal = "Please fill in my SG Arrival Card for my trip to Singapore — it's a holiday.";
-    let base = |mail: &str, addrs: &str| {
-        let mut t = vec![json!({"role": "system", "content": ""})];
-        t.extend(step(
-            "c0",
-            "load_skill",
-            json!({"name": "sg-arrival-card"}),
-            "# SG Arrival Card",
-        ));
-        t.extend(step("c1", "gmail_search", json!({"query": "x"}), mail));
-        t.extend(step(
-            "c2",
-            "profile_get",
-            json!({"fields": ["address:*"]}),
-            &profile(addrs),
-        ));
-        t
-    };
-    let ticket =
-        "E-ticket receipt. SQ 231 departs Sydney (SYD) 2026-11-01 09:10, arrives Singapore";
-    // a flight in the mail and one Singapore address: open the form
-    let one =
-        "Address — Singapore flat (address:Singapore flat): 10 Bayfront Avenue, Singapore 018956";
-    assert_eq!(
-        arrival_ask_first_guard(&base(ticket, one), goal, &open),
-        None
-    );
-    // no flight anywhere (the profile's "NSW 2000" is no flight): ask for the flight and the stay first
-    let t = base("no messages found", one);
-    assert!(arrival_ask_first_guard(&t, goal, &open)
-        .is_some_and(|e| e.contains("ask the user first") && e.contains("flight")));
-    // the user gave it in the request, or said they fill it in themselves
-    assert_eq!(
-        arrival_ask_first_guard(
-            &t,
-            "SG Arrival Card please: SQ 231 on 1 Nov, staying at my flat",
-            &open
-        ),
-        None
-    );
-    assert_eq!(
-        arrival_ask_first_guard(
-            &t,
-            "Fill in my SG Arrival Card; I'll fill in the flight myself",
-            &open
-        ),
-        None
-    );
-    // two Singapore addresses, none named: ask which one; named: open the form
-    let two = format!("{one}\nAddress — Parents in Singapore (address:Parents in Singapore): 5 Jalan Kayu, Singapore 799487");
-    let t = base(ticket, &two);
-    assert!(arrival_ask_first_guard(&t, goal, &open)
-        .is_some_and(|e| e.contains("Parents in Singapore") && e.contains("Singapore flat")));
-    assert_eq!(
-        arrival_ask_first_guard(&t, "The Parents in Singapore one, please.", &open),
-        None
-    );
-    // once per task
-    let mut asked = t.clone();
-    asked.extend(step(
-        "c3",
-        "browser_navigate",
-        json!({"url": "x"}),
-        "ERROR: Not done — ask the user first: …",
-    ));
-    assert_eq!(arrival_ask_first_guard(&asked, goal, &open), None);
 }
 
 // ---------------------------------------------------------------- the form-filling model
@@ -2430,77 +2322,6 @@ fn the_reference_on_the_confirmation_page_is_in_the_answer() {
 }
 
 #[test]
-fn an_arrival_cards_departure_defaults_to_arrival_plus_seven_days() {
-    use super::guards::departure_date_guard;
-    let step = |id: &str, name: &str, args: Value, result: &str| {
-        vec![
-            json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
-                   "function": {"name": name, "arguments": args.to_string()}}]}),
-            json!({"role": "tool", "tool_call_id": id, "content": result}),
-        ]
-    };
-    let page = r#"{"url": "https://tdac.immigration.go.th/", "snapshot": "  [e15] textbox \"Date of arrival in Thailand *\"\n  [e18] textbox \"Next city / port after Thailand *\"\n  [e21] textbox \"Intended date of departure from Thailand *\""}"#;
-    let mut t = vec![json!({"role": "system", "content": ""})];
-    t.extend(step(
-        "c0",
-        "load_skill",
-        json!({"name": "th-arrival-card"}),
-        "# TDAC",
-    ));
-    t.extend(step(
-        "c1",
-        "browser_navigate",
-        json!({"url": "https://tdac.immigration.go.th/"}),
-        page,
-    ));
-    t.extend(step(
-        "c2",
-        "browser_type",
-        json!({"ref": "e15", "text": "01/11/2026"}),
-        page,
-    ));
-    let wrong = call(
-        "c3",
-        "browser_type",
-        json!({"ref": "e21", "text": "05/11/2026"}),
-    );
-    assert!(departure_date_guard(&t, &wrong).is_some_and(|e| e.contains("= 08/11/2026")));
-    let right = call(
-        "c3",
-        "browser_type",
-        json!({"ref": "e21", "text": "08/11/2026"}),
-    );
-    assert_eq!(departure_date_guard(&t, &right), None);
-    // the month's end is counted on the calendar
-    let mut late = t.clone();
-    let at = late.len() - 2;
-    late[at]["tool_calls"][0]["function"]["arguments"] =
-        json!(json!({"ref": "e15", "text": "28/11/2026"}).to_string());
-    assert!(departure_date_guard(&late, &wrong).is_some_and(|e| e.contains("= 05/12/2026")));
-    // once: a date from a return flight, typed again, goes through
-    let mut again = t.clone();
-    again.extend(step(
-        "c3",
-        "browser_type",
-        json!({"ref": "e21", "text": "05/11/2026"}),
-        "ERROR: … (arrival + 7 days = 08/11/2026) …",
-    ));
-    let retyped = call(
-        "c4",
-        "browser_type",
-        json!({"ref": "e21", "text": "05/11/2026"}),
-    );
-    assert_eq!(departure_date_guard(&again, &retyped), None);
-    // other fields and non-dates are not this guard's business
-    let city = call(
-        "c3",
-        "browser_type",
-        json!({"ref": "e18", "text": "Sydney"}),
-    );
-    assert_eq!(departure_date_guard(&t, &city), None);
-}
-
-#[test]
 fn an_arrival_cards_submit_is_the_users_click() {
     use super::exec::hand_over_button;
     use super::guards::arrival_submit_guard;
@@ -2545,81 +2366,6 @@ fn an_arrival_cards_submit_is_the_users_click() {
     );
     // not an arrival card: not this guard's business
     assert_eq!(arrival_submit_guard(&t[3..], &submit), None);
-}
-
-#[test]
-fn a_filled_claim_form_is_handed_over() {
-    use super::guards::arrival_default_hint;
-    let step = |id: &str, name: &str, args: Value, result: &str| {
-        vec![
-            json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
-                   "function": {"name": name, "arguments": args.to_string()}}]}),
-            json!({"role": "tool", "tool_call_id": id, "content": result}),
-        ]
-    };
-    let mut t = vec![json!({"role": "system", "content": ""})];
-    t.extend(step(
-        "c0",
-        "load_skill",
-        json!({"name": "csr-trip-claim"}),
-        "# CSR",
-    ));
-    // nothing typed yet: no hint
-    assert_eq!(arrival_default_hint(&t, false, false), None);
-    t.extend(step(
-        "c1",
-        "browser_type",
-        json!({"ref": "e3", "text": "Lucas Lu"}),
-        "{}",
-    ));
-    assert!(arrival_default_hint(&t, false, false)
-        .is_some_and(|h| h.contains("browser_request_takeover")));
-    // handed over: nothing
-    t.extend(step(
-        "c2",
-        "browser_request_takeover",
-        json!({"reason": "x"}),
-        "Takeover finished",
-    ));
-    assert_eq!(arrival_default_hint(&t, false, false), None);
-    // a shopping cart is no claim
-    let mut shop = vec![json!({"role": "system", "content": ""})];
-    shop.extend(step(
-        "c0",
-        "load_skill",
-        json!({"name": "online-shopping"}),
-        "# shop",
-    ));
-    shop.extend(step(
-        "c1",
-        "browser_type",
-        json!({"ref": "e1", "text": "serum"}),
-        "{}",
-    ));
-    assert_eq!(arrival_default_hint(&shop, false, false), None);
-}
-
-#[test]
-fn telling_the_user_to_press_it_hands_the_page_over() {
-    use super::guards::self_press_hint;
-    let step = |id: &str, name: &str| {
-        vec![
-            json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
-                   "function": {"name": name, "arguments": "{}"}}]}),
-            json!({"role": "tool", "tool_call_id": id, "content": "{}"}),
-        ]
-    };
-    let mut t = vec![json!({"role": "system", "content": ""})];
-    // no browser: nothing to hand over
-    assert_eq!(self_press_hint(&t, true, false), None);
-    t.extend(step("c1", "browser_navigate"));
-    assert!(
-        self_press_hint(&t, true, false).is_some_and(|h| h.contains("browser_request_takeover"))
-    );
-    assert!(self_press_hint(&t, true, false).is_some());
-    assert_eq!(self_press_hint(&t, false, false), None);
-    t.extend(step("c2", "browser_request_takeover"));
-    assert_eq!(self_press_hint(&t, true, false), None);
 }
 
 #[test]
@@ -2685,40 +2431,6 @@ fn a_pick_from_an_unverified_catalog_row_says_so() {
 }
 
 #[test]
-fn an_arrival_cards_next_city_defaults_to_where_the_flight_came_from() {
-    use super::guards::next_city_note;
-    let page = r#"{"url": "https://www.e-arrivalcard.go.kr/", "snapshot": "  [e16] textbox \"Last city / port of embarkation before Korea *\"\n  [e17] textbox \"Next city / port after Korea *\""}"#;
-    let mut t = vec![json!({"role": "system", "content": ""})];
-    for (id, name, args) in [
-        ("c0", "load_skill", json!({"name": "kr-arrival-card"})),
-        (
-            "c1",
-            "browser_navigate",
-            json!({"url": "https://www.e-arrivalcard.go.kr/"}),
-        ),
-        (
-            "c2",
-            "browser_type",
-            json!({"ref": "e16", "text": "Sydney (SYD)"}),
-        ),
-    ] {
-        t.push(
-            json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
-               "function": {"name": name, "arguments": args.to_string()}}]}),
-        );
-        t.push(json!({"role": "tool", "tool_call_id": id, "content": page}));
-    }
-    let seoul = call("c3", "browser_type", json!({"ref": "e17", "text": "Seoul"}));
-    assert!(next_city_note(&t, &seoul).is_some_and(|n| n.contains("\"Sydney (SYD)\"")));
-    let sydney = call(
-        "c3",
-        "browser_type",
-        json!({"ref": "e17", "text": "Sydney"}),
-    );
-    assert_eq!(next_city_note(&t, &sydney), None);
-}
-
-#[test]
 fn a_filled_form_left_unhanded_is_handed_over_by_the_runtime() {
     use super::guards::needs_handover;
     let step = |id: &str, name: &str, args: Value| {
@@ -2730,25 +2442,19 @@ fn a_filled_form_left_unhanded_is_handed_over_by_the_runtime() {
     };
     let mut t = vec![json!({"role": "system", "content": ""})];
     t.extend(step("c0", "load_skill", json!({"name": "csr-trip-claim"})));
-    assert!(!needs_handover(&t, super::guards::AnswerTraits::default()));
+    assert!(!needs_handover(&t));
     t.extend(step(
         "c1",
         "browser_type",
         json!({"ref": "e1", "text": "Lucas Lu"}),
     ));
-    assert!(needs_handover(
-        &t,
-        super::guards::AnswerTraits {
-            tells_user_to_act: true,
-            ..Default::default()
-        }
-    ));
+    assert!(needs_handover(&t));
     t.extend(step(
         "c2",
         "browser_request_takeover",
         json!({"reason": "x"}),
     ));
-    assert!(!needs_handover(&t, super::guards::AnswerTraits::default()));
+    assert!(!needs_handover(&t));
     // a baggage lookup on WorldTracer is no form to hand over
     let mut bag = vec![json!({"role": "system", "content": ""})];
     bag.extend(step(
@@ -2761,10 +2467,7 @@ fn a_filled_form_left_unhanded_is_handed_over_by_the_runtime() {
         "browser_type",
         json!({"ref": "e1", "text": "NRTSQ12345"}),
     ));
-    assert!(!needs_handover(
-        &bag,
-        super::guards::AnswerTraits::default()
-    ));
+    assert!(!needs_handover(&bag));
 }
 
 #[test]
@@ -2797,18 +2500,6 @@ fn profile_fields_asked_by_another_name_are_found() {
     assert_eq!(profile_alias("mobile number"), "phone");
     assert_eq!(profile_alias("birthday"), "birthday");
     assert_eq!(profile_alias("address:*"), "address:*");
-}
-
-#[test]
-fn a_one_line_answer_after_a_hand_back_is_written_out() {
-    use super::guards::short_after_handback_hint;
-    let t = vec![
-        json!({"role": "tool", "tool_call_id": "c1", "content": "Takeover finished: the user handed browser control back."}),
-    ];
-    let short = "Your claim was submitted. Reference CL-TR-2026-118204.";
-    assert!(short_after_handback_hint(&t, short, false).is_some());
-    assert_eq!(short_after_handback_hint(&t, &"x".repeat(500), false), None);
-    assert_eq!(short_after_handback_hint(&[], short, false), None);
 }
 
 #[test]
@@ -3100,20 +2791,25 @@ fn an_arrival_question_about_the_stay_names_the_users_addresses_there() {
                          "address:Singapore flat": "10 Bayfront Avenue, Singapore 018956",
                          "address:Parents in Singapore": "5 Jalan Kayu, Singapore 799487"});
     let ask = "Where will you be staying in Singapore? Please give me the hotel name and address.";
-    let a = with_own_addresses(&t, ask, true, &profile, false);
+    // the question is read from the `ask_user` call (its structured result), never from the answer's words
+    assert_eq!(with_own_addresses(&t, ask, &profile, false), ask);
+    let mut asked = t.clone();
+    asked.extend(tool_step(
+        "a1",
+        "ask_user",
+        json!({"fields": ["stay"], "question": ask}),
+        "{\"asked\": true, \"fields\": [\"stay\"], \"question\": \"Where will you be staying in Singapore?\"}",
+    ));
+    let a = with_own_addresses(&asked, ask, &profile, false);
     assert!(
         a.contains("Singapore flat: 10 Bayfront Avenue")
             && a.contains("Parents in Singapore: 5 Jalan Kayu")
             && !a.contains("Harbour"),
         "{a}"
     );
-    // already named, or no question: unchanged
+    // already named (structured values): unchanged
     let named = "Which one: your Singapore flat or Parents in Singapore?";
-    assert_eq!(with_own_addresses(&t, named, true, &profile, false), named);
-    assert_eq!(
-        with_own_addresses(&t, "Filled.", false, &profile, false),
-        "Filled."
-    );
+    assert_eq!(with_own_addresses(&asked, named, &profile, false), named);
 }
 
 #[test]
@@ -3270,7 +2966,7 @@ fn a_long_result_keeps_its_links_and_notes_ahead_of_the_cut() {
 
 #[test]
 fn an_approved_purchase_that_ends_without_a_hand_over_is_handed_over() {
-    use super::guards::{needs_handover, AnswerTraits};
+    use super::guards::needs_handover;
     // shopping_real 2026-10-31: card and address filled, "I did not press Place your order", nothing handed over
     let step = |id: &str, name: &str, result: &str| {
         vec![
@@ -3286,7 +2982,7 @@ fn an_approved_purchase_that_ends_without_a_hand_over_is_handed_over() {
         "purchase_confirm",
         "{\"status\": \"approved\", \"purchase_id\": \"buy_1\"}",
     ));
-    assert!(needs_handover(&t, AnswerTraits::default()));
+    assert!(needs_handover(&t));
     let why = super::guards::handover_reason(&t, "generic");
     assert!(why.contains("place the order yourself"), "{why}");
     assert_eq!(super::guards::handover_reason(&[], "generic"), "generic");
@@ -3294,12 +2990,12 @@ fn an_approved_purchase_that_ends_without_a_hand_over_is_handed_over() {
     // no page open (bots_e2e: an approved purchase with no browser step): nothing to hand over
     let mut no_page = vec![json!({"role": "system", "content": ""})];
     no_page.extend(step("c2", "purchase_confirm", "{\"status\": \"approved\"}"));
-    assert!(!needs_handover(&no_page, AnswerTraits::default()));
+    assert!(!needs_handover(&no_page));
     let mut refused = vec![json!({"role": "system", "content": ""})];
     refused.extend(step("c2", "purchase_confirm", "{\"status\": \"denied\"}"));
-    assert!(!needs_handover(&refused, AnswerTraits::default()));
+    assert!(!needs_handover(&refused));
     t.extend(step("c3", "browser_request_takeover", "Takeover finished"));
-    assert!(!needs_handover(&t, AnswerTraits::default()));
+    assert!(!needs_handover(&t));
 }
 
 #[test]
@@ -3309,9 +3005,9 @@ fn a_skill_gets_the_profile_fields_it_names() {
         "---\nname: entry-requirements\nprofile: nationality, date_of_birth\n---\n# x",
     );
     let note = super::local::skill_profile_note(&fm, &json!({"nationality": "Australia"}));
-    assert!(note.contains("nationality: Australia"), "{note}");
+    assert!(note.contains("\"nationality\": \"Australia\""), "{note}");
     assert!(
-        note.contains("birthday: (not in the profile — ask the user once)"),
+        note.contains("\"birthday\": null") && !note.contains("ask the user"),
         "{note}"
     );
     let none = crate::skills::front_matter("---\nname: tokyo\n---\n# x");
@@ -3322,49 +3018,9 @@ fn a_skill_gets_the_profile_fields_it_names() {
 }
 
 #[test]
-fn a_reply_that_reconfirms_what_the_user_asked_for_is_sent_back_once() {
-    // drive_cleanup_real 2026-10-31: "move these two to the bin" got "Please confirm that you want me to move …"
-    let h = super::guards::reconfirm_hint(true, false).unwrap_or_default();
-    assert!(h.contains("do it now") && h.contains("Sentinel"), "{h}");
-    assert_eq!(super::guards::reconfirm_hint(false, false), None);
-}
-
-#[test]
-fn a_reply_that_asks_for_an_option_the_page_already_selected_is_sent_back() {
-    // shopping_real 2026-10-31: "Saddle Brown or Midnight Black?" for a case already showing Saddle Brown
-    let mut t = vec![json!({"role": "system", "content": ""})];
-    assert_eq!(super::guards::page_option_hint(&t, true, false), None);
-    t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
-        "function": {"name": "browser_navigate", "arguments": "{\"url\": \"https://kaya.example/kaya_item.html\"}"}}]}));
-    t.push(json!({"role": "tool", "tool_call_id": "c1", "content": "page"}));
-    let h = super::guards::page_option_hint(&t, true, false).unwrap_or_default();
-    assert!(
-        h.contains("already has selected") && h.contains("which option"),
-        "{h}"
-    );
-    assert_eq!(super::guards::page_option_hint(&t, false, false), None);
-}
-
-#[test]
-fn a_reply_that_does_not_know_a_profile_field_the_profile_has_is_sent_back() {
-    // travel_info_real 2026-10-31: "I couldn't find your passport nationality" with nationality: Australia saved
-    let p = json!({"nationality": "Australia", "name_en": "OLIVIA HARRIS"});
-    let h = super::guards::known_profile_hint(true, &p, false).unwrap_or_default();
-    assert!(
-        h.contains("nationality: Australia") && !h.contains("OLIVIA"),
-        "{h}"
-    );
-    assert_eq!(super::guards::known_profile_hint(false, &p, false), None);
-    assert_eq!(
-        super::guards::known_profile_hint(true, &json!({"name_en": "X"}), false),
-        None
-    );
-}
-
-#[test]
 fn no_takeover_once_the_departure_tax_refund_card_is_in() {
     // apdt_real 2026-10-31: "take over the browser to complete that verification" after the Vault card was filled
-    use super::guards::{apdt_face_guard, needs_handover, AnswerTraits};
+    use super::guards::{apdt_face_guard, needs_handover};
     let call = |id: &str, name: &str, args: Value| {
         vec![
             json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
@@ -3393,11 +3049,7 @@ fn no_takeover_once_the_departure_tax_refund_card_is_in() {
     ));
     let r = apdt_face_guard(&t, &takeover).unwrap_or_default();
     assert!(r.starts_with("ERROR") && r.contains("phone"), "{r}");
-    let asks = AnswerTraits {
-        tells_user_to_act: true,
-        ..Default::default()
-    };
-    assert!(!needs_handover(&t, asks));
+    assert!(!needs_handover(&t));
 }
 
 #[test]
@@ -3408,33 +3060,38 @@ fn an_arrival_card_the_answer_names_comes_with_its_filing_window() {
         json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
         "function": {"name": "load_skill", "arguments": "{\"name\": \"th-arrival-card\"}"}}]}),
     ];
+    let goal = "Fill in my Thai arrival card for Friday";
     let a = with_arrival_windows(
         &t,
+        goal,
         "Thailand Digital Arrival Card (TDAC): file 5–7 November.",
     );
     assert!(
         a.ends_with("TDAC: filed within the 3 days before arrival."),
         "{a}"
     );
-    // stated already, or a card whose skill was not loaded: unchanged
+    // a fact code owns: rendered from the loaded skill, whatever the answer says; no card skill, nothing
     let said = "TDAC: within 3 days before arrival.";
-    assert_eq!(with_arrival_windows(&t, said), said);
+    assert!(with_arrival_windows(&t, goal, said)
+        .ends_with("TDAC: filed within the 3 days before arrival."));
     assert_eq!(
-        with_arrival_windows(&t, "SG Arrival Card"),
+        with_arrival_windows(&[], goal, "SG Arrival Card"),
         "SG Arrival Card"
     );
-    // the entry-requirements overview answers for every card
+    // the entry-requirements overview answers for the cards the user's request names
     let t = vec![
         json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
         "function": {"name": "load_skill", "arguments": "{\"name\": \"entry-requirements\"}"}}]}),
     ];
     let a = with_arrival_windows(
         &t,
-        "TDAC: submit 5–7 November. SG Arrival Card: 9–11 November.",
+        "What do I need for Bangkok (TDAC) and the SG Arrival Card next week?",
+        "Both cards are filed online.",
     );
     assert!(
         a.contains("TDAC: filed within the 3 days before arrival")
-            && a.contains("SG Arrival Card: filed"),
+            && a.contains("SG Arrival Card: filed")
+            && !a.contains("MDAC"),
         "{a}"
     );
 }
@@ -3609,8 +3266,8 @@ fn what_the_user_changed_in_an_approval_stays_theirs() {
 }
 
 #[test]
-fn an_arrival_card_that_asks_for_defaults_is_handed_over_for_code_to_fill_them() {
-    use super::guards::{needs_handover, AnswerTraits};
+fn an_arrival_card_on_the_form_is_handed_over_for_code_to_fill_the_defaults() {
+    use super::guards::needs_handover;
     let step = |id: &str, name: &str, args: Value, result: &str| {
         vec![
             json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
@@ -3631,12 +3288,8 @@ fn an_arrival_card_that_asks_for_defaults_is_handed_over_for_code_to_fill_them()
         json!({"url": "https://vjw-lp.digital.go.jp/"}),
         "page",
     ));
-    let asks = AnswerTraits {
-        asks_defaults: true,
-        ..Default::default()
-    };
     // only on the form: a page merely opened is not handed over (arrival_cards_real 2026-10-31) …
-    assert!(!needs_handover(&t, asks));
+    assert!(!needs_handover(&t));
     // … once something is filled, it is
     t.extend(step(
         "c3",
@@ -3644,7 +3297,7 @@ fn an_arrival_card_that_asks_for_defaults_is_handed_over_for_code_to_fill_them()
         json!({"ref": "e5", "text": "LU"}),
         "typed",
     ));
-    assert!(needs_handover(&t, asks));
+    assert!(needs_handover(&t));
     // a sign-in hand-over before the fill is not the hand-over: a filled form after it still goes to the user
     let mut signed = t[..5].to_vec();
     signed.extend(step(
@@ -3659,7 +3312,7 @@ fn an_arrival_card_that_asks_for_defaults_is_handed_over_for_code_to_fill_them()
         json!({"ref": "e6", "text": "JORDAN"}),
         "typed",
     ));
-    assert!(needs_handover(&signed, AnswerTraits::default()));
+    assert!(needs_handover(&signed));
     // … and once the form is handed over after the fill, nothing more
     signed.extend(step(
         "c11",
@@ -3667,49 +3320,7 @@ fn an_arrival_card_that_asks_for_defaults_is_handed_over_for_code_to_fill_them()
         json!({"reason": "review and submit"}),
         "Takeover finished",
     ));
-    assert!(!needs_handover(&signed, AnswerTraits::default()));
-}
-
-#[test]
-fn filling_a_known_form_by_hand_gets_a_note_to_use_form_fill() {
-    use super::guards::form_fill_note;
-    let page = |url: &str| json!({"role": "tool", "tool_call_id": "c1", "content": format!("<untrusted_content source=\"web page {url}\">\n{{}}\n</untrusted_content>")});
-    let typing = call("c2", "browser_type", json!({"ref": "e6", "text": "x"}));
-    let t = [page(
-        "https://www.e-arrivalcard.go.kr/portal/apply/agreementPolicy.do?applyType=P&type=PC",
-    )];
-    assert!(form_fill_note(&t, &typing)
-        .is_some_and(|n| n.contains("kr-arrival-card") && n.contains("form_fill")));
-    // another site, or form_fill already ran: no note
-    assert_eq!(
-        form_fill_note(&[page("https://example.com/form")], &typing),
-        None
-    );
-    let mut done = t.to_vec();
-    done.insert(
-        0,
-        json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c0", "type": "function",
-                          "function": {"name": "form_fill", "arguments": "{}"}}]}),
-    );
-    // done = a fill result that did not stop for the user's step
-    done.push(json!({"role": "tool", "tool_call_id": "c0", "content": "{\"url\": \"https://www.e-arrivalcard.go.kr/portal/apply/individual.do\", \"filled\": []}"}));
-    assert_eq!(form_fill_note(&done, &typing), None);
-    // opening a known form, or a hand-over coming back on one, gets the note too (Taiwan: the agent re-navigated)
-    let open = call(
-        "c5",
-        "browser_navigate",
-        json!({"url": "https://twac.immigration.gov.tw/submit"}),
-    );
-    assert!(form_fill_note(&[], &open).is_some_and(|n| n.contains("tw-arrival-card")));
-    let stopped = vec![
-        json!({"role": "tool", "tool_call_id": "c6", "content": "<untrusted_content source=\"web page https://twac.immigration.gov.tw/submit\">{\"url\": \"https://twac.immigration.gov.tw/submit\", \"filled\": [{\"op\": \"require\", \"stop\": true}]}</untrusted_content>"}),
-    ];
-    let back = call(
-        "c7",
-        "browser_request_takeover",
-        json!({"reason": "verify your email"}),
-    );
-    assert!(form_fill_note(&stopped, &back).is_some_and(|n| n.contains("Do not navigate away")));
+    assert!(!needs_handover(&signed));
 }
 
 #[test]
@@ -3721,28 +3332,24 @@ fn an_arrival_card_question_without_a_mailbox_says_connecting_one_helps() {
         json!({"role": "tool", "tool_call_id": "c1", "content": "---\nname: th-arrival-card\nform_kind: arrival\n---\n# TDAC"}),
     ];
     let ask = "Which flight do you arrive on, and where will you stay?";
-    assert!(with_mailbox_hint(&t, ask, false, true, false).contains("Connect your mailbox"));
-    assert_eq!(with_mailbox_hint(&t, ask, true, true, false), ask); // a mailbox is connected
+    // nothing asked through `ask_user`: nothing added, whatever the answer says
+    assert_eq!(with_mailbox_hint(&t, ask, false, false), ask);
+    let mut asked = t.clone();
+    asked.extend(tool_step(
+        "a1",
+        "ask_user",
+        json!({"fields": ["flight", "stay"], "question": ask}),
+        &format!(
+            "{{\"asked\": true, \"fields\": [\"flight\", \"stay\"], \"question\": \"{ask}\"}}"
+        ),
+    ));
+    assert!(with_mailbox_hint(&asked, ask, false, false).contains("Connect your mailbox"));
+    assert_eq!(with_mailbox_hint(&asked, ask, true, false), ask); // a mailbox is connected
     assert_eq!(
-        with_mailbox_hint(&t, "Filled.", false, false, false),
-        "Filled."
-    ); // nothing asked
-    assert_eq!(with_mailbox_hint(&[], ask, false, true, false), ask); // not an arrival card
-}
-
-#[test]
-fn a_format_the_user_asked_for_and_the_run_did_not_make_is_asked_for_once() {
-    use super::guards::missing_format_hint;
-    let t = vec![
-        json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
-               "function": {"name": "make_xlsx", "arguments": "{\"output\":\"reports/trip.xlsx\"}"}}]}),
-        json!({"role": "tool", "tool_call_id": "c1", "content": "Excel created: reports/trip.xlsx"}),
-    ];
-    let goal = "Go ahead with what you have and give me the Excel and the PDF.";
-    assert!(missing_format_hint(&t, goal, false)
-        .is_some_and(|h| h.contains("PDF") && !h.contains("Excel")));
-    assert_eq!(missing_format_hint(&t, "Give me the Excel.", false), None);
-    assert_eq!(missing_format_hint(&[], goal, false), None); // nothing made at all: not this hint's business
+        super::guards::asked_user(&asked).map(|(f, _)| f),
+        Some(vec!["flight".to_string(), "stay".to_string()])
+    );
+    assert_eq!(with_mailbox_hint(&asked[2..], ask, false, false), ask); // not an arrival card
 }
 
 #[tokio::test]
@@ -3823,7 +3430,7 @@ Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible\n4.7 out of 5 star
         )
         .await
         .unwrap();
-    assert!(r.contains("already picked \"Carbon Fibre Case"), "{r}");
+    assert!(r.contains("\"picked\": \"Carbon Fibre Case"), "{r}");
 }
 
 #[test]
@@ -3836,7 +3443,10 @@ fn a_takeover_on_a_known_form_before_form_fill_is_refused_once() {
         json!({"reason": "upload your passport photo"}),
     );
     let r = takeover_before_fill_guard(std::slice::from_ref(&page), &takeover).unwrap_or_default();
-    assert!(r.starts_with("ERROR") && r.contains("cn-arrival-card") && r.contains("form_fill"));
+    assert!(
+        r.starts_with("ERROR: [form_first]") && r.contains("cn-arrival-card"),
+        "{r}"
+    );
     // the second try goes ahead
     let refused = vec![
         page.clone(),
@@ -3861,36 +3471,6 @@ fn a_takeover_on_a_known_form_before_form_fill_is_refused_once() {
         takeover_before_fill_guard(std::slice::from_ref(&page), &auto),
         None
     );
-}
-
-#[test]
-fn a_duration_in_minutes_gets_its_hours() {
-    use super::guards::with_hours;
-    assert_eq!(
-        with_hours("departed at 17:45 — a delay of 435 minutes. The claim is SGD 100."),
-        "departed at 17:45 — a delay of 435 minutes (7 h 15 min). The claim is SGD 100."
-    );
-    assert_eq!(with_hours("延误 180 分钟"), "延误 180 分钟（3 小时）");
-    // under an hour, or the hours already given: unchanged
-    for t in [
-        "a 45-minute walk",
-        "about 40 minutes",
-        "435 minutes (7 h 15 min)",
-        "the 2026 minutes of the meeting",
-    ] {
-        assert_eq!(with_hours(t), t, "{t}");
-    }
-}
-
-#[test]
-fn an_answer_asking_without_a_question_mark_still_asks() {
-    use super::guards::requests_info;
-    assert!(requests_info("I still need your **arrival flight number and date** and your **hotel name and address** in Thailand. You can send those details or upload your e-ticket."));
-    assert!(requests_info("Which hotel are you staying at?"));
-    assert!(requests_info("请告诉我你的航班号。"));
-    assert!(!requests_info(
-        "Your TDAC was submitted successfully. The confirmation page shows TDAC No. TH7D3K9Q2."
-    ));
 }
 
 fn tool_step(id: &str, name: &str, args: Value, result: &str) -> Vec<Value> {
@@ -3934,34 +3514,6 @@ fn a_published_report_gets_its_links_and_the_email_offer() {
 }
 
 #[test]
-fn a_report_asked_for_weekly_or_by_email_gets_its_schedule_or_its_mail() {
-    use super::guards::news_report_hint;
-    let t = report_run(&[]);
-    let weekly = "Research the news on solid-state batteries and send me a weekly report";
-    assert!(news_report_hint(&t, weekly, false, true, false)
-        .is_some_and(|h| h.contains("schedule_create") && h.contains("0 8 * * 1")));
-    let made = report_run(&[("s1", "schedule_create", "已创建 created: id=sch_1")]);
-    assert_eq!(news_report_hint(&made, weekly, false, true, false), None);
-    assert_eq!(
-        news_report_hint(&t, "Research the news on batteries", false, true, false),
-        None
-    );
-    // a scheduled edition whose schedule asks for email
-    let goal = "News report on solid-state batteries: research the latest news with the news-research skill and publish the newspaper report and email it to me";
-    let h = news_report_hint(&t, goal, true, true, false).unwrap_or_default();
-    assert!(
-        h.contains("gmail_send")
-            && h.contains("artifacts/news/solid-state-batteries/2026-11-02-0800.pdf"),
-        "{h}"
-    );
-    assert_eq!(news_report_hint(&t, goal, true, false, false), None); // no mailbox
-    let sent = report_run(&[("g1", "gmail_send", "{\"ok\": true}")]);
-    assert_eq!(news_report_hint(&sent, goal, true, true, false), None);
-    // nothing published: no hint
-    assert_eq!(news_report_hint(&[], weekly, false, true, false), None);
-}
-
-#[test]
 fn a_news_research_run_is_known_by_its_skill() {
     use super::guards::news_research_run;
     let t = tool_step(
@@ -3995,22 +3547,6 @@ fn the_users_edit_survives_a_result_cut_by_compression() {
         a.contains("You changed this in the approval: start = 2026-11-03 15:30"),
         "{a}"
     );
-}
-
-#[test]
-fn a_visa_exemption_without_its_days_gets_one_hint() {
-    use super::guards::visa_days_hint;
-    let t = tool_step(
-        "k1",
-        "load_skill",
-        json!({"name": "entry-requirements"}),
-        "---",
-    );
-    let vague = "Thailand: TDAC within 3 days. The current visa-exemption rules may have changed recently; please verify the visa length.";
-    assert!(visa_days_hint(&t, vague, false).is_some_and(|h| h.contains("in days")));
-    let ok = "Thailand: Australians get a 60-day visa-free stay (Thai MFA, July 2024).";
-    assert_eq!(visa_days_hint(&t, ok, false), None);
-    assert_eq!(visa_days_hint(&[], vague, false), None); // another skill
 }
 
 #[test]
@@ -4065,25 +3601,6 @@ fn tomorrow_in_a_call_is_the_users_tomorrow() {
         fix_relative_day("Call Zuni on 9 November", "Book 1 November.", today),
         None
     );
-}
-
-#[test]
-fn email_it_after_a_report_names_the_edition() {
-    use super::guards::report_followup_note;
-    let card = json!({"role": "system", "content": "{\"type\": \"files\", \"items\": [{\"path\": \"artifacts/news/lumora/2026-11-01-0240.html\"}, {\"path\": \"artifacts/news/lumora/2026-11-01-0240.pdf\"}]}"});
-    let msgs = vec![
-        card,
-        json!({"role": "assistant", "content": "Here is the edition. Reply email it …"}),
-    ];
-    let n = report_followup_note("email it", &msgs).unwrap_or_default();
-    assert!(n.contains("gmail_send") && n.contains("[\"artifacts/news/lumora/2026-11-01-0240.pdf\", \"artifacts/news/lumora/2026-11-01-0240.html\"]"), "{n}");
-    assert!(report_followup_note("Please email it to me", &msgs).is_some());
-    // another request, or no report in the chat: no note
-    assert_eq!(
-        report_followup_note("What is the weather tomorrow?", &msgs),
-        None
-    );
-    assert_eq!(report_followup_note("email it", &[]), None);
 }
 
 #[test]
@@ -4198,47 +3715,6 @@ fn an_arrival_cards_defaults_are_typed_by_code() {
 }
 
 #[test]
-fn a_buy_request_with_a_held_pick_is_not_asked_to_proceed() {
-    use super::guards::proceed_with_pick_hint;
-    let t = tool_step(
-        "p1",
-        "present_choices",
-        json!({"question": "Cheapest is Premium; shall I proceed?", "kind": "comparison", "picked": "Premium", "options": []}),
-        "shown",
-    );
-    let goal = "Buy me FWD's cheapest travel insurance plan for my Tokyo trip";
-    let h = proceed_with_pick_hint(
-        &t,
-        goal,
-        "I found three plans. Cheapest is Premium; shall I proceed with it?",
-        false,
-    );
-    assert!(h.is_some_and(|h| h.contains("\"Premium\"")));
-    assert_eq!(
-        proceed_with_pick_hint(&t, goal, "Premium is bought: reference FWD-1.", false),
-        None
-    );
-    assert_eq!(
-        proceed_with_pick_hint(&t, "Which FWD plans are there?", "Shall I proceed?", false),
-        None
-    );
-    let bought = [
-        t.clone(),
-        tool_step(
-            "p2",
-            "purchase_confirm",
-            json!({}),
-            "{\"status\": \"approved\"}",
-        ),
-    ]
-    .concat();
-    assert_eq!(
-        proceed_with_pick_hint(&bought, goal, "Shall I proceed?", false),
-        None
-    );
-}
-
-#[test]
 fn a_fully_specified_loan_payment_is_computed_by_code() {
     use super::guards::with_loan_payment;
     let goal = "What is the monthly payment on a 3,000,000 mortgage over 25 years at 3.5% a year?";
@@ -4254,4 +3730,157 @@ fn a_fully_specified_loan_payment_is_computed_by_code() {
         with_loan_payment("What is the weather?", "Sunny.", false),
         "Sunny."
     );
+}
+
+#[test]
+fn a_hand_back_in_an_arrival_run_gets_its_snapshot_from_code() {
+    use super::guards::needs_handback_snapshot;
+    let mut t = tool_step(
+        "k1",
+        "load_skill",
+        json!({"name": "jp-visit-japan-web"}),
+        "---\nname: jp-visit-japan-web\nform_kind: arrival\n---",
+    );
+    t.extend(tool_step(
+        "h1",
+        "browser_request_takeover",
+        json!({"reason": "submit"}),
+        "\"Takeover finished: the user handed browser control back.\"",
+    ));
+    assert!(needs_handback_snapshot(&t));
+    t.extend(tool_step("s1", "browser_snapshot", json!({}), "page"));
+    assert!(!needs_handback_snapshot(&t));
+    // any run's hand-back is read by code, not only an arrival card's (the outcome check needs the page)
+    assert!(needs_handback_snapshot(&tool_step(
+        "h1",
+        "browser_request_takeover",
+        json!({}),
+        "\"Takeover finished\""
+    )));
+}
+
+#[tokio::test]
+async fn ask_user_asks_only_what_the_user_alone_can_answer() {
+    // a question to the user is a tool, not prose: a field the profile or the form's defaults answer is refused with
+    // the value (data, no hint); the rest ends the run with the question as the reply and an `ask` card in the chat
+    let (rt, _d) = rt();
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    rt.store
+        .set_profile("nationality", "Australia", "test")
+        .unwrap();
+    rt.store
+        .set_profile(
+            "address:Singapore flat",
+            "10 Bayfront Avenue, Singapore 018956",
+            "test",
+        )
+        .unwrap();
+    let arrival = tool_step(
+        "k1",
+        "load_skill",
+        json!({"name": "sg-arrival-card"}),
+        "# SG Arrival Card",
+    );
+    let t = json!({"id": "t1", "conv_id": conv, "goal": "fill my SG arrival card", "transcript": arrival});
+    let ask = |fields: Value, q: &'static str| {
+        let rt = rt.clone();
+        let t = t.clone();
+        async move {
+            rt.local(&t, "ask_user", &json!({"fields": fields, "question": q}))
+                .await
+                .unwrap()
+        }
+    };
+    let r = ask(json!(["nationality"]), "What is your nationality?").await;
+    let v: Value = serde_json::from_str(&r).unwrap();
+    assert_eq!(v["refused"], "known");
+    assert_eq!(v["known"][0]["value"], "Australia");
+    let r = ask(
+        json!(["departure_date", "which_address"]),
+        "When do you leave, and where?",
+    )
+    .await;
+    let v: Value = serde_json::from_str(&r).unwrap();
+    assert_eq!(v["refused"], "known");
+    assert!(v["known"][0]["value"]
+        .as_str()
+        .unwrap()
+        .contains("+ 7 days"));
+    assert!(v["known"][1]["value"]
+        .as_str()
+        .unwrap()
+        .contains("Bayfront"));
+    let r = ask(json!(["weather"]), "Rain?").await;
+    assert_eq!(
+        serde_json::from_str::<Value>(&r).unwrap()["refused"],
+        "unknown_field"
+    );
+    assert!(ask(json!(["flight"]), " ")
+        .await
+        .starts_with("ERROR: [empty_question]"));
+    let r = ask(
+        json!(["flight", "stay"]),
+        "Which flight, and where do you stay?",
+    )
+    .await;
+    let v: Value = serde_json::from_str(&r).unwrap();
+    assert_eq!(v["asked"], true);
+    assert_eq!(v["fields"], json!(["flight", "stay"]));
+    let card = rt
+        .store
+        .msgs(&conv, 10)
+        .unwrap()
+        .into_iter()
+        .filter(|m| get_str(m, "role") == "system")
+        .find_map(|m| serde_json::from_str::<Value>(&get_str(&m, "content")).ok())
+        .unwrap();
+    assert_eq!(card["type"], "ask");
+    assert_eq!(card["question"], "Which flight, and where do you stay?");
+    // the loop reads the call back from the transcript
+    let mut tr = arrival.clone();
+    tr.extend(tool_step(
+        "a1",
+        "ask_user",
+        json!({"fields": ["flight", "stay"], "question": "q"}),
+        &r,
+    ));
+    assert_eq!(
+        super::guards::asked_user(&tr),
+        Some((
+            vec!["flight".to_string(), "stay".to_string()],
+            "Which flight, and where do you stay?".to_string()
+        ))
+    );
+    // two addresses in the country: a question only the user can answer
+    let two = json!({"address:Singapore flat": "10 Bayfront Avenue, Singapore 018956",
+                     "address:Parents in Singapore": "5 Jalan Kayu, Singapore 799487"});
+    assert_eq!(
+        super::guards::known_answer("which_address", &two, &arrival),
+        None
+    );
+    assert_eq!(super::guards::known_answer("declarations", &two, &[]), None); // not an arrival run
+}
+
+#[test]
+fn a_card_run_appends_the_users_cards_from_the_catalog() {
+    use super::guards::with_card_comparison;
+    let tool = |c: &str| json!({"role": "tool", "content": c});
+    let t = vec![
+        tool("- id=vlt_1 · Hang Seng Travel+ Visa Signature · issued in Hong Kong · card · UNKNOWN\n- id=vlt_2 · Chase Sapphire Reserve · issued in USA · card · UNKNOWN"),
+        tool("# Credit cards — HK (40 cards; catalog as of 2026-08)\n| Hang Seng | Travel+ | dining 5% |"),
+    ];
+    let a = with_card_comparison(&t, "Use your Hang Seng Travel+.", false);
+    assert!(
+        a.contains("**Your cards (catalog)**")
+            && a.contains("| Hang Seng Travel+ Visa Signature | HK |")
+            && a.contains("| Chase Sapphire Reserve | US |"),
+        "{a}"
+    );
+    // one card, or no catalog read: nothing
+    assert_eq!(with_card_comparison(&t[1..], "x", false), "x");
+    let one = [
+        tool("- id=vlt_2 · Chase Sapphire Reserve · issued in USA · card · UNKNOWN"),
+        t[1].clone(),
+    ];
+    assert_eq!(with_card_comparison(&one, "x", false), "x");
 }

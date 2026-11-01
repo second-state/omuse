@@ -290,24 +290,28 @@ async def connect_google_calendar(u: U.User) -> str:
 
 
 async def ask_takeover(u: U.User, text: str, *, on_takeover, label: str = "", timeout: float = 900, **kw) -> U.Answer:
-    """`User.ask` for a request that will need the user in the browser. When the agent's request to take over arrives as
-    its message before the chat shows the takeover card ("I need you to take over the browser … Open this task's
-    browser tab"), `ask` has already returned; the user then does what that message asks: opens the card (or the
-    message's link to the browser), lets `on_takeover` act in the live view, hands back, and waits for the answer."""
+    """`User.ask` for a request that will need the user in the browser. When the task is still waiting for the user
+    after `ask` returned (the takeover card came a moment after the message), the user opens the card, lets
+    `on_takeover` act in the live view, hands back, and waits for the answer. Only the card (and the task's waiting
+    state) starts this — never words in the message."""
     pg = u.page
     cards0 = await pg.locator(".sys-card.takeover").count()
     a = await u.ask(text, label=label, on_takeover=on_takeover, timeout=timeout, **kw)
-    if a.takeovers or a.timed_out or not re.search(r"take over|#browser/", a.text, re.I):
+    if a.takeovers or a.timed_out:
         return a
-    for _ in range(15):   # the card follows the message
+    for _ in range(15):   # the card follows the message while the task waits for the user
         if await pg.locator(".sys-card.takeover").count() > cards0:
             break
+        if not await u.takeover_pending():
+            return a
         await pg.wait_for_timeout(1000)
     card = pg.locator(".sys-card.takeover").last
-    request = " ".join((await card.inner_text()).split()) if await card.count() else a.text
-    link = card.locator("a.btn") if await card.count() else pg.locator(".msg.assistant .bubble a[href*='#browser/']").last
+    if not await card.count() or await pg.locator(".sys-card.takeover").count() <= cards0:
+        return a
+    request = " ".join((await card.inner_text()).split())
+    link = card.locator("a.btn")
     if not await link.count():
-        print(f"INFO no takeover card or browser link to follow: {a.text[:200]!r}")
+        print(f"INFO the takeover card has no browser link to follow: {request[:200]!r}")
         return a
     before = await pg.locator(".msg.assistant:not(.live)").count()
     back = pg.url

@@ -24,6 +24,7 @@ app = FastAPI()
 PAGE = os.environ.get("TEST_PAGE", "http://example.com/")
 CALLS = []
 RETRY = {}   # scenario -> failures served so far
+MARKUP_FINALS = {}   # MARKUPFINAL goal -> final (tool-free) calls served so far: the first is markup, the next plain text
 
 
 def tc(name, args):
@@ -311,6 +312,11 @@ async def _chat(req: Request, b: dict):
     last_tool = tools_done[-1]["content"] if tools_done else ""
     allu = "\n".join(str(m["content"]) for m in msgs if m["role"] == "user")
     tnames = [t["function"]["name"] for t in (b.get("tools") or [])]
+    # the scripted model decides from the transcript's SHAPE, never from the words of a system note: the tools it was
+    # offered (`tnames`), the tools it has called (`called`), the count of results (`n`), and whether an earlier final
+    # answer of its own is already in the transcript (`finals`: the runtime put it back when it asked again)
+    called = [c["function"]["name"] for m in msgs if m.get("role") == "assistant" for c in (m.get("tool_calls") or [])]
+    finals = [m for m in msgs if m.get("role") == "assistant" and not m.get("tool_calls") and str(m.get("content") or "").strip()]
     if "focused sub-agent of OMuse" in sys and "SUBTASK" in goal:   # parallel_steps_e2e.py: a sub-agent opens its page in its own lane
         url = re.search(r"https?://\S+", goal).group(0)
         if n == 0:
@@ -337,7 +343,7 @@ async def _chat(req: Request, b: dict):
     if sk is not None:
         return sk
     if "FAKECLAIM" in goal:   # says it sent an email without sending anything (outcome check, roadmap batch 1)
-        if "（系统）你的回答说已经" in allu or "(System) Your answer says you" in allu:
+        if finals:   # asked again (its claim is back in the transcript): the honest answer
             return reply("我还没有发送邮件：这个任务里没有执行发送，下面是准备好的草稿内容。")
         return reply("好的，邮件已发送给 Jennifer。")
     if "Kiprun 跑步袜 Run 100" in goal:   # golden G12: a price watch (a local tool the dry run stops)
@@ -356,9 +362,7 @@ async def _chat(req: Request, b: dict):
         return reply("10 月是西南季风转东北季风的过渡期，午后多雷阵雨。来源：https://www.weather.gov.sg/climate-climate-of-singapore/ ，"
                      "https://en.wikipedia.org/wiki/Climate_of_Singapore")
     if "ZHANSWER" in goal:   # a model that answers in Chinese although the setting is English
-        last = next((str(m["content"]) for m in reversed(msgs)
-                     if not str(m["content"]).startswith(("(System) Status", "（系统）当前状态"))), "")
-        if last.startswith("(System) Settings → Language is English"):
+        if finals:   # asked again (its Chinese answer is back in the transcript): the English one
             return reply("Here is the most important email: the security alert from Google Workspace about a suspicious login.")
         return reply("最重要的邮件是 Google Workspace 发来的可疑登录安全告警，建议尽快检查。")
     if "SKILLCHECK" in goal:   # report which skills the agent's instructions list
@@ -384,13 +388,13 @@ async def _chat(req: Request, b: dict):
         tools_txt = json.dumps(b.get("tools") or [], ensure_ascii=False)
         rule = sysm.split("\n", 1)[0][:40]
         return reply(f"RULE={rule} | SYS_CJK={len(cjk.findall(sysm))} | TOOLS_CJK={len(cjk.findall(tools_txt))} | NTOOLS={len(tnames)}")
-    if "BUDGETPDF" in goal:   # a research task that keeps reading pages until the step budget says: deliver now
-        done = [m for m in msgs if m["role"] == "tool"]
-        if "step budget" not in allu and "browser_navigate" in tnames:
+    if "BUDGETPDF" in goal:   # a research task that reads pages as long as the page tools are offered (the step budget
+        # is a tool-list limit: agent/runtime.rs `budget` withdraws them), then delivers
+        if "browser_navigate" in tnames:
             return reply("", [tc("browser_navigate", {"url": f"http://shop.test:8099/restaurants.html?p={n}"})])
-        if not any("PDF 已在本机生成" in str(m["content"]) for m in done):
+        if "make_pdf" not in called and "make_pdf" in tnames:
             return reply("", [tc("make_pdf", {"markdown": "# 调研简报\n\n- Kuriya Dining 19:00\n- Shinzo 19:30", "output": "reports/brief.pdf"})])
-        if not any("已发送到对话" in str(m["content"]) for m in done):
+        if "send_file" not in called and "send_file" in tnames:   # a second send of a file already in the chat is refused by code
             return reply("", [tc("send_file", {"path": "reports/brief.pdf", "note": "简报"})])
         return reply(f"BUDGET DONE after {n} tool results; tools offered at the end: {','.join(sorted(tnames))}")
     if "SHOPCART" in goal:   # the 2026-09-29 Amazon run: find a case on a long page, add it to the cart
@@ -620,11 +624,13 @@ async def _chat(req: Request, b: dict):
     if "NUMCHECK" in goal:   # 2026-10-03 M1-06: an answer with figures no tool produced is sent back once
         if n == 0:
             return reply("", [tc("calculate", {"expressions": ["6.5*365 - 6.5*3*52", "invest(1358.5, 4, 10, 0, 1)"]})])
-        if "do not appear in any tool result" in allu or "没有出现在任何工具结果" in allu:
+        if finals:   # asked again (its first answer is back in the transcript): the figures from the tool result
             return reply("FIXED: saves 1,358.50 a year; after 10 years 16,310.30")
         return reply("Saves 1,358.50 a year; after 10 years about 17,016.64")
-    if "WEBLOOP" in goal:   # 2026-10-02 R4-04b: endless searching for a cleaner product list → web-budget nudge
-        if "web budget" in allu:
+    if "WEBLOOP" in goal:   # 2026-10-02 R4-04b: endless searching for a cleaner product list — the web budget
+        # (guards.rs WEB_NUDGE = 18 web calls) ends it: the model wraps up once it has made that many, or as soon as
+        # the search tool is no longer offered
+        if n >= 18 or "web_search" not in tnames:
             return reply(f"WRAPPED after {n} calls")
         return reply("", [tc("web_search", {"query": f"anker power bank variant {n}"})])
     if "DATAQTEST" in goal:   # data_query: exact counts from a table (the 2026-10-02 NPS miscount), a log via pattern
@@ -666,7 +672,10 @@ async def _chat(req: Request, b: dict):
     if "MARKUPFINAL" in goal:   # the 2026-10-02 Tesla run: a final answer (no tools offered) that was only tool-call markup
         if b.get("tools"):
             return reply("", [tc("browser_navigate", {"url": PAGE + f"?m={n}"})])
-        if "<tool_call>" not in allu:   # the nudge (zh or en) names the markup
+        # the fake's own count of tool-free calls for this goal: the first final is markup, any later one plain text
+        # (whether the runtime asks again or drops the markup in code, the suite checks that no markup reaches the user)
+        MARKUP_FINALS[goal] = MARKUP_FINALS.get(goal, 0) + 1
+        if MARKUP_FINALS[goal] % 2 == 1 and not finals:
             return reply('<tool_call>\n<function=update_plan>\n<parameter=steps>\n[{"id": "s1", "status": "done"}]\n'
                          '</parameter>\n</function>\n</tool_call>')
         return reply("MARKUP FIXED: plain answer")

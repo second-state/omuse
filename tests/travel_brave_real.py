@@ -76,9 +76,6 @@ async def main():
               a.has_prices() and bool(re.search(AIRLINES, a.text) or re.search(FLIGHT_NO, a.text)) and len(re.findall(r"\b\d{1,2}:\d\d\b", a.text)) >= 2, a.text[:600])
         bk = [x for x in a.links if "kiwi.com" in x]
         check("trip: the flight has a Kiwi.com booking link, and it opens", bool(bk) and opens(bk[0])[0], a.links)
-        check("trip: the answer offers to search the hotel (or the car) next",
-              # the offer may span two sentences ("I haven't searched the hotel or car yet. I can search those next")
-              bool(re.search(r"hotel[^?!]{0,120}\b(next|now)\b|(shall|should|would you like|want) (me to |I )?search[^.?!]*hotel", a.text, re.I)), a.text[-400:])
 
         # 3. the hotel
         a = await u.ask("Yes, please search the hotel now.", label="hotel", new_chat=False)

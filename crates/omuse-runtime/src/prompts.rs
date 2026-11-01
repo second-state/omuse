@@ -761,7 +761,7 @@ pub fn executor_system(p: &ExecutorPrompt) -> String {
 a lookup of a few calls needs no plan, just do it; call plan_task for work that takes several dependent steps, several sources \
 or candidates, sub-agents or approvals in sequence; a skill is followed from its sheet (load_skill), and the few long skills that \
 need a plan bring one with the sheet. The plan and its progress \
-are then in the latest Status note at the end of the conversation; update it with update_plan)".to_string()
+are then in the plan section of this system prompt; update it with update_plan)".to_string()
     };
     if let Some(steps) = plan_steps(p.plan.as_ref()) {
         let plan = p.plan.as_ref().unwrap();
@@ -1166,7 +1166,7 @@ mod tests {
         assert!(PLANNER_SYSTEM.contains(
             "Searching or booking a new flight, hotel, restaurant or rental car has no mail step"
         ));
-        assert!(s.contains("latest Status note at the end"));
+        assert!(s.contains("plan section of this system prompt"));
         let zh = executor_system(&ExecutorPrompt {
             tz: "Asia/Shanghai".into(),
             connections: json!({"gmail": {"ready": true, "accounts": ["a@x.com", "b@y.com"], "providers": {"b@y.com": "Outlook"}},

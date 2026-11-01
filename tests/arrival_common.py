@@ -13,9 +13,9 @@ that goes to the confirmation page with every value in the address.
 What the user does and sees for a card (`fill_card`): they ask Main's chat to fill it in (holiday trip). If the answer
 asks something first, they answer once. When the agent asks them to take over, they read the request, look at the page
 in the browser view, scroll to the bottom, type the CAPTCHA, press Submit and hand the browser back (Visit Japan Web:
-they first log in to their account when asked). Checked: the Travel bot did it; no approval dialog at all; the request
-to take over says what is left and does not claim the card was submitted; the page handed over is the official form,
-not its confirmation; the confirmation page's address holds the right values (name, sex from the profile, birth date,
+they first log in to their account when asked). Checked (state and facts, never the model's words): the Travel bot did
+it; no approval dialog at all; a takeover card came and the page handed over is the official form, not its
+confirmation, with the CAPTCHA box still empty; the confirmation page's address holds the right values (name, sex from the profile, birth date,
 nationality, passport number and expiry DD/MM/YYYY from the Vault, flight, arrival date, last and next city = where the
 flight came from, departure = arrival + 7 days, the hotel, purpose, every health and declaration answer No); the final
 answer quotes the reference the confirmation page shows; the passport number never appears in the chat."""
@@ -61,7 +61,6 @@ class Card:
     hotel: tuple[str, str]    # (name, address)
     captcha: str = ""
     login: bool = False       # Visit Japan Web: the user logs in to their account first
-    leftover: str = r"captcha|security (?:code|check)|characters|image"   # what the takeover request must name
     fields_url: str = ""      # the page whose named fields the form has, when it is not `form` (Korea: the terms page first)
     trip: bool = True         # the form has the trip and accommodation sections
 
@@ -83,20 +82,18 @@ CARDS = {
     "sg": Card("sg", "Please fill in my SG Arrival Card for my trip to Singapore — it's a holiday.",
                "https://eservices.ica.gov.sg/sgarrivalcard/", "sgac_done", "DE202611020123", "SQ 231", "Singapore Airlines",
                ("Sydney", "SYD"), ("Singapore", "SIN"), ("Marina Bayfront Hotel", "10 Bayfront Avenue, Singapore 018956"),
-               # the real ICA form (rebuilt stand-in, 2026-10-31): no CAPTCHA; the user ticks the declaration and submits
-               leftover=r"declar|submit|review"),
+               ),   # the real ICA form (rebuilt stand-in, 2026-10-31): no CAPTCHA; the user ticks the declaration and submits
     "th": Card("th", "Please fill in my Thailand Digital Arrival Card (TDAC) for my trip — it's a holiday.",
                "https://tdac.immigration.go.th/", "tdac_done", "TH7D3K9Q2", "TG 476", "Thai Airways",
                ("Sydney", "SYD"), ("Bangkok", "BKK"), ("Siam Riverside Hotel", "88 Charoen Krung Road, Bang Rak, Bangkok 10500"), "M4XP8"),
     "my": Card("my", "Please fill in my Malaysia Digital Arrival Card (MDAC) for my trip — it's a holiday.",
                "https://imigresen-online.imi.gov.my/mdac/main", "mdac_done", "MDAC-2611-48213", "MH 122", "Malaysia Airlines",
-               ("Sydney", "SYD"), ("Kuala Lumpur", "KUL"), ("Bukit Bintang Grand Hotel", "22 Jalan Bukit Bintang, 55100 Kuala Lumpur"), "K9TW3",
-               leftover=r"captcha|puzzle|slide|slider|verif|submit"),   # the real MDAC ends in a slider puzzle
+               ("Sydney", "SYD"), ("Kuala Lumpur", "KUL"), ("Bukit Bintang Grand Hotel", "22 Jalan Bukit Bintang, 55100 Kuala Lumpur"), "K9TW3"),   # the real MDAC ends in a slider puzzle
     "kr": Card("kr", "Please fill in my Korea e-Arrival Card for my trip to Seoul — it's a holiday.",
                "https://www.e-arrivalcard.go.kr/", "kr_arrival_done", "KR-EA-77120934", "KE 122", "Korean Air",
                ("Sydney", "SYD"), ("Seoul Incheon", "ICN"), ("Hotel Namsan Gardens", "15 Toegye-ro 20-gil, Jung-gu, Seoul 04637"), "P3HN7",
                # the real site (rebuilt stand-in, 2026-10-31): landing → terms → the form; Submit asks for the emailed code
-               leftover=r"captcha|code|verif|submit", fields_url="https://www.e-arrivalcard.go.kr/portal/apply/individual.do"),
+               fields_url="https://www.e-arrivalcard.go.kr/portal/apply/individual.do"),
     "jp": Card("jp", "Please do my Visit Japan Web registration for my trip to Tokyo — it's a holiday.",
                "https://vjw-lp.digital.go.jp/", "vjw_done", "JP-5521-9087", "NH 880", "ANA",
                ("Sydney", "SYD"), ("Tokyo Haneda", "HND"), ("Shinjuku Granbell Inn", "2-14-5 Kabukicho, Shinjuku-ku, Tokyo 160-0021"), "W8FD2",
@@ -106,18 +103,16 @@ CARDS = {
                ("Sydney", "SYD"), ("Shanghai Pudong", "PVG"), ("Bund Riverside Hotel", "99 Zhongshan East 1st Road, Huangpu District, Shanghai"), "T6QZ4",
                # the real site (rebuilt stand-in, 2026-10-31): the passport-page upload is the user's ("captcha" = the
                # document code standing in for it), then the agent fills the form; Submit is the user's
-               leftover=r"submit|upload|photo|passport page|review",
                fields_url="https://s.nia.gov.cn/ArrivalCardFillingPC/entry-registation-form"),
     "tw": Card("tw", "Please fill in my Taiwan Arrival Card for my trip to Taipei — it's a holiday.",
                "https://twac.immigration.gov.tw/", "twac_done", "TWAC-90417736", "CI 52", "China Airlines",
                ("Sydney", "SYD"), ("Taipei Taoyuan", "TPE"), ("Xinyi Park Hotel", "6 Songshou Road, Xinyi District, Taipei 110"), "H2VK9",
                # the real TWAC (rebuilt stand-in, 2026-10-31): the user verifies their email (the code is the "captcha"),
                # then the agent fills the form; the declaration and SUBMIT are the user's
-               leftover=r"declar|submit|review", fields_url="https://twac.immigration.gov.tw/submit"),
+               fields_url="https://twac.immigration.gov.tw/submit"),
     "id": Card("id", "Please fill in my All Indonesia arrival card for my trip to Bali — it's a holiday.",
                "https://allindonesia.imigrasi.go.id/", "id_arrival_done", "ALLIND-332190", "GA 715", "Garuda Indonesia",
-               ("Sydney", "SYD"), ("Denpasar Bali", "DPS"), ("Seminyak Lagoon Resort", "Jl. Kayu Aya No. 8, Seminyak, Bali 80361"),
-               leftover=r"certif|declar|submit"),   # the real site (rebuilt stand-in, 2026-10-31): no CAPTCHA, the user certifies
+               ("Sydney", "SYD"), ("Denpasar Bali", "DPS"), ("Seminyak Lagoon Resort", "Jl. Kayu Aya No. 8, Seminyak, Bali 80361")),   # the real site (rebuilt stand-in, 2026-10-31): no CAPTCHA, the user certifies
     "ph": Card("ph", "Please do my Philippines eTravel registration for my trip to Manila — it's a holiday.",
                "https://etravel.gov.ph/", "etravel_done", "ETRV-PH-55820117", "PR 210", "Philippine Airlines",
                ("Sydney", "SYD"), ("Manila", "MNL"), ("Makati Palm Suites", "1200 Ayala Avenue, Makati City, Metro Manila"), "B7JQ3"),
@@ -127,7 +122,7 @@ CARDS = {
     "uk": Card("uk", "Please apply for my UK ETA for my trip to London — it's a holiday. I work as a software engineer.",
                "https://www.gov.uk/eta", "uk_eta_done", "4402-1187-6631", "QF 1", "Qantas",
                ("Sydney", "SYD"), ("London Heathrow", "LHR"), ("Covent Garden Court Hotel", "8 Bedford Street, London WC2E 9ED"), "",
-               leftover=r"photo|picture|selfie|pay|fee", trip=False),
+               trip=False),
 }
 
 
@@ -241,6 +236,7 @@ class Takeover:
         self.form_url = ""
         self.after_submit = ""
         self.logged_in = False
+        self.captcha_ink: float | None = None   # how much was written in the CAPTCHA box when the page was handed over
 
     async def __call__(self, pg, request: str) -> None:
         u, card = self.u, self.card
@@ -284,6 +280,10 @@ class Takeover:
             await pg.wait_for_timeout(500)
         if card.captcha and "captcha" in at:
             x, y, w, h = at["captcha"]
+            try:   # the CAPTCHA box as handed over: empty (left for the user), or written in
+                self.captcha_ink = (await u.view_ink({"captcha": at["captcha"]}))["captcha"]
+            except Exception as e:   # noqa: BLE001 — the picture was being replaced: nothing measured
+                print(f"INFO {self.label} CAPTCHA box not measured: {e!r}")
             await click_at(u, x + w / 2, y + h / 2)
             await pg.keyboard.press("Control+a")
             await pg.keyboard.press("Backspace")
@@ -308,24 +308,9 @@ class Takeover:
         print(f"INFO {self.label} after Submit the URL bar shows {self.after_submit!r}")
 
 
+# fields with a default the agent never asks about — checked on a choice card's structured question and options
+# (present_choices), never on the model's prose
 ASKED_DEFAULTS = re.compile(r"\b(gender|sex|symptom|fever|criminal|convict|refused|deport|declare|customs|other names|passport number)\b", re.I)
-_SUBMITTED = re.compile(r"\b(has been|have been|was|successfully|already) submitted\b", re.I)
-_NEGATED = re.compile(r"\b(no|not|nothing|never|neither|nor|none)\b|n['’]t\b", re.I)
-
-
-class _Claims:
-    """"…has been submitted" said as done — not "No registration has been submitted" (the sentence negates it)."""
-
-    @staticmethod
-    def search(text: str):
-        for m in _SUBMITTED.finditer(text or ""):
-            start = max(text.rfind(".", 0, m.start()), text.rfind("\n", 0, m.start())) + 1
-            if not _NEGATED.search(text[start:m.start()]):
-                return m
-        return None
-
-
-CLAIMS_SUBMITTED = _Claims()
 
 
 def norm(s: str) -> str:
@@ -413,11 +398,14 @@ async def fill_card(u: U.User, card: Card, *, label: str = "", ask: str = "", fl
     a = await u.ask(ask or card.ask, label=label, on_takeover=to, timeout=1500)
     approvals, answers = list(a.approvals), [a]
     if not to.form_url and not a.timed_out:
-        # the answer asked something before the form was handed over: the user answers once, in the same chat
-        # only the questions count: "I filled in your passport number" is no question
-        asked = [x for x in re.split(r"(?<=[.?!])\s+|\n", a.text) if "?" in x or re.search(r"\b(please (tell|provide|confirm|send|let me know))\b", x, re.I)]
-        check(f"{label}: the question did not ask for anything that has a default (health, declarations, sex, passport)",
-              not any(ASKED_DEFAULTS.search(x) for x in asked), asked or a.text[:500])
+        # the first turn ended with no hand-over: the agent asked something first (state: no takeover card, no
+        # takeover call). The user answers once, in the same chat.
+        cards = await u.choices()
+        check(f"{label}: the first turn asked (an answer with no takeover) before the form was handed over",
+              not a.takeovers and not await u.takeover_happened(), (a.takeovers, a.text[:300]))
+        if cards:   # a choice card: its question and options are structured — none of them a field with a default
+            check(f"{label}: the choice card did not ask for anything that has a default (health, declarations, sex, passport)",
+                  not ASKED_DEFAULTS.search(U.choice_text(cards)), U.choice_text(cards)[:500])
         a = await u.ask(follow_up or "It's a holiday, travelling alone. My e-ticket and hotel booking are in my email — please take "
                         "everything else from there and from my profile, and go ahead and fill in the form.",
                         label=f"{label} follow-up", new_chat=False, on_takeover=to, timeout=1500)
@@ -428,14 +416,12 @@ async def fill_card(u: U.User, card: Card, *, label: str = "", ask: str = "", fl
           [x.bot_link for x in answers])
     check(f"{label}: no approval dialog at all (browser auto-approve, the passport fill included)", not approvals, approvals)
     if card.login:
-        check(f"{label}: the agent asked the user to take over to log in to their account, and they did",
-              to.logged_in and any(re.search(r"log[- ]?in|sign[- ]?in|account", r, re.I) for r in to.requests), to.requests)
-    finish = [r for r in to.requests if not re.search(r"log[- ]?in|sign[- ]?in", r, re.I) or re.search(card.leftover, r, re.I)]
-    check(f"{label}: the user was asked to take over to finish the form, naming what is left ({card.leftover})",
-          bool(to.form_url) and any(re.search(card.leftover, r, re.I) for r in finish), to.requests)
-    check(f"{label}: nothing claims the card was submitted before the user did",
-          not any(CLAIMS_SUBMITTED.search(r) for r in to.requests) and not any(CLAIMS_SUBMITTED.search(x.text) for x in answers[:-1]),
-          to.requests)
+        check(f"{label}: the user was asked to take over to log in to their account, and they did (the account page was reached)",
+              to.logged_in, (to.logged_in, to.requests))
+    check(f"{label}: the user was asked to take over to finish the form (a takeover card whose page is the form)",
+          bool(to.form_url) and bool(to.requests), to.requests)
+    if card.captcha and to.captcha_ink is not None:
+        check(f"{label}: the CAPTCHA box was empty when the page was handed over (left for the user)", to.captcha_ink < 0.01, to.captcha_ink)
     host = urlsplit(card.form).hostname
     check(f"{label}: the page handed over is the official form ({host}), not its confirmation (the agent did not submit)",
           host in to.form_url and card.done not in to.form_url, to.form_url)

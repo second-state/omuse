@@ -110,8 +110,8 @@ async def main():
         quiet("business", a)
         check("business: the answer covers the preferred airline (ANA) — its fare, or that it has none",
               bool(re.search(r"\bANA\b|All Nippon", a.text)), a.text[:600])
-        if re.search(r"all airlines|other airlines", a.text, re.I) and not a.has_prices():
-            # ANA has no such flight and the answer offers to look wider: the user says yes
+        if not a.has_prices():
+            # no fare in the answer (ANA has no such flight): the user asks for all airlines
             a = await u.ask("Yes, please search all airlines.", label="business-all", new_chat=False)
             quiet("business (all airlines)", a)
         check("business: the answer gives business-class fares with prices", a.mentions("business") and a.has_prices(), a.text[:600])

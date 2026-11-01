@@ -66,12 +66,15 @@ async def main():
         pick = u.page.locator(".bubble.choices .choice", has_text="Slim Leather").locator("button")
         if await pick.count():
             await S.set_auto(u, False)   # the user wants to see what needs approval: adding to the cart must not
+            calls0, choices0 = len(await u.calls()), len(await u.choices())
             a = await S.ask(u, "", label="pick", new_chat=False, send=lambda: pick.first.click())
             asked = [" ".join(t.split()) for t in await u.page.locator(".msg.user .bubble").all_inner_texts()]
             check("pick: the user's pick is sent as their message", any("Slim Leather" in q for q in asked[-2:]), asked[-2:])
             check("pick: the cards are closed after the pick (their buttons disabled)",
                   await u.page.locator(".bubble.choices .choice button[disabled]").count() >= 3, await choice_cards(u))
-            if not re.search(r"cart", a.text, re.I) and "?" in a.text:
+            new_calls = [x.get("name", "") for x in (await u.calls())[calls0:]]
+            if len(await u.choices()) > choices0 or not any(n.startswith("browser_") for n in new_calls):
+                # the pick turn asked again (a new choice card) or took no step in the shop: the user answers once
                 a = await S.ask(u, "Any colour is fine — please add it to my cart.", label="pick follow-up", new_chat=False)
             check("pick: the answer says the Slim Leather case (S$24.90) is in the cart",
                   re.search(r"Slim Leather", a.text, re.I) and re.search(r"cart", a.text, re.I) and "24.90" in a.text, a.text[:700])
@@ -102,8 +105,8 @@ async def main():
         text = "\n".join(x.text for x in answers)
         takeovers = [t for x in answers for t in x.takeovers]
         check("buy: the answer came (no time-out)", bool(b.text.strip()) and not b.timed_out, b.text[:300])
-        check("buy: the user was asked to take over to place the order", any(re.search(r"place|order|pay", t, re.I) for t in takeovers), takeovers)
-        check("buy: the page handed over is Kaya Mobile's checkout (the agent did not place the order)", "kaya_checkout" in seen["url"], seen["url"])
+        check("buy: the user was asked to take over on Kaya Mobile's checkout (a takeover card; the agent did not place the order)",
+              bool(takeovers) and "kaya_checkout" in seen["url"], (takeovers, seen["url"]))
         q = {k: v[0] for k, v in parse_qs(urlsplit(seen["after"]).query).items()}
         print(f"INFO the order the user placed: { {k: v for k, v in q.items() if k not in ('card', 'cvc')} }")
         check("buy: the user's press reaches the confirmation with exactly the Slim Leather case at S$24.90",

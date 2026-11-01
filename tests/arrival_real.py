@@ -14,7 +14,6 @@ the user's part and the checks: tests/arrival_common.py; the rule: tests/user_co
 Not in run_in_docker.sh's default list (it needs a real model, billed):
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh arrival_real"""
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,11 +34,10 @@ async def main():
                    f"{TH.hotel[1]}. It's a holiday.")
         answers = await A.fill_card(u, TH, label="nomail", follow_up=details)
         first = answers[0]
-        check("nomail: with no mailbox the agent first asked (once) for the flight and the accommodation",
-              len(answers) == 2 and re.search(r"flight", first.text, re.I) is not None
-              and re.search(r"hotel|stay|accommodation|address", first.text, re.I) is not None, first.text[:500])
-        check("nomail: the question says a connected mailbox would let it find the bookings",
-              re.search(r"mail|inbox", first.text, re.I) is not None, first.text[:500])
+        # the first turn asked (an answer with no takeover, so the user's details were needed) and the form went in
+        # after the one answer: two turns, one hand-over
+        check("nomail: with no mailbox the agent first asked once (a turn with no takeover), then filled the form from the answer",
+              len(answers) == 2 and not first.takeovers and bool(answers[1].takeovers), [len(x.takeovers) for x in answers])
 
 
 A.world(SG.mail())

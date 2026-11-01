@@ -28,7 +28,6 @@ from tests import user_common as U  # noqa: E402
 from tests.user_common import check  # noqa: E402
 
 FACTS = [r"40\s?MW", r"€\s?120|120\s?million", r"Kestrel", r"Ofgem|£\s?310", r"Pentland|Orkney", r"Paimpol|Brittany"]
-ASKS = re.compile(r"[?？]|\b(which|what|whom)\b", re.I)   # the answer asks the user something
 SMTP = SC.SchoolMail()
 SMTP.start()
 
@@ -76,7 +75,6 @@ async def main():
         hits = C.c.get("http://127.0.0.1:8094/ddg/_hits").json()
         check("report: the news was searched in the browser (date-filtered queries reached the engine)",
               hits["n"] > hits0 and any("[df=" in q for q in hits["queries"]), hits)
-        check("report: the answer offers to email the edition", re.search(r"email it", a.text, re.I), a.text[-400:])
         tasks = await C.page_text(u, "timers")
         check("report: the Tasks tab lists a weekly task about Lumora",
               re.search(r"Lumora", tasks, re.I) and re.search(r"Next run", tasks), tasks[:600])
@@ -89,8 +87,8 @@ async def main():
         a2 = await u.ask("email it", label="email it", new_chat=False, timeout=600)
         mine = lambda: [m for m in SMTP.received[sent0:] if any(K.USER in t for t in m["to"])]   # noqa: E731
         got = C.wait_for(mine, timeout=30)
-        if not got and ASKS.search(a2.text):
-            # asking first is fine: the user says which report and where
+        if not got:
+            # no mail arrived (state): asking first is fine, the user says which report and where
             a2 = await u.ask("The Lumora report you just made — send it to my own email address.", label="email it (which)",
                              new_chat=False, timeout=600)
             got = C.wait_for(mine, timeout=60)
@@ -114,8 +112,8 @@ async def main():
             check("scheduled: the run published a new edition with its links", bool(new_html) and new_html != html, run_links)
             mailed = [m for m in SMTP.received[mailed0:] if any(K.USER in t for t in m["to"])
                       and any(n.endswith(".pdf") for n, _ in m["attachments"])]
-            check("scheduled: the edition was emailed to the user (the schedule asks for it), or the answer offers to email it",
-                  bool(mailed) or re.search(r"email it", out, re.I), (out[-300:], [m["subject"] for m in mailed]))
+            check("scheduled: the edition was emailed to the user with its PDF (the schedule asks for it: the SMTP sink has it)",
+                  bool(mailed), (out[-300:], [(m["to"], m["subject"]) for m in SMTP.received[mailed0:]]))
             st, _, body = await opens(u, U.APP.split("#")[0].rstrip("/") + "/artifacts/")
             listed = body.decode("utf-8", "replace").count("/artifacts/news/")
             check("scheduled: /artifacts/ lists both editions (HTML and PDF each)", st == 200 and listed >= 4, (st, listed))

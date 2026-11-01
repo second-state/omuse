@@ -63,9 +63,10 @@ MAIL = [
 
 
 def no_send(dialog: str) -> bool:
-    """The user's decision on an approval dialog: anything but sending, replying to or forwarding an email, or pressing
-    Submit for them (the user said they would press it)."""
-    yes = not re.search(r"submit|send email|send mail|reply|forward", dialog, re.I)
+    """The user's decision on an approval dialog, by the tool it names: anything but sending, replying to or forwarding
+    an email, or a click for them (the user said they would press Submit; browser actions are auto-approved, so a
+    dialog about a click is Sentinel's escalation of a submit)."""
+    yes = U.tool_of(dialog) not in U.MAIL_SEND_TOOLS | {"browser_click", "browser_click_at"}
     print(f"INFO approval dialog ({'approve' if yes else 'DENY'}): {dialog[:300]}")
     return yes
 

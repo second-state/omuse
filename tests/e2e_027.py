@@ -52,7 +52,8 @@ t = wait(r["task_id"])
 navs = [e for e in t["events"] if e["type"] == "tool_call" and e["data"]["name"] == "browser_navigate"]
 sent = [e for e in t["events"] if e["type"] == "tool_call" and e["data"]["name"] == "send_file"]
 check("budget: task completed (not FAILED at the limit)", t["status"] == "COMPLETED", (t["status"], t.get("error"), t.get("result")))
-check("budget: stopped browsing and delivered the PDF", len(sent) == 1 and os.path.isfile(WS + "/reports/brief.pdf") and 2 <= len(navs) <= 4,
+# the PDF is sent by code right after it is made (no model send_file to count): the file and its card are the proof
+check("budget: stopped browsing and delivered the PDF", os.path.isfile(WS + "/reports/brief.pdf") and 2 <= len(navs) <= 4,
       (len(navs), len(sent)))
 conv = c.get(f"{B}/api/conversations/{r['conversation_id']}").json()
 check("budget: PDF card in the chat", any('"type": "file"' in m["content"] and "brief.pdf" in m["content"] for m in conv["messages"]))

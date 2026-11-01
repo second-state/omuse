@@ -153,7 +153,8 @@ pub const REMAKE_TOOLS: [&str; 11] = [
 ];
 
 /// In the last 2 steps only delivery tools remain.
-pub const FINISH_TOOLS: [&str; 32] = [
+pub const FINISH_TOOLS: [&str; 33] = [
+    "ask_user",
     "update_plan",
     "files_write",
     "files_read",
@@ -488,6 +489,15 @@ size'. Note: pixel upscaling, it does not invent new detail (true AI super-resol
 not available). Omit `path` for this task's latest image.",
             json!({"path": {"type": "string"}, "factor": {"type": "integer", "enum": [2, 4], "description": "放大倍数，默认 2"},
              "title": {"type": "string"}, "send": {"type": "boolean"}}), &[]),
+        fn_("ask_user", "向用户提一个只有用户能回答的问题（航班、住宿、出行目的、哪个地址、持有哪些卡、日期……），任务到此结束等用户回复；\
+资料或表单默认值已经有答案的字段（国籍、生日、家庭地址、性别；离境日期、下一城市、健康/申报问题）会被拒绝并给出该值。\
+ Ask the user one question only they can answer; the task ends with it and continues with their next message. fields = what is \
+asked for. A field the profile or the form's defaults already answer (nationality, birthday, home_address, sex; departure_date, \
+next_city, declarations) is refused and the value given back instead.",
+            json!({"fields": {"type": "array", "items": {"type": "string", "enum": ["flight", "arrival_date", "stay", "purpose", "which_address",
+                       "cards_held", "trip_dates", "nationality", "birthday", "home_address", "sex", "departure_date", "next_city", "declarations", "other"]}},
+                   "question": {"type": "string", "description": "the question, in the user's language"}}),
+            &["fields", "question"]),
         fn_("present_choices", "把几个选项做成卡片给用户挑（餐厅、商品、航班、方案等）。kind=comparison 时，每个选项的 label 和 details \
 必须是你在本任务里读过的网页/邮件的原文摘录（照抄原文，不要翻译或改写），source_url 是读过的那个页面（或其中的链接）；\
 系统会逐条核对，找不到原文就拒绝显示。你的翻译、评价写在 note 里（不核对）。kind=clarify 用于简单的澄清选项（不核对）。\

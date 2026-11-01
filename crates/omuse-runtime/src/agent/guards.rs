@@ -9,8 +9,7 @@ use std::sync::LazyLock;
 use fancy_regex::Regex as FRegex;
 use indexmap::IndexMap;
 use omuse_common::guard::urlparse;
-use omuse_common::pyjson;
-use omuse_common::util::{get_str, get_truthy, last_chars, take_chars, truncate, truthy};
+use omuse_common::util::{get_str, get_truthy, take_chars, truncate, truthy};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
@@ -45,7 +44,7 @@ pub const MAX_REPLANS: i64 = 4;
 /// chars of context: compress old tool results in one batch
 pub const COMPRESS_HIGH: usize = 80000;
 pub const COMPRESS_LOW: usize = 40000;
-/// share of the time budget (Settings → max_minutes) after which the agent is told to wrap up
+/// share of the time budget (Settings → max_minutes) after which only the finishing tools remain (`Runtime::budget`)
 pub const TIME_NUDGE: f64 = 0.7;
 
 /// The least step budget of a form-filling skill's task (`form: on`): pages, fields, checks and the hand-over.
@@ -56,11 +55,7 @@ pub const COMPRESSED_MARK: &str = "older result compressed";
 // step budget: keep the last steps for producing / sending what the user asked for
 pub const BUDGET_RESERVE: i64 = 5;
 pub const RESEARCH_NUDGE_PAGES: i64 = 10;
-pub const BUDGET_MARK: &str = "step budget";
-pub const BUDGET_MARK_PAGES: &str = "research check";
-pub const TIME_MARK: &str = "time budget";
-pub const WEB_MARK: &str = "web budget";
-/// web tool calls in one task before the agent is told to wrap up
+/// web tool calls in one task after which the page-reading tools are withdrawn (`Runtime::budget`)
 pub const WEB_NUDGE: i64 = 18;
 /// the 2026-10-02 itinerary run re-made the same Excel file 9 times (≈5 minutes of generation)
 pub const REMAKE_MAX: i64 = 4;
@@ -189,11 +184,8 @@ pub fn retype_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
             if !old.is_empty() && old != text {
                 let (o, t) = (take_chars(&old, 40), take_chars(&text, 40));
                 return Some(format!(
-                    "ERROR: 没有执行 — 你刚才已经在 {r} 里输入了「{o}」，再输入「{t}」会把它覆盖掉。\
-多半是填错了格子：先看快照里每个输入框的名字，把「{t}」填到对应的那个 ref。\
- Not done: you already typed \"{o}\" into {r}; typing \"{t}\" there would replace it. \
-You probably meant the next field — check each textbox's name in the snapshot and use its ref. \
-If you really want to replace it, call browser_type again with replace=true."
+                    "ERROR: [retype] 没有执行 — {r} 里已经输入了「{o}」，「{t}」会把它覆盖掉（replace=true 才会覆盖）。 \
+Not done: you already typed \"{o}\" into {r}; \"{t}\" would replace it (replace=true replaces)."
                 ));
             }
             return None;
@@ -216,10 +208,9 @@ pub fn empty_mail_guard(call: &ToolCall) -> Option<String> {
         .all(|k| sget(args, k).trim().is_empty());
     empty.then(|| {
         format!(
-            "ERROR: 没有执行 — 这封邮件没有收件人、没有正文，也不是回复。只有在要写邮件时才调用 {}。 \
-Not done: this email has no recipient and no body, and replies to nothing. Call {} only when an email is meant to be \
-written.",
-            call.name, call.name
+            "ERROR: [empty_mail] 没有执行 — 这封邮件没有收件人、没有正文，也不是回复。 Not done: this {} has no recipient and no body, and \
+replies to nothing.",
+            call.name
         )
     })
 }
@@ -237,91 +228,10 @@ pub fn arrival_mail_guard(transcript: &[Value], goal: &str, call: &ToolCall) -> 
         return None;
     }
     Some(
-        "ERROR: 没有发送 — 入境卡是网页表单，不需要发邮件：在页面上填好，然后用 browser_request_takeover 交给用户提交。 Not sent: an arrival card \
-is a web form — nothing needs emailing. Fill it on the page, then hand it over with browser_request_takeover for the \
-user to submit."
+        "ERROR: [arrival_mail] 没有发送 — 入境卡是网页表单，这个请求没有要求发邮件。 Not sent: an arrival card is a web form and the \
+request asked for no email."
             .to_string(),
     )
-}
-
-/// What a final answer means, as a small classification call reads it (`Runtime::answer_traits`): the guards that act
-/// on the meaning of the model's words take these instead of matching its wording (2026-10-31: regex over prose misread
-/// "Neither email was sent", "verify the qualifying spend" and questions worded another way).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct AnswerTraits {
-    /// asks the user for a departure date, the next city, onward travel or the visa basis
-    pub asks_defaults: bool,
-    /// asks where the user will stay (a hotel, an address, which of their addresses)
-    pub asks_stay: bool,
-    /// tells the user to press, click, submit or complete something themselves on a web page
-    pub tells_user_to_act: bool,
-    /// asks the user to confirm an action their own message already asked for, instead of doing it
-    pub reconfirms: bool,
-    /// asks the user to choose a product option (colour, size) their request did not name, instead of adding it
-    pub asks_option: bool,
-    /// says it does not know, or asks for, the user's nationality, date of birth or home address
-    pub asks_profile: bool,
-}
-
-/// The reply asks the user to confirm what their message already asked for (`AnswerTraits::reconfirms`, the
-/// classifier's reading): sent back once to do it — Sentinel asks for an approval itself where one is needed
-/// (drive_cleanup_real 2026-10-31: "move these two to the bin" got "Please confirm that you want me to move …").
-pub fn reconfirm_hint(reconfirms: bool, zh: bool) -> Option<String> {
-    reconfirms.then(|| {
-        if zh {
-            "（系统）用户这条消息已经明确要求了这个操作，不要再请用户确认：现在就去做。需要审批的操作 Sentinel 会自己弹出审批。".to_string()
-        } else {
-            "(System) The user's message already asked for this action explicitly — do not ask them to confirm it again; \
-do it now. Where an approval is needed, Sentinel asks for it itself."
-                .to_string()
-        }
-    })
-}
-
-/// The reply asks for a product option the user's request did not name (`AnswerTraits::asks_option`) in a browser
-/// run: the option the page already has selected stands — sent back once to add it and say which one was taken; the
-/// user can change it in the cart (shopping_real 2026-10-31: "Saddle Brown or Midnight Black?" for a case already
-/// showing Saddle Brown).
-pub fn page_option_hint(transcript: &[Value], asks_option: bool, zh: bool) -> Option<String> {
-    (asks_option && browser_used(transcript)).then(|| {
-        if zh {
-            "（系统）用户没有指定颜色/尺寸：就用页面上已经选中的那个（没有选中就用第一个），现在加入购物车，并在回答里说明选了哪个——用户可以在购物车里改。".to_string()
-        } else {
-            "(System) The user did not name a colour or size: keep the option the page already has selected (or the \
-first one), add the product now, and say in your answer which option you took — the user can change it in the cart."
-                .to_string()
-        }
-    })
-}
-
-/// The reply says it does not know (or asks for) the user's nationality, birthday or home address
-/// (`AnswerTraits::asks_profile`) while the profile has it: sent back once with the profile's values
-/// (travel_info_real 2026-10-31: "I couldn't find your passport nationality" with nationality: Australia saved).
-pub fn known_profile_hint(asks_profile: bool, profile: &Value, zh: bool) -> Option<String> {
-    if !asks_profile {
-        return None;
-    }
-    let known: Vec<String> = ["nationality", "birthday", "address_home"]
-        .iter()
-        .filter_map(|k| {
-            let v = get_str(profile, k);
-            (!v.trim().is_empty()).then(|| format!("{k}: {}", v.trim()))
-        })
-        .collect();
-    if known.is_empty() {
-        return None;
-    }
-    Some(if zh {
-        format!(
-            "（系统）用户资料里已经有：{}。不要再问用户，按这些信息现在就回答。",
-            known.join("；")
-        )
-    } else {
-        format!(
-            "(System) The user's profile already has: {}. Do not ask the user for it — answer with it now.",
-            known.join("; ")
-        )
-    })
 }
 
 /// Each arrival card's filing window, from its official site (the skill sheets say the same): the card's names as an
@@ -369,14 +279,11 @@ const ARRIVAL_WINDOWS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// The answer with the filing window of each arrival card it names from a loaded card skill, when it does not state
-/// it ("within the 3 days before arrival") — the window is a fixed rule, given in code (travel_info_real 2026-10-31:
-/// "File 5–7 November" for a 7 November arrival, when the TDAC opens on the 4th).
-pub fn with_arrival_windows(transcript: &[Value], answer: &str) -> String {
-    static STATED: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(3|three|7|seven)[ -]days?\b|\b72[ -]hours?\b|\b(3|7)\s*天|72\s*小时")
-            .unwrap()
-    });
+/// The answer with the filing window of the arrival card the run is about: the loaded card skill's, or — under an
+/// overview skill (entry-requirements, arrival-cards) — the cards the user's request names. A fixed rule, given in code
+/// and always appended (travel_info_real 2026-10-31: "File 5–7 November" for a 7 November arrival, when the TDAC opens on
+/// the 4th). Never decided from the model's words.
+pub fn with_arrival_windows(transcript: &[Value], goal: &str, answer: &str) -> String {
     let loaded: Vec<String> = transcript
         .iter()
         .flat_map(tool_calls)
@@ -385,19 +292,18 @@ pub fn with_arrival_windows(transcript: &[Value], answer: &str) -> String {
             (name == "load_skill").then(|| sget(&args, "name"))
         })
         .collect();
+    let overview = loaded
+        .iter()
+        .any(|l| l == "entry-requirements" || l == "arrival-cards");
     let lines: Vec<&str> = ARRIVAL_WINDOWS
         .iter()
         .filter(|(skill, names, _)| {
-            // the card's own skill, or the overviews that answer for every card (travel_info_real 2026-10-31: only
-            // entry-requirements loaded, "Submit 5–7 November" for a 7 November TDAC)
-            loaded
-                .iter()
-                .any(|l| l == skill || l == "entry-requirements" || l == "arrival-cards")
-                && Regex::new(names).is_ok_and(|r| r.is_match(answer))
+            loaded.iter().any(|l| l == skill)
+                || (overview && Regex::new(names).is_ok_and(|r| r.is_match(goal)))
         })
         .map(|(_, _, w)| *w)
         .collect();
-    if lines.is_empty() || STATED.is_match(answer) {
+    if lines.is_empty() || answer.trim().is_empty() {
         return answer.to_string();
     }
     format!("{}\n\n{}.", answer.trim_end(), lines.join(". "))
@@ -428,21 +334,17 @@ fn arrival_country(skill: &str) -> &'static [&'static str] {
     }
 }
 
-/// `answer` naming the user's own addresses in the card's country when an arrival-card answer asks where they stay
-/// (no hand-over yet): the profile's addresses there (`profile`: the saved profile, key → value) are listed so the user
-/// picks one — read from the profile in code, whether or not the agent looked (arrival_address2_real 2026-10-31:
-/// "Where will you be staying?" with two Singapore addresses saved).
-pub fn with_own_addresses(
-    transcript: &[Value],
-    answer: &str,
-    asks_stay: bool,
-    profile: &Value,
-    zh: bool,
-) -> String {
+/// `answer` naming the user's own addresses in the card's country when an arrival-card run asked where they stay
+/// (`ask_user` with `stay` / `which_address`, no hand-over yet): the profile's addresses there (`profile`: the saved
+/// profile, key → value) are listed so the user picks one — read from the profile in code (arrival_address2_real
+/// 2026-10-31: "Where will you be staying?" with two Singapore addresses saved).
+pub fn with_own_addresses(transcript: &[Value], answer: &str, profile: &Value, zh: bool) -> String {
     let Some(skill) = form_kind_skills(transcript, "arrival").into_iter().next() else {
         return answer.to_string();
     };
     let country = arrival_country(&skill);
+    let asks_stay = asked_user(transcript)
+        .is_some_and(|(fields, _)| fields.iter().any(|f| f == "stay" || f == "which_address"));
     if country.is_empty() || !asks_stay {
         return answer.to_string();
     }
@@ -495,110 +397,6 @@ pub fn with_own_addresses(
     format!("{}\n\n{line}", answer.trim_end())
 }
 
-/// The one question an arrival card may ask, before the form is filled (a note on the first `browser_navigate`): with no
-/// flight in the request, the mail, the calendar, memory or an uploaded file, ask for the flight and the stay; with two
-/// or more of the user's own addresses in the destination country and none named in the request, ask which one
-/// (arrival_real / arrival_address2_real 2026-10-30: a TDAC handed over with the flight and stay empty; one of two
-/// Singapore addresses picked without asking).
-pub fn arrival_ask_first_guard(
-    transcript: &[Value],
-    goal: &str,
-    call: &ToolCall,
-) -> Option<String> {
-    static FLIGHT: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"\b(?:[A-Z]{2}|[A-Z][0-9]|[0-9][A-Z])\s?[0-9]{1,4}\b").unwrap()
-    });
-    static MYSELF: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\bmyself\b|I'?ll (fill|enter|add|do) (it|them|those|that)|leave (it|them|those) (blank|empty|for me)|我自己(填|来)").unwrap()
-    });
-    static ADDRESS: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?m)^(.*)\((address[^)]*)\): (.+)$").unwrap());
-    const MARK: &str = "ask the user first";
-    if call.name != "browser_navigate" || MYSELF.is_match(goal) {
-        return None;
-    }
-    // the arrival skills of a trip (not the UK ETA or ETIAS, which ask no flight or stay)
-    let skill = form_kind_skills(transcript, "arrival")
-        .into_iter()
-        .find(|n| !matches!(n.as_str(), "uk-eta" | "eu-etias"))?;
-    // once per task: after the refusal the agent asks, and the user's answer comes as the next message
-    if transcript
-        .iter()
-        .any(|m| get_str(m, "role") == "tool" && content_of(m).contains(MARK))
-    {
-        return None;
-    }
-    let names = |m: &Value| -> String {
-        let id = get_str(m, "tool_call_id");
-        transcript
-            .iter()
-            .flat_map(tool_calls)
-            .find(|tc| get_str(tc, "id") == id)
-            .map(|tc| stored_call(tc).0)
-            .unwrap_or_default()
-    };
-    let results: Vec<(String, String)> = transcript
-        .iter()
-        .filter(|m| get_str(m, "role") == "tool")
-        .map(|m| (names(m), content_of(m)))
-        .collect();
-    // the trip's sources: the request, the mail, the calendar, memory, an uploaded ticket (not the profile)
-    let trip = results
-        .iter()
-        .filter(|(n, _)| {
-            n.starts_with("gmail_")
-                || n.starts_with("calendar_")
-                || n.starts_with("memory_")
-                || n == "file_look"
-                || n.starts_with("files_")
-        })
-        .map(|(_, c)| c.as_str())
-        .chain(std::iter::once(goal))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !FLIGHT.is_match(&trip) {
-        return Some(format!(
-            "先问用户（ask the user first）：请求、邮件、日历、记忆里都没有航班。填表之前，在聊天里只问一次：航班号和日期、住哪里（酒店名或地址），\
-也可以上传电子机票 / 订单；没有连接邮箱就说一句：连接邮箱（连接页）后下次可以自己找到订单。 Ask the user first: there is no flight in the request, the mail, the calendar or memory. \
-Before filling the form, ask once in the chat for the flight (number and date) and where they stay (hotel name or \
-address), or to upload the e-ticket / booking; the page stays open for after the answer. With no mailbox connected, say \
-that connecting one (Connections) lets you find the bookings yourself next time. ({skill})"
-        ));
-    }
-    let country = arrival_country(&skill);
-    let mut there: Vec<(String, String)> = Vec::new();
-    for (_, c) in results.iter().filter(|(n, _)| n == "profile_get") {
-        for m in ADDRESS.captures_iter(c) {
-            let (label, value) = (
-                m[1].trim().trim_start_matches("Address — ").to_string(),
-                m[3].trim().to_string(),
-            );
-            let hit = country
-                .iter()
-                .any(|w| value.contains(w) || label.contains(w));
-            if hit && !there.iter().any(|(_, v)| *v == value) {
-                there.push((label, value));
-            }
-        }
-    }
-    let named = there.iter().any(|(l, v)| {
-        let g = goal.to_lowercase();
-        g.contains(&l.to_lowercase()) || g.contains(&v.to_lowercase())
-    });
-    (there.len() >= 2 && !named).then(|| {
-        let list = there
-            .iter()
-            .map(|(l, v)| format!("{l}: {v}"))
-            .collect::<Vec<_>>()
-            .join("; ");
-        format!(
-            "先问用户（ask the user first）：资料里有好几个当地地址（{list}）。填表之前，在聊天里问一次住哪一个。 \
-Ask the user first: the profile has several addresses there ({list}). Before filling the form, ask once in the chat \
-which one they stay at. ({skill})"
-        )
-    })
-}
-
 /// `answer` with the reference the confirmation page showed after the user's hand-back: when the user submitted a form
 /// in a takeover and a page read afterwards shows "<label> No. / ID / PIN / Number / reference: <code>", an answer that
 /// does not give the code gets "(<label>: <code>)" (arrival_cards2_real 2026-10-30: Visit Japan Web's Registration ID
@@ -626,6 +424,7 @@ pub fn with_confirmation_ref(transcript: &[Value], answer: &str) -> String {
                 .map(|x| (x[1].trim().to_string(), x[2].to_string()))
                 .next()
         });
+    // a fact code owns, always appended; dedupe by the code itself (a structured value), never by the wording
     match found {
         Some((label, code)) if !crate::links::decode(answer).contains(&code) => {
             format!("{}\n\n({label}: {code})", answer.trim_end())
@@ -657,53 +456,6 @@ fn form_date(text: &str) -> Option<(chrono::NaiveDate, &'static str)> {
         }
     }
     None
-}
-
-/// The departure date an arrival card defaults to is the arrival date + 7 days, counted in code: a departure date
-/// typed on the form that is not that gets a note with the right date, once (arrival_cards_real 2026-10-30: TDAC arrival
-/// 01/11/2026, departure typed 05/11/2026). A date the user, a return / onward flight or a check-out gave is typed
-/// again and goes through.
-pub fn departure_date_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
-    static DEPART: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)depart|leaving|离境|出境日期").unwrap());
-    static ARRIVE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)(arriv|入境).*(date|日期)|(date|日期).*(arriv|入境)").unwrap()
-    });
-    const MARK: &str = "arrival + 7 days =";
-    if call.name != "browser_type" || !arrival_run(transcript) {
-        return None;
-    }
-    let (r, text) = (sget(&call.args, "ref"), sget(&call.args, "text"));
-    let (typed, fmt) = form_date(&text)?;
-    let label = field_label(transcript, &r)?;
-    if !DEPART.is_match(&label) || ARRIVE.is_match(&label) {
-        return None;
-    }
-    if transcript
-        .iter()
-        .any(|m| get_str(m, "role") == "tool" && content_of(m).contains(MARK))
-    {
-        return None;
-    }
-    let arrival = calls_before(transcript, &call.id)
-        .into_iter()
-        .rev()
-        .filter(|(n, _)| n == "browser_type")
-        .find_map(|(_, a)| {
-            let l = field_label(transcript, &sget(&a, "ref"))?;
-            ARRIVE.is_match(&l).then(|| form_date(&sget(&a, "text")))?
-        })?
-        .0;
-    let want = arrival + chrono::Duration::days(7);
-    (typed != want).then(|| {
-        let (a, w) = (arrival.format(fmt), want.format(fmt));
-        format!(
-            "离境日期默认是入境日期 {a} + 7 天 = {w}（{MARK} {w}）。如果你输入的日期不是用户、回程 / 后续航班或退房日期给的，\
-请用 replace=true 把这一栏改成 {w}。 The default departure date is the arrival date {a} + 7 days = {w} ({MARK} {w}). \
-Unless the user, a return / onward flight or a check-out date gave the date you typed, type {w} into that field \
-(replace=true)."
-        )
-    })
 }
 
 /// The departure date to type instead of the model's: the arrival date typed on the form + 7 days (in the field's
@@ -838,57 +590,6 @@ pub fn departure_default(transcript: &[Value], goal: &str) -> Option<String> {
     (last.as_deref() != Some(want.as_str())).then_some(want)
 }
 
-/// The next city an arrival card defaults to is the city the flight came from (the last city typed on the form): another
-/// value gets a note with that city, once (arrival_cards_real 2026-10-31: Korea's next city typed as Seoul, the
-/// destination itself).
-pub fn next_city_note(transcript: &[Value], call: &ToolCall) -> Option<String> {
-    static NEXT: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r"(?i)next (city|port)|after (this|the) (country|trip)|下一(个)?(城市|目的地|港口)",
-        )
-        .unwrap()
-    });
-    static LAST: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)last (city|port)|embark|(city|port) of departure|上一(个)?(城市|港口)|出发(城市|地)").unwrap()
-    });
-    const MARK: &str = "next city defaults to";
-    if call.name != "browser_type" || !arrival_run(transcript) {
-        return None;
-    }
-    let (r, text) = (sget(&call.args, "ref"), sget(&call.args, "text"));
-    if text.trim().is_empty() || !NEXT.is_match(&field_label(transcript, &r)?) {
-        return None;
-    }
-    if transcript
-        .iter()
-        .any(|m| get_str(m, "role") == "tool" && content_of(m).contains(MARK))
-    {
-        return None;
-    }
-    let last = calls_before(transcript, &call.id)
-        .into_iter()
-        .rev()
-        .filter(|(n, _)| n == "browser_type")
-        .find_map(|(_, a)| {
-            let l = field_label(transcript, &sget(&a, "ref"))?;
-            (LAST.is_match(&l) && !NEXT.is_match(&l)).then(|| sget(&a, "text"))
-        })?;
-    let city = last
-        .split([',', '(', '/'])
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_lowercase();
-    if city.is_empty() || text.to_lowercase().contains(&city) {
-        return None;
-    }
-    Some(format!(
-        "下一城市默认是航班出发的城市「{last}」（{MARK} {last}）。如果你输入的不是用户或后续航班给的，请用 replace=true 改成「{last}」。 \
-The {MARK} the city the flight came from, \"{last}\". Unless the user or an onward flight gave \"{text}\", type \
-\"{last}\" into that field (replace=true)."
-    ))
-}
-
 /// An arrival card's final Submit is the traveller's own declaration, a claim's Submit the user's own claim: on such a
 /// run a click on a button or link named submit / send / confirm / declare (a claim: submit) is refused like a
 /// purchase's last click, and the runtime hands the
@@ -930,8 +631,8 @@ pub fn arrival_submit_guard(transcript: &[Value], call: &ToolCall) -> Option<Str
         return None;
     }
     Some(format!(
-        "ERROR: 没有执行 — 「{label}」由用户自己提交。 (\"{label}\" submits the user's own declaration or claim: \
-that click is the user's own. The filled form is handed over to the user now.)"
+        "ERROR: [user_submits] 没有执行 — 「{label}」由用户自己提交。 (\"{label}\" submits the user's own declaration or claim: \
+that click is the user's own.)"
     ))
 }
 
@@ -991,9 +692,8 @@ pub fn apdt_face_guard(transcript: &[Value], call: &ToolCall) -> Option<String> 
     // is left, and that is on the phone (apdt_real 2026-10-31: "take over the browser to complete that verification")
     if call.name == "browser_request_takeover" && apdt_card_done(transcript) {
         return Some(
-            "ERROR: 没有交接 — 银行卡已经填好，剩下的人脸识别由用户本人在手机上完成，不需要接管浏览器。停在这里，把参考编号和申请链接告诉用户。 \
-Not handed over: the card is filled in and what is left, the face recognition, is the user's own step on their phone — \
-no takeover is needed. Stop here and give the user the reference number and the link to their application."
+            "ERROR: [apdt_face] 没有交接 — 银行卡已经填好，剩下的人脸识别由用户本人在手机上完成。 Not handed over: the card is in, \
+and the face recognition left is the user's own step on their phone."
                 .to_string(),
         );
     }
@@ -1005,8 +705,8 @@ no takeover is needed. Stop here and give the user the reference number and the 
     }
     let label = field_label(transcript, &sget(&call.args, "ref")).unwrap_or_default();
     FACE.is_match(&label).then(|| {
-        "ERROR: 没有执行 — 人脸识别由用户本人在手机上完成。停在这里，把参考编号和申请链接告诉用户。 Not done: the face recognition \
-is the user's own step, on their phone. Stop here and give the user the reference number and the link to their application."
+        "ERROR: [apdt_face] 没有执行 — 人脸识别由用户本人在手机上完成。 Not done: the face recognition is the user's own step, on \
+their phone."
             .to_string()
     })
 }
@@ -1116,137 +816,17 @@ pub fn clear_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
         .any(|(nm, a)| nm == "browser_type" && sget(a, "ref") == r && !sget(a, "text").is_empty());
     typed.then(|| {
         format!(
-            "ERROR: 没有清空 {r} — 那是用户要的默认值（离境日期 = 入境 + 7 天，下一城市 = 航班出发城市，健康和申报问题「否」），\
-保留原值；用户接手后会在页面上核对。 Not cleared: {r} keeps its value — the default the user asked for (departure = \
-arrival + 7 days, next city = the city the flight comes from, health and declaration questions No). The user reviews \
-it on the page after the hand-over; the browser_request_takeover reason says what you assumed."
+            "ERROR: [keep_default] 没有清空 {r} — 那是用户要的默认值，用户接手后在页面上核对。 Not cleared: {r} keeps its value, \
+the user's default, reviewed on the page after the hand-over."
         )
-    })
-}
-
-/// A hint for an arrival-card run that ends asking the user, in the chat, for a value the form has a default for —
-/// with no hand-over: fill the default and hand over; and for a claim or application the user submits (CSR, FWD, the
-/// Hong Kong refund, a baggage claim) that filled its form and ended without the hand-over (`None` when the run handed the page over, or the answer asks
-/// nothing of the kind).
-pub fn arrival_default_hint(transcript: &[Value], asks_defaults: bool, zh: bool) -> Option<String> {
-    // the form was being filled (typed into, a Vault value put in): ending without the hand-over is the same mistake,
-    // whatever the answer asks (arrival_cards3_real 2026-10-30: eTravel's middle name asked in the chat)
-    // a form function's fill counts too (arrival_address_real 2026-11-01: the SG card filled by form_fill, then the
-    // declarations asked in the chat, never handed over)
-    let filled = transcript.iter().flat_map(tool_calls).any(|tc| {
-        matches!(
-            stored_call(tc).0.as_str(),
-            "browser_type"
-                | "browser_select"
-                | "browser_fill_secret"
-                | "form_fill"
-                | "browser_fill_form"
-        )
-    });
-    let handed = transcript.iter().any(|m| {
-        get_str(m, "role") == "tool"
-            && !content_of(m).starts_with("ERROR")
-            && transcript.iter().flat_map(tool_calls).any(|tc| {
-                get_str(tc, "id") == get_str(m, "tool_call_id")
-                    && stored_call(tc).0 == "browser_request_takeover"
-            })
-    });
-    if handed {
-        return None;
-    }
-    // a claim or an application the user submits: filled, then ended without handing the page over
-    // (cards_interruption_real 2026-10-30: "The Trip Interruption claim is filled on eClaimsLine and has not been
-    // submitted", no takeover)
-    let submits_own = claim_run(transcript);
-    if !arrival_run(transcript) {
-        return (submits_own && filled).then(|| {
-            if zh {
-                "（系统）表格已经填好但还没交给用户。现在调用 browser_request_takeover，原因里写明请用户核对、补上缺的内容并自己提交；\
-不要在聊天里问。".to_string()
-            } else {
-                "(System) The form is filled but not handed over. Call browser_request_takeover now, with a reason asking the \
-user to review it, fill in anything missing and submit it themselves; don't ask in the chat.".to_string()
-            }
-        });
-    }
-    if !(filled || asks_defaults) {
-        return None;
-    }
-    Some(if zh {
-        "（系统）不要在聊天里问这些：离境日期默认入境 + 7 天，下一城市默认航班出发的城市，健康和申报问题默认「否」，邮件里没有签证就按免签入境。\
-把这些默认值填进页面；没有值的项（例如中间名）留空，不要在聊天里问。然后调用 browser_request_takeover，原因里写明你假设了什么、\
-留给用户的是什么（留空的项、验证码、提交）。".to_string()
-    } else {
-        "(System) Don't ask these in the chat: the departure date defaults to arrival + 7 days, the next city to the city \
-the flight comes from, every health and declaration question to No, the entry basis to visa-free when no visa is in \
-the mail. Fill those defaults on the page and leave a field you have no value for (a middle name) empty instead of \
-asking in the chat; then call browser_request_takeover saying what you assumed and what is left for the user (the \
-empty fields, the CAPTCHA, Submit).".to_string()
-    })
-}
-
-/// A hint for any run that used the browser and ends telling the user to press or submit something themselves, but
-/// never handed the page over: the user has no live view to do it in (refunds_real 2026-10-31: "I've left the final
-/// Request cancellation for you", no takeover).
-pub fn self_press_hint(transcript: &[Value], tells_user_to_act: bool, zh: bool) -> Option<String> {
-    if !tells_user_to_act || apdt_card_done(transcript) {
-        return None;
-    }
-    let calls: Vec<(String, String)> = transcript
-        .iter()
-        .flat_map(tool_calls)
-        .map(|tc| (get_str(tc, "id"), stored_call(tc).0))
-        .collect();
-    if !calls.iter().any(|(_, n)| n.starts_with("browser_")) {
-        return None;
-    }
-    let handed = transcript.iter().any(|m| {
-        get_str(m, "role") == "tool"
-            && !content_of(m).starts_with("ERROR")
-            && calls
-                .iter()
-                .any(|(id, n)| *id == get_str(m, "tool_call_id") && n == "browser_request_takeover")
-    });
-    (!handed).then(|| {
-        if zh {
-            "（系统）你让用户自己点，但还没把浏览器交给用户。现在调用 browser_request_takeover，原因里写明要点哪个按钮；交回后读结果页告诉用户。"
-                .to_string()
-        } else {
-            "(System) You tell the user to press it themselves, but the browser was never handed over. Call \
-browser_request_takeover now, naming the button in the reason; after the hand-back read the result page and tell the user."
-                .to_string()
-        }
-    })
-}
-
-/// A hint when the answer after the user handed the browser back is only a line or two: the whole request's answer —
-/// what the run found and worked out before the hand-over — is written again with what the page shows now
-/// (insurance_real 2026-10-31: "Your claim was submitted, reference CL-…", the delay and the amount gone).
-pub fn short_after_handback_hint(transcript: &[Value], answer: &str, zh: bool) -> Option<String> {
-    let handed_back = transcript.iter().any(|m| {
-        get_str(m, "role") == "tool" && {
-            let c = content_of(m);
-            c.contains(TAKEOVER_DONE_MARK) || c.contains(TAKEOVER_DONE_EN)
-        }
-    });
-    if !handed_back || answer.trim().chars().count() >= 400 {
-        return None;
-    }
-    Some(if zh {
-        "（系统）这个回答太短了。重新写完整的回答：先写你在交给用户之前查到和算出的内容（金额、日期、延误时长、期限、编号），再写页面现在显示的结果。不要提到这次检查。"
-            .to_string()
-    } else {
-        "(System) That answer is too short. Write the complete answer again: what you found and worked out before the \
-hand-over (amounts, dates, the delay, deadlines, references), then what the page shows now. Don't mention this check."
-            .to_string()
     })
 }
 
 /// Whether a run ends with a filled form the user must finish but no hand-over: an arrival card or a claim whose
-/// form was typed into, or any browser run whose answer tells the user to press it themselves — after the one hint
-/// (`arrival_default_hint`, `self_press_hint`) the runtime then hands the page over itself (cards_claim_real
-/// 2026-10-31: "submit it yourself when ready", twice, no takeover).
-pub fn needs_handover(transcript: &[Value], traits: AnswerTraits) -> bool {
+/// form was typed into (no completed takeover after the last fill), or a browser run whose purchase the user approved
+/// — transcript facts only; the runtime then hands the page over itself (cards_claim_real 2026-10-31: "submit it
+/// yourself when ready", twice, no takeover).
+pub fn needs_handover(transcript: &[Value]) -> bool {
     let calls: Vec<(String, String)> = transcript
         .iter()
         .flat_map(tool_calls)
@@ -1288,18 +868,8 @@ pub fn needs_handover(transcript: &[Value], traits: AnswerTraits) -> bool {
                 | "browser_fill_form"
         )
     });
-    let form_filled = calls
-        .iter()
-        .any(|(_, n)| n == "form_fill" || n == "browser_fill_form");
-    let took_over_before = calls.iter().any(|(_, n)| n == "browser_request_takeover");
     (filled && (arrival_run(transcript) || claim_run(transcript)))
-        // an arrival card whose answer asks for what has a default (departure date, Yes / No) instead of filling it:
-        // the hand-over fills those in code (arrival_cards2_real 2026-10-31: Visit Japan Web, signed in, then asked)
-        // — only once the run is on the form: something filled, or an earlier hand-over (the sign-in) came back
-        // (arrival_cards_real 2026-10-31: a Korea landing page was handed over before anything was done)
-        || (traits.asks_defaults && arrival_run(transcript) && (filled || form_filled || took_over_before))
         || (purchase_approved(transcript, &calls) && browser_used(transcript))
-        || self_press_hint(transcript, traits.tells_user_to_act, false).is_some()
 }
 
 /// What the user changed in approval dialogs during this run: (the record's id, field, the user's value), read from
@@ -1364,8 +934,8 @@ pub fn user_edit_guard(transcript: &[Value], call: &ToolCall) -> Option<String> 
         return None;
     }
     Some(format!(
-        "ERROR: 没有执行 — 这是用户在审批时自己改的：{0}，保持不变。 (Not changed: the user set {0} themselves in the approval \
-dialog; it stays. Tell the user the event is saved with their change.)",
+        "ERROR: [user_edit] 没有执行 — 这是用户在审批时自己改的：{0}，保持不变。 Not changed: the user set {0} themselves in the \
+approval dialog; it stays.",
         reverted.join("; ")
     ))
 }
@@ -1540,61 +1110,6 @@ pub fn with_grounded_numbers(transcript: &[Value], answer: &str, zh: bool) -> St
         .into_owned()
 }
 
-/// A field-by-field fill on a page a form function knows, before `form_fill` ran: a note that the form is filled in
-/// code (cards_real 2026-10-31: the agent typed Korea's terms page itself and never called form_fill). The page is
-/// the newest browser result's ("web page <url>").
-pub fn form_fill_note(transcript: &[Value], call: &ToolCall) -> Option<String> {
-    let opening = call.name == "browser_navigate";
-    let back = call.name == "browser_request_takeover";
-    if !opening
-        && !back
-        && !matches!(
-            call.name.as_str(),
-            "browser_type" | "browser_select" | "browser_click" | "browser_fill_secret"
-        )
-    {
-        return None;
-    }
-    // form_fill done, unless it stopped for the user's step (a sign-in, an emailed code, a photo)
-    let done = transcript
-        .iter()
-        .filter(|m| get_str(m, "role") == "tool")
-        .any(|m| {
-            let c = content_of(m);
-            c.contains("\"filled\"")
-                && c.contains("\"url\"")
-                && !c.contains("\"stop\": true")
-                && !c.contains("\"stop\":true")
-        });
-    if done {
-        return None;
-    }
-    static PAGE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"source="web page (https?://[^"\s]+)"#).unwrap());
-    let url = if opening {
-        sget(&call.args, "url")
-    } else {
-        transcript
-            .iter()
-            .rev()
-            .filter(|m| get_str(m, "role") == "tool")
-            .find_map(|m| PAGE.captures(&content_of(m)).map(|c| c[1].to_string()))?
-    };
-    let (form, _) = crate::forms::form_for(&url)?;
-    Some(if back {
-        format!(
-            "This page is a known form ({form}): now call form_fill once with the trip facts — code fills the form from \
-here. Do not navigate away or reload: the form keeps the user's step (a sign-in, a code) only on this page."
-        )
-    } else {
-        format!(
-            "This page is a known form ({form}): call form_fill once with the trip facts — code fills the whole form, its \
-steps and the passport from the Vault — instead of filling it field by field. A step that is the user's (a sign-in, an \
-emailed code, a photo) is named in its result: hand the page over for it, then call form_fill again."
-        )
-    })
-}
-
 /// A loan's monthly payment the request fully specifies (principal, yearly rate, years) is arithmetic, not the model's:
 /// when the answer does not carry the figure, code appends it (market_real 2026-11-01: "approximately 3,000,000" for a
 /// 3,000,000 loan at 3.5% over 25 years; the right figure is 15,018.71).
@@ -1647,6 +1162,7 @@ pub fn with_loan_payment(goal: &str, answer: &str, zh: bool) -> String {
         }
         format!("{out}.{frac}")
     };
+    // the figure is a structured value: appended unless the answer already shows it
     let plain = answer.replace(',', "");
     if plain.contains(&shown) || plain.contains(&format!("{:.0}", pmt)) {
         return answer.to_string();
@@ -1657,36 +1173,6 @@ pub fn with_loan_payment(goal: &str, answer: &str, zh: bool) -> String {
         format!("Monthly payment (principal {principal:.0} at {rate}% a year over {years:.0} years, equal instalments): **{with_commas}**")
     };
     format!("{}\n\n{line}", answer.trim_end())
-}
-
-/// A duration of an hour or more given only in minutes gets its hours next to it — "a delay of 435 minutes (7 h 15
-/// min)" — so the user reads it at a glance (insurance_real 2026-10-31: the claim's 7 h 15 min delay as "435 minutes").
-pub fn with_hours(answer: &str) -> String {
-    static MINS: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(\d{2,4})(\s?(?:minutes|mins?)\b|\s?分钟)(\s*[（(])?").unwrap()
-    });
-    MINS.replace_all(answer, |c: &regex::Captures| {
-        let n: u64 = c[1].parse().unwrap_or(0);
-        // already followed by a bracket (most likely the hours), under an hour, or over a day (a year, a count): as
-        // written
-        if !(60..=1440).contains(&n) || c.get(3).is_some() {
-            return c[0].to_string();
-        }
-        let (h, m) = (n / 60, n % 60);
-        let zh = c[2].contains('分');
-        let hours = match (zh, m) {
-            (true, 0) => format!("{h} 小时"),
-            (true, _) => format!("{h} 小时 {m} 分钟"),
-            (false, 0) => format!("{h} h"),
-            (false, _) => format!("{h} h {m} min"),
-        };
-        if zh {
-            format!("{}{}（{hours}）", &c[1], &c[2])
-        } else {
-            format!("{}{} ({hours})", &c[1], &c[2])
-        }
-    })
-    .into_owned()
 }
 
 /// A hand-over on a known form before code has filled it (`form_fill` / `browser_fill_form` never ran) is refused
@@ -1729,9 +1215,7 @@ pub fn takeover_before_fill_guard(transcript: &[Value], call: &ToolCall) -> Opti
         .find_map(|m| PAGE.captures(&content_of(m)).map(|c| c[1].to_string()))?;
     let (form, _) = crate::forms::form_for(&url)?;
     Some(format!(
-        "ERROR: {MARK} ({form}) that code has not filled. Call form_fill once with the trip facts first — it fills the \
-form, its steps and the passport from the Vault, and names any step that is the user's (a photo, a sign-in, a code); \
-then hand the page over with browser_request_takeover."
+        "ERROR: [form_first] {MARK} ({form}) that code has not filled."
     ))
 }
 
@@ -1743,9 +1227,9 @@ pub fn news_research_run(transcript: &[Value]) -> bool {
     })
 }
 
-/// "email it" after a news report: the note that says which edition and which files, read from the chat's own file
-/// cards (news_report_real 2026-11-01: "email it" got "What would you like me to email, and to whom?").
-pub fn report_followup_note(goal: &str, msgs: &[Value]) -> Option<String> {
+/// The paths of the latest news report in the chat's own file cards (the PDF first), when the user's new message is
+/// "email it" or the like — read from the user's words and the structured cards, never from the model's.
+fn report_paths_to_mail(goal: &str, msgs: &[Value]) -> Option<Vec<String>> {
     static ASK: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
             r"(?i)^\W*(please\W+)?(e-?mail|mail|send)\b[^\n]{0,40}$|^\W*(发|寄)(个|到)?(邮件|邮箱)",
@@ -1755,7 +1239,6 @@ pub fn report_followup_note(goal: &str, msgs: &[Value]) -> Option<String> {
     if !ASK.is_match(goal.trim()) {
         return None;
     }
-    let mut paths: Vec<String> = Vec::new();
     for m in msgs.iter().rev().filter(|m| get_str(m, "role") == "system") {
         let Ok(card) = serde_json::from_str::<Value>(&get_str(m, "content")) else {
             continue;
@@ -1771,30 +1254,20 @@ pub fn report_followup_note(goal: &str, msgs: &[Value]) -> Option<String> {
         found.retain(|p| p.starts_with("artifacts/news/"));
         if !found.is_empty() {
             found.sort_by_key(|p| !p.ends_with(".pdf")); // the PDF first
-            paths = found;
-            break;
+            return Some(found);
         }
     }
-    if paths.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "\n\n(System) This refers to the latest news report in this chat: send it with gmail_send to the user's own \
-address (the first connected mailbox), subject the report's title, two or three lines of its highlights as the body, \
-attachments = {paths:?}."
-    ))
+    None
 }
 
-/// "email it" after a news report, as a call code makes on the follow-up turn (the same reading as
-/// `report_followup_note`): `gmail_send` of the chat's latest edition to the user's own address.
+/// "email it" after a news report, as a call code makes on the follow-up turn: `gmail_send` of the chat's latest
+/// edition to the user's own address (news_report_real 2026-11-01: "email it" got "What would you like me to email,
+/// and to whom?").
 pub fn report_followup_call(goal: &str, msgs: &[Value], own_email: &str) -> Option<ToolCall> {
     if own_email.is_empty() {
         return None;
     }
-    let note = report_followup_note(goal, msgs)?;
-    let i = note.find("attachments = ")?;
-    let atts: Vec<String> =
-        serde_json::from_str(note[i + "attachments = ".len()..].trim_end_matches('.')).ok()?;
+    let atts = report_paths_to_mail(goal, msgs)?;
     // the edition's title: the file card's note, else the file's name
     let title = msgs
         .iter()
@@ -1856,53 +1329,7 @@ static REPORT_FREQ: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
-/// A news report published, and what the request asked for around it is not done yet (one-time hint): a scheduled
-/// edition whose schedule asks to email it, with a mailbox connected and nothing sent → send it now; a request that
-/// asks for the report regularly ("weekly", "every morning") with no schedule made → make it now.
-pub fn news_report_hint(
-    transcript: &[Value],
-    goal: &str,
-    scheduled: bool,
-    mail_ready: bool,
-    zh: bool,
-) -> Option<String> {
-    let rep = published_report(transcript)?;
-    let mut atts = vec![get_str(&rep, "pdf_path"), get_str(&rep, "html_path")];
-    atts.retain(|a| !a.is_empty());
-    if scheduled
-        && mail_ready
-        && REPORT_EMAIL.is_match(goal)
-        && !ran_ok(transcript, &["gmail_send"])
-    {
-        return Some(if zh {
-            format!("（系统）这个定时任务要求把每一期报告发到用户邮箱：现在用 gmail_send 发给用户自己（第一个已连接的邮箱），主题「{}」，正文写两三句本期要点，attachments = {:?}；然后再回答。", get_str(&rep, "title"), atts)
-        } else {
-            format!("(System) This schedule asks for each edition by email: send it now with gmail_send to the user's own \
-address (the first connected mailbox), subject \"{}\", two or three lines of this edition's highlights as the body, \
-attachments = {:?}; then answer.", get_str(&rep, "title"), atts)
-        });
-    }
-    if !scheduled
-        && REPORT_FREQ.is_match(goal)
-        && !ran_ok(transcript, &["schedule_create", "goal_create"])
-    {
-        let email = if REPORT_EMAIL.is_match(goal) {
-            " and email it to me"
-        } else {
-            ""
-        };
-        return Some(if zh {
-            format!("（系统）用户要定期收到这份报告：现在用 schedule_create 创建定时任务（kind=cron；每天 '0 8 * * *'，每周 '0 8 * * 1'，或用户说的时间），goal 写 \"News report on <主题>: research the latest news with the news-research skill and publish the newspaper report{email}\"；然后再回答。")
-        } else {
-            format!("(System) The user asked for this report regularly: create the schedule now with schedule_create \
-(kind=cron; daily '0 8 * * *', weekly '0 8 * * 1', or the time they named), goal \"News report on <subject>: research \
-the latest news with the news-research skill and publish the newspaper report{email}\"; then answer.")
-        });
-    }
-    None
-}
-
-/// The call code makes after a news report, instead of asking the model (the same conditions as `news_report_hint`):
+/// The call code makes after a news report, instead of asking the model:
 /// the scheduled edition's mail to the user's own address, or the schedule a regular report asks for. `own_email` is
 /// the first connected mailbox.
 pub fn news_report_action(
@@ -2000,104 +1427,28 @@ pub fn with_report_links(transcript: &[Value], answer: &str, mail_ready: bool, z
     out
 }
 
-/// An entry-requirements answer that mentions a visa exemption without its length gets one hint to state the number
-/// of days for the user's passport, read from an official source (travel_info_real 2026-11-01: Thailand's exemption
-/// with "verify the visa length", no days). The days come from the page read, never from memory.
-pub fn visa_days_hint(transcript: &[Value], answer: &str, zh: bool) -> Option<String> {
-    static VISA: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)visa[- ]?(free|exempt|exemption|waiver)|免签|免簽").unwrap()
+/// After the user handed the browser back, the page is read by code: `true` when no `browser_snapshot` followed the
+/// last hand-back (the loop then takes one before the answer, so `with_confirmation_ref` and the outcome check find
+/// the reference; arrival_cards2_real 2026-11-01: Visit Japan Web answered without looking at the page, no reference).
+pub fn needs_handback_snapshot(transcript: &[Value]) -> bool {
+    let last_back = transcript.iter().rposition(|m| {
+        get_str(m, "role") == "tool" && {
+            let c = content_of(m);
+            c.contains(TAKEOVER_DONE_MARK) || c.contains(TAKEOVER_DONE_EN)
+        }
     });
-    static DAYS: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)\b\d{1,3}[- ]?(days?|nights?)\b|\d{1,3}\s?天").unwrap());
-    let loaded = transcript.iter().flat_map(tool_calls).any(|tc| {
-        let (name, args) = stored_call(tc);
-        name == "load_skill" && sget(&args, "name") == "entry-requirements"
-    });
-    if !loaded || !VISA.is_match(answer) {
-        return None;
-    }
-    // a day count within the sentence that names the exemption: fine
-    let stated = VISA.find_iter(answer).all(|m| {
-        let from = answer[..m.start()].rfind(['.', '\n']).map_or(0, |i| i + 1);
-        let to = answer[m.end()..]
-            .find(['.', '\n'])
-            .map_or(answer.len(), |i| m.end() + i);
-        DAYS.is_match(&answer[from..to])
-    });
-    if stated {
-        return None;
-    }
-    Some(if zh {
-        "（系统）回答提到了免签但没有说能停留几天：按用户的护照，从官方来源（该国外交部或移民局的页面，先 browser_read）查到免签停留天数；来源说法不一时以官方页面为准并注明日期。然后把完整的回答重写一遍（原来的每一项，包括入境卡、链接和提醒），加上天数。".to_string()
-    } else {
-        "(System) The answer mentions a visa exemption but not how long it allows: for the user's passport, find the \
-visa-free stay in days on an official source (the country's foreign ministry or immigration page — browser_read it); \
-when sources disagree, give the official one with its date. Then write the WHOLE answer again — every part of it \
-(each country, the arrival cards with their links, the reminders) — with the days added.".to_string()
-    })
+    let Some(back) = last_back else { return false };
+    !transcript[back + 1..]
+        .iter()
+        .flat_map(tool_calls)
+        .any(|tc| stored_call(tc).0 == "browser_snapshot")
 }
 
-/// A purchase or booking the user asked for, a comparison whose pick code holds (`present_choices` with `picked`),
-/// nothing bought yet — and the answer asks whether to proceed: the decision is the user's request, so the run is
-/// told once to go on with the pick (cards_pay_real 2026-11-01: "Cheapest is Premium; shall I proceed with it?" as
-/// the final answer; the classifier saw no re-confirmation). Deterministic: regexes on the request and the answer.
-pub fn proceed_with_pick_hint(
-    transcript: &[Value],
-    goal: &str,
-    answer: &str,
-    zh: bool,
-) -> Option<String> {
-    static BUY: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(buy|purchase|book|order|get me|pay for)\b|买|购买|下单|预订|订购")
-            .unwrap()
-    });
-    static ASKS: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)shall I (proceed|go ahead|book|buy|order|continue)|(do|would) you (want|like) me to\b|should I (proceed|go ahead|book|buy)|proceed\?|confirm (that|if|whether)|要不要(我)?(继续|下单|购买|预订)|是否(继续|下单|购买)").unwrap()
-    });
-    if !BUY.is_match(goal) || !ASKS.is_match(answer) {
-        return None;
-    }
-    let picked = transcript.iter().flat_map(tool_calls).find_map(|tc| {
-        let (name, args) = stored_call(tc);
-        (name == "present_choices")
-            .then(|| sget(&args, "picked").trim().to_string())
-            .filter(|p| !p.is_empty())
-    })?;
-    if ran_ok(
-        transcript,
-        &["purchase_confirm", "browser_request_takeover"],
-    ) {
-        return None;
-    }
-    Some(if zh {
-        format!("（系统）用户已经要求购买/预订，不用再问：现在就按已选的「{picked}」继续办理（打开它、填写、到付款前交给用户）。不要再问是否继续。")
-    } else {
-        format!("(System) The user already asked to buy / book: do not ask whether to proceed — go on with the pick now, \"{picked}\" (open it, fill in what is needed, hand the final payment to the user). Not a question.")
-    })
-}
-
-/// Whether an answer asks the user for something: a question, or request wording without one ("I still need your
-/// flight number…", "please send…", "you can upload…") — arrival_real 2026-10-31: the flight and the hotel asked for
-/// with no question mark, and the classifier saw no question.
-pub fn requests_info(answer: &str) -> bool {
-    static ASK: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)[?？]|\bI (still |also )?need (your|the|to know)\b|\bplease (send|tell|provide|share|give|confirm|upload|let me know)\b|\b(could|can) you (send|tell|provide|share|give|confirm|upload)\b|\byou can (send|upload|share|tell)\b|\blet me know\b|请(告诉|提供|发送|上传|确认)|还需要你")
-            .unwrap()
-    });
-    ASK.is_match(answer)
-}
-
-/// An arrival-card answer that asks the user for the trip, with no mailbox connected, says that connecting one lets
-/// OMuse read the flight and the stay from the booking emails (a fact of the connections, arrival_real 2026-10-31:
-/// "nomail" asked for the flight and the hotel without a word of the mailbox).
-pub fn with_mailbox_hint(
-    transcript: &[Value],
-    answer: &str,
-    mail_ready: bool,
-    asks: bool,
-    zh: bool,
-) -> String {
-    if mail_ready || !asks || !arrival_run(transcript) {
+/// An arrival-card run that asked the user for the trip (`ask_user`), with no mailbox connected, says that connecting
+/// one lets OMuse read the flight and the stay from the booking emails (a fact of the connections, arrival_real
+/// 2026-10-31: "nomail" asked for the flight and the hotel without a word of the mailbox).
+pub fn with_mailbox_hint(transcript: &[Value], answer: &str, mail_ready: bool, zh: bool) -> String {
+    if mail_ready || asked_user(transcript).is_none() || !arrival_run(transcript) {
         return answer.to_string();
     }
     let line = if zh {
@@ -2224,57 +1575,6 @@ pub fn with_flight_times(transcript: &[Value], answer: &str, zh: bool) -> String
         return format!("{}\n\n{line}", answer.trim_end());
     }
     answer.to_string()
-}
-
-/// The file formats the user asked for (PDF, Excel, Word) that no file of the run has: a one-time note sends the run
-/// back to make them (travel_receipts_real 2026-10-31: "give me the Excel and the PDF" got the Excel only). The formats
-/// come from the user's words, the files from the run's successful make_* / files_write calls.
-pub fn missing_format_hint(transcript: &[Value], goal: &str, zh: bool) -> Option<String> {
-    static PDF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bpdf\b").unwrap());
-    static XLSX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)\b(excel|xlsx|spreadsheet)\b|表格").unwrap());
-    static DOCX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)\b(docx|word document|word file)\b").unwrap());
-    let ok_ids: std::collections::HashSet<String> = transcript
-        .iter()
-        .filter(|m| get_str(m, "role") == "tool" && !content_of(m).starts_with("ERROR"))
-        .map(|m| get_str(m, "tool_call_id"))
-        .collect();
-    let made: Vec<String> = transcript
-        .iter()
-        .flat_map(tool_calls)
-        .filter(|tc| ok_ids.contains(&get_str(tc, "id")))
-        .filter_map(|tc| {
-            let (n, a) = stored_call(tc);
-            match n.as_str() {
-                "make_pdf" | "make_xlsx" | "make_docx" | "files_write" => {
-                    Some(format!("{} {} {n}", sget(&a, "output"), sget(&a, "path")).to_lowercase())
-                }
-                _ => None,
-            }
-        })
-        .collect();
-    let has = |ext: &str, tool: &str| made.iter().any(|m| m.contains(ext) || m.ends_with(tool));
-    let mut missing: Vec<&str> = Vec::new();
-    if PDF.is_match(goal) && !has(".pdf", "make_pdf") {
-        missing.push("PDF");
-    }
-    if XLSX.is_match(goal) && !has(".xlsx", "make_xlsx") {
-        missing.push("Excel");
-    }
-    if DOCX.is_match(goal) && !has(".docx", "make_docx") {
-        missing.push("Word");
-    }
-    if missing.is_empty() || made.is_empty() {
-        return None;
-    }
-    let what = missing.join(" and ");
-    Some(if zh {
-        format!("（系统）用户要了 {what} 文件，还没有生成：现在生成（make_pdf / make_xlsx / make_docx，用同一份内容），再用 send_file 发给用户。")
-    } else {
-        format!("(System) The user asked for the {what} too and it was not made: make it now from the same content (make_pdf / \
-make_xlsx / make_docx), then send it with send_file.")
-    })
 }
 
 /// The files the run wrote (`files_write`, `make_pdf`, `make_xlsx`, `make_docx`, without an error) that never reached the
@@ -2449,62 +1749,6 @@ pub fn with_handover_answer(transcript: &[Value], answer: &str) -> String {
     format!("{before}\n\n{}", answer.trim())
 }
 
-/// A 'final answer' that is really a cut-off fragment (2026-10-05 S1-04: the whole answer was 'Sheng Siong 搜索"gard'
-/// after 27 steps of price lookups). Such text must not end the task.
-pub fn cut_off_final(text: &str, finish_reason: Option<&str>, open_steps: usize) -> bool {
-    let t = text.trim();
-    if t.is_empty() {
-        return false;
-    }
-    if finish_reason == Some("length") {
-        return true;
-    }
-    if t.chars().count() >= 80 {
-        return false;
-    }
-    let count = |c: char| t.chars().filter(|x| *x == c).count();
-    let unbalanced = count('"') % 2 == 1
-        || count('「') > count('」')
-        || count('“') > count('”')
-        || count('(') > count(')');
-    let last = t.chars().last().unwrap_or(' ');
-    let ends = "。.!！?？)）」】”\"*|`~>:：…".contains(last) || t.ends_with("...");
-    unbalanced || (!ends && open_steps > 0)
-}
-
-/// Concrete different mail queries for a model that keeps repeating one (it copies a ready query more readily).
-pub fn search_alternatives(q: &str) -> Vec<String> {
-    static INBOX: LazyLock<Regex> = LazyLock::new(|| rx(r"\bin:inbox\b"));
-    static FROM: LazyLock<Regex> = LazyLock::new(|| rx(r"(?:from|subject):([\w.\-]+)"));
-    let q = q.trim();
-    let mut out: Vec<String> = Vec::new();
-    if INBOX.is_match(q) {
-        out.push(INBOX.replace_all(q, "in:anywhere").into_owned()); // receipts are often archived, not in the inbox
-    }
-    let mut words: Vec<String> = Vec::new();
-    for c in FROM.captures_iter(q) {
-        let w = c[1].to_string();
-        if !words.contains(&w) {
-            words.push(w);
-        }
-    }
-    words.truncate(3);
-    if !words.is_empty() {
-        out.push(format!(
-            "in:anywhere ({}) (receipt OR invoice OR order OR 收据 OR 发票 OR 订单)",
-            words.join(" OR ")
-        ));
-    }
-    let mut seen = Vec::new();
-    for x in out {
-        if !x.is_empty() && x != q && !seen.contains(&x) {
-            seen.push(x);
-        }
-    }
-    seen.truncate(2);
-    seen
-}
-
 /// Refusal text if `call` repeats an identical earlier call too often, else None.
 pub fn repeat_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
     let name = call.name.as_str();
@@ -2522,10 +1766,8 @@ pub fn repeat_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
                 .all(|n| n == "update_plan")
         {
             return Some(
-                "ERROR: 计划已经更新过好几次了，这次没有执行。不要再调用 update_plan：现在就执行下一步（调用真正干活的工具），\
-或者信息已经够了就直接写最终回答。\
- The plan was already updated several times in a row; this call was not run. Stop calling update_plan: \
-do the next step with a real tool now, or write the final answer if you have enough."
+                "ERROR: [repeat] 计划已经连续更新过好几次，这次没有执行。 The plan was already updated several times in a row; \
+this call was not run."
                     .to_string(),
             );
         }
@@ -2547,43 +1789,17 @@ do the next step with a real tool now, or write the final answer if you have eno
     if (name == "browser_click" || name == "browser_click_at") && total >= 4 {
         // 2026-10-04 V3-10: the same "Add to cart" ref was clicked 22 times while the cart stayed at 0 items
         return Some(format!(
-            "ERROR: 同一个元素已经点了 {total} 次，没有效果，这次没有执行。它可能不是你要的按钮，或者点了也不会变化。\
-先 browser_find(\"<按钮上的字>\") 或 browser_look 找到真正的按钮（注意是否要先选规格/配送选项），\
-或换一种方式；还是不行就如实告诉用户。\
- This element was already clicked {total}x with no effect; not clicked again. It is probably not the right \
-button or needs another step first: browser_find the real button (check options first) or report honestly."
+            "ERROR: [repeat] 同一个元素已经点了 {total} 次，这次没有执行。 This element was already clicked {total}x; not \
+clicked again."
         ));
     }
     if (!REPEAT_STREAK_OK.contains(&name) && streak >= REPEAT_STREAK)
         || ((REPEAT_READ.is_match(name) || searchy) && total >= REPEAT_TOTAL)
     {
         let n = total + 1;
-        if name == "gmail_search" {
-            // 2026-10-04 M2-06 / M3-08: the model re-ran the same mail search 5-11 times instead of moving on
-            let alts = search_alternatives(&sget(&call.args, "query"));
-            let alt_txt = if alts.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "\n可以直接试这些不同的查询 Different queries to try: {}",
-                    alts.join(" | ")
-                )
-            };
-            return Some(format!(
-                "ERROR: 这个搜索已经做过 {total} 次了，结果就在上文，这次没有执行。下一步：从上文结果里挑出相关邮件的 id，\
-统计金额就调用 gmail_read_amounts(message_ids=[…])，要看全文就调用 gmail_get_message；\
-如果上文结果里没有需要的邮件，就换一个不同的查询（例如只用 from:发件人域名）。\
- This exact search already ran {total}x and its result is above; it was not run again. Next step: take \
-the ids of the relevant emails from that result and call gmail_read_amounts(message_ids=[…]) for amounts, \
-or gmail_get_message for full text. If the result has nothing useful, run a DIFFERENT query \
-(e.g. only from:<sender domain>).{alt_txt}"
-            ));
-        }
         return Some(format!(
-            "ERROR: 重复调用已拦截 — 这是第 {n} 次用完全相同的参数调用 {name}，结果不会改变，本次没有执行。\
-请直接使用前面已经拿到的结果继续下一步；如果这个来源读不到需要的内容，就跳过它，换别的来源，或者用已有的内容完成任务。\
- Repeated identical call blocked ({name}, {n}x): the result will not change. Use what you already have, \
-skip this source, and move on to the next step."
+            "ERROR: [repeat] 重复调用已拦截 — 这是第 {n} 次用完全相同的参数调用 {name}，本次没有执行。 Repeated identical call \
+blocked ({name}, {n}x): the result is above."
         ));
     }
     None
@@ -2681,10 +1897,8 @@ pub fn invented_id_guard(
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!(
-        "ERROR: 这些 id 没有出现在任何搜索结果里（{shown}…），不要自己编 id 或按规律推算 id。\
-先用 gmail_search 找到邮件，再原样复制它返回的 id（包括 g2: 这样的前缀）。\
- These ids do not appear in any search result ({shown}…). Never invent or extrapolate ids: \
-run gmail_search and copy the ids it returns exactly (including prefixes like g2:)."
+        "ERROR: [unknown_id] 这些 id 没有出现在任何搜索结果里（{shown}…）。 These ids do not appear in any search result ({shown}…); \
+an id is copied from a result as returned."
     ))
 }
 
@@ -2729,11 +1943,8 @@ pub fn reread_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
             {
                 let id = get_str(m, "tool_call_id");
                 return Some(format!(
-                    "已读取过 — 这个内容在上文调用 {id} 的结果里，完整保留着，没有再读一次。请直接使用它；\
-如果需要的东西都已经有了，就继续下一步或写最终回答。\
- Already read: the full result is above (call {id}); use it instead of reading again. \
-If you have what you need, move on or write the final answer.{}",
-                    next_step_hint(name, call, &c)
+                    "已读取过 — 这个内容在上文调用 {id} 的结果里，完整保留着，没有再读一次。 Already read: the full result is \
+above (call {id})."
                 ));
             }
         }
@@ -2741,38 +1952,48 @@ If you have what you need, move on or write the final answer.{}",
     None
 }
 
-/// A concrete, copyable next call for a model that keeps repeating a search (2026-10-04 TC27, M3-21).
-fn next_step_hint(name: &str, call: &ToolCall, earlier: &str) -> String {
-    static URL: LazyLock<Regex> = LazyLock::new(|| rx(r#"https?://[^\s"'<>]+"#));
-    if name == "web_search" {
-        let mut urls: Vec<String> = Vec::new();
-        for m in URL.find_iter(earlier) {
-            let u = m
-                .as_str()
-                .trim_end_matches(['.', ',', ')', '"', '\''])
-                .to_string();
-            if !urls.contains(&u) {
-                urls.push(u);
-            }
-        }
-        urls.truncate(3);
-        if !urls.is_empty() {
-            return format!(
-                "\n下一步 Next: 打开这些结果页读取详情 open the result pages: browser_read(urls={})\
-，或者换一个不同的搜索词 or search with DIFFERENT words.",
-                pyjson::dumps_ascii(&json!(urls))
-            );
-        }
+/// The web searches the run made so far (`web_search`, `news_search`, `browser_news_search`).
+pub fn web_searches(transcript: &[Value]) -> i64 {
+    transcript
+        .iter()
+        .filter(|m| get_str(m, "role") == "assistant")
+        .flat_map(tool_calls)
+        .filter(|c| {
+            matches!(
+                stored_call(c).0.as_str(),
+                "web_search" | "news_search" | "browser_news_search"
+            )
+        })
+        .count() as i64
+}
+
+/// A web search past the task's WEB_NUDGE searches is refused: the search tools are withdrawn from the tool list by
+/// then (`Runtime::budget`); this holds the line for the searches of the same turn (2026-10-02 R4-04b: a "top 3
+/// products" lookup made 47 web calls).
+pub fn web_budget_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
+    if !matches!(
+        call.name.as_str(),
+        "web_search" | "news_search" | "browser_news_search"
+    ) {
+        return None;
     }
-    if name == "gmail_search" {
-        let alts = search_alternatives(&sget(&call.args, "query"));
-        return if alts.is_empty() {
-            "\n下一步 Next: 用结果里的 id 调用 gmail_read_amounts / gmail_get_message (ids from the result above).".to_string()
-        } else {
-            format!("\n下一步 Next: 用结果里的 id 调用 gmail_read_amounts / gmail_get_message；或换查询 or try: {}", alts.join(" | "))
-        };
-    }
-    String::new()
+    let done = transcript
+        .iter()
+        .flat_map(tool_calls)
+        .take_while(|tc| get_str(tc, "id") != call.id)
+        .filter(|c| {
+            matches!(
+                stored_call(c).0.as_str(),
+                "web_search" | "news_search" | "browser_news_search"
+            )
+        })
+        .count() as i64;
+    (done >= WEB_NUDGE).then(|| {
+        format!(
+            "ERROR: [web_budget] 这个任务已经做了 {done} 次网页搜索，不再搜索。 Blocked: this task already ran {done} web \
+searches; no more are run."
+        )
+    })
 }
 
 /// `urlparse(url).hostname` lowercased without a leading `www.` ("" when unparsable).
@@ -3057,19 +2278,20 @@ pub fn with_fallback_pages(transcript: &[Value], answer: &str, zh: bool) -> Stri
     format!("{}\n\n{label}: {links}", answer.trim_end())
 }
 
-/// The answer with the comparison it showed as cards, when it gives none of the cards' prices: the options with their
-/// details (as checked against the pages), so the answer stands on its own — in Telegram, a notification, a later
-/// "book the second one" (travel_brave_real 2026-10-31: "you can choose from the cards shown", no price in the answer).
+/// The answer with the comparison it showed as cards (`present_choices`): the options with their details, as checked
+/// against the pages, so the answer stands on its own — in Telegram, a notification, a later "book the second one"
+/// (travel_brave_real 2026-10-31: "you can choose from the cards shown", no price in the answer). Appended unless the
+/// answer already names every option (its label, a structured value).
 pub fn with_choices_listing(transcript: &[Value], answer: &str, zh: bool) -> String {
-    static PRICE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?:S\$|US\$|A\$|HK\$|SGD|USD|JPY|EUR|GBP|¥|€|£|\$)\s?\d").unwrap()
-    });
     let Some(listing) = transcript
         .iter()
         .rev()
         .filter(|m| get_str(m, "role") == "tool")
         .map(content_of)
-        .find(|c| c.contains("Shown to the user as") && c.contains("verified against the pages"))
+        .find(|c| {
+            serde_json::from_str::<Value>(c.lines().next().unwrap_or(""))
+                .is_ok_and(|v| v.get("shown").is_some())
+        })
     else {
         return answer.to_string();
     };
@@ -3080,7 +2302,13 @@ pub fn with_choices_listing(transcript: &[Value], answer: &str, zh: bool) -> Str
                 .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
         })
         .collect();
-    if lines.is_empty() || !lines.iter().any(|l| PRICE.is_match(l)) || PRICE.is_match(answer) {
+    let low = answer.to_lowercase();
+    let all_named = lines.iter().all(|l| {
+        l.split_once(". ")
+            .and_then(|(_, rest)| rest.split(" — ").next())
+            .is_some_and(|label| low.contains(&label.trim().to_lowercase()))
+    });
+    if lines.is_empty() || all_named {
         return answer.to_string();
     }
     let head = if zh { "选项" } else { "The options" };
@@ -3409,16 +2637,50 @@ fn catalog_card(name: &str, market: &str) -> Option<&'static Value> {
     if word.is_empty() {
         return None;
     }
+    let names = |c: &Value| -> Vec<String> {
+        std::iter::once(format!("{} {}", sget(c, "issuer"), sget(c, "product")))
+            .chain(arr(c, "aliases").iter().map(omuse_common::util::py_str))
+            .map(|n| n.to_lowercase())
+            .collect()
+    };
     let hits: Vec<&Value> = catalog_cards()
         .iter()
-        .filter(|c| {
-            std::iter::once(format!("{} {}", sget(c, "issuer"), sget(c, "product")))
-                .chain(arr(c, "aliases").iter().map(omuse_common::util::py_str))
-                .any(|n| n.to_lowercase().contains(&word))
-        })
+        .filter(|c| names(c).iter().any(|n| n.contains(&word)))
         .collect();
+    // a card whose name carries every telling word of the user's ("Hang Seng Travel+") before one that shares only
+    // the longest ("Travel")
+    let words: Vec<String> = name
+        .to_lowercase()
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|w| {
+            w.chars().count() >= 2
+                && ![
+                    "card",
+                    "credit",
+                    "visa",
+                    "mastercard",
+                    "signature",
+                    "infinite",
+                    "world",
+                    "elite",
+                    "american",
+                    "express",
+                ]
+                .contains(w)
+        })
+        .map(str::to_string)
+        .collect();
+    let whole = |c: &Value| {
+        let full = names(c).join(" ");
+        words.iter().all(|w| full.contains(w.as_str()))
+    };
     hits.iter()
-        .find(|c| market.is_empty() || sget(c, "region") == market)
+        .find(|c| whole(c) && (market.is_empty() || sget(c, "region") == market))
+        .or_else(|| hits.iter().find(|c| whole(c)))
+        .or_else(|| {
+            hits.iter()
+                .find(|c| market.is_empty() || sget(c, "region") == market)
+        })
         .or_else(|| hits.first())
         .copied()
 }
@@ -3584,39 +2846,58 @@ fn card_word(label: &str) -> String {
         .to_string()
 }
 
-/// A note sending the model back once when a card pick names only one of the user's several cards: the answer must
-/// compare the pick with the others (rate and value each) and give the foreign transaction fee where it applies
-/// (cards_markets_real 2026-10-30: "Use your Hang Seng Travel+", nothing about the user's two other cards). `None`
-/// when no catalog was read, the user holds fewer than two cards, or the answer names two or more.
-pub fn card_comparison_hint(transcript: &[Value], answer: &str, zh: bool) -> Option<String> {
+/// `answer` with a compact table of the user's cards from the catalog (its structured rows: market, base rate, dining,
+/// travel, foreign transaction fee, verified) when a card run (a catalog table read) knows two or more of the user's
+/// cards — the comparison the pick is made against, rendered from data (cards_markets_real 2026-10-30: "Use your Hang
+/// Seng Travel+", nothing about the user's two other cards). Nothing when the catalog knows fewer than two of them.
+pub fn with_card_comparison(transcript: &[Value], answer: &str, zh: bool) -> String {
     let read_catalog = transcript
         .iter()
         .any(|m| get_str(m, "role") == "tool" && content_of(m).contains("# Credit cards — "));
     let cards = vault_cards(transcript);
     if !read_catalog || cards.len() < 2 {
-        return None;
+        return answer.to_string();
     }
-    let low = answer.to_lowercase();
-    let named = cards
+    let rate = |c: &Value, k: &str| {
+        c["rules"]
+            .get(k)
+            .and_then(Value::as_f64)
+            .map(pyfmt_pct)
+            .unwrap_or_else(|| "—".into())
+    };
+    let rows: Vec<String> = cards
         .iter()
-        .filter(|c| {
-            let w = card_word(c);
-            !w.is_empty() && low.contains(&w)
+        .filter_map(|name| {
+            let c = catalog_card(name, "")?;
+            let fx = c
+                .get("fx_fee_pct")
+                .and_then(Value::as_f64)
+                .map(|f| format!("{}%", pyfmt_pct(f)))
+                .unwrap_or_else(|| "?".into());
+            let verified = if c.get("verified").and_then(Value::as_bool) == Some(true) {
+                sget(c, "verified_at")
+            } else {
+                "seed".to_string()
+            };
+            Some(format!(
+                "| {name} | {} | {} | {} | {} | {} | {fx} | {verified} |",
+                sget(c, "region"),
+                sget(c, "unit"),
+                rate(c, "other"),
+                rate(c, "dining"),
+                rate(c, "travel"),
+            ))
         })
-        .count();
-    if named >= 2 {
-        return None;
+        .collect();
+    if rows.len() < 2 {
+        return answer.to_string();
     }
-    let list = cards.join(", ");
-    Some(if zh {
-        format!("（系统）用户有这些卡：{list}。你的回答只提到了一张。请把推荐的卡和用户的其他卡逐一比较（按数据库里的费率算出每张卡的回报），\
-发卡国家和商户国家不同的卡要写出境外交易手续费；然后重新写完整的回答。回答直接从内容开始，不要提到这次核对。")
+    let head = if zh {
+        "**你的卡（数据库）**\n\n| 卡 | 市场 | 单位 | 基础 | 餐饮 | 旅行 | 境外手续费 | 核实 |\n|---|---|---|---|---|---|---|---|"
     } else {
-        format!("(System) The user holds these cards: {list}. Your answer names only one. Compare the pick with each of \
-the user's other cards (the rate and the value each returns, from the catalog tables), and give the foreign \
-transaction fee for any card issued in another country than the merchant's; then write the complete answer again. \
-Start straight with the content; don't mention this check.")
-    })
+        "**Your cards (catalog)**\n\n| Card | Market | Unit | Base | Dining | Travel | FX fee | Verified |\n|---|---|---|---|---|---|---|---|"
+    };
+    format!("{}\n\n{head}\n{}", answer.trim_end(), rows.join("\n"))
 }
 
 /// Every market's table of the card catalog the build ships (`skills/credit-card-picker/cards/*.md`).
@@ -3982,9 +3263,8 @@ pub fn mail_before_travel_guard(goal: &str, call: &ToolCall) -> Option<String> {
         return None;
     }
     Some(
-        "ERROR: 已拦截 — 搜索或预订新的机票、酒店、租车或餐厅不读用户的邮件（用户没有要求从邮件里找东西）：直接用请求、个人资料和记忆去搜索。\
- Blocked: a new flight, hotel, car or restaurant search never reads the user's mail — the user did not ask for anything \
-from their mail or about a booking they already have. Search with what the request, the profile and memory say."
+        "ERROR: [no_mail_for_search] 已拦截 — 搜索新的机票、酒店、租车或餐厅不读用户的邮件。 Blocked: a new flight, hotel, car or \
+restaurant search never reads the user's mail."
             .to_string(),
     )
 }
@@ -4002,11 +3282,8 @@ pub fn one_search_guard(events: impl FnOnce() -> Vec<Value>, call: &ToolCall) ->
     let first = get_str(&done["data"], "call_id");
     let (what, zh) = travel_search(&get_str(&done["data"], "name")).unwrap_or(("travel", "旅行"));
     Some(format!(
-        "ERROR: 已拦截 — 这个请求已经做过它唯一的一次旅行搜索（调用 {first}，{zh}），每个请求只搜一次。用那次的结果回答，\
-其余的（换条件，或机票之外的酒店、租车）在回答里问用户，用户下一条消息再搜。\
- Blocked: this request already ran its one travel search (call {first}: {what}); ONE travel search per request. \
-Answer from that result; offer the rest in the answer (other conditions, or the hotel / car after the flight) — the \
-user's next message can search again."
+        "ERROR: [one_search] 已拦截 — 这个请求已经做过它唯一的一次旅行搜索（调用 {first}，{zh}）。 Blocked: this request already \
+ran its one travel search (call {first}: {what}); ONE travel search per request."
     ))
 }
 
@@ -4054,9 +3331,8 @@ pub fn search_order_guard(goal: &str, searched: bool, call: &ToolCall) -> Option
     let (what, zh) = travel_search(first).unwrap_or(("travel", "旅行"));
     let (mine, mine_zh) = travel_search(base).unwrap_or(("travel", "旅行"));
     Some(format!(
-        "ERROR: 已拦截 — 用户先要的是{zh}：这个请求唯一的一次旅行搜索是 {first}；{mine_zh}在回答里提出，用户下一条消息再搜。\
- Blocked: the request names the {what} first, so its one travel search is {first}; offer the {mine} in the answer for \
-the user's next message."
+        "ERROR: [search_order] 已拦截 — 用户先要的是{zh}：这个请求唯一的一次旅行搜索是 {first}，不是{mine_zh}。 Blocked: the \
+request names the {what} first, so its one travel search is {first}, not the {mine}."
     ))
 }
 
@@ -4076,12 +3352,8 @@ pub fn host_guard(events: impl FnOnce() -> Vec<Value>, call: &ToolCall) -> Optio
         return None;
     }
     Some(format!(
-        "ERROR: 已拦截 — {host} 在本任务里已经失败或被拦截 {n} 次，本次没有执行，之后也不会再执行。\
-不要再访问这个网站：换一个完全不同的网站或数据来源（例如同类信息的其他网站、官方网站、新闻或资料站），\
-或者用已经拿到的内容完成任务，并告诉用户哪些数据拿不到。\
- Blocked: {host} already failed or was refused {n} times in this task, so it will not be called again. \
-Switch to a completely different website or data source, or finish with what you already have and tell the user \
-what could not be fetched."
+        "ERROR: [dead_host] 已拦截 — {host} 在本任务里已经失败或被拦截 {n} 次，不再执行。 Blocked: {host} already failed or was \
+refused {n} times in this task and is not called again."
     ))
 }
 
@@ -4097,102 +3369,16 @@ pub fn out_key(args: &Value) -> String {
         .to_lowercase()
 }
 
-static ERRORISH: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)(system[-_]?error|/error|errorpage|error\.html|session[-_]?(expired|timeout)|timeout|expired|/sorry|invalid[-_]?(request|access)|access[-_]?denied)",
-    )
-});
-
-static PRODUCT_PAGE: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)amazon\.[a-z.]+/(?:[^/]+/)?(?:dp|gp/product)/|lazada\.[a-z.]+/products/|shopee\.[a-z.]+/.+-i\.\d+\.\d+|fairprice\.com\.sg/product/|courts\.com\.sg/.+\.html|challenger\.sg/products/",
-    )
-});
-
 static PARKED: LazyLock<Regex> = LazyLock::new(|| {
     rx(
         r"(?i)(this|the) domain (name )?(\S+ )?(is|may be) for sale|\S+\.\w+ is for sale|domain is for sale|buy this domain|is parked free|parked (domain|by|courtesy)|sedoparking|domain parking|godaddy\.com/domain|域名.{0,6}(出售|转让)",
     )
 });
 
-/// A guessed address that is a parked / for-sale domain (2026-10-04 V3-07: "scoot.com" instead of flyscoot.com).
-pub fn parked_domain_hint(_url: &str, title: &str, snapshot: &str) -> String {
-    let probe = format!("{}\n{}", title, take_chars(snapshot, 3000));
-    if !PARKED.is_match(&probe) {
-        return String::new();
-    }
-    "（提示）这是一个停放/出售中的域名，不是这家公司的官网——网址可能猜错了。用 web_search 搜索\
-「<公司名> official site」找到正确网址再继续。 (Hint) This is a parked / for-sale domain, not the company's site — \
-the address was probably guessed wrong. web_search \"<company> official site\" for the right one."
-        .to_string()
-}
-
-/// On a shop's product page the next step is the cart button, not another search (2026-10-04 V3-04: the agent bounced
-/// between the search page and the product page eight times and never pressed Add to Cart).
-pub fn product_page_hint(url: &str, task_goal: &str) -> String {
-    static CART: LazyLock<Regex> =
-        LazyLock::new(|| rx(r"(?i)购物车|加购|cart|basket|买|buy|下单|order"));
-    if !PRODUCT_PAGE.is_match(url) || !CART.is_match(task_goal) {
-        return String::new();
-    }
-    "（提示）这是商品详情页。下一步：有颜色/尺寸选项就先选，然后 browser_find(\"Add to Cart\") 并点击它的 ref；\
-不要回到搜索页重新打开。 (Hint) This is the product page: pick options if any, then browser_find(\"Add to Cart\") \
-and click its ref — don't go back to the search results."
-        .to_string()
-}
-
-/// A deep link (from an email, a bookmark) that lands on the site's error page usually means "no session yet",
-/// not "the site is down": say so, so the agent enters through the home page instead of retrying for hours.
-pub fn deep_link_hint(asked: &str, landed: &str, title: &str) -> String {
-    static ERR_TITLE: LazyLock<Regex> = LazyLock::new(|| rx(r"(?i)\berror\b|エラー|错误"));
-    let (Ok(a), Ok(b)) = (urlparse(asked), urlparse(landed)) else {
-        return String::new();
-    };
-    if a.netloc.is_empty()
-        || b.netloc.is_empty()
-        || asked.trim_end_matches('/') == landed.trim_end_matches('/')
-    {
-        return String::new();
-    }
-    if !(ERRORISH.is_match(&format!("{}?{}", b.path, b.query)) || ERR_TITLE.is_match(title)) {
-        return String::new();
-    }
-    if ERRORISH.is_match(&a.path) {
-        return String::new();
-    }
-    "[DEEP LINK → ERROR PAGE] You opened a deep link and were sent to an error page. On airline/bank/booking \
-sites this almost always means the link needs a session that a fresh browser doesn't have — it does NOT mean \
-the site is down. Don't retry the same link later. Open the company's main home page (search for it if \
-needed — booking systems often live on a different subdomain) and use its own menu (My Booking / Manage booking / Sign in) to get there; that page usually asks for the booking \
-number AND a passenger's first/last name."
-        .to_string()
-}
-
-static REFUSED: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)heavy traffic|cannot be accepted at this time|大変混み合って|混み合っております|document registration process could not be completed|please try again later|request (?:was |has been )?(?:rejected|refused|blocked)|access (?:has been )?denied|unusual (?:traffic|activity)|temporarily unavailable|服务繁忙|系统繁忙",
-    )
-});
-
-/// A transactional page (booking lookup, check-in, account) answering "busy / try later / system error" right after
-/// the agent submitted a form or opened it. When the site's normal pages load fine, this is usually the site refusing
-/// this automated browser, not an outage — retrying on a timer only repeats it. Say so plainly.
-pub fn refusal_hint(url: &str, title: &str, text: &str, submitted: bool) -> String {
-    static SYSERR: LazyLock<Regex> = LazyLock::new(|| rx(r"(?i)system[-_]?error"));
-    if !REFUSED.is_match(&format!("{}\n{}", title, take_chars(text, 3000))) && !SYSERR.is_match(url)
-    {
-        return String::new();
-    }
-    format!(
-        "[SITE REFUSED THE REQUEST] The site answered with a busy / try-later / system-error page{}. If its ordinary pages (home page, info pages) \
-load fine, this is most likely the site refusing this automated browser — not maintenance. First check your \
-inputs once (each field got the right value?) and try ONE more time; if it happens again, stop: tell the \
-user plainly that the site refused the automated browser, and that they can do it themselves on their own \
-device (give the steps and the details they need), or take over this browser (browser_request_takeover). \
-Don't schedule retries, don't call it maintenance unless the site says so for this date, and never try to \
-get around the refusal.",
-        if submitted { " right after you submitted" } else { "" }
-    )
+/// A page that is a parked / for-sale domain, not the company's site (2026-10-04 V3-07: "scoot.com" instead of
+/// flyscoot.com): the runtime then searches for the official site and opens it itself (`exec::official_site`).
+pub fn parked_domain(title: &str, snapshot: &str) -> bool {
+    PARKED.is_match(&format!("{}\n{}", title, take_chars(snapshot, 3000)))
 }
 
 fn norm_goal(s: &str) -> String {
@@ -4216,37 +3402,17 @@ pub fn same_schedule(schedules: &[Value], name: &str, goal: &str) -> Option<Valu
     None
 }
 
-static POINTS_BACK: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)\babove\b|\bpreceding\b|\bearlier (table|summary|message)\b|上面|上方|如上|上述|前面(的|那)",
-    )
-});
-
-static ASK_RE: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)(请(你)?(告诉|提供|确认|发给|补充)|能(否|不能)告诉我|需要你(提供|告诉|确认)|你(想|要)(选|用)哪|哪一(个|家|天|封)|please (tell|confirm|provide|send|let me know)|could you (tell|confirm|provide|share)|which (one|of)|do you want me to)",
-    )
-});
-
-/// The answer ends by asking the user for a missing detail or a choice (needs-info), rather than reporting a failure.
-/// 2026-10-04 TC34: "find my dentist appointment and call to move it" ended correctly by asking which appointment /
-/// the clinic's number, but the task showed FAILED because the searches had come back empty.
-pub fn asks_user(final_: &str) -> bool {
-    let tail = last_chars(final_, 500);
-    ASK_RE.is_match(tail) && (tail.contains('?') || tail.contains('？'))
-}
-
 fn is_system_user(m: &Value) -> bool {
     let c = content_of(m);
     c.starts_with("(System)") || c.starts_with("（系统）")
 }
 
 /// 2026-10-02 R7-02: the model wrote the full answer (a table of bills) as text next to an update_plan call, then
-/// finished with "the summary table above covers …" — the chat only shows the final message, so the table was lost.
-/// When the final answer is short and points back, put the last substantial mid-task text in front of it.
+/// finished with a short closing line — the chat only shows the final message, so the table was lost. When the final
+/// answer is short (a measured length, not its wording), the last substantial mid-task text goes in front of it.
 pub fn merge_stranded_answer(transcript: &[Value], final_: &str) -> String {
     let f = final_.trim();
-    if f.chars().count() > 700 || !POINTS_BACK.is_match(f) {
+    if f.chars().count() > 300 {
         return final_.to_string();
     }
     for m in transcript.iter().rev() {
@@ -4288,17 +3454,6 @@ static MONEY_GOAL: LazyLock<Regex> = LazyLock::new(|| {
 });
 static CURRENCY: LazyLock<Regex> =
     LazyLock::new(|| rx(r"S\$|SGD|US\$|USD|JPY|¥|円|日元|新元|美元|€|£|\$\d"));
-static SELF_FIX: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)等一下|等等，|不对[：:，,。]|需要修正|我算错|算错了|更正一下|\bwait,|\bcorrection:|\bactually, that'?s wrong",
-    )
-});
-
-/// The answer changes its mind half-way ("……10.5 超过 10？不对……等一下，这里需要修正") — the user gets two results.
-pub fn self_corrects(final_: &str) -> bool {
-    SELF_FIX.is_match(final_)
-}
-
 fn source_text(transcript: &[Value], goal: &str) -> String {
     let mut s = goal.to_string();
     s.push('\n');
@@ -4469,6 +3624,141 @@ pub fn site_blocked(transcript: &[Value], url: &str) -> String {
         }
     }
     String::new()
+}
+
+/// `answer` with every flight number no tool result nor the request contains replaced by "(flight not in the
+/// sources)": a code the model made up never reaches the user (2026-10-04 V8-05: a return flight "SQ 637 11:30" that
+/// no email mentioned). A repair of values in code, not a message to the model.
+pub fn with_grounded_codes(transcript: &[Value], answer: &str, goal: &str, zh: bool) -> String {
+    let note = if zh {
+        "（航班号未在来源中找到）"
+    } else {
+        "(flight not in the sources)"
+    };
+    let mut out = answer.to_string();
+    for code in ungrounded_codes(transcript, answer, goal) {
+        out = out.replace(&code, note);
+    }
+    out
+}
+
+/// `answer` with every computed figure no tool result nor the request contains replaced by "(figure not in the
+/// sources)" (2026-10-03 M1-06: a hand-made table whose balances came from nowhere). Only the figures
+/// `ungrounded_numbers` flags; a repair of values in code.
+pub fn with_grounded_figures(transcript: &[Value], answer: &str, goal: &str, zh: bool) -> String {
+    let note = if zh {
+        "（数字未在来源中找到）"
+    } else {
+        "(figure not in the sources)"
+    };
+    let mut out = answer.to_string();
+    for lbl in ungrounded_numbers(transcript, answer, goal) {
+        let Ok(re) = FRegex::new(&format!(
+            r"(?<![\d.,]){}(?![\d.,])",
+            fancy_regex::escape(&lbl)
+        )) else {
+            continue;
+        };
+        out = re.replace_all(&out, note).into_owned();
+    }
+    out
+}
+
+/// The `ask_user` call of the run (the newest whose result went through): the fields asked for and the question.
+/// Read from the tool call and its structured result, never from the model's prose.
+pub fn asked_user(transcript: &[Value]) -> Option<(Vec<String>, String)> {
+    let ids: Vec<String> = transcript
+        .iter()
+        .flat_map(tool_calls)
+        .filter(|tc| stored_call(tc).0 == "ask_user")
+        .map(|tc| get_str(tc, "id"))
+        .collect();
+    transcript
+        .iter()
+        .rev()
+        .filter(|m| get_str(m, "role") == "tool" && ids.contains(&get_str(m, "tool_call_id")))
+        .find_map(|m| {
+            let v: Value = serde_json::from_str(content_of(m).trim()).ok()?;
+            if !get_truthy(&v, "asked") {
+                return None;
+            }
+            let fields = arr(&v, "fields")
+                .iter()
+                .map(omuse_common::util::py_str)
+                .collect();
+            Some((fields, sget(&v, "question")))
+        })
+}
+
+/// The fields `ask_user` may name.
+pub const ASK_FIELDS: [&str; 15] = [
+    "flight",
+    "arrival_date",
+    "stay",
+    "purpose",
+    "which_address",
+    "cards_held",
+    "trip_dates",
+    "nationality",
+    "birthday",
+    "home_address",
+    "sex",
+    "departure_date",
+    "next_city",
+    "declarations",
+    "other",
+];
+
+/// What the profile or the form's defaults already answer for an `ask_user` field: `Some((source, value))` when the
+/// question must not be asked — the profile's nationality, birthday, home address or sex; an arrival card's departure
+/// date (arrival + 7 days), next city (where the flight came from) and health / declaration answers (No); the one
+/// profile address in the card's country. `None`: a question only the user can answer.
+pub fn known_answer(
+    field: &str,
+    profile: &Value,
+    transcript: &[Value],
+) -> Option<(&'static str, String)> {
+    let prof = |k: &str| {
+        let v = get_str(profile, k);
+        (!v.trim().is_empty()).then(|| ("profile", v.trim().to_string()))
+    };
+    match field {
+        "nationality" => prof("nationality"),
+        "birthday" => prof("birthday"),
+        "home_address" => prof("address_home"),
+        "sex" => prof("gender"),
+        "departure_date" => arrival_run(transcript).then(|| {
+            (
+                "default",
+                "the arrival date + 7 days (the user's default)".to_string(),
+            )
+        }),
+        "next_city" => arrival_run(transcript).then(|| {
+            (
+                "default",
+                "the city the flight came from (the user's default)".to_string(),
+            )
+        }),
+        "declarations" => arrival_run(transcript).then(|| {
+            (
+                "default",
+                "No to every health and declaration question (the user's default)".to_string(),
+            )
+        }),
+        "which_address" => {
+            let skill = form_kind_skills(transcript, "arrival").into_iter().next()?;
+            let country = arrival_country(&skill);
+            let there: Vec<String> = profile
+                .as_object()?
+                .iter()
+                .filter(|(k, _)| k.starts_with("address"))
+                .map(|(_, v)| omuse_common::util::py_str(v))
+                .filter(|v| country.iter().any(|w| v.contains(w)))
+                .collect();
+            (there.len() == 1).then(|| ("profile", there[0].clone()))
+        }
+        _ => None,
+    }
 }
 
 /// Tool arguments for the event log: long strings cut to 300 characters.

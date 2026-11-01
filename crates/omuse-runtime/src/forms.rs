@@ -39,12 +39,16 @@ pub struct Facts {
     pub arrival_airport: String,
     /// the airline's name ("Garuda Indonesia"), from the e-ticket
     pub airline: String,
+    /// every argument of the call as given: the claim forms' facts (`agent::claims`: the policy number, the loss
+    /// date, the amount, the benefit, …) are read from here by key ([`Inputs::arg`])
+    pub extra: Value,
 }
 
 impl Facts {
     pub fn from_args(a: &Value) -> Self {
         let g = |k: &str| get_str(a, k).trim().to_string();
         Facts {
+            extra: if a.is_object() { a.clone() } else { json!({}) },
             flight_no: g("flight_no"),
             arrival_date: g("arrival_date"),
             origin_city: g("origin_city"),
@@ -118,6 +122,19 @@ impl Inputs<'_> {
     pub fn home_address(&self) -> String {
         self.p("address_home")
     }
+    /// The occupation (the profile's job title).
+    pub fn job_title(&self) -> String {
+        self.p("job_title")
+    }
+    /// ISO alpha-3 of the country the home address ends with ("…, Australia" → AUS), else of the nationality.
+    pub fn residence_iso3(&self) -> String {
+        let from_home = iso3(self.home_address().rsplit(',').next().unwrap_or(""));
+        if from_home.is_empty() {
+            iso3(&self.nationality())
+        } else {
+            from_home
+        }
+    }
     pub fn arrival(&self) -> Option<NaiveDate> {
         NaiveDate::parse_from_str(&self.facts.arrival_date, "%Y-%m-%d").ok()
     }
@@ -134,6 +151,10 @@ impl Inputs<'_> {
         } else {
             self.facts.next_city.clone()
         }
+    }
+    /// A fact given by key in the call's arguments (the claim forms' facts), trimmed; empty when missing.
+    pub fn arg(&self, k: &str) -> String {
+        get_str(&self.facts.extra, k).trim().to_string()
     }
     /// The stay as one line: "<name>, <address>", or the address alone.
     pub fn stay(&self) -> String {
@@ -299,6 +320,15 @@ const FORMS: &[(&str, &str, &str, FormFn)] = &[
     ("tw-arrival-card", "twac.immigration.gov.tw", "/", tw_arrival_card),
     ("cn-arrival-card", "s.nia.gov.cn", "/arrivalcardfillingpc", cn_arrival_card),
     ("th-arrival-card", "tdac.immigration.go.th", "/", th_arrival_card),
+    ("jp-visit-japan-web", "vjw-lp.digital.go.jp", "/", jp_visit_japan_web),
+    ("kh-arrival-card", "arrival.gov.kh", "/", kh_arrival_card),
+    ("ph-etravel", "etravel.gov.ph", "/", ph_etravel),
+    ("uk-eta", "www.gov.uk", "/eta", uk_eta),
+    // the claims and the purchase driven by `agent::claims`
+    ("csr-trip-claim", "www.eclaimsline.com", "/", eclaims_trip_claim),
+    ("fwd-sg-claim", "www.fwd.com.sg", "/claim-online/travel", fwd_sg_claim),
+    ("fwd-sg-quote", "www.fwd.com.sg", "/travel-insurance/online-quote", fwd_sg_quote),
+    ("fwd-sg-apply", "www.fwd.com.sg", "/fwd_sg_apply", fwd_sg_apply),
 ];
 
 /// The function for the page at `url`, with its name: `None` for a page no function knows (the generic path).
@@ -493,21 +523,8 @@ fn th_arrival_card(i: &Inputs) -> Vec<Op> {
     let f = i.facts;
     let (given, family) = i.name_parts();
     let nat = iso3(&i.nationality());
-    let purpose = match f.purpose.as_str() {
-        "holiday" => "HOLIDAY",
-        "business" => "BUSINESS",
-        "family" => "FAMILY",
-        "study" => "STUDY",
-        "transit" => "TRANSIT",
-        _ => "",
-    };
-    let accom_type = match f.stay_kind.as_str() {
-        "hotel" => "HOTEL",
-        "friends" => "RESIDENCE",
-        "own" => "OWN",
-        "other" => "OTHERS",
-        _ => "",
-    };
+    let purpose = purpose_option(&f.purpose);
+    let accom_type = accom_option(&f.stay_kind);
     let mut ops = vec![
         text("family_name", "#family_name", &family),
         text("first_name", "#first_name", &given),
@@ -556,6 +573,231 @@ fn th_arrival_card(i: &Inputs) -> Vec<Op> {
         "d_criminal",
         "d_goods",
     ] {
+        ops.push(radio(q, q, "No"));
+    }
+    ops
+}
+
+/// The purpose option of the one-page cards (TDAC, Cambodia, eTravel, Visit Japan Web): HOLIDAY / BUSINESS / FAMILY /
+/// STUDY / TRANSIT; empty for one not known (left for the user).
+fn purpose_option(purpose: &str) -> &'static str {
+    match purpose {
+        "holiday" => "HOLIDAY",
+        "business" => "BUSINESS",
+        "family" => "FAMILY",
+        "study" => "STUDY",
+        "transit" => "TRANSIT",
+        _ => "",
+    }
+}
+
+/// The accommodation type option of the same cards: HOTEL / RESIDENCE (friends or relatives) / OWN / OTHERS.
+fn accom_option(stay_kind: &str) -> &'static str {
+    match stay_kind {
+        "hotel" => "HOTEL",
+        "friends" => "RESIDENCE",
+        "own" => "OWN",
+        "other" => "OTHERS",
+        _ => "",
+    }
+}
+
+/// Visit Japan Web (https://vjw-lp.digital.go.jp/ → Log in → "Register planned entry"), mapped from the pages rebuilt
+/// from the site on 2026-11-01: the sign-in (email, password, any 2-factor code) is the user's — the plan stops until
+/// the entry form's first field shows; then one page, dates DD/MM/YYYY, selects by ISO alpha-3, the customs questions
+/// Yes / No radios by name (No, the user's default; they review before they register). There is no next-city field
+/// and no health section. The security check and Register are the user's.
+fn jp_visit_japan_web(i: &Inputs) -> Vec<Op> {
+    let f = i.facts;
+    let (given, family) = i.name_parts();
+    let nat = iso3(&i.nationality());
+    let mut ops = vec![
+        // the sign-in page has no entry fields: the user's step comes first
+        require("entry_form", "#family_name",
+                "the sign-in to your Visit Japan Web account (email, password and any 2-factor code) is the user's: hand the page over for it, then call form_fill again"),
+        text("family_name", "#family_name", &family),
+        text("given_name", "#given_name", &given),
+        radio("sex", "sex", &i.sex_code()),
+        text("dob", "#dob", &date(i.birthday(), "%d/%m/%Y")),
+        select("nationality", "#nationality", &nat),
+        vault_as("passport_no", "text", "#passport_no", "number", ""),
+        vault_as("passport_expiry", "text", "#passport_expiry", "expiry", "%d/%m/%Y"),
+        select("passport_country", "#passport_country", &nat),
+        text("email", "#email", &i.email()),
+        text("phone", "#phone", &i.phone()),
+        select("mode", "#mode", if f.flight_no.is_empty() { "" } else { "AIR" }),
+        text("flight_no", "#flight_no", &f.flight_no),
+        text("arrival_date", "#arrival_date", &date(i.arrival(), "%d/%m/%Y")),
+        text("last_city", "#last_city", &f.origin_city),
+        text("departure_date", "#departure_date", &date(i.departure(), "%d/%m/%Y")),
+        select("purpose", "#purpose", purpose_option(&f.purpose)),
+        select("accom_type", "#accom_type", accom_option(&f.stay_kind)),
+        text("accommodation", "#accommodation", &i.stay()),
+    ];
+    for q in [
+        "d_goods",
+        "d_cash",
+        "d_unaccompanied",
+        "d_refused",
+        "d_criminal",
+    ] {
+        ops.push(radio(q, q, "No"));
+    }
+    ops
+}
+
+/// The Cambodia e-Arrival Card (https://arrival.gov.kh/), mapped from the page rebuilt from the site on 2026-11-01:
+/// one page like the TDAC's — dates DD/MM/YYYY, selects by ISO alpha-3, a next-city box, health and declaration
+/// Yes / No radios by name (No, the user's default). The CAPTCHA and Submit are the user's.
+fn kh_arrival_card(i: &Inputs) -> Vec<Op> {
+    let f = i.facts;
+    let (given, family) = i.name_parts();
+    let nat = iso3(&i.nationality());
+    let mut ops = vec![
+        text("family_name", "#family_name", &family),
+        text("given_name", "#given_name", &given),
+        radio("sex", "sex", &i.sex_code()),
+        text("dob", "#dob", &date(i.birthday(), "%d/%m/%Y")),
+        select("nationality", "#nationality", &nat),
+        vault_as("passport_no", "text", "#passport_no", "number", ""),
+        vault_as(
+            "passport_expiry",
+            "text",
+            "#passport_expiry",
+            "expiry",
+            "%d/%m/%Y",
+        ),
+        select("passport_country", "#passport_country", &nat),
+        text("email", "#email", &i.email()),
+        text("phone", "#phone", &i.phone()),
+        select(
+            "mode",
+            "#mode",
+            if f.flight_no.is_empty() { "" } else { "AIR" },
+        ),
+        text("flight_no", "#flight_no", &f.flight_no),
+        text(
+            "arrival_date",
+            "#arrival_date",
+            &date(i.arrival(), "%d/%m/%Y"),
+        ),
+        text("last_city", "#last_city", &f.origin_city),
+        text("next_city", "#next_city", &i.next_city()),
+        text(
+            "departure_date",
+            "#departure_date",
+            &date(i.departure(), "%d/%m/%Y"),
+        ),
+        select("purpose", "#purpose", purpose_option(&f.purpose)),
+        select("accom_type", "#accom_type", accom_option(&f.stay_kind)),
+        text("accommodation", "#accommodation", &i.stay()),
+    ];
+    for q in [
+        "h_symptoms",
+        "h_travel",
+        "d_names",
+        "d_refused",
+        "d_criminal",
+        "d_goods",
+    ] {
+        ops.push(radio(q, q, "No"));
+    }
+    ops
+}
+
+/// The Philippines eTravel registration (https://etravel.gov.ph/), mapped from the page rebuilt from the site on
+/// 2026-11-01: one page — last / first / middle name (the middle name is not in the profile: left for the user),
+/// the country of residence (the home address's country, else the nationality), dates DD/MM/YYYY, selects by ISO
+/// alpha-3, a next-city box, health and declaration Yes / No radios by name (No, the user's default). The CAPTCHA and
+/// Submit are the user's.
+fn ph_etravel(i: &Inputs) -> Vec<Op> {
+    let f = i.facts;
+    let (given, family) = i.name_parts();
+    let nat = iso3(&i.nationality());
+    let mut ops = vec![
+        text("last_name", "#last_name", &family),
+        text("first_name", "#first_name", &given),
+        radio("sex", "sex", &i.sex_code()),
+        text("dob", "#dob", &date(i.birthday(), "%d/%m/%Y")),
+        select("nationality", "#nationality", &nat),
+        select(
+            "country_residence",
+            "#country_residence",
+            &i.residence_iso3(),
+        ),
+        vault_as("passport_no", "text", "#passport_no", "number", ""),
+        vault_as(
+            "passport_expiry",
+            "text",
+            "#passport_expiry",
+            "expiry",
+            "%d/%m/%Y",
+        ),
+        select("passport_country", "#passport_country", &nat),
+        text("email", "#email", &i.email()),
+        text("phone", "#phone", &i.phone()),
+        select(
+            "mode",
+            "#mode",
+            if f.flight_no.is_empty() { "" } else { "AIR" },
+        ),
+        text("flight_no", "#flight_no", &f.flight_no),
+        text(
+            "arrival_date",
+            "#arrival_date",
+            &date(i.arrival(), "%d/%m/%Y"),
+        ),
+        text("last_city", "#last_city", &f.origin_city),
+        text("next_city", "#next_city", &i.next_city()),
+        text(
+            "departure_date",
+            "#departure_date",
+            &date(i.departure(), "%d/%m/%Y"),
+        ),
+        select("purpose", "#purpose", purpose_option(&f.purpose)),
+        select("accom_type", "#accom_type", accom_option(&f.stay_kind)),
+        text("accommodation", "#accommodation", &i.stay()),
+    ];
+    for q in [
+        "h_symptoms",
+        "h_travel",
+        "d_names",
+        "d_refused",
+        "d_criminal",
+        "d_goods",
+    ] {
+        ops.push(radio(q, q, "No"));
+    }
+    ops
+}
+
+/// The UK ETA application (https://www.gov.uk/eta), mapped from the page rebuilt from the site on 2026-11-01. No
+/// trip: the application asks for the passport, the home address and the occupation (the profile's job title) — the
+/// driver's trip facts are optional and the plan is the same with empty [`Facts`]. The face photo is the user's: the
+/// plan fills what comes before it, then stops until the questions after the photo step show (on a one-page form they
+/// are there already and the stop passes); the criminality / immigration-history questions are No, the user's own
+/// default, reviewed by them before they pay. "Submit and pay" is the user's.
+fn uk_eta(i: &Inputs) -> Vec<Op> {
+    let (given, family) = i.name_parts();
+    let nat = iso3(&i.nationality());
+    let mut ops = vec![
+        text("family_name", "#family_name", &family),
+        text("given_name", "#given_name", &given),
+        radio("sex", "sex", &i.sex_code()),
+        text("dob", "#dob", &date(i.birthday(), "%d/%m/%Y")),
+        select("nationality", "#nationality", &nat),
+        vault_as("passport_no", "text", "#passport_no", "number", ""),
+        vault_as("passport_expiry", "text", "#passport_expiry", "expiry", "%d/%m/%Y"),
+        select("passport_country", "#passport_country", &nat),
+        text("email", "#email", &i.email()),
+        text("phone", "#phone", &i.phone()),
+        text("home_address", "#home_address", &i.home_address()),
+        text("occupation", "#occupation", &i.job_title()),
+        // the photo step is the user's: the questions after it gate the rest of the plan
+        require("history_questions", "input[name=\"d_criminal\"]",
+                "the face photo upload is the user's: hand the page over for it, then call form_fill again"),
+    ];
+    for q in ["d_criminal", "d_refused", "d_terror"] {
         ops.push(radio(q, q, "No"));
     }
     ops
@@ -1531,6 +1773,143 @@ pub fn date(d: Option<NaiveDate>, fmt: &str) -> String {
     d.map(|d| d.format(fmt).to_string()).unwrap_or_default()
 }
 
+// ---------------------------------------------------------------- the claim forms (`agent::claims` drives them)
+
+/// eClaimsLine's "File a claim" form (Card Benefit Services, https://www.eclaimsline.com — where
+/// chasecardbenefits.com sends Chase cardholders), mapped from the portal's claim page on 2026-11-01: one page, native
+/// inputs and selects with fixed ids. The facts come from `agent::claims` (the benefit by rule, the date of loss, the
+/// amount by arithmetic, the reason in general terms, the supplier and booking reference, the card's last 4 from the
+/// charge alert); the cardholder from the profile. A sign-in the portal may put first is the user's (`require`), and
+/// "Submit claim" is the user's.
+fn eclaims_trip_claim(i: &Inputs) -> Vec<Op> {
+    vec![
+        require(
+            "claim_form",
+            "#benefit",
+            "the sign-in is the user's: hand the page over for it, then call form_fill again",
+        ),
+        text("name", "#name", &i.full_name()),
+        text("email", "#email", &i.email()),
+        text("phone", "#phone", &i.phone()),
+        select("card", "#card", &i.arg("card_product")),
+        text("last4", "#last4", &i.arg("last4")),
+        select("benefit", "#benefit", &i.arg("benefit")),
+        text("loss", "#loss", &i.arg("loss_date")),
+        text("amount", "#amount", &i.arg("amount")),
+        text("reason", "#reason", &i.arg("reason")),
+        text("booking", "#booking", &i.arg("booking")),
+    ]
+}
+
+/// FWD Singapore's online travel claim (https://www.fwd.com.sg/claim-online/travel.html), mapped 2026-11-01: one page.
+/// The policy number, the incident and the amount come from `agent::claims` (the delay from the airline's
+/// certificate, the benefit by the policy's 6-hour rule); the claimant from the profile; the NRIC / passport from the
+/// Vault (never typed from chat). The supporting documents are uploaded by the driver (`browser_upload` needs the
+/// file input's ref), and "Submit claim" is the user's.
+fn fwd_sg_claim(i: &Inputs) -> Vec<Op> {
+    vec![
+        require(
+            "claim_form",
+            "#policy",
+            "the sign-in (Singpass or a one-time code) is the user's: hand the page over for it, then call form_fill again",
+        ),
+        text("policy", "#policy", &i.arg("policy_no")),
+        text("name", "#name", &i.full_name()),
+        text("email", "#email", &i.email()),
+        text("mobile", "#mobile", &i.phone()),
+        vault_as("idno", "text", "#idno", "number", ""),
+        select("type", "#type", &i.arg("claim_type")),
+        text("date", "#date", &i.arg("incident_date")),
+        text("what", "#what", &i.arg("what")),
+        text("amount", "#amount", &i.arg("amount")),
+    ]
+}
+
+/// FWD Singapore's travel insurance quote (https://www.fwd.com.sg/travel-insurance/online-quote/), mapped 2026-11-01:
+/// the trip (destination, dates, travellers) and "Get quote"; the plans the page then lists are read by the driver,
+/// which picks one by the user's rule and clicks its "Select" link.
+fn fwd_sg_quote(i: &Inputs) -> Vec<Op> {
+    vec![
+        text("destination", "#dest", &i.arg("destination")),
+        text("departure_date", "#from", &i.arg("depart")),
+        text("return_date", "#to", &i.arg("return")),
+        text("travellers", "#pax", &i.arg("travellers")),
+        button("get_quote", "Get quote"),
+        wait(800),
+    ]
+}
+
+/// FWD Singapore's travel insurance application (the page a plan's "Select" link opens from the quote; path
+/// `/fwd_sg_apply…` as the quote links it, 2026-11-01): the insured from the profile, the passport from the Vault. The
+/// card is filled by the driver with `browser_fill_secret` after `purchase_confirm` (a Vault card never travels in a
+/// plan); the policy-wording declaration and "Pay now" are the user's.
+fn fwd_sg_apply(i: &Inputs) -> Vec<Op> {
+    vec![
+        text("name", "#name", &i.full_name()),
+        text("dob", "#dob", &date(i.birthday(), "%Y-%m-%d")),
+        text("email", "#email", &i.email()),
+        text("mobile", "#mobile", &i.phone()),
+        vault_as("passport", "text", "#passport", "number", ""),
+    ]
+}
+
+/// bolttech's Travel Insurance Claim Form (the fillable PDF FWD Hong Kong links, `travel-insurance-clm-form-fillable.pdf`),
+/// its field names as the form defines them: the values `pdf_form_fill` gets for a flight-delay claim. The HKID number,
+/// the bank account, the signature and the date of signing are the user's and never set.
+pub fn bolttech_delay_claim(a: &Value, profile: &Value) -> Value {
+    let g = |k: &str| get_str(a, k).trim().to_string();
+    let p = |k: &str| {
+        profile
+            .get(k)
+            .map(py_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let email = if p("email_personal").is_empty() {
+        p("email")
+    } else {
+        p("email_personal")
+    };
+    let when = |t: &str| {
+        [g("incident_date").as_str(), t]
+            .iter()
+            .filter(|x| !x.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let place = if g("from").is_empty() {
+        when(&g("scheduled"))
+    } else {
+        format!("{}, {} airport", when(&g("scheduled")), g("from"))
+    };
+    let mut v = json!({
+        "fill_17": g("policy_no"),
+        "Full name": p("name_en").to_uppercase(),
+        "Correspondence address": p("address_home"),
+        "Email address": email,
+        "fill_12": place,
+        "fill_15": g("what"),
+        "fill_11": when(&g("scheduled")),
+        "fill_12_2": g("from"),
+        "fill_13_2": g("to"),
+        "fill_14_2": g("flight_no"),
+        "fill_15_2": when(&g("actual")),
+        "fill_16_2": g("from"),
+        "fill_17_2": g("to"),
+        "fill_18_2": g("flight_no"),
+        "fill_1": g("hours"),
+        "fill_7": g("amount"),
+        "fill_8": g("airline"),
+        "fill_9_2": g("airline_ref"),
+    });
+    if let Some(m) = v.as_object_mut() {
+        m.retain(|_, x| !x.as_str().unwrap_or("").is_empty());
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1898,7 +2277,12 @@ mod tests {
         .iter()
         .filter_map(Op::to_json)
         .collect();
-        assert_eq!(plan[0]["op"], "require");
+        // the stop for the user's email step comes before any traveller field (after the landing clicks and the email)
+        let at = |pred: &dyn Fn(&Value) -> bool| plan.iter().position(pred).unwrap_or(usize::MAX);
+        assert!(
+            at(&|o| o["op"] == "require") < at(&|o| o["field"] == "english_name"),
+            "{plan:?}"
+        );
         let by = |field: &str| {
             plan.iter()
                 .find(|o| o["field"] == field)
@@ -2069,6 +2453,12 @@ mod tests {
             ("https://allindonesia.imigrasi.go.id/arrival-card-submission/personal-information", "id-arrival-card"),
             ("https://twac.immigration.gov.tw/submit", "tw-arrival-card"),
             ("https://s.nia.gov.cn/ArrivalCardFillingPC/entry-registation-form", "cn-arrival-card"),
+            ("https://vjw-lp.digital.go.jp/", "jp-visit-japan-web"),
+            ("https://vjw-lp.digital.go.jp/vjw_entry.html", "jp-visit-japan-web"),
+            ("https://arrival.gov.kh/", "kh-arrival-card"),
+            ("https://etravel.gov.ph/", "ph-etravel"),
+            ("https://www.gov.uk/eta", "uk-eta"),
+            ("https://www.gov.uk/eta/apply", "uk-eta"),
         ] {
             assert_eq!(form_for(url).map(|(n, _)| n), Some(name), "{url}");
         }
@@ -2169,5 +2559,470 @@ mod tests {
         );
         assert_eq!(ops[at("verify_email")]["value"], "jordan@example.com");
         assert_eq!(ops[at("traveler_form")]["op"], "require");
+    }
+
+    /// The plan of `f` for a one-page card: the ops as the broker takes them.
+    fn plan_of(f: FormFn, facts: &Facts, profile: &Value) -> Vec<Value> {
+        f(&Inputs { facts, profile })
+            .iter()
+            .filter_map(Op::to_json)
+            .collect()
+    }
+
+    fn one_page_facts(flight: &str, stay: &str, address: &str) -> Facts {
+        Facts {
+            flight_no: flight.into(),
+            arrival_date: "2026-11-03".into(),
+            origin_city: "Sydney".into(),
+            origin_country: "Australia".into(),
+            stay_name: stay.into(),
+            stay_address: address.into(),
+            stay_kind: "hotel".into(),
+            purpose: "holiday".into(),
+            ..Facts::default()
+        }
+    }
+
+    fn field<'a>(plan: &'a [Value], name: &str) -> &'a Value {
+        plan.iter()
+            .find(|o| o["field"] == name)
+            .unwrap_or(&Value::Null)
+    }
+
+    fn index(plan: &[Value], name: &str) -> usize {
+        plan.iter()
+            .position(|o| o["field"] == name)
+            .unwrap_or(usize::MAX)
+    }
+
+    #[test]
+    fn the_visit_japan_web_plan_waits_for_the_sign_in_then_fills_the_entry() {
+        let facts = one_page_facts(
+            "NH 880",
+            "Shinjuku Granbell Inn",
+            "2-14-5 Kabukicho, Shinjuku-ku, Tokyo 160-0021",
+        );
+        let p = profile();
+        let plan = plan_of(jp_visit_japan_web, &facts, &p);
+        // the stop for the user's sign-in comes before every field; its reason reads as the driver expects
+        assert_eq!(plan[0]["op"], "require");
+        assert_eq!(plan[0]["sel"], "#family_name");
+        assert!(plan[0]["why"]
+            .as_str()
+            .unwrap()
+            .starts_with("the sign-in to your Visit Japan Web account"));
+        assert!(plan[0]["why"]
+            .as_str()
+            .unwrap()
+            .contains(" is the user's: hand the page over for it, then call form_fill again"));
+        assert!(index(&plan, "entry_form") < index(&plan, "family_name"));
+        assert_eq!(field(&plan, "family_name")["value"], "LU");
+        assert_eq!(field(&plan, "given_name")["value"], "JORDAN");
+        assert_eq!(field(&plan, "sex")["value"], "F");
+        assert_eq!(field(&plan, "dob")["value"], "12/04/1985");
+        assert_eq!(field(&plan, "nationality")["value"], "AUS");
+        assert_eq!(field(&plan, "passport_country")["value"], "AUS");
+        assert_eq!(field(&plan, "passport_no")["vault"]["field"], "number");
+        assert_eq!(
+            field(&plan, "passport_expiry")["vault"]["date_fmt"],
+            "%d/%m/%Y"
+        );
+        assert_eq!(field(&plan, "mode")["value"], "AIR");
+        assert_eq!(field(&plan, "flight_no")["value"], "NH 880");
+        assert_eq!(field(&plan, "arrival_date")["value"], "03/11/2026");
+        assert_eq!(field(&plan, "departure_date")["value"], "10/11/2026");
+        assert_eq!(field(&plan, "last_city")["value"], "Sydney");
+        assert_eq!(field(&plan, "purpose")["value"], "HOLIDAY");
+        assert_eq!(field(&plan, "accom_type")["value"], "HOTEL");
+        assert_eq!(
+            field(&plan, "accommodation")["value"],
+            "Shinjuku Granbell Inn, 2-14-5 Kabukicho, Shinjuku-ku, Tokyo 160-0021"
+        );
+        // the customs questions: No; the page has no next-city or health fields
+        for q in [
+            "d_goods",
+            "d_cash",
+            "d_unaccompanied",
+            "d_refused",
+            "d_criminal",
+        ] {
+            assert_eq!(field(&plan, q)["value"], "No", "{q}");
+        }
+        assert!(plan
+            .iter()
+            .all(|o| o["field"] != "next_city" && o["field"] != "h_symptoms"));
+        // the security check and Register stay the user's
+        assert!(!plan
+            .iter()
+            .any(|o| o["field"] == "captcha" || o["text"] == "Register"));
+        assert!(form_for("https://vjw-lp.digital.go.jp/")
+            .is_some_and(|(n, _)| n == "jp-visit-japan-web"));
+    }
+
+    #[test]
+    fn the_cambodia_plan_fills_every_field_and_answers_no() {
+        let facts = one_page_facts(
+            "SQ 166",
+            "Riverside Palace Hotel",
+            "51 Sisowath Quay, Phnom Penh",
+        );
+        let p = profile();
+        let plan = plan_of(kh_arrival_card, &facts, &p);
+        assert!(!plan.iter().any(|o| o["op"] == "require"));
+        assert_eq!(field(&plan, "family_name")["value"], "LU");
+        assert_eq!(field(&plan, "given_name")["value"], "JORDAN");
+        assert_eq!(field(&plan, "sex")["value"], "F");
+        assert_eq!(field(&plan, "dob")["value"], "12/04/1985");
+        assert_eq!(field(&plan, "nationality")["value"], "AUS");
+        assert_eq!(field(&plan, "passport_no")["vault"]["field"], "number");
+        assert_eq!(field(&plan, "email")["value"], "jordan.lu@example.com");
+        assert_eq!(field(&plan, "mode")["value"], "AIR");
+        assert_eq!(field(&plan, "flight_no")["value"], "SQ 166");
+        assert_eq!(field(&plan, "arrival_date")["value"], "03/11/2026");
+        assert_eq!(field(&plan, "last_city")["value"], "Sydney");
+        assert_eq!(field(&plan, "next_city")["value"], "Sydney"); // the default: where the flight came from
+        assert_eq!(field(&plan, "departure_date")["value"], "10/11/2026"); // arrival + 7
+        assert_eq!(field(&plan, "purpose")["value"], "HOLIDAY");
+        assert_eq!(field(&plan, "accom_type")["value"], "HOTEL");
+        assert_eq!(
+            field(&plan, "accommodation")["value"],
+            "Riverside Palace Hotel, 51 Sisowath Quay, Phnom Penh"
+        );
+        for q in [
+            "h_symptoms",
+            "h_travel",
+            "d_names",
+            "d_refused",
+            "d_criminal",
+            "d_goods",
+        ] {
+            assert_eq!(field(&plan, q)["value"], "No", "{q}");
+        }
+        assert!(!plan
+            .iter()
+            .any(|o| o["field"] == "captcha" || o["text"] == "Submit"));
+        assert!(form_for("https://arrival.gov.kh/").is_some_and(|(n, _)| n == "kh-arrival-card"));
+    }
+
+    #[test]
+    fn the_etravel_plan_splits_the_name_and_knows_the_country_of_residence() {
+        let facts = one_page_facts(
+            "PR 210",
+            "Makati Palm Suites",
+            "1200 Ayala Avenue, Makati City, Metro Manila",
+        );
+        let p = profile();
+        let plan = plan_of(ph_etravel, &facts, &p);
+        assert!(!plan.iter().any(|o| o["op"] == "require"));
+        assert_eq!(field(&plan, "last_name")["value"], "LU");
+        assert_eq!(field(&plan, "first_name")["value"], "JORDAN");
+        // no middle name in the profile: the box is left for the user, never guessed
+        assert!(plan.iter().all(|o| o["field"] != "middle_name"));
+        assert_eq!(field(&plan, "sex")["value"], "F");
+        assert_eq!(field(&plan, "nationality")["value"], "AUS");
+        assert_eq!(field(&plan, "country_residence")["value"], "AUS"); // "…, Australia" in the home address
+        assert_eq!(field(&plan, "passport_country")["value"], "AUS");
+        assert_eq!(
+            field(&plan, "passport_expiry")["vault"]["date_fmt"],
+            "%d/%m/%Y"
+        );
+        assert_eq!(field(&plan, "mode")["value"], "AIR");
+        assert_eq!(field(&plan, "flight_no")["value"], "PR 210");
+        assert_eq!(field(&plan, "arrival_date")["value"], "03/11/2026");
+        assert_eq!(field(&plan, "next_city")["value"], "Sydney");
+        assert_eq!(field(&plan, "departure_date")["value"], "10/11/2026");
+        assert_eq!(field(&plan, "purpose")["value"], "HOLIDAY");
+        assert_eq!(field(&plan, "accom_type")["value"], "HOTEL");
+        assert!(field(&plan, "accommodation")["value"]
+            .as_str()
+            .unwrap()
+            .starts_with("Makati Palm Suites"));
+        for q in [
+            "h_symptoms",
+            "h_travel",
+            "d_names",
+            "d_refused",
+            "d_criminal",
+            "d_goods",
+        ] {
+            assert_eq!(field(&plan, q)["value"], "No", "{q}");
+        }
+        assert!(!plan
+            .iter()
+            .any(|o| o["field"] == "captcha" || o["text"] == "Submit"));
+        // a home address without a known country: the residence falls back to the nationality
+        let p2 = json!({"name_en": "Jordan Lu", "nationality": "Japan", "address_home": "1-1 Chiyoda, Chiyoda-ku"});
+        let plan2 = plan_of(ph_etravel, &facts, &p2);
+        assert_eq!(field(&plan2, "country_residence")["value"], "JPN");
+        assert!(form_for("https://etravel.gov.ph/").is_some_and(|(n, _)| n == "ph-etravel"));
+    }
+
+    #[test]
+    fn the_uk_eta_plan_needs_no_trip_and_stops_for_the_photo_before_the_questions() {
+        let p = json!({"name_en": "Jordan Lu", "gender": "Female", "birthday": "1985-04-12", "nationality": "Australia",
+               "email_personal": "jordan.lu@example.com", "phone": "+61 400 000 000",
+               "address_home": "12 Harbour St, Sydney NSW 2000, Australia", "job_title": "Software engineer"});
+        // empty facts: the ETA has no trip section, and the plan is complete without one
+        let plan = plan_of(uk_eta, &Facts::default(), &p);
+        assert_eq!(field(&plan, "family_name")["value"], "LU");
+        assert_eq!(field(&plan, "given_name")["value"], "JORDAN");
+        assert_eq!(field(&plan, "sex")["value"], "F");
+        assert_eq!(field(&plan, "dob")["value"], "12/04/1985");
+        assert_eq!(field(&plan, "nationality")["value"], "AUS");
+        assert_eq!(field(&plan, "passport_country")["value"], "AUS");
+        assert_eq!(field(&plan, "passport_no")["vault"]["field"], "number");
+        assert_eq!(
+            field(&plan, "passport_expiry")["vault"]["date_fmt"],
+            "%d/%m/%Y"
+        );
+        assert_eq!(field(&plan, "email")["value"], "jordan.lu@example.com");
+        assert_eq!(field(&plan, "phone")["value"], "+61 400 000 000");
+        assert_eq!(
+            field(&plan, "home_address")["value"],
+            "12 Harbour St, Sydney NSW 2000, Australia"
+        );
+        assert_eq!(field(&plan, "occupation")["value"], "Software engineer");
+        // no trip field is in the plan at all
+        assert!(plan.iter().all(|o| {
+            ![
+                "flight_no",
+                "arrival_date",
+                "departure_date",
+                "accommodation",
+                "mode",
+            ]
+            .contains(&o["field"].as_str().unwrap_or(""))
+        }));
+        // the stop for the user's photo step gates the questions after it, and the photo itself is never touched
+        let stop = field(&plan, "history_questions");
+        assert_eq!(stop["op"], "require");
+        assert_eq!(stop["sel"], "input[name=\"d_criminal\"]");
+        assert!(stop["why"]
+            .as_str()
+            .unwrap()
+            .starts_with("the face photo upload is the user's: hand the page over for it, then call form_fill again"));
+        assert!(index(&plan, "occupation") < index(&plan, "history_questions"));
+        for q in ["d_criminal", "d_refused", "d_terror"] {
+            assert!(index(&plan, "history_questions") < index(&plan, q), "{q}");
+            assert_eq!(field(&plan, q)["value"], "No", "{q}");
+        }
+        assert!(!plan.iter().any(
+            |o| o["field"] == "photo" || o["text"].as_str().is_some_and(|t| t.contains("pay"))
+        ));
+        // the same plan with the trip facts given: the ETA ignores them
+        let with_trip = plan_of(
+            uk_eta,
+            &one_page_facts(
+                "QF 1",
+                "Covent Garden Court Hotel",
+                "8 Bedford Street, London WC2E 9ED",
+            ),
+            &p,
+        );
+        assert_eq!(with_trip, plan);
+        // no job title in the profile: the box stays for the user
+        let p2 = json!({"name_en": "Jordan Lu", "nationality": "Australia"});
+        assert!(plan_of(uk_eta, &Facts::default(), &p2)
+            .iter()
+            .all(|o| o["field"] != "occupation"));
+        assert!(form_for("https://www.gov.uk/eta").is_some_and(|(n, _)| n == "uk-eta"));
+    }
+
+    #[test]
+    fn the_claim_forms_fill_their_fixed_ids_from_the_claim_facts() {
+        let p = profile();
+        let facts = Facts::from_args(
+            &json!({"benefit": "Trip Interruption", "loss_date": "2026-10-24", "amount": "1050.00",
+            "reason": "injury of the cardholder", "booking": "United Airlines QX7P2L; Park Hyatt Tokyo HY-55821",
+            "card_product": "Chase Sapphire Reserve", "last4": "4321"}),
+        );
+        let i = Inputs {
+            facts: &facts,
+            profile: &p,
+        };
+        assert_eq!(i.arg("benefit"), "Trip Interruption");
+        let plan: Vec<Value> = eclaims_trip_claim(&i)
+            .iter()
+            .filter_map(Op::to_json)
+            .collect();
+        let by = |field: &str| {
+            plan.iter()
+                .find(|o| o["field"] == field)
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        assert_eq!(by("claim_form")["op"], "require"); // a sign-in first is the user's
+        assert_eq!(
+            (by("name")["sel"].clone(), by("name")["value"].clone()),
+            (json!("#name"), json!("JORDAN LU"))
+        );
+        assert_eq!(
+            (
+                by("benefit")["op"].clone(),
+                by("benefit")["sel"].clone(),
+                by("benefit")["value"].clone()
+            ),
+            (
+                json!("select"),
+                json!("#benefit"),
+                json!("Trip Interruption")
+            )
+        );
+        assert_eq!(by("loss")["value"], "2026-10-24");
+        assert_eq!(by("amount")["value"], "1050.00");
+        assert_eq!(by("last4")["value"], "4321");
+        assert_eq!(by("card")["value"], "Chase Sapphire Reserve");
+        assert!(!plan.iter().any(|o| o["text"] == "Submit claim"));
+        // an unknown fact leaves its field for the user
+        let none = Facts::from_args(&json!({"benefit": "Trip Cancellation"}));
+        let plan: Vec<Value> = eclaims_trip_claim(&Inputs {
+            facts: &none,
+            profile: &p,
+        })
+        .iter()
+        .filter_map(Op::to_json)
+        .collect();
+        assert!(!plan
+            .iter()
+            .any(|o| o["field"] == "amount" || o["field"] == "loss"));
+        // FWD Singapore's claim: the passport from the Vault, never a value in the plan
+        let facts = Facts::from_args(
+            &json!({"policy_no": "TI-SG-2026-55123", "claim_type": "Travel delay", "incident_date": "2026-10-29",
+            "what": "SQ 636 delayed 7 h 15 min", "amount": "100.00"}),
+        );
+        let plan: Vec<Value> = fwd_sg_claim(&Inputs {
+            facts: &facts,
+            profile: &p,
+        })
+        .iter()
+        .filter_map(Op::to_json)
+        .collect();
+        let by = |field: &str| {
+            plan.iter()
+                .find(|o| o["field"] == field)
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        assert_eq!(by("policy")["value"], "TI-SG-2026-55123");
+        assert_eq!(
+            (
+                by("idno")["sel"].clone(),
+                by("idno")["vault"]["field"].clone()
+            ),
+            (json!("#idno"), json!("number"))
+        );
+        assert!(by("idno").get("value").is_none());
+        assert_eq!(
+            (
+                by("type")["value"].clone(),
+                by("date")["value"].clone(),
+                by("amount")["value"].clone()
+            ),
+            (json!("Travel delay"), json!("2026-10-29"), json!("100.00"))
+        );
+        // the quote and the application
+        let facts = Facts::from_args(
+            &json!({"destination": "Japan", "depart": "2026-11-24", "return": "2026-12-01", "travellers": "1"}),
+        );
+        let plan: Vec<Value> = fwd_sg_quote(&Inputs {
+            facts: &facts,
+            profile: &p,
+        })
+        .iter()
+        .filter_map(Op::to_json)
+        .collect();
+        assert_eq!(
+            plan[0],
+            json!({"op": "text", "sel": "#dest", "value": "Japan", "field": "destination"})
+        );
+        assert!(plan
+            .iter()
+            .any(|o| o["op"] == "button" && o["text"] == "Get quote"));
+        let plan: Vec<Value> = fwd_sg_apply(&Inputs {
+            facts: &facts,
+            profile: &p,
+        })
+        .iter()
+        .filter_map(Op::to_json)
+        .collect();
+        let by = |field: &str| {
+            plan.iter()
+                .find(|o| o["field"] == field)
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        assert_eq!(by("dob")["value"], "1985-04-12");
+        assert_eq!(by("passport")["vault"]["field"], "number");
+        // no card field and no declaration in the plan: the card goes through browser_fill_secret, the box is the user's
+        assert!(!plan
+            .iter()
+            .any(|o| o["sel"] == "#card" || o["sel"] == "#agree" || o["sel"] == "#cvc"));
+        assert_eq!(
+            form_for("https://www.eclaimsline.com/").map(|(n, _)| n),
+            Some("csr-trip-claim")
+        );
+        assert_eq!(
+            form_for("https://www.fwd.com.sg/claim-online/travel.html").map(|(n, _)| n),
+            Some("fwd-sg-claim")
+        );
+        assert_eq!(
+            form_for("https://www.fwd.com.sg/travel-insurance/online-quote/").map(|(n, _)| n),
+            Some("fwd-sg-quote")
+        );
+        assert_eq!(
+            form_for("https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business").map(|(n, _)| n),
+            Some("fwd-sg-apply")
+        );
+    }
+
+    #[test]
+    fn bolttechs_pdf_values_leave_the_hkid_bank_and_signature_to_the_user() {
+        let p = json!({"name_en": "Chan Tai Man", "email_personal": "taiman@example.com", "address_home": "Flat 12B, 88 Robinson Road, Hong Kong"});
+        let v = bolttech_delay_claim(
+            &json!({"policy_no": "MT-HK-2026-00881", "incident_date": "2026-10-29", "scheduled": "09:05", "actual": "15:20",
+            "from": "Hong Kong", "to": "Tokyo Narita", "flight_no": "CX 543", "hours": "6 h 15 min", "amount": "300.00", "airline": "Cathay Pacific",
+            "airline_ref": "CX-DLY-55821", "what": "CX 543 delayed 6 h 15 min (technical inspection)"}),
+            &p,
+        );
+        assert_eq!(v["fill_17"], "MT-HK-2026-00881");
+        assert_eq!(v["Full name"], "CHAN TAI MAN");
+        assert_eq!(v["Email address"], "taiman@example.com");
+        assert_eq!(v["fill_11"], "2026-10-29 09:05");
+        assert_eq!(v["fill_15_2"], "2026-10-29 15:20");
+        assert_eq!(v["fill_12"], "2026-10-29 09:05, Hong Kong airport");
+        assert_eq!(
+            (v["fill_14_2"].clone(), v["fill_18_2"].clone()),
+            (json!("CX 543"), json!("CX 543"))
+        );
+        assert_eq!(
+            (
+                v["fill_1"].clone(),
+                v["fill_7"].clone(),
+                v["fill_8"].clone(),
+                v["fill_9_2"].clone()
+            ),
+            (
+                json!("6 h 15 min"),
+                json!("300.00"),
+                json!("Cathay Pacific"),
+                json!("CX-DLY-55821")
+            )
+        );
+        for user_only in [
+            "HKID Card no",
+            "fill_1_4",
+            "fill_4_5",
+            "Claimants signature",
+            "Date",
+        ] {
+            assert!(v.get(user_only).is_none(), "{user_only}");
+        }
+        // nothing known: nothing written (no empty strings over the form's fields)
+        assert_eq!(
+            bolttech_delay_claim(&json!({}), &json!({}))
+                .as_object()
+                .map(|m| m.len()),
+            Some(0)
+        );
     }
 }

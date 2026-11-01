@@ -20,7 +20,7 @@ use super::exec::CallMode;
 use super::guards::*;
 use super::lang::{agent_lang, request_lang, with_langs};
 use super::tools::{concurrent_runs, tool_name, FINISH_TOOLS, LOCAL_TOOLS};
-use super::util::{arr, content_of, fmt_float, sget, stored_call, tool_calls};
+use super::util::{arr, content_of, sget, tool_calls};
 use super::{is_terminal, TERMINAL};
 use crate::health::Health;
 use crate::llm::{
@@ -103,8 +103,6 @@ pub(crate) struct Inner {
     pub skill_steps: HashMap<String, i64>,
     /// sites whose bot wall was learned as a habit
     pub block_noted: HashSet<String>,
-    /// task_id -> product pages that already got the cart hint
-    pub product_hinted: HashMap<String, HashSet<String>>,
     /// tasks already sent back once for a listings comparison without `ranking` criteria
     pub ranking_asked: HashSet<String>,
     /// tasks whose known page already got its fixed ticks (`guards::apdt_fixed_ticks`)
@@ -161,15 +159,6 @@ pub(crate) fn assistant_with_calls(content: &str, calls: &[ToolCall]) -> Value {
 
 fn content_chars(msgs: &[Value]) -> usize {
     msgs.iter().map(|m| content_of(m).chars().count()).sum()
-}
-
-fn user_said(transcript: &[Value]) -> String {
-    transcript
-        .iter()
-        .filter(|m| get_str(m, "role") == "user")
-        .map(content_of)
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn user_msg(text: impl Into<String>) -> Value {
@@ -315,15 +304,13 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
             .then_some(success)
     }
 
-    /// What a final answer means, from one small classification call: three yes / no questions the guards act on
-    /// (`guards::AnswerTraits`). The model only reads the text; code decides what to do. Any failure → all false.
     /// The code driver's turn for a known-form skill (`super::driver`): the next step from the transcript; when the
     /// regexes found no flight in the bookings, one extraction call (the last resort), recorded in the transcript
     /// as an `extract_facts` result, then the step again.
     async fn drive(
         &self,
         task_id: &str,
-        card: &'static super::driver::CardSpec,
+        machine: Machine,
         transcript: &mut Vec<Value>,
         catalog: &Value,
         lg: &str,
@@ -356,12 +343,20 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
             mail_ready,
             zh: lg != "en",
         };
-        let mut step = super::driver::next(card, transcript, &w);
+        let next = |t: &[Value]| match machine {
+            Machine::Card(c) => super::driver::next(c, t, &w),
+            Machine::Claim(c) => super::claims::next(c, t, &w),
+        };
+        let (prefix, extract_system) = match machine {
+            Machine::Card(_) => ("drv_", super::driver::EXTRACT_SYSTEM),
+            Machine::Claim(_) => ("clm_", super::claims::EXTRACT_SYSTEM),
+        };
+        let mut step = next(transcript);
         if let Step::Extract(text) = &step {
             let n = transcript
                 .iter()
                 .flat_map(tool_calls)
-                .filter(|tc| get_str(tc, "id").starts_with("drv_"))
+                .filter(|tc| get_str(tc, "id").starts_with(prefix))
                 .count()
                 + 1;
             let o = ChatOpts {
@@ -371,7 +366,7 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
                 ..opts("classify", task_id)
             };
             let msgs = [
-                json!({"role": "system", "content": super::driver::EXTRACT_SYSTEM}),
+                json!({"role": "system", "content": extract_system}),
                 user_msg(text.clone()),
             ];
             let facts = match self.llm.chat(&msgs, None, &o).await {
@@ -380,8 +375,11 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
             };
             self.event(task_id, "extract_facts", json!({"facts": facts}))
                 .await;
-            transcript.extend(super::driver::extract_exchange(n, text, &facts));
-            step = super::driver::next(card, transcript, &w);
+            transcript.extend(match machine {
+                Machine::Card(_) => super::driver::extract_exchange(n, text, &facts),
+                Machine::Claim(_) => super::claims::extract_exchange(n, text, &facts),
+            });
+            step = next(transcript);
         }
         let (content, tool_calls) = match step {
             Step::Calls(c) => (String::new(), c),
@@ -399,7 +397,7 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
         self.event(
             task_id,
             "driver",
-            json!({"card": card.skill, "calls": tool_calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), "final": !content.is_empty()}),
+            json!({"card": match machine { Machine::Card(c) => c.skill, Machine::Claim(c) => c.skill }, "calls": tool_calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), "final": !content.is_empty()}),
         )
         .await;
         ChatReply {
@@ -443,58 +441,6 @@ missing details are NOT problems (ok = true). problem: one short sentence naming
         }
         let problem = get_str(&v, "problem");
         (!problem.trim().is_empty()).then(|| take_chars(problem.trim(), 300).to_string())
-    }
-
-    pub async fn answer_traits(
-        &self,
-        task_id: &str,
-        request: &str,
-        answer: &str,
-    ) -> super::guards::AnswerTraits {
-        let system = "You classify an assistant's reply to a user. Answer with JSON only, exactly these keys: \
-{\"asks_defaults\": bool, \"asks_stay\": bool, \"tells_user_to_act\": bool, \"reconfirms\": bool, \"asks_option\": bool, \"asks_profile\": bool}.\n\
-asks_defaults: the reply asks the user for a departure date, the next city or port, onward travel, or the visa / entry basis.\n\
-asks_stay: the reply asks where the user will stay (a hotel, an address, or which of their addresses).\n\
-tells_user_to_act: the reply tells the user to press, click, submit, pay or complete something themselves on a web page or form.\n\
-reconfirms: the reply asks the user to confirm (or say yes to) an action that the user's request already asked for explicitly, instead of doing it.\n\
-asks_option: the reply asks the user to choose a product option (colour, size, variant) that the user's request did not name, instead of adding or ordering the product.\n\
-asks_profile: the reply says it does not know, or asks the user for, their nationality (passport country), date of birth or home address.\n\
-Judge the meaning, not the wording; a statement that something is NOT needed is false.";
-        let o = ChatOpts {
-            max_tokens: Some(120),
-            temperature: Some(0.0),
-            no_think: true,
-            ..opts("classify", task_id)
-        };
-        let msgs = [
-            json!({"role": "system", "content": system}),
-            user_msg(format!(
-                "The user's request:\n{}\n\nThe assistant's reply:\n{}",
-                take_chars(request, 2000),
-                take_chars(answer, 4000)
-            )),
-        ];
-        let Ok(r) = self.llm.chat(&msgs, None, &o).await else {
-            return super::guards::AnswerTraits::default();
-        };
-        let v = crate::llm::extract_json(&r.content).unwrap_or(Value::Null);
-        let b = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
-        let traits = super::guards::AnswerTraits {
-            asks_defaults: b("asks_defaults"),
-            asks_stay: b("asks_stay"),
-            tells_user_to_act: b("tells_user_to_act"),
-            reconfirms: b("reconfirms"),
-            asks_option: b("asks_option"),
-            asks_profile: b("asks_profile"),
-        };
-        self.event(
-            task_id,
-            "answer_traits",
-            json!({"asks_defaults": traits.asks_defaults, "asks_stay": traits.asks_stay,
-                   "tells_user_to_act": traits.tells_user_to_act, "reconfirms": traits.reconfirms, "asks_option": traits.asks_option, "asks_profile": traits.asks_profile}),
-        )
-        .await;
-        traits
     }
 
     pub async fn chat_or_cancel(
@@ -1269,23 +1215,11 @@ work around it; write the final answer saying what you would do and how far you 
                     .cloned()
                     .unwrap_or_else(|| json!({}));
                 let lg = agent_lang(&self.settings());
-                // the answer after a hand-back covers the whole request, not only the page (cards_claim_real
-                // 2026-10-31: "the form is still open" — the benefit, amount and deadlines worked out before were gone)
-                let text = prompts::l(
-                    lg,
-                    "用户已完成接管并交还浏览器控制权。请先调用 browser_snapshot 查看当前页面状态再继续。最后的回答要覆盖整个请求——\
-你查到和算出的一切（金额、日期、期限、编号），不只是页面现在的样子。",
-                    "",
-                );
+                // a fact, not an instruction: the page after the hand-back is read by code (`needs_handback_snapshot`)
                 let text = if lg == "en" {
-                    format!(
-                        "{}: the user handed browser control back. Take a browser_snapshot first to see the current page, then continue. \
-Your final answer covers the whole request — everything you found and worked out (amounts, dates, deadlines, references) — \
-not only what the page shows now.",
-                        TAKEOVER_DONE_EN
-                    )
+                    format!("{TAKEOVER_DONE_EN}: the user handed browser control back.")
                 } else {
-                    text.to_string()
+                    format!("{TAKEOVER_DONE_MARK}并交还浏览器控制权。")
                 };
                 pend["resolved"] = json!({"call_id": pend.get("call_id"), "decision": "takeover_ended",
                                           "result": {"status": "ok", "result": text}});
@@ -1999,16 +1933,17 @@ not only what the page shows now.",
 
     /// Keep the last steps for delivering what the user asked for.
     ///
-    /// A research-heavy task used to spend every step reading pages and hit the limit before writing the PDF / sending
-    /// the email. Now: (1) after many page visits, one nudge to start writing; (2) with BUDGET_RESERVE steps left, a note
-    /// to stop gathering and deliver; (3) in the last 2 steps only delivery tools remain.
+    /// The budget is a tool-list limit, never a message to the model (the hard rule: no natural language in the
+    /// decision flow): with BUDGET_RESERVE steps left, or past TIME_NUDGE of the minute budget (`late`), only the
+    /// finishing tools remain (the deliverable, send_file, the answer); after RESEARCH_NUDGE_PAGES + 3 page visits the
+    /// page-reading tools are withdrawn, after WEB_NUDGE web searches (`web_calls`) the search tools.
     pub fn budget(
-        transcript: &mut Vec<Value>,
+        transcript: &[Value],
         tools: Vec<Value>,
         remaining: i64,
-        lang: &str,
+        web_calls: i64,
+        late: bool,
     ) -> Vec<Value> {
-        let said = user_said(transcript);
         let pages = transcript
             .iter()
             .filter(|m| get_str(m, "role") == "assistant")
@@ -2020,49 +1955,36 @@ not only what the page shows now.",
                     == Some("browser_navigate")
             })
             .count() as i64;
-        if pages >= RESEARCH_NUDGE_PAGES
-            && !said.contains(BUDGET_MARK_PAGES)
-            && remaining > BUDGET_RESERVE
-        {
-            let txt = if lang == "en" {
-                format!(
-                    "(System) [{BUDGET_MARK_PAGES}] You have opened {pages} pages. If you have enough, start writing the result now; otherwise read at most 2–3 more pages or delegate the rest to a sub-agent."
-                )
-            } else {
-                format!(
-                    "（系统）[{BUDGET_MARK_PAGES}] 你已经打开了 {pages} 个网页。如果信息已经够用，现在就开始写结果/交付物；还缺的话最多再看 2–3 个页面，或者用 delegate 交给子 Agent 去查。"
-                )
-            };
-            transcript.push(user_msg(txt));
-        }
-        if remaining <= BUDGET_RESERVE && !said.contains(BUDGET_MARK) {
-            let txt = if lang == "en" {
-                format!(
-                    "(System) [{BUDGET_MARK}] Only {remaining} steps left: stop gathering yourself and produce the deliverable the \
-user asked for with what you have (write the file, make_pdf/make_xlsx, send_file, send the email…), then give \
-the final answer and note anything left unverified. If a fixed number of items the user asked for is still \
-short, use one delegate call for the rest (it doesn't use these steps). Internal control — do not mention a \
-'budget' or remaining steps to the user."
-                )
-            } else {
-                format!(
-                    "（系统）[{BUDGET_MARK}] 只剩 {remaining} 步了。停止自己继续搜集资料，用已有的信息马上完成\
-用户要的交付物（写文件、生成 PDF/Excel、send_file、发邮件等），然后给出最终回答，并说明哪些没来得及核实。\
-如果用户要的固定数量条目还没凑齐，用一次 delegate 把剩下的交给子 Agent（不占用这里的步数）。\
-这是内部控制，不要向用户提「预算」或剩余步数。"
-                )
-            };
-            transcript.push(user_msg(txt));
-        }
-        if remaining <= 2 {
-            let fin: Vec<Value> = tools
-                .iter()
-                .filter(|x| FINISH_TOOLS.contains(&tool_name(x)))
-                .cloned()
+        const GATHER: [&str; 6] = [
+            "browser_navigate",
+            "browser_read",
+            "web_search",
+            "news_search",
+            "browser_news_search",
+            "browser_click",
+        ];
+        if remaining <= BUDGET_RESERVE || late {
+            return tools
+                .into_iter()
+                .filter(|t| FINISH_TOOLS.contains(&tool_name(t)))
                 .collect();
-            if !fin.is_empty() {
-                return fin;
-            }
+        }
+        if pages >= RESEARCH_NUDGE_PAGES + 3 {
+            return tools
+                .into_iter()
+                .filter(|t| !GATHER.contains(&tool_name(t)))
+                .collect();
+        }
+        if web_calls >= WEB_NUDGE {
+            return tools
+                .into_iter()
+                .filter(|t| {
+                    !matches!(
+                        tool_name(t),
+                        "web_search" | "news_search" | "browser_news_search"
+                    )
+                })
+                .collect();
         }
         tools
     }
@@ -2371,12 +2293,10 @@ yourself; ask_bot is not available for it."
         let mut stuck = 0; // turns in a row where every call was refused by a loop guard
         let mut gave_up = false; // set when the agent keeps going round in circles: it must answer now, without tools
         let mut searched: HashMap<String, String> = HashMap::new(); // normalised web_search query -> first call id
-        let (mut nudged, mut cut_nudged, mut numbers_checked, mut outcome_checked) =
-            (false, false, false, false);
-        let mut cards_compared = false;
-        let mut arrival_checked = false;
+        let mut cut_continued = false;
         let mut auto_handed = false;
         let mut answer_reviewed = false;
+        let mut handback_snapped = false;
         let mut news_acted: HashSet<String> = HashSet::new();
         let mut ctx_retries = 0;
         loop {
@@ -2400,7 +2320,7 @@ yourself; ask_bot is not available for it."
                 user_name: get_str(&s, "user_name"),
                 tz: tz.clone(),
                 connections: catalog.get("connections").cloned().unwrap_or_else(|| json!({})),
-                plan: None,
+                plan: t.get("plan").cloned(),
                 facts: facts.clone(),
                 prefs: self.standing_prefs(),
                 skills: bot_skills.clone(),
@@ -2418,46 +2338,9 @@ yourself; ask_bot is not available for it."
                 .copied()
                 .unwrap_or(0.0);
             let minutes = (now_ts() - run_started - waited).max(0.0) / 60.0;
-            if minutes >= max_minutes * TIME_NUDGE && !user_said(&transcript).contains(TIME_MARK) {
-                let txt = if lg == "en" {
-                    format!("(System) [{TIME_MARK}] This task has run for {:.0} minutes (limit {}). Stop gathering \
-and deliver what the user asked for with what you have (chart, file, answer); note what is unverified.", minutes, fmt_float(max_minutes))
-                } else {
-                    format!(
-                        "（系统）[{TIME_MARK}] 这个任务已经用了 {:.0} 分钟（上限 {} 分钟）。\
-停止继续搜集，用已有的信息尽快完成用户要的结果（图表、文件、回答），并说明哪些还没核实。",
-                        minutes,
-                        fmt_float(max_minutes)
-                    )
-                };
-                transcript.push(user_msg(txt));
-            }
-            let web_calls = transcript
-                .iter()
-                .filter(|m| get_str(m, "role") == "assistant")
-                .flat_map(tool_calls)
-                .filter(|c| {
-                    let n = stored_call(c).0;
-                    n.starts_with("browser_") || n == "web_search" || n == "news_search"
-                    // the searches of the web count
-                })
-                .count();
-            if web_calls as i64 >= WEB_NUDGE && !user_said(&transcript).contains(WEB_MARK) {
-                // 2026-10-02 R4-04b: a "top 3 products" lookup made 47 web calls in 12 minutes chasing cleaner results
-                let txt = if lg == "en" {
-                    format!("(System) [{WEB_MARK}] This task has made {web_calls} web calls. Stop opening pages one by one yourself. \
-If the user asked for a fixed number of items (e.g. 3 jobs, 5 companies) and you don't have them all yet, \
-use delegate to fetch the rest (a sub-agent per remaining item — its calls don't count here) and compile \
-them yourself; if you have enough or truly cannot find more, answer with what you have and note what is \
-unverified. This is an internal efficiency control — never mention a 'budget' or a call count to the user.")
-                } else {
-                    format!("（系统）[{WEB_MARK}] 这个任务已经调用了 {web_calls} 次网页工具。不要自己再一个个翻网页了。\
-如果用户要的是固定数量的条目（例如 3 个岗位、5 家公司）而你还没凑齐，就用 delegate 把还差的交给子 Agent 去查\
-（子 Agent 的调用不算在这里），再由你汇总；如果已经够了或确实查不到更多，就用已有信息完成回答，说明哪些没核实。\
-这是内部效率控制，不要向用户提起「预算」或调用次数。")
-                };
-                transcript.push(user_msg(txt));
-            }
+            // the web searches so far: past WEB_NUDGE the search tools are withdrawn (a tool-list limit, never a
+            // message to the model; `guards::web_budget_guard` refuses a search past it in the same turn)
+            let web_calls = super::guards::web_searches(&transcript);
             let timed_out = minutes >= max_minutes;
             if let Some(n) = self.inner.lock().skill_steps.get(task_id) {
                 max_steps = max_steps.max(*n);
@@ -2482,68 +2365,32 @@ unverified. This is an internal efficiency control — never mention a 'budget' 
                             && crate::bots::has_tool(bot, n)
                     })
                     .collect();
-                let tl = Self::budget(&mut transcript, tl, max_steps - steps, lg);
+                let tl = Self::budget(
+                    &transcript,
+                    tl,
+                    max_steps - steps,
+                    web_calls,
+                    minutes >= max_minutes * TIME_NUDGE,
+                );
                 tools = Some(if lg == "en" {
                     prompts::strip_tools_en(&tl)
                 } else {
                     tl
                 });
             }
-            if gave_up {
-                transcript.push(user_msg(prompts::l(lg,
-                    "（系统）同样的方法和来源反复失败，已经换过计划也没有进展，所以停止重试。请不要再调用工具，\
-用已经拿到的信息给出尽可能有用的回答；清楚说明哪些数据没拿到、为什么（例如哪个网站打不开或被拦截），\
-并建议用户下一步可以怎么做（例如换哪个来源、或者由用户提供数据）。",
-                    "(System) The same methods and sources keep failing even after re-planning, so retrying has stopped. \
-Do not call tools. Give the most useful answer you can from what you already have, say clearly what could \
-not be fetched and why (e.g. which site would not open or was blocked), and suggest what the user can do \
-next (another source, or providing the data).")));
-            } else if timed_out {
-                let txt = if lg == "en" {
-                    format!("(System) The {:.0}-minute time limit is reached: stop calling tools and give the most complete \
-answer you can from what you have — what is done, the findings and what is missing.", max_minutes)
-                } else {
-                    format!("（系统）已达到 {:.0} 分钟的用时上限。请停止调用工具，用已有的信息给出尽量完整的回答，\
-说明完成了什么、结论是什么、还缺什么。", max_minutes)
-                };
-                transcript.push(user_msg(txt));
-            } else if force_final {
-                transcript.push(user_msg(prompts::l(lg,
-                    "（系统）已达到步数上限。请停止调用工具，总结目前完成的内容、结果和未完成的部分。",
-                    "(System) Step limit reached: stop calling tools and summarize what is done, the results and what is left.")));
-            }
+            // the budget is spent (gave_up / timed_out / force_final): the model gets no tools, nothing is said to it
             self.event(task_id, "thinking", json!({"step": steps + 1}))
                 .await;
-            let mut msgs = transcript.clone();
-            if !force_final {
-                // live state at the end (not stored), see prompts::status_note
-                // only when it carries a plan or failed sources: a bare "(System) Status — now 5:30 pm" as the last
-                // user message got answered ("Noted — it's 5:30 pm") instead of the user's follow-up (2026-10-30,
-                // memory_real / telegram_real); the time is in the system prompt
-                let dead = dead_ends_text(&source_failures(&self.store.events(task_id, 0)?), lg);
-                let has_plan = t
-                    .get("plan")
-                    .and_then(|p| p.get("steps"))
-                    .and_then(Value::as_array)
-                    .is_some_and(|a| !a.is_empty());
-                if has_plan || !dead.is_empty() {
-                    let note = prompts::status_note(t.get("plan"), &tz, lg, minutes, &dead);
-                    msgs.push(user_msg(format!(
-                        "{note}\n{}",
-                        prompts::l(
-                            lg,
-                            "（这是系统状态，不是用户说的话；不用回复它，接着完成用户的请求。）",
-                            "(This is system state, not the user's words: don't reply to it; carry on with the user's request.)"
-                        )
-                    )));
-                }
-            }
+            let msgs = transcript.clone();
             // a known-form skill (the arrival cards with a form function): code decides the next step, no model call
-            let driven = match super::driver::active(&transcript) {
-                Some(card) if !force_final => Some(
-                    self.drive(task_id, card, &mut transcript, &catalog, lg)
-                        .await,
-                ),
+            // (and the claims and the FWD purchase: `agent/claims.rs`)
+            let machine = super::driver::active(&transcript)
+                .map(Machine::Card)
+                .or_else(|| super::claims::active(&transcript).map(Machine::Claim));
+            let driven = match machine {
+                Some(m) if !force_final => {
+                    Some(self.drive(task_id, m, &mut transcript, &catalog, lg).await)
+                }
                 _ => None,
             };
             let called = if let Some(r) = driven {
@@ -2618,7 +2465,9 @@ answer you can from what you have — what is done, the findings and what is mis
             } else {
                 resp.tool_calls.clone()
             };
+            let mut asked: Option<String> = None;
             if !calls.is_empty() {
+                let base_len = transcript.len();
                 transcript.push(assistant_with_calls(&resp.content, &calls));
                 if !resp.content.is_empty() {
                     self.event(
@@ -2798,76 +2647,55 @@ answer you can from what you have — what is done, the findings and what is mis
                 self.store
                     .update_task(task_id, &json!({"transcript": transcript}))?;
                 stuck = if progress { 0 } else { stuck + 1 };
-                let evs = self.store.events(task_id, 0)?;
-                let replans = evs
-                    .iter()
-                    .filter(|e| get_str(e, "type") == "replanning")
-                    .count() as i64;
-                let dead = dead_ends_text(&source_failures(&evs), lg);
-                if stuck >= 3 || ((stuck != 0 || consecutive_errors >= 3) && replans >= MAX_REPLANS)
-                {
-                    // still going round in circles after a nudge and a re-plan: stop and answer with what we have
-                    gave_up = true;
-                    self.event(task_id, "gave_up",
+                // `ask_user`: the question is the reply, and the run waits for the user's next message
+                if let Some((_, q)) = super::guards::asked_user(&transcript[base_len..]) {
+                    asked = Some(q);
+                } else {
+                    let evs = self.store.events(task_id, 0)?;
+                    let replans = evs
+                        .iter()
+                        .filter(|e| get_str(e, "type") == "replanning")
+                        .count() as i64;
+                    let dead = dead_ends_text(&source_failures(&evs), lg);
+                    if stuck >= 3
+                        || ((stuck != 0 || consecutive_errors >= 3) && replans >= MAX_REPLANS)
+                    {
+                        // still going round in circles after a nudge and a re-plan: stop and answer with what we have
+                        gave_up = true;
+                        self.event(task_id, "gave_up",
                                json!({"reason": "stuck", "replans": replans, "dead_ends": take_chars(&dead, 500)}))
                         .await;
-                } else if stuck == 2 || consecutive_errors >= 3 {
-                    self.replan(task_id, &mut transcript, &facts, &history_txt, &dead)
-                        .await?;
-                    consecutive_errors = 0;
-                } else if stuck == 1 {
-                    let tail = if dead.is_empty() {
-                        String::new()
-                    } else {
-                        format!("\n{}", dead)
-                    };
-                    let txt = if lg == "en" {
-                        format!("(System) Every call you just made was refused (a repeat, or a site that already failed several times). \
-Do not repeat them. Switch to a completely different method or source, or finish the task if you \
-already have enough.{tail}")
-                    } else {
-                        format!("（系统）你刚才的调用全部被拦截了（重复调用，或者这个网站已经多次失败）。不要再重复同样的调用。\
-换一个完全不同的方法或来源继续；如果前面已经拿到了足够的信息，就直接完成任务。{tail}")
-                    };
-                    transcript.push(user_msg(txt));
+                    } else if stuck == 2 || consecutive_errors >= 3 {
+                        self.replan(task_id, &transcript, &facts, &history_txt, &dead)
+                            .await?;
+                        consecutive_errors = 0;
+                    }
+                    continue;
                 }
-                continue;
             }
-            let mut final_ = resp.content.clone();
+            // the model's markup never reaches the user: stripped in code (an empty remainder is rescued below)
+            let mut final_ = asked
+                .clone()
+                .unwrap_or_else(|| strip_tool_markup(&resp.content).trim().to_string());
             let plan_steps = t
                 .get("plan")
                 .map(|p| arr(p, "steps").to_vec())
                 .unwrap_or_default();
-            let open_steps = plan_steps
-                .iter()
-                .filter(|st| matches!(sget(st, "status").as_str(), "pending" | "running"))
-                .count();
             if !final_.is_empty()
-                && !cut_nudged
-                && !force_final
-                && steps < max_steps - 1
-                && cut_off_final(&final_, resp.finish_reason.as_str(), open_steps)
+                && asked.is_none()
+                && !cut_continued
+                && resp.finish_reason.as_str() == Some("length")
             {
-                cut_nudged = true;
+                // the reply hit the token limit: the same request once more with a higher limit, and the longer of
+                // the two is the answer (no message to the model about it)
+                cut_continued = true;
                 self.event(
                     task_id,
                     "cut_off_answer",
                     json!({"text": truncate(&final_, 200)}),
                 )
                 .await;
-                transcript.push(json!({"role": "assistant", "content": final_}));
-                transcript.push(user_msg(prompts::l(lg,
-                    "（系统）你刚才的回复被截断了，只有半句话。任务还没完成的话就继续用工具做完；已经做完了就把完整的最终回答重新写一遍（包括前面查到的所有结果）。",
-                    "(System) Your last reply was cut off mid-sentence. If the task is not finished, keep going with tools; \
-if it is, write the complete final answer again (including everything you found).")));
-                continue;
-            }
-            if final_.is_empty() && !nudged {
-                nudged = true;
-                transcript.push(user_msg(prompts::l(lg,
-                    "（系统）请直接用文字写出最终回答（不要调用工具，也不要输出 <tool_call> 之类的标记）。",
-                    "(System) Write the final answer now as plain text (no tool calls, no <tool_call> markup).")));
-                continue;
+                final_ = self.continue_cut_answer(task_id, &msgs, &final_).await;
             }
             if final_.is_empty() {
                 final_ = self
@@ -2916,123 +2744,10 @@ if it is, write the complete final answer again (including everything you found)
                     )
                 };
             }
-            if !final_.is_empty()
-                && !numbers_checked
-                && !force_final
-                && !timed_out
-                && steps < max_steps - 1
-            {
-                numbers_checked = true;
-                let bad = ungrounded_numbers(&transcript, &final_, &goal_text);
-                let codes = ungrounded_codes(&transcript, &final_, &goal_text);
-                if self_corrects(&final_) && bad.is_empty() {
-                    self.event(task_id, "number_check", json!({"self_correction": true}))
-                        .await;
-                    transcript.push(json!({"role": "assistant", "content": final_}));
-                    transcript.push(user_msg(prompts::l(lg,
-                        "（系统）你的回答中途改口了（例如「等一下，这里需要修正」）。用 calculate 把所有数字重新算一遍，然后只写最终正确的版本：不要保留错误的版本，也不要提到这次更正。",
-                        "(System) Your answer changes its mind half-way (\"wait, this needs correcting\"). Recompute every figure \
-with calculate, then write only the final correct version: drop the wrong one and don't mention the fix.")));
-                    continue;
-                }
-                if !codes.is_empty() && bad.is_empty() {
-                    // 2026-10-04 V8-05: a return flight "SQ 637 11:30" that no email mentioned
-                    let c10: Vec<String> = codes.iter().take(10).cloned().collect();
-                    self.event(task_id, "number_check", json!({"unsupported_codes": c10}))
-                        .await;
-                    transcript.push(json!({"role": "assistant", "content": final_}));
-                    let txt = if lg == "en" {
-                        format!("(System) These flight numbers / codes in your answer appear in no tool result: {}. Never invent flights, booking codes or times: remove them or say \"not found\", then write the complete final answer again.", c10.join(", "))
-                    } else {
-                        format!("（系统）你回答里的这些航班号/编号没有出现在任何工具结果里：{}。不要编造航班、预订号或时间：删掉它们，或者写明「未找到」，然后重新写完整的最终回答。", c10.join("、"))
-                    };
-                    transcript.push(user_msg(txt));
-                    continue;
-                }
-                if !bad.is_empty() {
-                    // 2026-10-03 M1-06: calculate returned the right building blocks, the answer then carried a
-                    // hand-made table whose balances came from nowhere (17,016.64 instead of 16,962.71)
-                    let b10: Vec<String> = bad.iter().take(10).cloned().collect();
-                    self.event(task_id, "number_check", json!({"unsupported": b10}))
-                        .await;
-                    transcript.push(json!({"role": "assistant", "content": final_}));
-                    let txt = if lg == "en" {
-                        format!("(System) These figures in your answer do not appear in any tool result: {}. \
-Recompute them with calculate (data_query for table data) — if an earlier result looked wrong, fix the \
-inputs — then write the complete final answer again using only figures the tools produced. Start \
-straight with the content: don't mention this check or say \"here is the complete answer\".", b10.join(", "))
-                    } else {
-                        format!("（系统）你回答里的这些数字没有出现在任何工具结果里：{}。\
-请用 calculate（表格数据用 data_query）把它们重新算一遍——如果之前某个工具结果看起来不对，就改正输入再算——\
-然后重新写完整的最终回答，只使用工具算出的数字。回答直接从内容开始，不要提到这次核对或“以下是完整回答”之类的话。", b10.join("、"))
-                    };
-                    transcript.push(user_msg(txt));
-                    continue;
-                }
-            }
-            if !final_.is_empty()
-                && !outcome_checked
-                && !force_final
-                && !timed_out
-                && steps < max_steps - 1
-            {
-                outcome_checked = true;
-                let texts = self.inner.lock().tool_texts.get(task_id).cloned();
-                let oc = crate::outcome::assess(
-                    &self.store.events(task_id, 0)?,
-                    &final_,
-                    texts.as_deref(),
-                    Some(&goal_text),
-                );
-                let hint = crate::outcome::nudge(&oc, lg != "en");
-                if !hint.is_empty() {
-                    // 2026-10-06 (roadmap batch 1): "done" needs proof — an order number the confirmation page shows,
-                    // or no claim at all
-                    self.event(
-                        task_id,
-                        "outcome_check",
-                        json!({"status": oc.get("status"), "missing": oc.get("missing")}),
-                    )
-                    .await;
-                    transcript.push(json!({"role": "assistant", "content": final_}));
-                    transcript.push(user_msg(hint));
-                    continue;
-                }
-            }
-            if !final_.is_empty()
-                && !cards_compared
-                && !force_final
-                && !timed_out
-                && steps < max_steps - 1
-            {
-                cards_compared = true;
-                if let Some(hint) =
-                    super::guards::card_comparison_hint(&transcript, &final_, lg != "en")
-                {
-                    self.event(task_id, "card_check", json!({"compared": false}))
-                        .await;
-                    transcript.push(json!({"role": "assistant", "content": final_}));
-                    transcript.push(user_msg(hint));
-                    continue;
-                }
-            }
-            // what the answer means, read by a small classification call — only when a guard acts on it (a browser
-            // run or an arrival card); the guards decide from these answers, not from the wording
-            // (and a reply that asks something: it may re-ask for what the user already asked to have done)
-            let driven_run = super::driver::active(&transcript).is_some();
-            let traits = if !final_.is_empty()
-                && !driven_run
-                && (super::guards::arrival_run(&transcript)
-                    || super::guards::browser_used(&transcript)
-                    || final_.contains('?')
-                    || final_.contains('？'))
-            {
-                self.answer_traits(task_id, &goal_text, &final_).await
-            } else {
-                super::guards::AnswerTraits::default()
-            };
+            let driven_run = super::driver::active(&transcript).is_some()
+                || super::claims::active(&transcript).is_some();
             // a news report's delivery is code's: the scheduled edition's mail, or the schedule asked for (once each)
-            if !final_.is_empty() && !force_final && !timed_out {
+            if !final_.is_empty() && asked.is_none() && !force_final && !timed_out {
                 let own = own_mailbox(&catalog);
                 if let Some(tc) = super::guards::news_report_action(
                     &transcript,
@@ -3065,86 +2780,67 @@ straight with the content: don't mention this check or say \"here is the complet
                     }
                 }
             }
-            // the answer read once by the model as the user would: incoherent or self-contradicting → written again
+            // the confirmation after a hand-back is read by code: a snapshot the model skipped is taken here, once,
+            // before the answer (the reference then comes from the page, `with_confirmation_ref`)
             if !final_.is_empty()
+                && asked.is_none()
+                && !handback_snapped
+                && !driven_run
+                && super::guards::needs_handback_snapshot(&transcript)
+            {
+                handback_snapped = true;
+                let tc = ToolCall {
+                    id: format!("handback_snapshot_{steps}"),
+                    name: "browser_snapshot".into(),
+                    args: json!({"max_chars": 6000}),
+                };
+                self.event(task_id, "handback_snapshot", json!({})).await;
+                transcript.push(json!({"role": "assistant", "content": final_, "tool_calls": [{"id": tc.id, "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+                match self
+                    .exec_call(
+                        &t,
+                        &tc,
+                        &mut transcript,
+                        &catalog,
+                        &[],
+                        None,
+                        CallMode::MAIN,
+                    )
+                    .await
+                {
+                    Ok(_) => continue,
+                    Err(sp) => return self.suspend(task_id, sp, transcript).await,
+                }
+            }
+            // the answer read once by the model as the user would (JSON out): when it does not hold together, the
+            // answer is written again from the run's facts in code (`rescue_final`), once — no message to the model
+            if !final_.is_empty()
+                && asked.is_none()
                 && !answer_reviewed
                 && !force_final
                 && !timed_out
-                && steps < max_steps - 1
             {
                 answer_reviewed = true;
                 if let Some(problem) = self.review_answer(task_id, &goal_text, &final_).await {
                     self.event(task_id, "answer_review", json!({"problem": problem}))
                         .await;
-                    transcript.push(json!({"role": "assistant", "content": final_}));
-                    transcript.push(user_msg(if lg == "en" {
-                        format!("(System) Read as the user would, this answer does not hold together: {problem}. Write the whole answer again — complete, consistent and only what the sources support.")
-                    } else {
-                        format!("（系统）站在用户角度看，这个回答说不通：{problem}。请把完整的回答重写一遍——完整、前后一致、只写来源支持的内容。")
-                    }));
-                    continue;
-                }
-            }
-            if !final_.is_empty()
-                && !arrival_checked
-                && !driven_run
-                && !force_final
-                && !timed_out
-                && steps < max_steps - 1
-            {
-                arrival_checked = true;
-                if let Some(hint) = super::guards::arrival_default_hint(
-                    &transcript,
-                    traits.asks_defaults,
-                    lg != "en",
-                )
-                .or_else(|| {
-                    super::guards::self_press_hint(
-                        &transcript,
-                        traits.tells_user_to_act,
-                        lg != "en",
-                    )
-                })
-                .or_else(|| {
-                    super::guards::short_after_handback_hint(&transcript, &final_, lg != "en")
-                })
-                .or_else(|| {
-                    super::guards::proceed_with_pick_hint(
-                        &transcript,
-                        &goal_text,
-                        &final_,
-                        lg != "en",
-                    )
-                })
-                .or_else(|| super::guards::reconfirm_hint(traits.reconfirms, lg != "en"))
-                .or_else(|| {
-                    super::guards::page_option_hint(&transcript, traits.asks_option, lg != "en")
-                })
-                .or_else(|| {
-                    super::guards::known_profile_hint(
-                        traits.asks_profile,
-                        &self.store.profile().unwrap_or_else(|_| json!({})),
-                        lg != "en",
-                    )
-                })
-                .or_else(|| super::guards::missing_format_hint(&transcript, &goal_text, lg != "en"))
-                .or_else(|| super::guards::visa_days_hint(&transcript, &final_, lg != "en"))
-                {
-                    self.event(task_id, "arrival_check", json!({"handed_over": false}))
+                    let again = self
+                        .rescue_final(task_id, &goal_text, &transcript, lg)
                         .await;
-                    transcript.push(json!({"role": "assistant", "content": final_}));
-                    transcript.push(user_msg(hint));
-                    continue;
+                    if !again.is_empty() {
+                        final_ = again;
+                    }
                 }
             }
-            // the hint was given (or there was no step or minute left to give it) and the form is still not handed
-            // over: the runtime hands it over itself — a runtime step, so no budget stops it (cards_interruption_real
-            // 2026-10-31: the claim's last field took the last step, the hint was skipped and nothing was handed over)
+            // a filled form (an arrival card, a claim) or an approved purchase that ends without the hand-over: the
+            // runtime hands the page over itself — a runtime step decided from the transcript, so no budget stops it
+            // (cards_interruption_real 2026-10-31: the claim's last field took the last step and nothing was handed over)
             if !final_.is_empty()
-                && (arrival_checked || force_final || timed_out || steps >= max_steps - 1)
+                && asked.is_none()
                 && !auto_handed
                 && !driven_run
-                && super::guards::needs_handover(&transcript, traits)
+                && super::guards::needs_handover(&transcript)
             {
                 auto_handed = true;
                 self.event(task_id, "auto_handover", json!({})).await;
@@ -3198,13 +2894,37 @@ straight with the content: don't mention this check or say \"here is the complet
             final_ = super::guards::with_purchase_total(&transcript, &final_, lg != "en");
             final_ = super::guards::with_confirmation_ref(&transcript, &final_);
             final_ = super::guards::with_apdt_link(&transcript, &final_, lg != "en");
-            final_ = super::guards::with_arrival_windows(&transcript, &final_);
+            final_ = super::guards::with_arrival_windows(&transcript, &goal_text, &final_);
             final_ = super::guards::with_flight_times(&transcript, &final_, lg != "en");
             final_ = super::guards::with_flight_date(&transcript, &final_, lg != "en");
             final_ = super::guards::with_etias_status(&transcript, &final_, lg != "en");
             final_ = super::guards::with_grounded_numbers(&transcript, &final_, lg != "en");
+            // figures and flight codes no source showed are replaced in code (the `number_check` event names them)
+            let bad = ungrounded_numbers(&transcript, &final_, &goal_text);
+            let codes = ungrounded_codes(&transcript, &final_, &goal_text);
+            if !bad.is_empty() || !codes.is_empty() {
+                self.event(
+                    task_id,
+                    "number_check",
+                    json!({"unsupported": bad.iter().take(10).collect::<Vec<_>>(),
+                           "unsupported_codes": codes.iter().take(10).collect::<Vec<_>>()}),
+                )
+                .await;
+                final_ = super::guards::with_grounded_codes(
+                    &transcript,
+                    &final_,
+                    &goal_text,
+                    lg != "en",
+                );
+                final_ = super::guards::with_grounded_figures(
+                    &transcript,
+                    &final_,
+                    &goal_text,
+                    lg != "en",
+                );
+            }
+            final_ = super::guards::with_card_comparison(&transcript, &final_, lg != "en");
             final_ = super::guards::with_claim_deadlines(&transcript, &final_, lg != "en");
-            final_ = super::guards::with_hours(&final_);
             final_ = super::guards::with_loan_payment(&goal_text, &final_, lg != "en");
             final_ = super::guards::with_user_edits(&transcript, &final_, lg != "en");
             final_ = super::guards::with_report_links(
@@ -3217,17 +2937,10 @@ straight with the content: don't mention this check or say \"here is the complet
                 &transcript,
                 &final_,
                 truthy(&catalog["connections"]["gmail"]["ready"]),
-                traits.asks_defaults || traits.asks_stay || super::guards::requests_info(&final_),
                 lg != "en",
             );
             let profile = self.store.profile().unwrap_or_else(|_| json!({}));
-            final_ = super::guards::with_own_addresses(
-                &transcript,
-                &final_,
-                traits.asks_stay,
-                &profile,
-                lg != "en",
-            );
+            final_ = super::guards::with_own_addresses(&transcript, &final_, &profile, lg != "en");
             final_ = super::guards::with_injection_notice(&transcript, &final_, lg != "en");
             final_ = super::guards::with_masked_cards(&final_);
             if get_str(&t, "source") == "schedule" {
@@ -3281,16 +2994,11 @@ straight with the content: don't mention this check or say \"here is the complet
                 &json!({"transcript": transcript, "result": final_, "plan": plan, "finished_at": now_ts()}),
             )?;
             let en_ui = get_str(&s, "language") == "en";
-            let needs_user = (gave_up || force_final) && !timed_out && asks_user(&final_);
             let (mut gave_up_f, mut force_final_f) = (gave_up, force_final);
-            if needs_user {
-                // stopped because something only the user knows is missing, and the answer asks for it: not a failure
-                self.event(
-                    task_id,
-                    "needs_user",
-                    json!({"reason": if gave_up { "gave_up" } else { "step_limit" }}),
-                )
-                .await;
+            if asked.is_some() {
+                // the run asked the user (`ask_user`): the question is the reply, the user's next message answers it
+                self.event(task_id, "needs_user", json!({"reason": "ask_user"}))
+                    .await;
                 self.set_status(task_id, "COMPLETED", json!({})).await;
                 gave_up_f = false;
                 force_final_f = false;
@@ -3441,13 +3149,14 @@ straight with the content: don't mention this check or say \"here is the complet
         transcript: &[Value],
         final_: &str,
     ) -> String {
-        let mut msgs = transcript.to_vec();
-        msgs.push(json!({"role": "assistant", "content": final_}));
-        msgs.push(user_msg(
-            "(System) Settings → Language is English. Rewrite your complete final answer \
-in English now — same content, same structure, no tool calls. Keep \
-names, email subjects and quotes in their original language only where needed.",
-        ));
+        // a translation of the reply, outside the run's conversation: the reply is its only input and its only
+        // output (no message to the agent, nothing decided)
+        let _ = transcript;
+        let msgs = [
+            json!({"role": "system", "content": "Translate the user's text into English. Keep its structure, markdown, \
+links, numbers, names, email subjects and quotes exactly; output only the translation."}),
+            user_msg(final_.to_string()),
+        ];
         let Ok(r) = self.llm.chat(&msgs, None, &opts("executor", task_id)).await else {
             return final_.to_string();
         };
@@ -3458,6 +3167,27 @@ names, email subjects and quotes in their original language only where needed.",
             return text;
         }
         final_.to_string()
+    }
+
+    /// A reply cut by the token limit (`finish_reason: length`): the same request once more, without tools and with
+    /// a higher limit; the longer reply is the answer. No words to the model about the cut.
+    async fn continue_cut_answer(&self, task_id: &str, msgs: &[Value], first: &str) -> String {
+        let set = self.settings();
+        let limit = omuse_common::util::as_i64(&set["max_tokens"])
+            .filter(|n| *n > 0)
+            .map(|n| n * 2)
+            .unwrap_or(8192)
+            .max(8192);
+        let o = ChatOpts {
+            max_tokens: Some(limit),
+            ..opts("executor", task_id)
+        };
+        match self.llm.chat(msgs, None, &o).await {
+            Ok(r) if r.content.trim().chars().count() > first.trim().chars().count() => {
+                strip_tool_markup(&r.content).trim().to_string()
+            }
+            _ => first.to_string(),
+        }
     }
 
     /// The model returned no text even when asked for the final answer (2026-10-05 S1-04: after 27 steps of price
@@ -3513,7 +3243,7 @@ user can do next. Answer in the user's language.");
     async fn replan(
         &self,
         task_id: &str,
-        transcript: &mut Vec<Value>,
+        transcript: &[Value],
         facts: &[Value],
         history_txt: &str,
         dead_ends: &str,
@@ -3562,18 +3292,7 @@ user can do next. Answer in the user's language.");
         );
         self.store.update_task(task_id, &json!({"plan": plan}))?;
         self.event(task_id, "plan", plan).await;
-        let base = prompts::l(agent_lang(&self.settings()),
-            "（系统）多次失败后已重新规划，请按新计划换一种方法继续，不要重复失败过的调用。",
-            "(System) Several steps failed; a new plan was made — try a different approach and do not repeat the calls that failed.");
-        transcript.push(user_msg(format!(
-            "{}{}",
-            base,
-            if dead_ends.is_empty() {
-                String::new()
-            } else {
-                format!("\n{}", dead_ends)
-            }
-        )));
+        // the new plan reaches the model through the system prompt (structured data); nothing is said to it
         Ok(())
     }
 
@@ -4086,4 +3805,12 @@ fn own_mailbox(catalog: &Value) -> String {
         .filter(|e| !e.is_empty())
         .or_else(|| Some(get_str(gm, "account")).filter(|e| !e.is_empty()))
         .unwrap_or_default()
+}
+
+/// The code machine that decides a driven run's steps: an arrival card (`agent/driver.rs`) or a claim / the FWD
+/// purchase (`agent/claims.rs`).
+#[derive(Clone, Copy)]
+enum Machine {
+    Card(&'static super::driver::CardSpec),
+    Claim(&'static super::claims::ClaimSpec),
 }

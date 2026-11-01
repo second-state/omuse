@@ -32,10 +32,12 @@ async def main():
         address("Parents in Singapore", PARENTS)
         answers = await A.fill_card(u, SG, label="two", ask=ASK, hotel="Jalan Kayu", accom=("RESIDENCE", "OWN"),
                                     follow_up="The Parents in Singapore one, please.")
-        first = (answers[0].text + " " + await u.thread_text()).lower()   # the question, or its choice cards
-        check("two: the agent asked in the chat which Singapore address, naming both",
-              len(answers) == 2 and ("bayfront" in first or "flat" in first) and ("jalan kayu" in first or "parents" in first),
-              first[:400])
+        # the question is a choice card (present_choices): its options name both addresses
+        cards = await u.choices()
+        options = U.choice_text(cards).lower()
+        check("two: the agent asked which Singapore address with a choice card whose options name both",
+              len(answers) == 2 and bool(cards) and ("bayfront" in options or "flat" in options) and ("jalan kayu" in options or "parents" in options),
+              options[:400])
 
 
 A.world(SG.mail()[:1])

@@ -505,271 +505,89 @@ transcript alone, so a run suspended for a takeover carries on where it was:
 
 No classifier call, no hints and no automatic hand-over apply to a driven run (`driven_run` in the loop); its tool
 calls are `drv_<n>`. Tests: `driver::tests` (the step machine on transcripts), `tests/arrival_*_real.py`. Cards
-without a form function (KH, PH, JP, UK ETA, ETIAS) stay on the model path with the arrival guards; the way to move
-one is a form function per URL, then a `CardSpec`.
+without a form function (KH, PH, JP, UK ETA, ETIAS) stay on the model path with the arrival guards (the defaults typed
+by code, the user's Submit, the automatic hand-over); the way to move one is a form function per URL, then a
+`CardSpec`.
 
-**Other decisions moved from hints into code the same day:** the news report's delivery (`guards::news_report_action`:
-the scheduled edition's `gmail_send` to the user's own address, the schedule a regular report asks for;
-`report_followup_call` for "email it"), the arrival defaults typed by code (`departure_fix`, `next_city_fix` rewrite
-the `browser_type` text; `clear_guard` and `arrival_mail_guard` refuse), files sent at once when the request asked
-for a file (`Runtime::auto_send` after `make_pdf` / `make_xlsx` / `make_docx`), the live answer text repaired like
-the final (`links::trim_open_link`), and the final answer read once by the model as the user would
-(`Runtime::review_answer`: JSON, ok / problem; one rewrite when it does not hold together — the one place the model
-judges the model, by the user's rule that the final natural-language answer is reviewed).
+## Guarantees in code (2026-11-02)
 
-## Guarantees in code (2026-10-30)
+The hard rule of `CLAUDE.md` holds in the runtime loop: **no natural language from the model anywhere in the decision
+flow**. Nothing is pushed to the model as a "(System)" message during a task, no regex over the model's prose decides
+a step, a refusal, a rewrite or a hint, and no tool result tells the model what to call next. What the model writes is
+the reply the user reads; everything else is data or a code action:
 
-What the user must always get no longer depends on the model following its instructions. Only two kinds of check stop an
-action (browser actions are auto-approved by default): **the final click is the user's** and **the Vault's secrets**
-(passport numbers and expiries only through `browser_fill_secret`, an email with no recipient or body). The other checks
-below never stop the call: what they find is added to its result as a "(System note)" for the agent (`exec_call`
-notes).
-- **The final click is the user's**: a click that pays, confirms a purchase or booking, or changes an order is refused
-  (`policy::hand_over_click`) and the runtime itself then hands the filled page over with a takeover naming the button
-  (`exec::hand_over_button`; the model is not trusted to do it after the refusal); after the hand-back the answer carries
-  the reference the confirmation page shows (`with_confirmation_ref`); ticking a box (a fee agreement) is no
-  such click; a page that receives money (`guard::refund_page`) takes a complete Vault card without `purchase_confirm`.
-  The ledger records an order the user placed in the takeover (`outcome::actions_done`: a completed takeover after an
-  approved purchase) and a cancellation / return they requested there (`Ctx::order_changes`, `user::b_release`).
-- **Answers**: the approved amount and what it was for (`with_purchase_total`), the card catalog's date
-  (`with_catalog_date`), a card the catalog lacks (`with_uncatalogued_cards`), the preferred airline
-  (`with_preferred_airline`), a scheduled run's notifications (`with_notifications`); a card pick that names one of
-  several Vault cards is sent back once to compare (`card_comparison_hint`).
-- **Edited approvals**: what the user changed in the dialog goes back to the agent in the result (`user_edited`, a note
-  that it is the user's choice); moving an event's start keeps its length (`act::shifted_end`).
-- **No bare status note**: the executor's last message carries the status only with a plan or failed sources, marked as
-  not the user's words (an answer about "it's 5:30 pm" replaced replies).
-- **Memory**: a request and a fact naming the same relation ("my wife" / "the user's wife") match like a named person
-  (`context::shared_relation`); near names of one card are one card (`vault::card_key`).
-- **Browser**: Vault values are hidden in vision screenshots (`Broker::masked`) instead of vision being refused; a
-  document date from the Vault goes in the field's order (`textfmt::date_for_field`); a photo inside a link is marked
-  "(photo)"; a city guide's `browser: off` does not override a skill loaded earlier that needs websites.
-- **Files**: `make_pdf(pages=N)` fits the page count; HTML sources get their workspace pictures embedded and missing
-  ones reported; `\pagebreak` in Markdown; the library Report shows `sources.md` when the report lists none.
-- **Hand-overs, wider**: a claim the user submits (CSR, FWD, a baggage claim) has its Submit refused and handed over
-  like an arrival card's (`arrival_submit_guard`); a filled claim form that ends without the hand-over, and any browser
-  run whose answer tells the user to press or submit something themselves without a hand-over, is sent back once to
-  hand the page over (`arrival_default_hint`, `self_press_hint`); when it still ends without one, the runtime calls
-  browser_request_takeover itself (`needs_handover`, an `auto_handover` event). A baggage claim is an email draft —
-  WorldTracer's tracking page is not handed over.
-- **Default No in code**: an arrival card's hand-over first answers every plain Yes / No question still unanswered
-  with No (`browser_request_takeover` with `default_no` from the runtime → Sentinel → the broker's `default_no` action):
-  the user's own default for health and declaration questions, reviewed by them on the page; a model that refuses to
-  answer declarations (gpt-6-luna on the UK ETA) no longer leaves them blank. After a runtime hand-over the answer the
-  agent had given opens the final answer (`with_handover_answer`). `profile_get` maps common other names of a field
-  (`date_of_birth`, `dob`, `sex`, `email`, `mobile` …) to the profile's keys (`store::profile_alias`).
-- **The Hong Kong departure-tax refund** answer always ends with the reference code and a link to that application
-  (its page stopped before "Proceed with Facial Recognition", plus "Resume Application" with the code) so the user does
-  the face recognition themselves (`with_apdt_link`); the card refund's processing-fee box is ticked without asking.
-- **Tables**: `data_query` bins are pandas.cut's (low, high] by default, the first bin keeping its low edge
-  (`right: false` = [low, high), the last bin keeping its high edge) — a model's NPS bins no longer drop the 10s.
-- **The ledger** reads "Order reference: KM-50731" as the order number (`outcome::refs_in`).
-- **Foreign transaction fees**: every catalog card carries its fee as data — `fx_fee_pct` (0 = none), `fx_source` (the
-  page it was read on) and `fx_checked` — researched card by card on 2026-10-31 (issuers' fee statements, key fact
-  statements and pricing pages first; 167 cards: US mostly 0% or 3% / 2.7%, HK 1.95% with UnionPay 1% and Amex 2%, SG
-  3.25%). `build_cards.py --fx <results.json …>` merges new research and flags a card never researched; `RETIRED` keeps
-  discontinued cards (the Wells Fargo Bilt Mastercard) out of re-imports. A card answer for a market (the card table read
-  last) names each of the user's cards issued in another country with its fee when the fee is above 0, says nothing
-  for 0%, and says when the catalog does not know it (`with_fx_fees`).
-- **Facts from code, meaning from a classifier**: no regex judges what the model wrote. A fact that code owns (an
-  ETIAS status, an injection notice, an unverified catalog row, a foreign transaction fee, a card the catalog lacks) is
-  always rendered from data and appended, even when the answer already mentions it. Questions about the answer's
-  meaning (does it ask for a departure date / next city / visa basis, ask where the user stays, tell the user to press
-  or submit something themselves) go to one small JSON call to the executor model (`Runtime::answer_traits`, purpose
-  `classify`, temperature 0, an `answer_traits` event), made only in arrival or browser runs. Its booleans
-  (`AnswerTraits`) drive `arrival_default_hint`, `self_press_hint`, `needs_handover` and `with_own_addresses`; a failed
-  call means all false (no hint, the auto hand-over still runs on state). The fake LLM answers it from wording.
-- **Goals keep the user's words**: a goal made in chat stores the request it came from (`goals.ask`,
-  `goals::set_ask`), and every check is told those words decide when it is achieved, the model's success criteria
-  only explain them — "until John confirms the contract" had become "signed, approved, or finalized", and John's
-  "I confirm the contract terms" was not counted.
-- **Values the model copies are repaired in code** (`crate::ids`, like `crate::links` for URLs): where a tool call's
-  arguments are parsed, every top-level id (`*_id`, `*_ids`, `id`), element `ref`, mail `account`, `calendar`, `bot`,
-  `load_skill`'s `name` / `file` and the workspace file a tool reads (`path`, `paths`, `audio_path`; not
-  `files_write`'s) that no tool result, user message or system prompt showed becomes the one shown value it is a slip
-  of (`util::nearest`: one character off for 4–7 characters, two for longer ones, or cut short; a tie or anything
-  farther stays as written). Sentinel resolves Vault references against the Vault itself (`vault::resolve_args`): a
-  mistyped `item_id` / `card_item_id`, and a `field` named another way ("passport_expiry", "Expiry Date", "CVV") —
-  arrival_cards2_real 2026-10-31: `vlt_752694d1f8` for `vlt_752694d1f1f8` was refused and the model told the user the
-  Vault had no passport expiry. Also in code: `purchase_confirm`'s site is always the open page's host; a
-  `present_choices` pick and a `profile_get` key written with other case or a slip match the option / the key; a
-  purchase's order number is any reference-shaped token of the answer that the page showed, labelled or not
-  (`outcome::confirmed_refs`).
-- **A form skill's budget**: a `form: on` skill gets at least 70 steps (`guards::FORM_STEPS`), and the runtime's
-  automatic hand-over runs even when the step or minute budget is spent (cards_interruption_real 2026-10-31: the CSR
-  claim's last field took the last of 30 steps and the form was never handed over).
-- **The user's Submit, enforced in Sentinel**: in an arrival-card or claim run the runtime marks each click
-  (`user_submits`: arrival / claim) and Sentinel refuses a submit from the element's own label as the browser
-  describes it (`policy::user_submit_click`), then the page is handed over — never judged from a snapshot in the
-  transcript, which may be cut short (cards_interruption_real 2026-10-31: "Submit claim" fell off a long snapshot
-  and the agent filed the claim). The runtime's `arrival_submit_guard` stays as the earlier stop.
-- **Phone numbers come from sources**: an answer's phone number of 8+ digits that no tool result or user message
-  showed is replaced by "(number not on the pages read — check the official site)" (`with_grounded_numbers`;
-  emergency_real 2026-10-31: embassy lines written from memory). Dates, amounts, references and 110 / 119 stay.
-- **Hand-overs, refined**: a page with more than three empty fields is sent back once (a hand-over made too early,
-  e.g. for the CAPTCHA with the trip section blank); fewer are listed for the user. The rest of the ID document used on
-  the page fills passport number / expiry boxes, never a card's (`id_field_for` skips card labels). An approved
-  purchase in a browser run is handed over as an order to place (`handover_reason`); with no page open, nothing is
-  handed over. The HK refund's face-recognition line is always added from the page (a code fact).
-- **Claim deadlines in code**: `with_claim_deadlines` counts a claim's dates from the loss date typed on the form
-  (the field labelled loss / incident, else the only date typed) with the rules as data (`CLAIM_DEADLINES`: CSR
-  notice + 20 days, documents + 90) and always adds them to the answer.
-- **The user's edits in an approval stay theirs**: a later update that sets back a field the user changed in the
-  dialog does not run (`user_edit_guard`), and the answer says what the user changed (`with_user_edits`; gcal_real
-  2026-10-31: moved to 15:30, the agent tried 15:00 again and called 15:30 the calendar's mistake).
-- **An arrival card that asks for defaults is handed over**: in an arrival run with a page open, an answer that asks
-  for a departure date or Yes / No answers (the classifier's `asks_defaults`) goes to the hand-over, where code fills
-  them (`needs_handover`; arrival_cards2_real 2026-10-31: Visit Japan Web).
-- **A read that may leak data names its address** in the approval (the data-egress reason carries the URL; a read has
-  no open page for the dialog's Site / Page).
-- **Long results keep their links**: a Sentinel result longer than the model's limit (9,000 characters) has its short
-  top-level fields — links, notes, ids — moved ahead of the bulky ones before it is cut (`exec::short_fields_first`):
-  a fallback's `compare_url` and `*_fallback` note no longer fall off the end (travel_brave_real 2026-10-31).
-- **Which search first**: a request asking for several travel searches runs the one it names first
-  (`guards::searches_asked` / `search_order_guard`, beside the one-search rule): "the cheapest flight, a 4-star hotel
-  and a rental car" searches the flight; a hotel or car search before it is refused naming flights_search, and the
-  others are offered for the next message (travel_brave_real 2026-10-31). A flight number names no flight search.
-- **Maps are Google Maps**: every `places_search` place carries `map_url`, its Google Maps page built in code
-  (`serpapi::place_map_url`: the Maps URLs API with the name, address and place id), the page the browser loads to
-  show or check a place; a page the model opens on OpenStreetMap becomes the Google Maps search for the same query
-  (`serpapi::google_maps_instead`, in Sentinel before the policy, so an approval shows the Google page).
-- **Fallbacks are chains in code, never advice to the model**: `places_search` is `actions::places_with_fallback` —
-  SerpApi's Google Maps data (with a key), else the Google Maps search page read in the browser (`/agent/read` with
-  `wait_ms` 5000; no key, a SerpApi error or no places), else a web search (the page failed, was blocked or met a
-  consent wall); `places_fallback` says which source answered and why the others did not. Every fallback web search
-  (`web_fallback`: hotels, places) reads its top two pages in code (`pages`), and `browser_read` reads a page with
-  almost no text once more after 5 s itself (`reread_thin_pages`) — no result tells the model to go and read or
-  navigate. Flights fall back to Kiwi.com in code as before.
-- **`browser: off` yields to the user**: a city guide does not switch the browser off when the user's request names a
-  website or page (`guards::names_website`: a URL, a domain, "site / page / portal", 网站 / 官网).
-- **After a hand-back** the agent is told its final answer covers the whole request, and an answer of a line or two is
-  sent back once to be written out (`short_after_handback_hint`).
-- **The next city** on an arrival card defaults to the last city typed (where the flight came from): another value gets
-  a note with it, once (`next_city_note`).
-- **Food and drink**: "my food / drink / diet preferences" selects the dining facts (vegetarian, alcohol, allergies,
-  halal) for the request (`store::INTENTS` dining).
-- **Card answers**: a card named in the answer whose catalog row is an unverified seed gets "(The catalog's terms for …
-  are unverified seeds; check them on the issuer's page.)" (`with_unverified_rows`); whether a
-  card is in the catalog is judged against every market's table the build ships (`with_uncatalogued_cards`).
-- **Snapshots**: a password box reads "(password field — only the user types it, in a takeover)" — the earlier "agent
-  must NOT type here" plus a login error's "email" a line later tripped the injection scan's agent-directive pattern.
-- **Phone calls** are Main's as well as Travel's (`bots/main.md` skills).
-- **From the instructions review (2026-10-31)**, moved from skill text into code:
-  - Skills declare their kind in front matter — `form_kind: arrival` (the arrival cards, Visit Japan Web, eTravel, the
-    UK ETA, ETIAS) or `form_kind: claim` (CSR, FWD) — and the guards read it from the loaded skill
-    (`guards::form_kind_skills`), so a new or imported skill with the flag gets them (ETIAS had been left out).
-  - A flight search follows the request's cabin ("business class", "lie-flat", "first class", "premium economy" —
-    never lowered to economy), "direct" / "nonstop", and self-transfer only when asked
-    (`travel_args::align_with_request`, from the task's request in Sentinel; each change in `input_fixed`).
-  - The Hong Kong refund's "Proceed with Facial Recognition" click is refused: the user's own step (`apdt_face_guard`).
-  - Identity-card numbers (NRIC, HKID, FIN, national ID) and card number / security-code boxes are Vault-only, like
-    passports (`policy::passport_field`); a full card number (network prefix + Luhn) in an answer becomes "•••• 1111"
-    (`with_masked_cards`).
-  - A PDF form's signature fields are never filled (`pdf_form_fill`: `left_for_the_user_to_sign`).
-  - Content that carried an injection warning is named in the answer (`with_injection_notice`).
-  - An ETIAS answer always says ETIAS is not in operation yet, with the official link (`with_etias_status`).
-  - An arrival-card answer that asks where the user stays lists the profile's own addresses in that country, read
-    from the profile in code (`with_own_addresses`).
-  - Skill text that contradicted code was fixed: restaurant-booking's final click is the user's; travel-planning no
-    longer teaches browser search URLs or assumes a Singapore user; dining-dietary-translate is `browser: off`.
-  Still to move into code (the review's other candidates): claim deadlines computed from the loss date (CSR +20 / +90,
-  FWD SG +30, the HK refund +28, baggage 21 days), a card's value computed from the catalog, phone numbers grounded in
-  a source (`phone_call` `to`, emergency lines), emergency numbers as data, relative dates ("next Friday") resolved in
-  code, the FWD health questions never ticked "No" unprompted, bank details kept out of emails, and one billed
-  image / video per request.
-  The audit of 2026-10-31 ("only natural-language meaning is the model's") adds, by impact: card value per purchase
-  as a catalog tool (rate × cap × point value − FX fee, ranked); CSR claim amount and caps as data; flight offers with
-  `total` for all passengers and `cheapest` / `cheapest_nonstop`; the search currency from the profile, not USD;
-  expense-report matching, de-duplication and dated FX in a tool; receipts grouped by order reference in
-  `gmail_find_receipts`; multi-currency sums and coupon stacking in `calculate`; the arrival-card filing window
-  (arrival − 3 days → a reminder in code); FWD eligibility and delay hours computed; a `trip_timeline` tool; the FWD
-  plan picked by rule in code; restaurant-booking's browser search dropped for `places_search` filters; travel-planning's
-  "widen the hotel search" removed; hotel results with `nights` and the best free-cancellation rate; mail counts
-  paged and broadened in code; checkout phone formats retried in code; one Kiwi.com retry in code; `watch_create`
-  keywords picked from the page; shop listings ranked in code (the Shopping bot, below).
-  Planned for 0.5.5: a **Shopping bot** — product search Shopify Catalog first (Catalog MCP `search_catalog`, the
-  merchant's checkout, the final click the user's), the market's local shops in the browser next, web search last;
-  Amazon only when the user names it (it blocks agents); the Shopify key in Settings → Connections.
-  Real suites to write to retire fakes (the fake-suite review of 2026-10-31): `language_real` (from `e2e_028`),
-  `profile_id_real` (passport photo OCR, from `profile_onboarding_ui`), `skills_real` (import a skill from GitHub,
-  from `skills_e2e`), a Chinese PDF with a workspace image in `docs_real` (from `pdf_e2e`), the plan fold in
-  `chat_real` (then delete `chat_fold_ui`), Site habits and the block count in `brief_real` (then delete
-  `batchR_e2e`), and the no-key Kiwi.com "book it" path; `docker_browser_e2e` is in neither suite list.
-- **A comparison the user's rule already decided**: `present_choices(picked=<label>)` shows the verified cards and tells
-  the agent to go on with that option in the same turn (no question) — the FWD purchase ("the cheapest with at least
-  SGD 10,000 cancellation") shows its plans and applies for the pick. A bot's choice cards show in Main as well, like
-  its approvals and takeovers (`mirror_to_parent`).
-- **Listings are ranked in code** (`listings.rs`): `present_choices(ranking={by, max_price, min_ratings, title_has, …})`
-  — the model reads the criteria off the user's words, code parses the results page it read (name, stars, ratings,
-  price) and builds the cards in order; `picked` becomes the top of the ranking. A comparison of 2+ listings from a page
-  with 6+ listings and no `ranking` is sent back once for the criteria (shopping_real 2026-10-31). A reply that asks for
-  a colour / size the user did not name (`AnswerTraits::asks_option`) is sent back once: the page's selection stands.
-- **Profile fields a reply claims not to know** (`AnswerTraits::asks_profile`, `known_profile_hint`): nationality,
-  birthday or home address the profile has are handed back once; a skill's `profile:` note now opens the sheet.
-- **Arrival-card filing windows** (`ARRIVAL_WINDOWS`, `with_arrival_windows`): an answer naming a loaded card's form
-  without its window ("within the 3 days before arrival") gets it added in code.
-- **APDT**: once the refund card is in (Vault number filled, or a takeover done), a takeover is refused and no
-  automatic hand-over runs — the face step is on the user's phone (`apdt_card_done`).
-- **Keyless places_search** (Sentinel `act`): without a SerpApi key the Google Maps page load passes the same egress
-  check as `browser_navigate`; when that check would ask, the call becomes the page load (auto-approved or asked).
-- **MCP results** carry their JSON as text: `with_hotel_links` reads JSON nested in strings.
-- **Skill front matter after compression**: a `load_skill` result cut to 500 characters loses `form_kind`; the built-in
-  sheet's own front matter is used (`form_kind_skills`). Without it a claim run lost both the hand-over and the
-  `user_submits` hard stop on Submit.
-- **Card fill before a purchase confirmation** (Sentinel `act`): the confirmation is made in code from the page's site
-  and total (`purchase_site`), approved or auto-approved, and the fill then runs. `page_total` reads currency codes
-  (JPY, KRW, MYR …).
-- **APDT upload page**: "I have authorized a third party" is ticked in code (`apdt_fixed_ticks`); the agent's click on
-  that box becomes the idempotent tick.
-- **Answer links in code**: `with_flight_links` (offer `flight_no` → `booking_url`), `with_fallback_pages` (the pages a
-  hotel search's web fallback, or the run, read), `with_choices_listing` (the cards' options with prices when the answer
-  gives none); a price-less card gets the price its page shows after its name (`listings::price_after`).
-- **Claim deadlines line** names the benefit chosen on the form when the answer does not.
-- **Notion filters** (`notion::fix_filter`): a status/select value becomes the database's own option (any case), a
-  status group's name ("In progress") its options; an unknown value is refused with the options listed.
-- **"Until X" schedules** become goals: `Runtime::until_condition` classifies the request; code calls goal_create.
-- **Telegram** speaks the app's language only (`telegram_bot::pick`, `status_label`, `help_text`).
-- **Image edits** go as JSON to xAI grok-imagine models (`imagegen::edit`). An edit or variation asked in a later message of the same
-  conversation (a new task) works on the newest picture the chat shows (`images::last_conv_image`), not "no image to
-  edit".
-- **Arrival cards** (notes): clearing a field the agent filled on the form (`clear_guard`: its value is the default
-  the user asked for — departure = arrival + 7 days, next city = the flight's origin); a run that filled the form, or
-  asks in the chat for a value with a default, without handing the page over is sent back once to fill the defaults,
-  leave what it lacks empty and hand over (`arrival_default_hint`); missing values are tolerated: the hand-over is never
-  held up by empty fields (the user reviews the page and fills them in before submitting) — first Sentinel fills in
-  code what it knows (the rest of the Vault ID document already used on the page, `complete_id_document`: passport
-  number / expiry by the field's label; the Yes / No defaults; the departure date), then the takeover message names the
-  fields still empty for the user (`empty_fields_left`; optional ones and CAPTCHAs / codes / passwords left out). A skill's `steps: N` front matter raises the task's step budget
-  (the arrival skills: 70 — a login hand-over plus a 20-field form).
-- **The one question before the form** (a note, once, on opening the form, `arrival_ask_first_guard`): with no flight
-  in the request, the mail, the calendar, memory or an uploaded ticket, the agent is told to ask for the flight and the
-  stay; with two or more profile addresses in the destination country and none named in the request, to ask which.
-  "I'll fill it in myself" skips it.
-- **The departure date** on an arrival card is the arrival date typed on the form + 7 days, counted in code: another
-  date gets a note with the right one, once (`departure_date_guard`), and at the hand-over the runtime sends that date
-  with the takeover (`departure_default` → `set_departure` → the broker sets the departure field) unless the request,
-  mail, calendar, memory or an uploaded ticket names a return / onward flight or a check-out — notes alone were ignored
-  (MY, JP and CN cards, 2026-10-31). The arrival skills carry no `plan: on` any more: their sheets are linear and these
-  rules hold in code, and the planner cost about 34 s per card.
-- **Email**: a `gmail_send` / `gmail_create_draft` with no recipient, no body and no thread is refused before any approval dialog
-  (`empty_mail_guard`); an email while an arrival card is being filled, with none asked for, gets a note
-  (`arrival_mail_guard`: the card is a web form the user submits). An arrival card's own Submit / Send / Confirm click
-  is refused and the page handed over like a purchase's (`arrival_submit_guard`).
-- **Links**: every link reaches the model as it is and is repaired in code where the model's words leave the agent
-  (`crate::links`, see above).
-- **Passport fields**: typing into a passport / travel-document number or expiry box is refused — those come only from
-  the Vault with `browser_fill_secret` (`policy::passport_field`).
+- **Model calls that return JSON only**: the planner and the bots router (`agent/bots.rs`), the driver's extraction
+  (`driver::EXTRACT_SYSTEM`), `Runtime::until_condition`, and `Runtime::review_answer` — the one reading of the final
+  answer as the user would (ok / problem); when it does not hold together the answer is written again from the run's
+  facts by `rescue_final` (code, once), never by a hint. `rescue_final` also writes the reply when the model returned
+  no text or only tool markup (`strip_tool_markup` runs on every final answer). A reply cut by the token limit
+  (`finish_reason: length`) is requested once more with a higher limit and the longer one is kept
+  (`continue_cut_answer`). The English-UI fix for a Chinese answer stays (`rewrite_in_english`, triggered by the
+  measured CJK share, `language_fixed` event).
+- **Questions to the user are a tool**: `ask_user(fields, question)` (`agent/tools.rs`, `agent/local.rs`). The
+  dispatcher refuses, in data, a field the profile or the form's defaults already answer (`guards::known_answer`:
+  nationality, birthday, home address, sex; an arrival card's departure date, next city, declarations; the one profile
+  address in the country) — `{"refused": "known", "known": [{field, value, source}]}` — and otherwise ends the run
+  with the question as the reply (`asked` in the loop, a `needs_user` event, status COMPLETED) and an
+  `{"type": "ask"}` card in the chat. `guards::asked_user` reads the call back for the appenders (`with_mailbox_hint`
+  when no mailbox is connected, `with_own_addresses` for `stay` / `which_address`). `present_choices` stays for
+  options; its result is `{"shown", "verified", "picked"}` plus the listing.
+- **Budgets are tool-list limits** (`Runtime::budget`): the finishing tools only in the last `BUDGET_RESERVE` steps or
+  past `TIME_NUDGE` of the minute budget; the page-reading tools withdrawn after `RESEARCH_NUDGE_PAGES + 3` page
+  visits; the search tools withdrawn after `WEB_NUDGE` web searches (`guards::web_budget_guard` refuses one more in the
+  same turn). When the step or minute budget is spent the model gets no tools and no message. A stuck run (every call
+  of a turn refused) re-plans at the second turn and stops at the third; the plan reaches the model as data in the
+  system prompt (`ExecutorPrompt.plan`), not as a status note.
+- **Refusals are results, not instructions**: every guard answers `ERROR: [reason_code] one neutral sentence` (bilingual,
+  `system_text_en` keeps the English half): `repeat`, `retype`, `unknown_id`, `dead_host`, `one_search`,
+  `search_order`, `no_mail_for_search`, `empty_mail`, `arrival_mail`, `user_submits` (the sentence `… that click is the
+  user's own` is what `exec::hand_over_button` reads to hand the page over), `keep_default`, `apdt_face`,
+  `form_first`, `user_edit`, `web_budget`, `other_bot`, `browser_off`, `remade`, `bad_arguments`,
+  `arguments_cut`, `needs_approval_alone`, `[SITE BLOCKED site=…]`. The re-read pointer ("Already read: call c1") and
+  Sentinel's `DENIED by Sentinel: <reason>.` carry no advice. Tool results carry facts as data: `input_fixed` on a
+  `browser_type` whose text code replaced (departure = arrival + 7 days, next city = where the flight came from),
+  `{"browser": "off" | "on"}` from `load_skill`, `{"profile": {field: value | null}}` for a skill's `profile:` fields,
+  `{"sent": true}` / `{"already_sent": […]}` from the file tools, `{"made_times": n}`, a published report's JSON.
+- **Code actions in the loop** (transcript facts only, never the answer's words): the automatic hand-over
+  (`guards::needs_handover`: a typed-into arrival or claim form with no completed takeover after the last fill, or an
+  approved purchase in a browser run; `auto_handover` event), the hand-over after a refused final click
+  (`hand_over_button`), the snapshot after any hand-back (`needs_handback_snapshot`), the news report's delivery
+  (`news_report_action`, `report_followup_call`), files the request asked for sent at once (`auto_send`,
+  `unsent_files`), the official site opened when the agent landed on a parked domain (`guards::parked_domain`,
+  `exec::official_site`: one web search, the first result on another domain), the arrival defaults typed by code
+  (`departure_fix`, `next_city_fix`, `departure_default` → `set_departure`, `default_no`), the APDT ticks
+  (`apdt_fixed_ticks`).
+- **The answer is completed from structured data** (the `with_*` appenders in `Runtime::run`): each reads the request
+  (the user's words) and tool results, appends a fact code owns, and dedupes only by a structured value already in the
+  text (a URL, a code, a figure, a label) — never by regex over the wording. Replaced in code, not asked for: figures
+  and flight numbers no source showed (`with_grounded_figures`, `with_grounded_codes`: "(figure / flight not in the
+  sources)", a `number_check` event names them), phone numbers no source showed (`with_grounded_numbers`), full card
+  numbers (`with_masked_cards`). Appended: booking and compare links (`with_hotel_links`, `with_flight_links`,
+  `with_compare_links`, `with_fallback_pages`), leg times, the flight's day, the scheduled time of a delayed flight,
+  the comparison's options (`with_choices_listing`), the catalog date, unverified rows, FX fees, uncatalogued cards and
+  the user's cards from the catalog (`with_card_comparison`, instead of the old "compare the cards" hint), the approved
+  amount, the confirmation reference after a hand-back, the HK refund's face step, the arrival card's filing window
+  (`with_arrival_windows`: the loaded card skill, or under an overview skill the cards the REQUEST names), the ETIAS
+  status, claim deadlines, the loan payment the request specifies, the user's approval edits, notifications, the
+  preferred airline, the injection notice, the report links. `merge_stranded_answer` merges by length only.
+- **Outcome from events only** (`outcome::assess`): a purchase, send, calendar change or call is verified by its own
+  evidence (the order number on a page read after the click or the hand-back, a message or event id); the answer's
+  words are not read for claims. `outcome::notice` adds the "not confirmed" line when an action ran without its proof;
+  the ledger gets the page's order number.
+- **Hard stops stay two**: the final click is the user's (`policy::hand_over_click`, `arrival_submit_guard`,
+  `apdt_face_guard`) and the Vault's secrets.
 
-- **The flight's day** (`guards::with_flight_date`): a flight answer that does not show the searched date in any usual
-  writing gets it in front.
-- **Visa-free days** (`guards::visa_days_hint`): an entry-requirements answer naming a visa exemption with no number of
-  days in that sentence is sent back once to state the days from an official page it reads (never from memory).
-- **"Tomorrow" is the user's** (`guards::fix_relative_day`): a phone call's purpose naming one other date than the
-  user's "today" / "tomorrow" (in the Settings time zone) gets the right one.
-- **The user's edit survives compression**: Sentinel puts `user_edited` and its note first in an approved result, and
-  `guards::user_edits` also reads them from a result the transcript compression cut.
-- **Request wording asks** (`guards::requests_info`): "I still need your flight…", "please send…" count as asking (the
-  mailbox hint), not only a question mark.
+Gone with the rule (2026-11-02): `answer_traits` / `AnswerTraits` and every hint built on them (`arrival_default_hint`,
+`self_press_hint`, `reconfirm_hint`, `page_option_hint`, `known_profile_hint`), `short_after_handback_hint`,
+`proceed_with_pick_hint`, `visa_days_hint`, `missing_format_hint`, `card_comparison_hint`, `news_report_hint`,
+`report_followup_note`, `form_fill_note`, `arrival_ask_first_guard`, `departure_date_guard`, `next_city_note`,
+`requests_info`, `asks_user`, `cut_off_final`, `self_corrects`, `with_hours`, the time / web / stuck / step-limit /
+status-note / cut-off / plain-text / number / outcome / replan "(System)" messages, `outcome::nudge` and its claim
+regexes, the page hints (`deep_link_hint`, `product_page_hint`, `refusal_hint`, `parked_domain_hint`), and the
+"(System note)" tool-result notes. What they covered and code does not decide now, by product choice: a reply that asks
+whether to proceed with a held pick, a visa exemption stated without its days, a missing second file format, a deep
+link that lands on a site's error page, a product page the agent keeps leaving — these are the model's reply to the
+user, reviewed once by `review_answer`.
 
 ## News research reports (`skills/news-research/`, 2026-11-01)
 

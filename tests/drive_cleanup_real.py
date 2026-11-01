@@ -41,9 +41,8 @@ async def main():
               a.text[:1200])
         check("list: … with their sizes", re.search(r"\d(\.\d+)?\s?(GB|MB|GiB|MiB)", a.text) is not None, a.text[:1200])
         check("list: the sheet shared with the user is not offered", not a.mentions("team-roadmap"), a.text[:1200])
-        check("list: the user is asked which to remove", "?" in a.text and a.mentions("which", "all", "bin", "trash", "delete", "remove"),
-              a.text[-500:])
-        check("list: nothing has left My Drive yet, the Bin is as before", live1 == live0 and bin1 == bin0, (live0 - live1, bin1 - bin0))
+        check("list: nothing has left My Drive yet, the Bin is as before (the user decides what goes)", live1 == live0 and bin1 == bin0,
+              (live0 - live1, bin1 - bin0))
 
         b = await u.ask("Please move backup-2022.zip and old-render.mov to the bin. Keep everything else, including wedding-raw.mov.",
                         new_chat=False, label="cleanup-trash", timeout=600)

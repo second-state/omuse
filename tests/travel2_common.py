@@ -67,8 +67,8 @@ async def attach(u: U.User, paths: list[str]) -> None:
 
 # ---------------------------------------------------------------------------------------------------- the user's side
 def no_send(dialog: str) -> bool:
-    """The user asked for drafts: they deny sending an email and approve anything else."""
-    yes = not re.search(r"\bsend|reply|forward", dialog, re.I)
+    """The user asked for drafts: they deny a dialog about sending mail (by the tool it names) and approve anything else."""
+    yes = U.tool_of(dialog) not in U.MAIL_SEND_TOOLS
     print(f"INFO approval dialog ({'approve' if yes else 'DENY'}): {dialog[:300]}")
     return yes
 

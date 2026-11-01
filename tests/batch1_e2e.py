@@ -104,7 +104,9 @@ t = wait_task(tid)
 evs = c.get(f"{B}/api/tasks/{tid}").json()["events"]
 chk = [e for e in evs if e["type"] == "outcome_check"]
 check("claim without a send was caught before finishing", chk and "send:not_done" in chk[0]["data"]["missing"], [e["type"] for e in evs])
-check("final answer no longer says it was sent", "已发送" not in (t["result"] or "") and "没有" in (t["result"] or ""), t["result"])
+# the code-side outcome: no mail was sent (no gmail_send call in the task's record) and the task still completed
+check("nothing was sent and the task completed", t["status"] == "COMPLETED"
+      and not any(e["type"] == "tool_call" and e["data"].get("name") in ("gmail_send", "gmail_reply") for e in evs), (t["status"], [e["type"] for e in evs]))
 check("outcome stored on the task", (t.get("outcome") or {}).get("status") in ("none", "unverified"), t.get("outcome"))
 r = c.post(f"{B}/api/outcome/{tid}", json={}, headers=H)
 check("outcome can be re-assessed for an older task", r.status_code == 200 and r.json()["outcome"]["status"] in ("none", "unverified"), r.text[:200])

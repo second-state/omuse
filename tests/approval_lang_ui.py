@@ -17,8 +17,10 @@ K.setup(mail=[("Singapore Airlines <noreply@singaporeair.example>", "Your e-tick
               ("Marina Bayfront Hotel <stay@marinabayfront.example>", "Booking confirmed: Marina Bayfront Hotel",
                "Confirmation MB-55120. Check-in 2026-11-02, 3 nights. 10 Bayfront Avenue, Singapore 018956.", 1)])
 K.set_profile(name_en="LUCAS LU", birthday="1985-04-12", nationality="Australia")
-K.vault_item("Passport Lucas", "id_document", {"number": "E1234567X", "expiry": "2031-05-01"}, domains="shop.test")
-t = K.run("SGAC fill in my Singapore arrival card for this trip. Health: nothing to declare.", approve=False)
+# a Vault fill the model does field by field (a membership number on a shop page): the arrival cards are filled by code
+# since 2026-11-01 (agent/driver.rs) and no longer open this dialog
+K.vault_item("KrisFlyer", "membership", {"number": "8123456785678", "name": "LU LUCAS"}, domains="shop.test")
+t = K.run("VAULTFILL fill my membership number", approve=False)
 K.check("a vault-fill approval is pending", t["status"] == "WAITING_APPROVAL", (t["status"], t.get("error")))
 HAN = re.compile(r"[一-鿿]")
 
