@@ -822,10 +822,8 @@ pub async fn execute(
         return telegram_send(st, take_chars(&text, 3500)).await;
     }
     if connector == "travel" {
-        let mut checked = checked_travel_args(tool, args)?;
-        // the cabin, stops and self-transfer the user asked for, from their own words
-        let request = store.user_request(task_id).unwrap_or_default();
-        omuse_apps::travel_args::align_with_request(tool, &mut checked, &request);
+        // cabin, stops and self_transfer are the model's (required enums in the catalog), never read from the request
+        let checked = checked_travel_args(tool, args)?;
         let res = with_fixed(
             travel_sync(st, tool, &checked.args, task_id).await?,
             &checked.fixed,
@@ -1474,7 +1472,6 @@ async fn fill_form(st: &AppState, store: &Store, page: &str, args: &Value) -> Ac
         }
         if let Some(it) = doc.as_ref() {
             let _ = vault::mark_used(store, &get_str(it, "id"));
-            ID_FILLED.lock().insert(page.to_string(), get_str(it, "id"));
         }
         fills.push(g);
     }
@@ -1495,94 +1492,6 @@ async fn fill_form(st: &AppState, store: &Store, page: &str, args: &Value) -> Ac
 /// The pages a known form's function filled (`browser_fill_form`): their hand-over is never sent back for blanks.
 static FORM_FILLED: LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
     LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
-
-/// The Vault ID document (passport) a page was filled from, by page: its other fields are completed at the hand-over.
-static ID_FILLED: LazyLock<parking_lot::Mutex<std::collections::HashMap<String, String>>> =
-    LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
-
-/// Whether a form field's label or hints (placeholder, name, autocomplete, section heading) belong to a payment card:
-/// a card's fields are never an ID document's (cards_pay_real 2026-10-31: the passport expiry went into the FWD
-/// form's card expiry, a box labelled just "Expiry" with the placeholder MM/YY).
-fn card_field(text: &str) -> bool {
-    static CARD: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\bcards?\b|credit|debit|payment|cvv|cvc|security code|mm\s*/\s*yy\b|\bcc-|\bcc_|银行卡|信用卡|卡号|付款")
-            .unwrap()
-    });
-    CARD.is_match(text)
-}
-
-/// The Vault field of an ID document an empty form field asks for, by its label (`None`: not one of them).
-fn id_field_for(label: &str) -> Option<&'static str> {
-    static EXPIRY: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)expir|valid (until|thru|through)|date of expiry|有效期|到期").unwrap()
-    });
-    static NUMBER: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)(passport|travel document|document) *(no\b|no\.|number|#)|护照号|证件号")
-            .unwrap()
-    });
-    if card_field(label) {
-        None
-    } else if EXPIRY.is_match(label) {
-        Some("expiry")
-    } else if NUMBER.is_match(label) {
-        Some("number")
-    } else {
-        None
-    }
-}
-
-/// At a hand-over, the empty passport number / expiry fields of a page that was filled from a Vault ID document are
-/// filled from that same item, in code (arrival_cards3_real 2026-10-31: the eTravel form got the passport number,
-/// the expiry was never filled and the model told the user the Vault had none). Only an item the agent already used
-/// on this page, only where the item allows the site, never a card; what fails is left for the empty-fields check.
-async fn complete_id_document(st: &AppState, store: &Store, page: &str) {
-    let Some(iid) = ID_FILLED.lock().get(page).cloned() else {
-        return;
-    };
-    let Ok(Some(it)) = vault::item(store, &iid) else {
-        return;
-    };
-    let Ok(r) = broker(
-        st,
-        "POST",
-        "/agent/empty_fields",
-        Some(&json!({"task_id": page})),
-        20.0,
-    )
-    .await
-    else {
-        return;
-    };
-    if !vault::domain_ok(&it, &guard::domain_of(&get_str(&r, "url"))) {
-        return;
-    }
-    let fields = vault::item_fields(&it);
-    let empty = r["empty"].as_array().cloned().unwrap_or_default();
-    for f in empty.iter().filter(|f| get_str(f, "kind") == "text") {
-        // the field's own hints count too: a box labelled just "Expiry" whose placeholder is MM/YY is a card's
-        // (cards_pay_real 2026-10-31)
-        if card_field(&get_str(f, "hint")) {
-            continue;
-        }
-        let (Some(field), r) = (id_field_for(&get_str(f, "label")), get_str(f, "ref")) else {
-            continue;
-        };
-        if r.is_empty() || !fields.iter().any(|x| x == field) {
-            continue;
-        }
-        let Ok(val) = vault::value(store, &iid, field) else {
-            continue;
-        };
-        if val.is_empty() || val == vault::UNKNOWN {
-            continue;
-        }
-        let body = json!({"task_id": page, "ref": r, "text": val, "keys": true, "date": field == "expiry", "secret": true});
-        if let Ok(snap) = broker(st, "POST", "/agent/type", Some(&body), 90.0).await {
-            let _ = vault::mark_used(store, &iid);
-            vault::note_fill(page, &fstr(&snap, "url"));
-        }
-    }
-}
 
 /// How many empty fields a hand-over tolerates without a send-back: the user fills a few in before submitting.
 const MAX_LEFT_FOR_USER: usize = 3;
@@ -1651,8 +1560,6 @@ pub async fn browser(
         return Ok(broker(st, "GET", "/agent/downloads", None, BROKER_TIMEOUT).await?);
     }
     if action == "request_takeover" {
-        // the rest of the ID document already used on this page goes in, in code (passport number / expiry)
-        complete_id_document(st, store, page).await;
         // an arrival card (the runtime asks with `default_no`): every plain Yes / No question still unanswered gets
         // No before the page is checked and handed over — the user's own default, reviewed by them on the page
         // and the departure date the runtime computed from the user's default (arrival + 7 days)
@@ -1746,9 +1653,6 @@ is left for the final hand-over. Then call browser_request_takeover again; it go
         let snap = broker(st, "POST", "/agent/type", Some(&body), 90.0).await?;
         vault::mark_used(store, &iid)?;
         vault::note_fill(page, &fstr(&snap, "url"));
-        if !card {
-            ID_FILLED.lock().insert(page.to_string(), iid.clone());
-        }
         let mut out = vault::scrub(store, &snap_envelope(store, task_id, &snap)?);
         let it = vault::item(store, &iid)?.unwrap_or_else(|| json!({"label": "?", "masked": ""}));
         set(
@@ -3581,28 +3485,6 @@ pub async fn drive_call(st: &AppState, tool: &str, args: &Value, task_id: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_id_documents_fields_are_known_by_their_labels() {
-        for (label, field) in [
-            ("Date of passport expiry *", Some("expiry")),
-            ("Passport Expiry Date", Some("expiry")),
-            ("Valid until", Some("expiry")),
-            ("护照有效期", Some("expiry")),
-            ("Passport No. *", Some("number")),
-            ("Passport number", Some("number")),
-            ("Travel document number", Some("number")),
-            ("Middle name *", None),
-            ("Flight number", None),
-            ("Phone number", None),
-            ("Card expiry (MM/YY)", None),
-            ("Expiry date of card", None),
-            ("Credit card number", None),
-            ("Expiry MM/YY", None),
-        ] {
-            assert_eq!(id_field_for(label), field, "{label}");
-        }
-    }
 
     #[test]
     fn the_places_fallback_decides_in_code() {

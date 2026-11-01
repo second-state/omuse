@@ -59,6 +59,8 @@ async def main():
         for i, (lab, val) in enumerate((("Airline", "Singapore Airlines"), ("Seat", "aisle"), ("Hotel chain", "Marriott"))):
             await rows.nth(i).locator("input").nth(0).fill(lab)
             await rows.nth(i).locator("input").nth(1).fill(val)
+        # the airline is a standing preference: the user ticks "Always use" on its row (the agent then sees it in every task)
+        await rows.nth(0).locator("input[type=checkbox]").check()
         await card.locator("button", has_text="Add address").click()
         arow = card.locator(".newfield[data-kind=address]").nth(1)
         await arow.locator("input").nth(0).fill("Beach house")
@@ -68,6 +70,8 @@ async def main():
         toast = await pg.locator(".toast").inner_text()
         check("saving reports the four new fields and the three dropdown choices", "7" in toast, toast)
         prof = K.c.get(K.B + "/api/memory").json().get("profile", {})
+        standing = K.c.get(K.B + "/api/memory").json().get("profile_standing")
+        check("the ticked custom field is saved as a standing preference, the others are not", standing == ["custom:Airline"], standing)
         check("the dropdown choices are saved as the standard fields", prof.get("preferred_airline") == "Star Alliance" and prof.get("preferred_hotel_brand") == "Holiday Inn"
               and prof.get("preferred_car_rental") == "Hertz", {k: prof.get(k) for k in ("preferred_airline", "preferred_hotel_brand", "preferred_car_rental")})
         await pg.wait_for_function("() => document.querySelectorAll('#profile .removable').length >= 4", timeout=10000)

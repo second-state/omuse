@@ -2,10 +2,12 @@
 use cases — what the user tells OMuse sorted into domains on the Memory page, people as entities, "Try it", the right
 facts used for a request ("my wife" → Mei), something the user asked to remember kept at once — are tested from the
 user's side by tests/memory_real.py (and tests/assistant_real.py). What stays here, and why it cannot be e2e:
-  * the 7 domains in their order, an alias / relation set on an entity found by another wording (exact selection);
-  * the v1 selection against the legacy one, the trigger rule only on its phrase (exact selection);
+  * the 7 domains in their order; a fact typed on the Memory page sorted by the model at once (its scope, entity);
+    an alias / relation set on an entity found by another wording (exact selection);
+  * the selection on the facts' fields (the fake model's JSON reading of the request stands in for a real one): the
+    shoe size and the shop's habit for a shoe request and nothing unrelated; the trigger rule only on its phrase;
   * the executor's prompt carrying the grouped context and the don't-ask-again rule, the context_used event (internal);
-  * a site's habits shown to the model when the browser lands there (internal prompt);
+  * a site's habits shown to the model when the browser lands there (internal prompt; the fact's entity names the site);
   * a habit OMuse learned by itself waits for the user's OK but is used meanwhile (a real model learning a habit on
     its own cannot be produced on demand: forced with the scripted model);
   * the health check API."""
@@ -45,8 +47,8 @@ def mem():
     return c.get(B + "/api/memory", headers=H).json()
 
 
-def preview(q, mode="v1"):
-    return [f["fact"] for f in c.get(B + "/api/context/preview", params={"q": q, "mode": mode}, headers=H).json()["facts"]]
+def preview(q):
+    return [f["fact"] for f in c.get(B + "/api/context/preview", params={"q": q}, headers=H).json()["facts"]]
 
 
 # ---- 1. domains + entities
@@ -60,20 +62,23 @@ add("用户要求：以后每次说「准备出差」，先查邮件里的航班
 r = c.post(B + "/api/memory", json={"fact": "Mei collects jazz vinyl records.", "domain": "person", "entity": "Mei"}, headers=H).json()
 m = mem()
 check("7 domains listed for the Memory page", [d["key"] for d in m["domains"]] == ["person", "preference", "place", "account", "site", "rule", "work"])
+shop = next((f for f in m["facts"] if f["fact"].startswith("shop.test")), {})
+trip = next((f for f in m["facts"] if "准备出差" in f["fact"]), {})
+check("a fact typed on the Memory page is sorted by the model at once (site habit: the site is its entity)",
+      shop.get("domain") == "site" and shop.get("entity") == "shop.test" and shop.get("scope") == "topic", shop)
+check("…a routine on a phrase gets scope trigger with that phrase", trip.get("scope") == "trigger" and trip.get("trigger") == "准备出差", trip)
 mei = next((e for e in m["entities"] if e["name"] == "Mei"), None)
 check("a person named by a fact becomes an entity", mei and mei["type"] == "person", m["entities"])
 c.put(f"{B}/api/entities/{mei['id']}", json={"aliases": "梅梅", "relation": "太太"}, headers=H)
 check("alias / relation let a different wording find the person", any("Mei" in f for f in preview("帮我给太太挑个生日礼物")),
       preview("帮我给太太挑个生日礼物"))
 
-# ---- 2. the request gets what it needs; legacy did not
+# ---- 2. the request gets what it needs, chosen on the facts' fields
 q = "帮我在 shop.test 挑一双跑鞋，选好尺码加入购物车"
-v1, old = preview(q), preview(q, "legacy")
-check("v1 context has the shoe size and the shop's checkout habit", any("43码" in f for f in v1) and any("shop.test" in f for f in v1), v1)
-check("v1 context leaves out unrelated facts (pens, cabin class, cuisine)",
+v1 = preview(q)
+check("the context has the shoe size and the shop's checkout habit", any("43码" in f for f in v1) and any("shop.test" in f for f in v1), v1)
+check("the context leaves out unrelated facts (pens, cabin class, cuisine)",
       not any(k in " ".join(v1) for k in ("metal pens", "business class", "Hunan")), v1)
-check("legacy selection (before batch 2) hands unrelated facts to a shoe task",
-      sum(k in " ".join(old) for k in ("metal pens", "business class", "Hunan", "AI and robotics")) >= 3, old)
 check("trigger rule only when its phrase is said", not any("准备出差" in f for f in preview("帮我订机票去东京"))
       and any("准备出差" in f for f in preview("准备出差，下周去东京")))
 

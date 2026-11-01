@@ -209,7 +209,7 @@ listings by the criteria, shows them as choice cards, and for cart / buy adds th
 profile and the Vault (Place order is the user's). A shop code has no form for is opened and handed to the browser-use \
 skill (status browser_use). Write the reply from the JSON result, with every fact in its must_say.",
         json!({
-            "url": {"type": "string", "description": "the shop's link the user gave (a results or product page)"},
+            "url": {"type": "string", "description": "the shop's link the user gave in this chat (a results or product page) — the same link again when a later message asks to add to the cart or buy"},
             "action": {"type": "string", "enum": ["compare", "cart", "buy"]},
             "by": {"type": "string", "enum": ["rating", "price", "ratings"], "description": "best-rated, cheapest or most-reviewed first"},
             "max_price": {"type": "number"}, "min_price": {"type": "number"}, "min_stars": {"type": "number"},
@@ -250,6 +250,53 @@ pub fn ask_before_tool(events: &[Value]) -> Option<Value> {
     };
     Some(json!({"refused": "call_the_tool_first", "tool": tool,
                 "why": format!("the {} skill asks through {tool}: call it with what the user gave; its needs_input lists what only the user can give, and code fills the defaults", skill.skill)}))
+}
+
+/// The model loading `browser-use` itself while the chat's shopping runs on a shop code fills (Kaya Mobile, Stride
+/// Sports): refused, as data — that shop's cart and checkout are `shop_order`'s (shopping_real 2026-11-01: "buy it now"
+/// after a cart turn went to browser-use, the model filled the checkout and never read the order number). A page of
+/// another site opened since then, or the load code makes after a `browser_use` result (`bkg_` id), passes.
+pub fn browser_use_guard(transcript: &[Value], call: &crate::llm::ToolCall) -> Option<String> {
+    if call.name != "load_skill"
+        || sget(&call.args, "name") != BROWSER_USE
+        || super::guards::code_call(call)
+    {
+        return None;
+    }
+    let (i, args) = transcript
+        .iter()
+        .enumerate()
+        .flat_map(|(i, m)| {
+            tool_calls(m)
+                .iter()
+                .map(move |tc| (i, tc))
+                .collect::<Vec<_>>()
+        })
+        .filter_map(|(i, tc)| {
+            let (name, args) = stored_call(tc);
+            TOOLS.contains(&name.as_str()).then_some((i, name, args))
+        })
+        .next_back()
+        .filter(|(_, name, _)| name == SHOP_ORDER)
+        .map(|(i, _, a)| (i, a))?;
+    let url = sget(&args, "url");
+    if !known_shop(&url) {
+        return None;
+    }
+    let elsewhere = transcript[i..].iter().flat_map(tool_calls).any(|tc| {
+        let (name, a) = stored_call(tc);
+        name.ends_with("browser_navigate")
+            && !sget(&a, "url").is_empty()
+            && !known_shop(&sget(&a, "url"))
+    });
+    if elsewhere {
+        return None;
+    }
+    Some(
+        json!({"refused": "known_shop", "tool": SHOP_ORDER, "url": url,
+               "rule": "this shop's cart and checkout are filled by code: call shop_order with the same url (action buy to order, cart to add to the cart)"})
+        .to_string(),
+    )
 }
 
 // ---------------------------------------------------------------- validation (code, on the JSON)
@@ -1346,6 +1393,14 @@ pub fn offer_of(kind: Kind, o: &Value, default_currency: &str) -> Offer {
     if currency.is_empty() {
         currency = default_currency.to_string();
     }
+    // a bare figure ("562.0": Kiwi.com's round-trip price) gets its currency, as every amount the reply carries
+    // (travel_brave_real 2026-11-01: "— 562.0" in the answer, no currency)
+    let price_text = match price_text.trim().replace(',', "").parse::<f64>() {
+        Ok(p) if !currency.is_empty() => {
+            format!("{currency} {}", money(p).trim_end_matches(".00"))
+        }
+        _ => price_text,
+    };
     let rating_text = first_str(o, &["rating"]);
     let rating = num_of(o.get("rating")).map(|r| {
         if rating_text.contains("/10") || r > 5.0 {
@@ -1847,6 +1902,29 @@ fn offer_fact(o: &Offer) -> String {
         s = format!("{s} (or on {})", o.book_at.join(" or "));
     }
     s
+}
+
+/// A flight offer's departure → arrival line from the result's own details (the first one with a clock time), seconds
+/// dropped ("SIN 2026-12-02 08:00 → HND 2026-12-02 20:00").
+fn schedule_of(o: &Offer) -> Option<String> {
+    static TIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{1,2}:\d{2}\b").unwrap());
+    static SECS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\b(\d{1,2}:\d{2}):\d{2}\b").unwrap());
+    o.details
+        .iter()
+        .find(|d| TIME.is_match(d))
+        .map(|d| SECS.replace_all(d, "$1").trim().to_string())
+}
+
+/// Whether a flight offer is on one of the user's preferred airlines: the search flagged it, or its airline or label
+/// names one of them (a structured field of the result against the profile's value).
+fn on_airline(o: &Offer, airlines: &[String]) -> bool {
+    o.preferred
+        || airlines.iter().any(|a| {
+            let a = a.trim().to_lowercase();
+            !a.is_empty()
+                && (o.airline.to_lowercase().contains(&a) || has_word(&o.label.to_lowercase(), &a))
+        })
 }
 
 /// A web fallback's results (`{"results": [{"title", "url", "snippet"}]}`), the first four, with a price a page shows
@@ -2561,7 +2639,31 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     let mut out = json!({"status": "shown", "searched": searched,
                          "options": shown.iter().map(option_json).collect::<Vec<_>>(),
                          "pick": {"label": pick.label, "rule": rule}});
-    let mut must: Vec<String> = vec![format!("picked: {} ({rule})", offer_fact(&pick))];
+    let mut must: Vec<String> = vec![
+        format!("picked: {} ({rule})", offer_fact(&pick)),
+        format!("searched: {}", searched_line(kind, req)),
+    ];
+    // a flight's departure and arrival times, from the result (travel_kiwi_real 2026-11-01: the reply gave neither the
+    // day nor the times of the pick)
+    if let Some(when) = (kind == Kind::Flight).then(|| schedule_of(&pick)).flatten() {
+        must.push(format!("{}: {when}", pick.label));
+    }
+    // the user's preferred airline: its best fare in the results, or that it has none (travel_ask_real 2026-11-01:
+    // the cheapest was another airline and ANA went unmentioned)
+    if kind == Kind::Flight && !req.airlines.is_empty() && !on_airline(&pick, &req.airlines) {
+        let names = req.airlines.join(" or ");
+        match offers.iter().find(|o| on_airline(o, &req.airlines)) {
+            Some(p) => must.push(format!(
+                "your preferred airline {names}: {}{}",
+                offer_fact(p),
+                schedule_of(p).map(|w| format!(", {w}")).unwrap_or_default()
+            )),
+            None => must.push(format!(
+                "no {names} flight in the results for {}",
+                searched_line(kind, req)
+            )),
+        }
+    }
     if !source.is_empty() {
         out["source"] = json!(source);
     }
@@ -2693,7 +2795,17 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
         return Step::Done(out);
     }
     // 4. the item to book
-    let item = match item_for(spec, req, t, m, ids, &pick, slot.as_ref(), &rooms_args) {
+    let item = match item_for(
+        spec,
+        req,
+        t,
+        m,
+        ids,
+        &pick,
+        slot.as_ref(),
+        &rooms_args,
+        connector,
+    ) {
         Ok(i) => i,
         Err(step) => return step,
     };
@@ -2770,6 +2882,7 @@ fn item_for(
     pick: &Offer,
     slot: Option<&(String, String, Value)>,
     rooms_args: &Value,
+    connector: bool,
 ) -> Result<Item, Step> {
     let kind = spec.kind;
     Ok(match kind {
@@ -2796,8 +2909,9 @@ fn item_for(
             lines: pick.details.clone(),
         },
         Kind::Hotel => {
-            // the rooms of the picked hotel, then the room by rule
-            let connector = req.use_connector;
+            // the rooms of the picked hotel, then the room by rule — on the connector the search ran on
+            // (travel_hotel_real 2026-11-01: the search went to the agency's connector, the rooms to the SerpApi tool
+            // without a key; Sentinel refused it and the hotel's page for other dates was booked)
             let rooms_call = calls_of(t, spec.detail)
                 .into_iter()
                 .rfind(|(a, _)| sget(a, "hotel_id") == pick.id);

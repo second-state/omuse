@@ -629,9 +629,10 @@ async fn fake_checkout_broker() -> String {
 }
 
 #[tokio::test]
-async fn a_card_fill_before_the_purchase_was_confirmed_confirms_it_from_the_page_and_fills() {
-    // travel_michelin_real 2026-10-31: the deposit's card fills were refused ("call purchase_confirm first") and the
-    // model gave up; the confirmation is made in code from the page's site and total, then the card is filled
+async fn a_checkout_pages_text_never_sets_the_amount_it_is_shown_next_to_the_models() {
+    // the card fill before a purchase was confirmed used to make the confirmation in code with the page text's total
+    // (`page_total` over an arbitrary checkout's prose): now the fill is refused until purchase_confirm, whose total
+    // is the model's, and the page's own figure is shown beside it on the approval card
     let broker = fake_checkout_broker().await;
     let dir = tempfile::tempdir().unwrap();
     let toml = format!(
@@ -652,24 +653,64 @@ async fn a_card_fill_before_the_purchase_was_confirmed_confirms_it_from_the_page
         .as_str()
         .unwrap()
         .to_string();
-    let body = json!({"tool": "browser_fill_secret", "task_id": "t1", "call_id": "c1",
-                      "args": {"ref": "e5", "item_id": card, "field": "number"}});
-    let (s, v) = send(
-        &router(ctx.clone()),
-        req("POST", "/internal/act")
-            .header("X-Persona-Runtime", TOKEN)
-            .body(Body::from(body.to_string()))
-            .unwrap(),
+    let act = |body: Value| {
+        let ctx = ctx.clone();
+        async move {
+            send(
+                &router(ctx),
+                req("POST", "/internal/act")
+                    .header("X-Persona-Runtime", TOKEN)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    let (s, v) = act(
+        json!({"tool": "browser_fill_secret", "task_id": "t1", "call_id": "c1",
+                             "args": {"ref": "e5", "item_id": card, "field": "number"}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["status"], "denied", "{v}");
+    assert!(v.to_string().contains("purchase_confirm"), "{v}");
+    assert!(ctx
+        .store
+        .active_purchase("t1", "shop.test")
+        .unwrap()
+        .is_none());
+    // the model's purchase_confirm (it read JPY 25,000; the page text says 28,000; a `_page_shows` it sends is dropped)
+    let (_, v) = act(json!({"tool": "purchase_confirm", "task_id": "t1", "call_id": "c2",
+                             "args": {"site": "shop.test", "items": [{"name": "Deposit", "qty": 1, "price": 25000}],
+                                      "total": 25000, "currency": "JPY", "delivery": "Table for 2", "card_item_id": card,
+                                      "_page_shows": 1}}))
+    .await;
+    assert_eq!(v["status"], "approval_required", "{v}");
+    let summ = v["summary"].to_string();
+    assert!(summ.contains("JPY 25000.00"), "{summ}");
     assert!(
-        v["result"]["filled"]
+        summ.contains("Page shows") && summ.contains("JPY 28000.00"),
+        "{summ}"
+    );
+    assert!(
+        v["summary"]["warning"]
             .as_str()
             .unwrap_or("")
-            .contains("1111"),
-        "{v}"
+            .contains("JPY 28000.00"),
+        "{summ}"
     );
+    let ap = ctx
+        .store
+        .approval(v["approval_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(ap["args"]["total"], json!(25000), "{ap}");
+    // the same total as the page shows: the auto-approval setting applies as before
+    let (_, v) = act(json!({"tool": "purchase_confirm", "task_id": "t1", "call_id": "c3",
+                             "args": {"site": "shop.test", "items": [{"name": "Deposit", "qty": 1, "price": 28000}],
+                                      "total": 28000, "currency": "JPY", "delivery": "Table for 2", "card_item_id": card}}))
+    .await;
+    assert_eq!(v["auto_approved"], true, "{v}");
     let p = ctx
         .store
         .active_purchase("t1", "shop.test")

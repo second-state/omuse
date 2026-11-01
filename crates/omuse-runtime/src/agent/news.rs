@@ -81,7 +81,7 @@ schedule and the mail. Write the reply from it, with every fact in its must_say.
             "schedule": {"type": "string", "enum": ["once", "daily", "weekly", "monthly"], "description": "a new edition on a timer when the user asked for one (\"every week\" = weekly); once = no schedule"},
             "weekday": {"type": "integer", "description": "weekly: the day the user named, 0 = Sunday … 6 = Saturday (default Monday)"},
             "hour": {"type": "integer", "description": "the hour (0-23) the user named for the editions (default 8)"},
-            "email": {"type": "boolean", "description": "the user asked for the edition (or each edition) by email: it goes to their own connected address"}
+            "email": {"type": "boolean", "description": "the user wants the edition (or each new edition) sent to them — by email, or \"send me\" a report / a new edition every week: it goes to their own connected address"}
         }),
         &["stories"],
     );

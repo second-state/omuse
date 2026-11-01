@@ -193,8 +193,8 @@ preferences come from the request, else from the profile: two standard fields, `
 alliance) and `preferred_hotel_brand` (a brand or a group), dropdowns on Memory → Profile in two groups each
 (`ALLIANCES` / `AIRLINES`, `HOTEL_GROUPS` / `HOTEL_BRANDS` in `web/app.js`; a unit test keeps the alliance and group
 names equal to the Rust table; the card says anything not on the list goes in a custom field), plus any custom field
-whose label carries a travel / loyalty word (`store::PREFERENCE_WORDS`: airline, hotel, brand, loyalty, status, seat,
-航空, 酒店 …). `Runtime::standing_prefs` collects them and the executor prompt always carries them as a "Standing
+the user ticked "Always use" on (a `standing` flag per profile row, `Store::profile_standing`; off by default, also for
+fields saved before 0.6.0 — no label is read for travel words). `Runtime::standing_prefs` collects them and the executor prompt always carries them as a "Standing
 preferences" block (`prompts::prefs_text`) with the rule — pass them to the search tools, show the preferred option
 next to the best value with the price difference, say so when none matched, a wish in the request wins — so they
 count whether or not a skill was loaded and whichever flight tool (built-in or an MCP connector's) the executor picks;
@@ -410,6 +410,27 @@ The profile (Memory → Profile) holds the fixed details forms and emails need: 
 nationality…), any number of further addresses as `address:<label>` ("Singapore flat", "Parents in Sydney"), and free
 fields as `custom:<label>`. The agent reads it with `profile_get` (only the fields a form needs; `address:*` selects
 every further address) and proposes changes with `profile_suggest`, which the user confirms on the Memory page.
+
+## Long-term memory: structured fields, the model's reading, code's selection
+
+No code reads a fact's prose or the request's words to sort or pick memory (CLAUDE.md, natural language is the
+model's). Every fact carries structured fields the model sets when it writes it — `domain`, `topics`
+(`store::TOPICS`), `scope` (always · topic · trigger with its `trigger` phrase), `kind` (`id_document`; `site_block` is
+code's own), `entity` (a website as its host) and, on the entity, the user's `relation` — through `memory_remember`'s
+JSON, the extraction prompt (`prompts::MEMORY_EXTRACT`) and, for a fact written without them (before 0.6.0, typed on
+the Memory page), the sorting step `memory_tidy::classify` (prompt `MEMORY_SORT`, JSON; at once for a typed fact, in the
+background for older ones, and in every tidy run). Code validates them against the enums (`FactOpts::with_model_fields`).
+At a task's start the model reads the request against what memory holds and answers with choices from JSON lists
+(`context::relevance`, prompt `MEMORY_RELEVANCE`: topics, entities with relation / aliases / one fact, trigger phrases,
+unsorted fact ids); `context::select` scores the facts on their fields plus the task's data (`context::task_data`: the
+bot, the skills loaded, the tools called). Memory → "Try it" runs the same path. `memory_search` takes `topics` and
+`entities` from the model besides its query words; the words are only a full-text search (FTS / LIKE) over the stored
+text. Identity-document and unsorted facts stay out unless `id_documents`. What a task used is recorded
+(`task_memory`: topics, entities, fact ids) and its episode carries the fact ids, so forgetting a fact deletes the
+episodes that used it by id (`Store::delete_fact`; `forget_fact` also drops pre-0.6.0 episodes, which carry no ids).
+Memory tidy merges only facts whose text is identical after normalisation; other wordings are the LLM review's to merge.
+The one text check left in code is the secrets backstop `store::looks_sensitive` (card / ID-shaped numbers, "password",
+密码, CVV), a documented safety exception.
 
 **Memory page layout**: the pending profile changes are the whole top row; the profile and the Vault (ID documents,
 memberships, credit cards) sit side by side below it (`#memPending`, `#memProfileVault`).

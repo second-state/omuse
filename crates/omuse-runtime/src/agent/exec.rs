@@ -356,6 +356,7 @@ impl Runtime {
                 .or_else(|| {
                     machine_only_guard(call, crate::bots::has_tool(self.bot_of(t), "travel_search"))
                 })
+                .or_else(|| super::booking::browser_use_guard(transcript, call))
                 .or_else(|| invented_id_guard(transcript, call, seen.as_ref()))
                 .or_else(|| repeat_guard(transcript, call))
                 .or_else(|| retype_guard(transcript, call))
@@ -372,7 +373,8 @@ impl Runtime {
                     one_search_guard(move || st.events(&tid, 0).unwrap_or_default(), call)
                 })
                 .or_else(|| host_guard(move || st.events(&tid2, 0).unwrap_or_default(), call));
-            let reread = if repeated.is_some() {
+            // a code machine's read is its own state (a second run reads the page again): never a pointer back
+            let reread = if repeated.is_some() || super::guards::code_call(call) {
                 None
             } else {
                 reread_guard(transcript, call)
@@ -427,7 +429,8 @@ impl Runtime {
                 || super::news::TOOLS.contains(&name)
                 || super::claims::TOOLS.contains(&name)
                 || super::driver::TOOLS.contains(&name)
-                || super::apdt::TOOLS.contains(&name))
+                || super::apdt::TOOLS.contains(&name)
+                || super::trains::TOOLS.contains(&name))
                 && crate::bots::has_tool(self.bot_of(t), name)
             {
                 // a workflow tool: its arguments checked by the JSON layer (repair, schema, the tool's field checks, the

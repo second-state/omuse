@@ -449,7 +449,14 @@ fn the_csr_claim_is_filled_from_the_arguments_and_handed_over() {
         csr_answers("Claim received. Your claim number is CBS-26-118204."),
     );
     assert_eq!(res["status"], "submitted");
-    assert!(must(&res).contains("claim number CBS-26-118204"));
+    // cards_interruption_real 2026-11-01: the reply said "I submitted the claim" — the fact says who pressed Submit,
+    // and who decides the claim
+    let m = must(&res);
+    assert!(
+        m.contains("you pressed Submit yourself on eClaimsLine (the assistant did not submit it): claim number CBS-26-118204")
+            && m.contains("Card Benefit Services (Chase's benefit administrator) decides the claim"),
+        "{m}"
+    );
 }
 
 #[test]

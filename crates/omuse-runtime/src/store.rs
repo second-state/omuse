@@ -277,17 +277,11 @@ pub const PROFILE_FIELDS: [(&str, &str, &str); 16] = [
 ];
 
 /// The profile keys that are standing preferences the executor always sees (`Runtime::standing_prefs`): the
-/// fixed ones, and any custom field whose label carries one of [`PREFERENCE_WORDS`].
+/// fixed ones, and any custom field the user marked `standing` on the Memory page ([`Store::profile_standing`]).
 pub const PREFERENCE_KEYS: [&str; 3] = [
     "preferred_airline",
     "preferred_hotel_brand",
     "preferred_car_rental",
-];
-
-/// Words (lower-case) that mark a custom profile field as a travel / loyalty preference.
-pub const PREFERENCE_WORDS: [&str; 18] = [
-    "airline", "carrier", "航空", "alliance", "loyalty", "miles", "mileage", "status", "seat",
-    "hotel", "酒店", "brand", "chain", "会员", "member", "常用", "rental", "租车",
 ];
 
 /// A fixed field, a further address written as `address:<label>` (a flat in another city, the parents' house), or a
@@ -360,33 +354,10 @@ pub fn looks_sensitive(text: &str) -> bool {
     SENSITIVE.is_match(text).unwrap_or(false)
 }
 
-/// Whether `text` restates `fact`: its numbers plus at least two of its words (CJK bigrams or latin words).
-pub fn mentions_fact(fact: &str, text: &str) -> bool {
-    static NUMS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d[\d,.]*\d|\d{2,}").unwrap());
-    static CJK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[一-鿿]+").unwrap());
-    static WORDS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z]{4,}").unwrap());
-    let nums: HashSet<&str> = NUMS.find_iter(fact).map(|m| m.as_str()).collect();
-    let mut toks: HashSet<String> = HashSet::new();
-    for run in CJK.find_iter(fact) {
-        let cs: Vec<char> = run.as_str().chars().collect();
-        for w in cs.windows(2) {
-            toks.insert(w.iter().collect());
-        }
-    }
-    for w in WORDS.find_iter(fact) {
-        toks.insert(w.as_str().to_lowercase());
-    }
-    let low = text.to_lowercase();
-    let hits = toks.iter().filter(|t| low.contains(t.as_str())).count();
-    if !nums.is_empty() {
-        return nums.iter().any(|n| text.contains(n)) && hits >= 2;
-    }
-    !toks.is_empty() && hits >= std::cmp::max(3, toks.len() / 2)
-}
-
 // ------------------------------------------------------------------------------------------------
-// From app/runtime/context.py: the pieces the store itself needs (domains, request intents, tokens) and
-// the prompt rendering of selected facts. `context.rs` is ported separately and may `pub use` these.
+// Personal context: the structured fields a fact carries. They are set by the model when it writes memory
+// (memory_remember, the extraction after a task, the sorting step in `memory_tidy::classify`) or by the user on the
+// Memory page, and validated here against these enums. Code never reads a fact's prose to sort or select it.
 // ------------------------------------------------------------------------------------------------
 
 /// `DOMAINS`: key, 中文, English.
@@ -419,214 +390,95 @@ pub fn domain_label(key: &str) -> String {
         .unwrap_or_default()
 }
 
-fn rx(p: &str) -> Regex {
-    Regex::new(p).unwrap()
-}
-
-static EMAIL_ADDR: LazyLock<Regex> = LazyLock::new(|| rx(r"[\w.+-]+@[\w-]+(\.[\w-]+)+"));
-static WEBSITE: LazyLock<Regex> = LazyLock::new(|| {
-    rx(r"(?i)\b[a-z0-9-]+\.(?:com|sg|co|net|org|io|my|hk|cn|jp|uk|de)(?:\.[a-z]{2})?\b")
-});
-static SITE_HOW: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)网站|网页|结账|结算|付款页|下单页|访客|登录|注册|填写|格式|表单|送货到家|checkout|guest|log ?in|sign ?in|form|format|field|delivery option|home delivery|accepts|without \+|8 digits|位数",
-    )
-});
-static RULE: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)以后|每次|总是|一律|默认|上限|不超过|不要|别再|必须|先问|先确认|固定流程|\b(always|never|whenever|every time|by default|default to|must|do not|don't|avoid|limit|cap|at most|ask (me |the user )?(first|before))\b|the assistant|OMuse|助手",
-    )
-});
-static PERSON: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)同事|同行|家人|太太|老婆|丈夫|老公|孩子|儿子|女儿|父母|爸|妈|朋友|老板|助理|秘书|\b(travels? with|colleague|collaborat\w*|works? with|wife|husband|son|daughter|kids?|family|friend|boss|assistant to|partner|manager)\b",
-    )
-});
-static PLACE: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)地址|住在|住址|邮编|办公室|公司地址|城市|时区|located at|\blives? in\b|(home|office|work|street|postal|mailing) address|address (is|at)|postal|\bRd\b|road|street|avenue|time ?zone|SGT|UTC|\bhome\b|office",
-    )
-});
-static ACCOUNT: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)账户|账号|会员|积分|订阅|邮箱|手机号|电话号码|号码是|\b(account|membership|member|subscription|loyalty|points|krisflyer|mailbox|email accounts?|phone (number|line))\b",
-    )
-});
-static PREF: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)喜欢|偏好|偏爱|爱吃|常用|习惯|尺码|鞋码|\d+码|身高|体重|只要|想要|\b(prefer\w*|likes?|enjoys?|wants?|favou?rite|interested|size|uses)\b",
-    )
-});
-
-/// Best-guess domain for a fact (the user can change it on the Memory page).
-pub fn domain_of(fact: &str, category: &str, entity: &str) -> &'static str {
-    static WEBSITE_WORD: LazyLock<Regex> = LazyLock::new(|| rx(r"(?i)网站|website"));
-    static LOCATED: LazyLock<Regex> = LazyLock::new(|| rx(r"(?i)located|地址|address"));
-    static PREFERS: LazyLock<Regex> = LazyLock::new(|| {
-        rx(r"(?i)prefer|interested in (buying|purchasing|dining)|enjoys?|喜欢|偏好")
-    });
-    let text = format!("{} {}", fact, entity);
-    let plain = EMAIL_ADDR.replace_all(&text, " ");
-    let cat = category.to_lowercase();
-    match cat.as_str() {
-        "place" => return "place",
-        "account" => return "account",
-        "site" => return "site",
-        "rule" => return "rule",
-        "work" => return "work",
-        _ => {}
-    }
-    if (WEBSITE.is_match(&plain) || WEBSITE_WORD.is_match(&plain)) && SITE_HOW.is_match(&plain) {
-        return "site";
-    }
-    if RULE.is_match(&plain) && cat != "person" {
-        return "rule";
-    }
-    if cat == "person" {
-        return "person";
-    }
-    if cat == "company" || cat == "project" {
-        if PLACE.is_match(&plain) && LOCATED.is_match(&plain) {
-            return "place";
-        }
-        if ACCOUNT.is_match(&text) {
-            return "account";
-        }
-        return if PREFERS.is_match(&plain) {
-            "preference"
-        } else {
-            "work"
-        };
-    }
-    if PERSON.is_match(&plain) {
-        return "person";
-    }
-    if PLACE.is_match(&plain) {
-        return "place";
-    }
-    if ACCOUNT.is_match(&text) {
-        return "account";
-    }
-    if cat == "preference" || cat == "habit" || PREF.is_match(&plain) {
-        return "preference";
-    }
-    "work"
-}
-
-/// `INTENTS`: name → (what a request mentions, what the facts that matter for it mention).
-pub const INTENTS: [(&str, &str, &str); 13] = [
+/// What a fact is about, as an enum the model fills (key, what it covers — the description goes into the model's
+/// schema). A task's topics come from the model's reading of the request (`context::relevance`) and from structured
+/// task data (the bot, the skill loaded, the workflow tool called).
+pub const TOPICS: [(&str, &str); 17] = [
+    ("shopping", "buying things, shops, delivery, checkout"),
+    ("clothing", "clothes and shoes, sizes"),
+    ("electronics", "phones, computers, gadgets"),
+    ("gifts", "presents for other people"),
+    ("dining", "restaurants, food, drinks, diet"),
+    ("travel", "flights, hotels, trips, visas, car rental"),
+    ("email", "mail, mailboxes, signatures, replies"),
+    ("calendar", "meetings, appointments, time zone"),
     (
-        "shopping",
-        r"买|购|下单|订购|购物车|挑(一|个|件|双|支|款|几)|选(一|个|件|双|支|款)|推荐.{0,8}(款|个|件|双|支)|送人|礼物|\b(buy|purchase|order|shop|cart|gift)\b",
-        r"送货|\bdeliver(y|ed)?\b|结账|checkout|访客|guest|注册|个人信息|personal information|shops? on|购物|预算|budget",
+        "documents",
+        "reports, briefs, files, formats, the language of deliverables",
     ),
+    ("news", "news and subjects the user follows"),
+    ("fitness", "sport, running, hiking"),
+    ("health", "medical matters, allergies"),
+    ("phone_calls", "calling people or businesses"),
+    ("forms", "filling in forms, sign-ups, applications"),
     (
-        "wear",
-        r"鞋|靴|衣|裤|裙|外套|夹克|t恤|衬衫|袜|帽|\b(shoes?|sneakers?|boots?|shirts?|t-shirt|tee|jacket|pants|dress|socks)\b",
-        r"尺码|鞋码|\d+码|身高|体重|\bsize\b|\bcm\b|\bkg\b",
+        "finance",
+        "money, budgets, payments, cards, banks, insurance",
     ),
-    (
-        "phone_gear",
-        r"手机|iphone|充电|耳机|\b(phone|case|charger|earbuds|airpods)\b",
-        r"iphone|手机壳|phone cases?|otterbox|android|pixel|galaxy",
-    ),
-    ("pen", r"笔|钢笔|\bpens?\b", r"笔|\bpens?\b"),
-    (
-        "dining",
-        r"餐厅|吃饭|晚饭|午饭|晚餐|午餐|订位|订座|订台|饭店|饮食|食物|喝的|吃的|\b(restaurant|dinner|lunch|brunch|book a table|cuisine|food|foods|drinks?|diet|dietary|eat|meals?)\b",
-        r"菜|cuisine|口味|吃|餐|restaurant|dining|chope|饮食|素食|vegetarian|vegan|辣|spicy|japanese|日本|湘|hunan|酒|alcohol|drinks?|allerg|过敏|halal|清真",
-    ),
-    (
-        "travel",
-        r"机票|航班|飞往|飞去|出差|旅行|旅游|酒店|住宿|行程|签证|\b(flights?|fly|hotels?|trip|travel|itinerary)\b",
-        r"航班|flight|直飞|\bdirect\b|舱|\bclass\b|座位|seat|酒店|hotel|精品|boutique|安静|quiet|同行|travels? with|companion|一起|签证|护照|krisflyer|airline|航空",
-    ),
-    (
-        "email",
-        r"邮件|邮箱|回复|回信|写信|草稿|\b(e-?mail|mail|reply|draft)\b",
-        r"邮箱|e-?mails?|mail|发件|sending|签名|signature|bytetradelab|sixwings",
-    ),
-    (
-        "meeting",
-        r"会议|开会|日历|约(他|她|一下|个)|\b(meeting|calendar|appointment)\b",
-        r"日历|calendar|时区|time ?zone|sgt|会议|meeting",
-    ),
-    (
-        "report",
-        r"报告|简报|总结|汇总|新闻|周报|日报|\b(report|brief|summary|news|digest|pdf)\b",
-        r"pdf|报告|\breports?\b|中文|chinese|格式|\bformat\b|新闻|\bnews\b|deliverables?",
-    ),
-    (
-        "outdoor",
-        r"徒步|爬山|远足|跑步|健身|\b(hike|hiking|trail|run|running|exercise|workout)\b",
-        r"徒步|hik|强度|intensity|小时|hours",
-    ),
-    (
-        "phone",
-        r"打电话|致电|电话给|\b(call|phone)\b",
-        r"电话|phone|号码|number",
-    ),
-    (
-        "form",
-        r"填表|表格|表单|报名|\b(form|apply|sign ?up|register)\b",
-        r"地址|address|电话|phone|邮箱|e-?mail|姓名|name|公司|company|个人信息|personal information|注册",
-    ),
-    (
-        "unsubscribe",
-        r"退订|取消订阅|广告邮件|垃圾邮件|\b(unsubscribe|newsletters?|spam|promotions?)\b",
-        r"退订|unsubscribe|已读|as read|non-important",
-    ),
+    ("home", "household, family logistics, home services"),
+    ("work", "the user's job, company, projects, colleagues"),
 ];
 
-static INTENT_RX: LazyLock<Vec<(&'static str, Regex, Regex)>> = LazyLock::new(|| {
-    INTENTS
-        .iter()
-        .map(|(k, a, b)| (*k, rx(&format!("(?i){}", a)), rx(&format!("(?i){}", b))))
-        .collect()
-});
-
-/// `_INTENT_RX[k]`: (request pattern, facts pattern) for an intent name.
-pub fn intent_rx(name: &str) -> Option<(&'static Regex, &'static Regex)> {
-    INTENT_RX
-        .iter()
-        .find(|(k, _, _)| *k == name)
-        .map(|(_, a, b)| (a, b))
+/// The topic keys.
+pub fn topic_keys() -> Vec<&'static str> {
+    TOPICS.iter().map(|(k, _)| *k).collect()
 }
 
-/// The intents a request matches.
-pub fn intents(text: &str) -> Vec<&'static str> {
-    INTENT_RX
-        .iter()
-        .filter(|(_, ask, _)| ask.is_match(text))
-        .map(|(k, _, _)| *k)
-        .collect()
-}
+/// When a fact applies: `always` (every task: how the assistant should behave in general), `topic` (tasks about
+/// its topics or its entity), `trigger` (only when the user says its trigger phrase). `""` = not sorted yet (a fact
+/// written before 0.6.0 or typed on the Memory page): `memory_tidy::classify` sorts it.
+pub const SCOPES: [&str; 3] = ["always", "topic", "trigger"];
 
-static STOP: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    [
-        "the", "user", "users", "and", "for", "with", "that", "this", "from", "their", "they",
-        "are", "has", "have", "was", "who", "about", "into", "when", "will", "not", "but", "any",
-        "all", "can", "you", "your", "our", "his", "her", "帮我", "一下", "我的", "用户", "一个",
-        "这个", "那个", "可以", "需要", "看看", "给我", "什么",
-    ]
-    .into_iter()
-    .collect()
-});
+/// A fact's kind: `general`, or `id_document` (passport / ID card / birth date facts: only for tasks that fill in a
+/// form or check a document — `memory_search` with `id_documents`). `site_block` is code's own (a site that blocks
+/// the automated browser, `Runtime::learn_site_block`). `""` = not sorted yet.
+pub const FACT_KINDS: [&str; 3] = ["general", "id_document", "site_block"];
 
-/// Latin words (3+ chars) and CJK bigrams of a text, lower-cased, stop words dropped.
-pub fn tokens(text: &str) -> HashSet<String> {
-    static WORD: LazyLock<Regex> = LazyLock::new(|| rx(r"[a-z][a-z0-9.+-]{2,}"));
-    static CJK: LazyLock<Regex> = LazyLock::new(|| rx(r"[一-鿿]{2,}"));
-    let t = text.to_lowercase();
-    let mut out: HashSet<String> = WORD.find_iter(&t).map(|m| m.as_str().to_string()).collect();
-    for run in CJK.find_iter(&t) {
-        let cs: Vec<char> = run.as_str().chars().collect();
-        for w in cs.windows(2) {
-            out.insert(w.iter().collect());
+/// The listed topics in a JSON value (an array of strings, or one string), each once, in the list's order of
+/// appearance; anything not in [`TOPICS`] is dropped.
+pub fn clean_topics(v: Option<&Value>) -> Vec<String> {
+    let keys = topic_keys();
+    let items: Vec<String> = match v {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        Some(Value::String(s)) => vec![s.clone()],
+        _ => vec![],
+    };
+    let mut out: Vec<String> = Vec::new();
+    for t in items {
+        let t = t.trim().to_lowercase();
+        if keys.contains(&t.as_str()) && !out.contains(&t) {
+            out.push(t);
         }
     }
-    out.retain(|w| !STOP.contains(w.as_str()));
     out
+}
+
+/// A fact row's topics (stored as a JSON array in a text column; already an array after [`decode_fact`]).
+pub fn fact_topics(f: &Value) -> Vec<String> {
+    match f.get("topics") {
+        Some(Value::String(s)) => clean_topics(Some(&loads(Some(s), json!([])))),
+        other => clean_topics(other),
+    }
+}
+
+/// A fact row as the API and the agent see it: `topics` parsed into an array.
+pub fn decode_fact(mut r: Value) -> Value {
+    let t = fact_topics(&r);
+    set(&mut r, "topics", json!(t));
+    r
+}
+
+/// Whether a fact still waits to be sorted (no scope yet).
+pub fn unsorted(f: &Value) -> bool {
+    !SCOPES.contains(&get_str(f, "scope").as_str())
+}
+
+fn rx(p: &str) -> Regex {
+    Regex::new(p).unwrap()
 }
 
 /// `context.render`: selected facts grouped by domain, for the prompt.
@@ -636,11 +488,15 @@ pub fn render_facts(selected: &[Value], en: bool) -> String {
     }
     let mut by: HashMap<String, Vec<String>> = HashMap::new();
     for f in selected {
-        let mark = if get_str(f, "status") == "pending" {
-            " (unconfirmed — learned in an earlier task)"
+        let mut mark = if get_str(f, "status") == "pending" {
+            " (unconfirmed — learned in an earlier task)".to_string()
         } else {
-            ""
+            String::new()
         };
+        let trigger = get_str(f, "trigger");
+        if get_str(f, "scope") == "trigger" && !trigger.is_empty() {
+            mark.push_str(&format!(" (the user said “{trigger}”)"));
+        }
         let dom = {
             let d = get_str(f, "domain");
             if d.is_empty() {
@@ -683,7 +539,7 @@ e-mails marked as test / fictional are not the user's real plans.";
 
 // ------------------------------------------------------------------------------------------------
 
-/// Optional arguments of [`Store::add_fact`] (the Python keyword defaults).
+/// Optional arguments of [`Store::add_fact`] (the Python keyword defaults) and the fact's structured fields.
 #[derive(Debug, Clone)]
 pub struct FactOpts {
     pub source: String,
@@ -692,6 +548,18 @@ pub struct FactOpts {
     pub tier: String,
     pub domain: String,
     pub status: String,
+    /// [`FACT_KINDS`]; "" = not sorted yet
+    pub kind: String,
+    /// [`SCOPES`]; "" = not sorted yet (`memory_tidy::classify` sorts it)
+    pub scope: String,
+    /// [`TOPICS`] keys
+    pub topics: Vec<String>,
+    /// the phrase that triggers a `scope = trigger` fact
+    pub trigger: String,
+    /// the user's relation to the fact's entity (wife, boss, travel companion), kept on the entity
+    pub relation: String,
+    /// the task that wrote the fact: its episode is linked to the fact (forgetting the fact forgets the episode)
+    pub task_id: String,
 }
 
 impl Default for FactOpts {
@@ -703,14 +571,101 @@ impl Default for FactOpts {
             tier: "long".into(),
             domain: String::new(),
             status: "active".into(),
+            kind: String::new(),
+            scope: String::new(),
+            topics: Vec::new(),
+            trigger: String::new(),
+            relation: String::new(),
+            task_id: String::new(),
         }
     }
+}
+
+impl FactOpts {
+    /// The structured fields of a fact the model wrote (a `memory_remember` call, an extracted item, a sorting
+    /// answer), validated: `domain` in [`DOMAIN_KEYS`], `topics` in [`TOPICS`], `scope` in [`SCOPES`] (a trigger
+    /// scope needs its `trigger` phrase, else it is a topic scope), `id_document` (bool) → kind, `relation` (≤ 40
+    /// chars). A field the model left out or got wrong keeps what `self` had. Given any of scope / topics / kind,
+    /// the fact counts as sorted (scope defaults to `topic`, kind to `general`).
+    pub fn with_model_fields(mut self, v: &Value) -> Self {
+        let d = get_str(v, "domain").trim().to_lowercase();
+        if DOMAIN_KEYS.contains(&d.as_str()) {
+            self.domain = d;
+        }
+        let topics = clean_topics(v.get("topics"));
+        let scope = get_str(v, "scope").trim().to_lowercase();
+        let trigger = take_chars(get_str(v, "trigger").trim(), 60).to_string();
+        let id_doc = v.get("id_document").and_then(Value::as_bool);
+        let sorted = !topics.is_empty() || SCOPES.contains(&scope.as_str()) || id_doc.is_some();
+        if !topics.is_empty() {
+            self.topics = topics;
+        }
+        if SCOPES.contains(&scope.as_str()) {
+            self.scope = scope;
+        }
+        if self.scope == "trigger" {
+            if trigger.is_empty() {
+                self.scope = "topic".into();
+            } else {
+                self.trigger = trigger;
+            }
+        }
+        if let Some(b) = id_doc {
+            self.kind = if b { "id_document" } else { "general" }.into();
+        }
+        if sorted {
+            if self.scope.is_empty() {
+                self.scope = "topic".into();
+            }
+            if self.kind.is_empty() {
+                self.kind = "general".into();
+            }
+        }
+        let rel = take_chars(get_str(v, "relation").trim(), 40).to_string();
+        if !rel.is_empty() {
+            self.relation = rel;
+        }
+        self
+    }
+}
+
+/// The JSON-schema properties of a fact's structured fields, for a tool or a prompt the model answers in JSON
+/// (`memory_remember`, the extraction, the sorting step).
+pub fn fact_field_schema() -> Value {
+    let topic_desc = TOPICS
+        .iter()
+        .map(|(k, d)| format!("{k} ({d})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    json!({
+        "domain": {"type": "string", "enum": DOMAIN_KEYS,
+            "description": "person (people and how they relate) | preference (likes, sizes, styles) | place (home / office / city) | account (memberships, subscriptions, which mailbox is for what — never numbers) | site (how a website works for the user) | rule (a standing instruction) | work (companies, projects, anything else)"},
+        "topics": {"type": "array", "items": {"type": "string", "enum": topic_keys()},
+            "description": format!("the kinds of tasks this fact matters for: {topic_desc}")},
+        "scope": {"type": "string", "enum": SCOPES,
+            "description": "always = applies to every task (how the assistant should behave in general, the language or format of every answer); topic = applies to tasks about its topics or its entity; trigger = only when the user says the trigger phrase"},
+        "trigger": {"type": "string", "description": "scope=trigger only: the phrase the user says, as they wrote it (e.g. 准备出差, prepare for a trip)"},
+        "id_document": {"type": "boolean", "description": "the fact is about the user's identity documents (passport, ID card, visa, date of birth): used only for forms and document checks"},
+        "relation": {"type": "string", "description": "when the entity is a person: the user's relation to them in one or two words (wife, colleague, travel companion); else empty"},
+    })
 }
 
 /// Recent facts and episodes are kept this many days (`RStore.RECENT_DAYS`).
 pub const RECENT_DAYS: f64 = 30.0;
 /// Facts in these domains name entities (`RStore.ENTITY_DOMAINS`).
 pub const ENTITY_DOMAINS: [&str; 4] = ["person", "place", "account", "site"];
+
+/// What [`Store::search_facts`] looks for: the model's query words, the topics and entities it named (enums /
+/// names from the lists it was given), whether identity-document facts may come back, a tier, a limit.
+#[derive(Debug, Clone, Default)]
+pub struct MemoryQuery {
+    pub query: String,
+    pub topics: Vec<String>,
+    pub entities: Vec<String>,
+    pub include_id: bool,
+    pub tier: Option<String>,
+    pub limit: usize,
+}
 
 /// The runtime's SQLite store (`runtime.db` under the runtime data directory). `Send + Sync`; share it in an `Arc`.
 pub struct Store {
@@ -754,8 +709,7 @@ fn set(row: &mut Value, key: &str, v: Value) {
 }
 
 impl Store {
-    /// Open (or create) `<data_dir>/runtime.db`, apply the schema and the column migrations, and give older
-    /// facts a domain.
+    /// Open (or create) `<data_dir>/runtime.db` and apply the schema and the column migrations.
     pub fn new(data_dir: &Path, cfg: Arc<Config>) -> Result<Store> {
         let db = Db::open(data_dir.join("runtime.db"))?;
         if db.script(SCHEMA).is_err() {
@@ -831,6 +785,11 @@ impl Store {
             ("history", "TEXT DEFAULT ''"),
             ("domain", "TEXT DEFAULT ''"),
             ("status", "TEXT DEFAULT 'active'"),
+            // the structured fields the model sets when it writes a fact (0.6.0); '' = not sorted yet
+            ("kind", "TEXT DEFAULT ''"),
+            ("scope", "TEXT DEFAULT ''"),
+            ("topics", "TEXT DEFAULT ''"),
+            ("trigger", "TEXT DEFAULT ''"),
         ] {
             if !fcols.contains(col) {
                 db.execute(
@@ -839,9 +798,27 @@ impl Store {
                 )?;
             }
         }
-        let st = Store { db, cfg };
-        st.sort_domains()?;
-        Ok(st)
+        // the facts each episode's task used ('' = written before 0.6.0: unknown, forgotten with any fact)
+        if !cols("episodes")?.contains("fact_ids") {
+            db.execute(
+                "ALTER TABLE episodes ADD COLUMN fact_ids TEXT DEFAULT ''",
+                params![],
+            )?;
+        }
+        // a custom profile field the agent always sees (the user ticks it on the Memory page)
+        if !cols("profile")?.contains("standing") {
+            db.execute(
+                "ALTER TABLE profile ADD COLUMN standing INTEGER DEFAULT 0",
+                params![],
+            )?;
+        }
+        // what memory each task used: the topics and entities of its request (the model's JSON) and the fact ids
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS task_memory (task_id TEXT PRIMARY KEY, topics TEXT, entities TEXT, \
+             fact_ids TEXT, updated_at REAL)",
+            params![],
+        )?;
+        Ok(Store { db, cfg })
     }
 
     /// [`default_settings`] for this store's config.
@@ -1329,7 +1306,8 @@ impl Store {
     // (preferences, people, companies, projects, habits) and recent facts/episodes (one-off details, kept 30 days).
 
     /// Remember a fact; a restatement of a known fact refreshes it (`{"duplicate": true}`), a new one is indexed
-    /// and its entity synced. `None` for an empty fact.
+    /// and its entity synced. `None` for an empty fact. The domain is the one given (`o.domain`), else the
+    /// category when that is a domain key ("company" / "project" → work), else empty until the fact is sorted.
     pub fn add_fact(
         &self,
         fact: &str,
@@ -1343,8 +1321,12 @@ impl Store {
         }
         let tier = if o.tier == "recent" { "recent" } else { "long" };
         let norm = norm_fact(fact);
-        for r in self.db.all("SELECT id, fact, tier FROM facts", params![])? {
+        for r in self
+            .db
+            .all("SELECT id, fact, tier, scope FROM facts", params![])?
+        {
             if norm_fact(&get_str(&r, "fact")) == norm {
+                let fid = get_str(&r, "id");
                 let mut upd = Map::new();
                 upd.insert("last_verified".into(), json!(now_ts()));
                 if o.status == "active" {
@@ -1356,8 +1338,12 @@ impl Store {
                     upd.insert("tier".into(), json!("long"));
                     upd.insert("expires_at".into(), Value::Null);
                 }
-                self.db
-                    .update("facts", "id", get_str(&r, "id"), &Value::Object(upd))?;
+                if unsorted(&r) && SCOPES.contains(&o.scope.as_str()) {
+                    // restated with its fields: sorted now
+                    upd.extend(Self::field_cols(o));
+                }
+                self.db.update("facts", "id", &fid, &Value::Object(upd))?;
+                self.note_task_memory(&o.task_id, &[], &[], std::slice::from_ref(&fid))?;
                 return Ok(Some(
                     json!({"id": r["id"], "fact": r["fact"], "duplicate": true}),
                 ));
@@ -1369,39 +1355,193 @@ impl Store {
         } else {
             Value::Null
         };
+        let cat = category.trim().to_lowercase();
         let domain: &str = if DOMAIN_KEYS.contains(&o.domain.as_str()) {
             o.domain.as_str()
+        } else if DOMAIN_KEYS.contains(&cat.as_str()) {
+            cat.as_str()
+        } else if cat == "company" || cat == "project" {
+            "work"
         } else {
-            domain_of(fact, category, entity)
+            ""
         };
         let status = if o.status == "pending" {
             "pending"
         } else {
             "active"
         };
-        self.db.insert(
-            "facts",
-            &json!({"id": fid, "fact": fact, "category": category, "entity": entity, "source": o.source,
-                    "confidence": o.confidence, "created_at": now_ts(), "last_verified": now_ts(),
-                    "ttl_days": o.ttl_days, "tier": tier, "uses": 0, "expires_at": exp, "history": "",
-                    "domain": domain, "status": status}),
-        )?;
+        let mut row = json!({"id": fid, "fact": fact, "category": category, "entity": entity, "source": o.source,
+                "confidence": o.confidence, "created_at": now_ts(), "last_verified": now_ts(),
+                "ttl_days": o.ttl_days, "tier": tier, "uses": 0, "expires_at": exp, "history": "",
+                "domain": domain, "status": status});
+        if let Some(m) = row.as_object_mut() {
+            m.extend(Self::field_cols(o));
+        }
+        self.db.insert("facts", &row)?;
         self.db.execute(
             "INSERT INTO facts_fts(id, fact, entity) VALUES (?,?,?)",
             params![fid.as_str(), fact, entity],
         )?;
         self.sync_entity(domain, entity)?;
+        if !o.relation.is_empty() {
+            self.set_relation_if_unset(entity, &o.relation)?;
+        }
+        self.note_task_memory(&o.task_id, &[], &[], std::slice::from_ref(&fid))?;
         Ok(Some(
-            json!({"id": fid, "fact": fact, "tier": tier, "domain": domain, "status": status}),
+            json!({"id": fid, "fact": fact, "tier": tier, "domain": domain, "status": status,
+                   "scope": row["scope"], "topics": o.topics}),
         ))
     }
 
+    /// The structured-field columns of a new or newly sorted fact.
+    fn field_cols(o: &FactOpts) -> Map<String, Value> {
+        let mut m = Map::new();
+        let kind = if FACT_KINDS.contains(&o.kind.as_str()) {
+            o.kind.as_str()
+        } else {
+            ""
+        };
+        let scope = if SCOPES.contains(&o.scope.as_str()) {
+            o.scope.as_str()
+        } else {
+            ""
+        };
+        let topics = clean_topics(Some(&json!(o.topics)));
+        m.insert("kind".into(), json!(kind));
+        m.insert("scope".into(), json!(scope));
+        m.insert(
+            "topics".into(),
+            json!(if topics.is_empty() {
+                String::new()
+            } else {
+                pyjson::dumps(&json!(topics))
+            }),
+        );
+        m.insert(
+            "trigger".into(),
+            json!(if scope == "trigger" {
+                o.trigger.as_str()
+            } else {
+                ""
+            }),
+        );
+        m
+    }
+
+    /// The user's relation to a person entity the model named with a fact ("wife"), unless one is set already (the
+    /// user's own edit on the Memory page wins).
+    pub fn set_relation_if_unset(&self, name: &str, rel: &str) -> Result<()> {
+        let Some(e) = self.db.one(
+            "SELECT id, type FROM entities WHERE lower(name)=lower(?)",
+            params![name.trim()],
+        )?
+        else {
+            return Ok(());
+        };
+        let eid = get_str(&e, "id");
+        if get_str(&e, "type") != "person"
+            || self
+                .db
+                .one(
+                    "SELECT rel FROM relations WHERE src='me' AND dst=?",
+                    params![eid.as_str()],
+                )?
+                .is_some()
+        {
+            return Ok(());
+        }
+        self.db.insert(
+            "relations",
+            &json!({"src": "me", "rel": take_chars(rel.trim(), 40), "dst": eid, "source": "model",
+                    "created_at": now_ts()}),
+        )?;
+        Ok(())
+    }
+
+    /// Record what memory a task used: the topics and entities of its request and the facts it was given, found or
+    /// wrote (merged with what is recorded). An episode of that task carries the fact ids, so forgetting a fact
+    /// forgets the episodes that used it. A blank `task_id` records nothing.
+    pub fn note_task_memory(
+        &self,
+        task_id: &str,
+        topics: &[String],
+        entities: &[String],
+        fact_ids: &[String],
+    ) -> Result<()> {
+        if task_id.trim().is_empty() {
+            return Ok(());
+        }
+        let cur = self.task_memory(task_id)?;
+        let merge = |key: &str, add: &[String]| -> Vec<String> {
+            let mut v: Vec<String> = cur
+                .get(key)
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for x in add {
+                if !x.is_empty() && !v.contains(x) {
+                    v.push(x.clone());
+                }
+            }
+            v
+        };
+        let (t, e, f) = (
+            merge("topics", topics),
+            merge("entities", entities),
+            merge("fact_ids", fact_ids),
+        );
+        self.db.execute(
+            "INSERT OR REPLACE INTO task_memory(task_id, topics, entities, fact_ids, updated_at) VALUES (?,?,?,?,?)",
+            params![
+                task_id,
+                pyjson::dumps(&json!(t)),
+                pyjson::dumps(&json!(e)),
+                pyjson::dumps(&json!(f)),
+                now_ts()
+            ],
+        )?;
+        // an episode already written for the task (the extraction runs after it) gets the new ids too
+        if !fact_ids.is_empty() {
+            self.db.execute(
+                "UPDATE episodes SET fact_ids=? WHERE task_id=?",
+                params![pyjson::dumps(&json!(f)), task_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `{"topics": [...], "entities": [...], "fact_ids": [...]}` recorded for a task (empty lists when none).
+    pub fn task_memory(&self, task_id: &str) -> Result<Value> {
+        let row = self.db.one(
+            "SELECT topics, entities, fact_ids FROM task_memory WHERE task_id=?",
+            params![task_id],
+        )?;
+        let col = |k: &str| {
+            row.as_ref()
+                .map(|r| loads_col(r, k, json!([])))
+                .filter(Value::is_array)
+                .unwrap_or_else(|| json!([]))
+        };
+        Ok(
+            json!({"topics": col("topics"), "entities": col("entities"), "fact_ids": col("fact_ids")}),
+        )
+    }
+
     pub fn fact(&self, fid: &str) -> Result<Option<Value>> {
-        self.db.one("SELECT * FROM facts WHERE id=?", params![fid])
+        Ok(self
+            .db
+            .one("SELECT * FROM facts WHERE id=?", params![fid])?
+            .map(decode_fact))
     }
 
     /// `update_fact(fid, fact=…, category=…, entity=…, tier=…, uses=…, last_used=…, expires_at=…, history=…,
-    /// last_verified=…, confidence=…, domain=…, status=…)`; returns the updated row, `None` when unknown.
+    /// last_verified=…, confidence=…, domain=…, status=…, kind=…, scope=…, topics=[…], trigger=…)`; returns the
+    /// updated row, `None` when unknown. Enum fields outside their list are dropped.
     pub fn update_fact(&self, fid: &str, kw: &Value) -> Result<Option<Value>> {
         let Some(r) = self.fact(fid)? else {
             return Ok(None);
@@ -1422,49 +1562,40 @@ impl Store {
                     "confidence",
                     "domain",
                     "status",
+                    "kind",
+                    "scope",
+                    "trigger",
                 ]
                 .contains(&k.as_str())
                 {
                     data.insert(k.clone(), v.clone());
                 }
             }
-        }
-        if let Some(d) = data.get("domain") {
-            if !d.is_null() && !d.as_str().is_some_and(|s| DOMAIN_KEYS.contains(&s)) {
-                data.remove("domain");
+            if let Some(t) = o.get("topics") {
+                let t = clean_topics(Some(t));
+                data.insert(
+                    "topics".into(),
+                    json!(if t.is_empty() {
+                        String::new()
+                    } else {
+                        pyjson::dumps(&json!(t))
+                    }),
+                );
             }
         }
-        if let Some(s) = data.get("status") {
-            if !s.is_null() && !matches!(s.as_str(), Some("active") | Some("pending")) {
-                data.remove("status");
+        let in_list = |data: &mut Map<String, Value>, key: &str, list: &[&str]| {
+            if let Some(d) = data.get(key) {
+                if !d.is_null() && !d.as_str().is_some_and(|s| list.contains(&s)) {
+                    data.remove(key);
+                }
             }
-        }
+        };
+        in_list(&mut data, "domain", &DOMAIN_KEYS);
+        in_list(&mut data, "status", &["active", "pending"]);
+        in_list(&mut data, "kind", &FACT_KINDS);
+        in_list(&mut data, "scope", &SCOPES);
         let r_fact = get_str(&r, "fact");
-        let r_cat = get_str(&r, "category");
         let r_ent = get_str(&r, "entity");
-        if !data.contains_key("domain")
-            && ["fact", "category", "entity"]
-                .iter()
-                .any(|k| data.contains_key(*k))
-        {
-            // re-sort only if the domain was the automatic one (a domain the user picked stays)
-            let cur = get_str(&r, "domain");
-            if cur.is_empty() || cur == domain_of(&r_fact, &r_cat, &r_ent) {
-                let nf = data
-                    .get("fact")
-                    .map(py_str)
-                    .unwrap_or_else(|| r_fact.clone());
-                let nc = data
-                    .get("category")
-                    .map(py_str)
-                    .unwrap_or_else(|| r_cat.clone());
-                let ne = data
-                    .get("entity")
-                    .map(py_str)
-                    .unwrap_or_else(|| r_ent.clone());
-                data.insert("domain".into(), json!(domain_of(&nf, &nc, &ne)));
-            }
-        }
         let tier = data
             .get("tier")
             .and_then(|v| v.as_str())
@@ -1512,27 +1643,6 @@ impl Store {
     }
 
     // ------------------------------------------------------------ personal context (domains + entities)
-    /// Give older facts a domain (one-off, cheap; the user can change it on the Memory page).
-    fn sort_domains(&self) -> Result<()> {
-        let rows = self.db.all(
-            "SELECT id, fact, category, entity FROM facts WHERE COALESCE(domain,'')=''",
-            params![],
-        )?;
-        for r in rows {
-            let dom = domain_of(
-                &get_str(&r, "fact"),
-                &get_str(&r, "category"),
-                &get_str(&r, "entity"),
-            );
-            self.db.execute(
-                "UPDATE facts SET domain=? WHERE id=?",
-                params![dom, get_str(&r, "id")],
-            )?;
-            self.sync_entity(dom, &get_str(&r, "entity"))?;
-        }
-        Ok(())
-    }
-
     /// People, places, accounts and sites named by facts become entities (aliases + relation live there).
     pub fn sync_entity(&self, domain: &str, name: &str) -> Result<()> {
         let name = name.trim();
@@ -1644,25 +1754,69 @@ impl Store {
         Ok(())
     }
 
-    /// Forget a fact — and the episodes that quote it (2026-10-04 M4-21: after "forget my taxi budget" the agent
-    /// still answered "300" from a past-task summary).
+    /// Delete a fact and the episodes whose task used it (by the fact ids each episode carries — 2026-10-04 M4-21:
+    /// after "forget my taxi budget" the agent still answered "300" from a past-task summary).
     pub fn delete_fact(&self, fid: &str) -> Result<()> {
-        let row = self
-            .db
-            .one("SELECT fact FROM facts WHERE id=?", params![fid])?;
         self.db
             .execute("DELETE FROM facts WHERE id=?", params![fid])?;
         self.db
             .execute("DELETE FROM facts_fts WHERE id=?", params![fid])?;
-        if let Some(fact) = row.map(|r| get_str(&r, "fact")).filter(|f| !f.is_empty()) {
-            for e in self.db.all("SELECT id, summary FROM episodes", params![])? {
-                if mentions_fact(&fact, &get_str(&e, "summary")) {
-                    self.db
-                        .execute("DELETE FROM episodes WHERE id=?", params![e["id"].clone()])?;
-                }
-            }
+        for e in self.episodes_using(fid)? {
+            self.db
+                .execute("DELETE FROM episodes WHERE id=?", params![e])?;
         }
         Ok(())
+    }
+
+    /// The user (or the agent, on the user's word) forgets a fact: [`Store::delete_fact`], and the episodes written
+    /// before 0.6.0 too — they carry no fact ids, so whether they quote the fact is unknown (they expire after
+    /// [`RECENT_DAYS`] anyway).
+    pub fn forget_fact(&self, fid: &str) -> Result<()> {
+        self.delete_fact(fid)?;
+        self.db.execute(
+            "DELETE FROM episodes WHERE COALESCE(fact_ids,'')=''",
+            params![],
+        )?;
+        Ok(())
+    }
+
+    /// A fact merged into another (memory tidy): the episodes that used it now point to the one kept.
+    pub fn relink_fact(&self, from: &str, to: &str) -> Result<()> {
+        for eid in self.episodes_using(from)? {
+            let row = self
+                .db
+                .one("SELECT fact_ids FROM episodes WHERE id=?", params![eid])?;
+            let mut ids: Vec<String> = row
+                .map(|r| loads_col(&r, "fact_ids", json!([])))
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            ids.retain(|x| x != from);
+            if !ids.iter().any(|x| x == to) {
+                ids.push(to.to_string());
+            }
+            self.db.execute(
+                "UPDATE episodes SET fact_ids=? WHERE id=?",
+                params![pyjson::dumps(&json!(ids)), eid],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The ids of the episodes whose `fact_ids` hold `fid`.
+    fn episodes_using(&self, fid: &str) -> Result<Vec<i64>> {
+        let rows = self.db.all(
+            "SELECT id, fact_ids FROM episodes WHERE fact_ids LIKE ?",
+            params![format!("%\"{}\"%", fid.replace('%', ""))],
+        )?;
+        Ok(rows
+            .iter()
+            .filter(|r| {
+                loads_col(r, "fact_ids", json!([]))
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(fid)))
+            })
+            .filter_map(|r| r.get("id").and_then(Value::as_i64))
+            .collect())
     }
 
     fn live(r: &Value) -> bool {
@@ -1696,28 +1850,79 @@ impl Store {
             )?,
             None => self.db.all("SELECT * FROM facts ORDER BY created_at DESC LIMIT ?", params![limit])?,
         };
-        Ok(rows.into_iter().filter(Self::live).collect())
+        Ok(rows
+            .into_iter()
+            .filter(Self::live)
+            .map(decode_fact)
+            .collect())
     }
 
-    /// Facts matching a query: FTS, a LIKE fallback, then (with `fuzzy`) a ranking by shared tokens and topic
-    /// (a Chinese query is one long "word").
-    pub fn search_facts(
-        &self,
-        query: &str,
-        limit: i64,
-        tier: Option<&str>,
-        fuzzy: bool,
-    ) -> Result<Vec<Value>> {
-        let tier = tier.filter(|t| !t.is_empty());
-        let terms = split_terms(query);
+    /// Live long-term facts that are not sorted yet (no scope), the most used first.
+    pub fn unsorted_facts(&self, limit: usize) -> Result<Vec<Value>> {
+        let mut v: Vec<Value> = self
+            .facts(5000, None)?
+            .into_iter()
+            .filter(unsorted)
+            .collect();
+        v.sort_by_key(|f| std::cmp::Reverse(f.get("uses").and_then(Value::as_i64).unwrap_or(0)));
+        v.truncate(limit);
+        Ok(v)
+    }
+
+    /// Facts for a [`MemoryQuery`]: the ones whose topics or entity the query names (structured fields the model
+    /// filled in on both sides), then the full-text hits of the model's query words (FTS, a LIKE fallback) — a
+    /// search engine over the stored text, nothing decided by it. Identity-document facts and facts not sorted yet
+    /// only with `include_id`.
+    pub fn search_facts(&self, q: &MemoryQuery) -> Result<Vec<Value>> {
+        let tier = q.tier.as_deref().filter(|t| !t.is_empty());
+        let limit = q.limit.max(1);
+        let keep = |r: &Value| -> bool {
+            let rt = {
+                let t = get_str(r, "tier");
+                if t.is_empty() {
+                    "long".to_string()
+                } else {
+                    t
+                }
+            };
+            Self::live(r)
+                && tier.is_none_or(|t| rt == t)
+                && (q.include_id || (get_str(r, "kind") != "id_document" && !unsorted(r)))
+        };
         let mut rows: Vec<Value> = Vec::new();
-        if !terms.is_empty() {
-            let q = fts_query(&terms);
+        let mut have: HashSet<String> = HashSet::new();
+        if !q.topics.is_empty() || !q.entities.is_empty() {
+            let ents: Vec<String> = q.entities.iter().map(|e| e.trim().to_lowercase()).collect();
+            let mut scored: Vec<(usize, Value)> = Vec::new();
+            for r in self.facts(5000, tier)? {
+                if !keep(&r) {
+                    continue;
+                }
+                let ent = get_str(&r, "entity").trim().to_lowercase();
+                let by_ent = !ent.is_empty() && ents.contains(&ent);
+                let shared = fact_topics(&r)
+                    .iter()
+                    .filter(|t| q.topics.contains(t))
+                    .count();
+                if by_ent || shared > 0 {
+                    scored.push((if by_ent { 10 } else { 0 } + shared, r));
+                }
+            }
+            scored.sort_by_key(|x| std::cmp::Reverse(x.0));
+            for (_, r) in scored {
+                if have.insert(get_str(&r, "id")) {
+                    rows.push(r);
+                }
+            }
+        }
+        let terms = split_terms(&q.query);
+        if !terms.is_empty() && rows.len() < limit {
+            let fq = fts_query(&terms);
             let mut ids: Vec<String> = self
                 .db
                 .all(
                     "SELECT id FROM facts_fts WHERE facts_fts MATCH ? LIMIT ?",
-                    params![q, limit * 3],
+                    params![fq, (limit * 3) as i64],
                 )
                 .unwrap_or_default()
                 .iter()
@@ -1733,7 +1938,7 @@ impl Store {
                     .iter()
                     .map(|t| Param::Text(format!("%{}%", t)))
                     .collect();
-                p.push(Param::Int(limit * 3));
+                p.push(Param::Int((limit * 3) as i64));
                 ids = self
                     .db
                     .all(&format!("SELECT id FROM facts WHERE {} LIMIT ?", cond), p)?
@@ -1742,51 +1947,30 @@ impl Store {
                     .collect();
             }
             for i in ids {
+                if have.contains(&i) {
+                    continue;
+                }
                 if let Some(r) = self.fact(&i)? {
-                    let rt = {
-                        let t = get_str(&r, "tier");
-                        if t.is_empty() {
-                            "long".to_string()
-                        } else {
-                            t
-                        }
-                    };
-                    if Self::live(&r) && tier.is_none_or(|t| rt == t) {
+                    if keep(&r) {
+                        have.insert(i);
                         rows.push(r);
                     }
                 }
             }
         }
-        if fuzzy && (rows.len() as i64) < limit {
-            let qt = tokens(query);
-            let its = intents(query);
-            let have: HashSet<String> = rows.iter().map(|r| get_str(r, "id")).collect();
-            let pool = self.facts(1000, tier)?;
-            let mut ranked: Vec<(usize, Value)> = Vec::new();
-            for r in pool {
-                if have.contains(&get_str(&r, "id")) {
-                    continue;
-                }
-                let txt = format!("{} {}", get_str(&r, "fact"), get_str(&r, "entity"));
-                let ft = tokens(&txt);
-                let mut sc = qt.intersection(&ft).count();
-                for k in &its {
-                    if let Some((_, facts_rx)) = intent_rx(k) {
-                        if facts_rx.is_match(&txt) {
-                            sc += 2;
-                        }
-                    }
-                }
-                if sc >= 2 {
-                    ranked.push((sc, r));
-                }
-            }
-            ranked.sort_by_key(|a| std::cmp::Reverse(a.0));
-            let room = (limit as usize).saturating_sub(rows.len());
-            rows.extend(ranked.into_iter().take(room).map(|(_, r)| r));
-        }
-        rows.truncate(limit.max(0) as usize);
+        rows.truncate(limit);
         Ok(rows)
+    }
+
+    /// The live facts hidden from a search without `include_id`: identity-document facts and facts not sorted yet.
+    pub fn hidden_fact_count(&self) -> Result<(usize, usize)> {
+        let fs = self.facts(5000, None)?;
+        Ok((
+            fs.iter()
+                .filter(|f| get_str(f, "kind") == "id_document")
+                .count(),
+            fs.iter().filter(|f| unsorted(f)).count(),
+        ))
     }
 
     pub fn mark_used(&self, ids: &[String]) -> Result<()> {
@@ -1823,12 +2007,63 @@ impl Store {
         Ok(json!({"facts": gone.len(), "episodes": n_ep}))
     }
 
+    /// A past task's summary, with the ids of the facts the task used ([`Store::note_task_memory`]; `[]` when none).
     pub fn add_episode(&self, task_id: &str, summary: &str) -> Result<()> {
+        let ids = self.task_memory(task_id)?["fact_ids"].clone();
         self.db.insert(
             "episodes",
-            &json!({"ts": now_ts(), "task_id": task_id, "summary": take_chars(summary, 1000)}),
+            &json!({"ts": now_ts(), "task_id": task_id, "summary": take_chars(summary, 1000),
+                    "fact_ids": pyjson::dumps(&ids)}),
         )?;
         Ok(())
+    }
+
+    /// Recent episodes whose task used one of `fact_ids` or had one of `topics` / `entities` (structured links), then
+    /// the ones whose summary holds one of the model's query words (a plain text search), at most `limit`.
+    pub fn episodes_for(
+        &self,
+        fact_ids: &[String],
+        topics: &[String],
+        entities: &[String],
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Value>> {
+        let words: Vec<&str> = query
+            .split_whitespace()
+            .filter(|w| w.chars().count() > 1)
+            .collect();
+        let ents: Vec<String> = entities.iter().map(|e| e.to_lowercase()).collect();
+        let mut linked = Vec::new();
+        let mut by_word = Vec::new();
+        for e in self.episodes(200)? {
+            let ids = loads_col(&e, "fact_ids", json!([]));
+            let tm = self.task_memory(&get_str(&e, "task_id"))?;
+            let any_in = |v: &Value, list: &[String], low: bool| {
+                v.as_array().is_some_and(|a| {
+                    a.iter().filter_map(Value::as_str).any(|x| {
+                        if low {
+                            list.contains(&x.to_lowercase())
+                        } else {
+                            list.iter().any(|y| y == x)
+                        }
+                    })
+                })
+            };
+            if any_in(&ids, fact_ids, false)
+                || any_in(&tm["topics"], topics, false)
+                || any_in(&tm["entities"], &ents, true)
+            {
+                linked.push(e);
+            } else {
+                let s = get_str(&e, "summary");
+                if words.iter().any(|w| s.contains(w)) {
+                    by_word.push(e);
+                }
+            }
+        }
+        linked.extend(by_word);
+        linked.truncate(limit);
+        Ok(linked)
     }
 
     pub fn episodes(&self, limit: i64) -> Result<Vec<Value>> {
@@ -1852,6 +2087,36 @@ impl Store {
         Ok(Value::Object(out))
     }
 
+    /// The custom profile fields (`custom:<label>`) the user marked as standing preferences: the executor always sees
+    /// them (`Runtime::standing_prefs`), like the fixed [`PREFERENCE_KEYS`].
+    pub fn profile_standing(&self) -> Result<Vec<String>> {
+        Ok(self
+            .db
+            .all(
+                "SELECT key FROM profile WHERE COALESCE(standing,0)=1 AND key LIKE 'custom:%' ORDER BY key",
+                params![],
+            )?
+            .iter()
+            .map(|r| get_str(r, "key"))
+            .collect())
+    }
+
+    /// Mark a saved custom field as a standing preference (or not). Errors for anything but a saved `custom:` field.
+    pub fn set_profile_standing(&self, key: &str, standing: bool) -> Result<()> {
+        let key = profile_key(key);
+        if !key.starts_with("custom:") {
+            return Err(anyhow!("only a custom field can be a standing preference"));
+        }
+        let n = self.db.execute(
+            "UPDATE profile SET standing=? WHERE key=?",
+            params![i64::from(standing), key.as_str()],
+        )?;
+        if n == 0 {
+            return Err(anyhow!("unknown profile field"));
+        }
+        Ok(())
+    }
+
     /// Set (or, with a blank value, clear) a profile field. Errors with `unknown profile field` (Python
     /// `ValueError`) for a key [`profile_key`] rejects.
     pub fn set_profile(&self, key: &str, value: &str, source: &str) -> Result<()> {
@@ -1866,8 +2131,10 @@ impl Store {
                 .to_string();
         }
         if !value.is_empty() {
+            // an upsert, so the field's `standing` flag stays
             self.db.execute(
-                "INSERT OR REPLACE INTO profile(key, value, updated_at, source) VALUES (?,?,?,?)",
+                "INSERT INTO profile(key, value, updated_at, source) VALUES (?,?,?,?) \
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at, source=excluded.source",
                 params![key.as_str(), value, now_ts(), source],
             )?;
         } else {
@@ -2198,122 +2465,262 @@ mod tests {
     }
 
     #[test]
-    fn forget_removes_episodes_that_quote_the_fact() {
+    fn forget_removes_the_episodes_that_used_the_fact() {
         let (_d, st) = store();
         let o = FactOpts {
-            source: "user-request:t".into(),
+            source: "user-request:t1".into(),
             confidence: 0.95,
+            task_id: "t1".into(),
             ..Default::default()
         };
         let f = st
             .add_fact("每月打车预算 300 新元（SGD）", "preference", "", &o)
             .unwrap()
             .unwrap();
-        st.add_episode(
-            "t1",
-            "[测试] 请记住：我每月打车预算 300 新元 → 已记住：打车 300 新元/月",
-        )
-        .unwrap();
-        st.add_episode("t2", "[测试] 买一双徒步鞋，预算不超过 S$250 → 已筛选 3 双")
+        let fid = f["id"].as_str().unwrap().to_string();
+        // t1 wrote the fact, t2 was given it in its prompt (both by id), t3 never saw it
+        st.add_episode("t1", "[测试] 请记住：我每月打车预算 300 新元 → 已记住")
             .unwrap();
-        st.delete_fact(f["id"].as_str().unwrap()).unwrap();
+        st.note_task_memory("t2", &["travel".into()], &[], std::slice::from_ref(&fid))
+            .unwrap();
+        st.add_episode("t2", "[测试] 叫车去机场 → 已叫车").unwrap();
+        st.add_episode("t3", "[测试] 买一双徒步鞋，预算不超过 S$250 → 已筛选 3 双")
+            .unwrap();
+        assert_eq!(st.task_memory("t2").unwrap()["topics"], json!(["travel"]));
+        st.delete_fact(&fid).unwrap();
         let left: Vec<String> = st
             .episodes(10)
             .unwrap()
             .iter()
             .map(|e| get_str(e, "summary"))
             .collect();
-        assert_eq!(left.len(), 1);
+        assert_eq!(left.len(), 1, "{left:?}");
         assert!(left[0].contains("徒步鞋"));
+        // an episode written before 0.6.0 (no fact ids) goes when the user forgets any fact; a merge relinks
+        st.db
+            .execute(
+                "INSERT INTO episodes(ts, task_id, summary, fact_ids) VALUES (?,?,?,'')",
+                params![now_ts(), "old", "old summary"],
+            )
+            .unwrap();
+        let g = st
+            .add_fact(
+                "Likes tea",
+                "preference",
+                "",
+                &FactOpts {
+                    task_id: "t4".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .unwrap();
+        let h = st
+            .add_fact("Likes green tea", "preference", "", &FactOpts::default())
+            .unwrap()
+            .unwrap();
+        st.add_episode("t4", "tea → ok").unwrap();
+        st.relink_fact(g["id"].as_str().unwrap(), h["id"].as_str().unwrap())
+            .unwrap();
+        st.delete_fact(g["id"].as_str().unwrap()).unwrap();
+        assert_eq!(st.episodes(10).unwrap().len(), 3); // relinked: kept; the old one stays on a plain delete
+        st.forget_fact(h["id"].as_str().unwrap()).unwrap();
+        let left: Vec<String> = st
+            .episodes(10)
+            .unwrap()
+            .iter()
+            .map(|e| get_str(e, "summary"))
+            .collect();
+        assert_eq!(left.len(), 1, "{left:?}");
     }
 
     #[test]
-    fn old_memory_gets_domains_and_chinese_search() {
-        let d = tempfile::tempdir().unwrap();
-        let st = Store::new(d.path(), cfg("")).unwrap();
+    fn search_by_topics_entities_and_words() {
+        let (_d, st) = store();
+        let shoes = FactOpts::default().with_model_fields(
+            &json!({"domain": "preference", "topics": ["clothing", "shopping", "bogus"], "scope": "topic"}),
+        );
+        assert_eq!(shoes.topics, vec!["clothing", "shopping"]);
         st.add_fact(
-            "我身高177，体重76公斤，鞋子42码，运动鞋43码。",
+            "我身高177，体重76公斤，运动鞋43码。",
             "preference",
             "",
-            &FactOpts::default(),
+            &shoes,
         )
         .unwrap();
-        st.db
-            .execute("UPDATE facts SET domain=''", params![])
-            .unwrap();
-        let st2 = Store::new(d.path(), cfg("")).unwrap(); // restart: older facts are sorted
-        assert_eq!(
-            st2.facts(500, Some("long")).unwrap()[0]["domain"],
-            "preference"
-        );
-        let hits = st2
-            .search_facts("我平时穿多大码的鞋", 5, Some("long"), true)
-            .unwrap();
-        assert!(!hits.is_empty() && get_str(&hits[0], "fact").contains("43"));
-    }
-
-    #[test]
-    fn learned_facts_and_domains() {
-        let (_d, st) = store();
-        let o = FactOpts {
+        let site = FactOpts {
             domain: "site".into(),
             status: "pending".into(),
             ..Default::default()
-        };
+        }
+        .with_model_fields(&json!({"topics": ["shopping"]}));
         let f = st
             .add_fact(
                 "decathlon.sg asks for the phone as 8 digits without +65.",
                 "habit",
                 "decathlon.sg",
-                &o,
+                &site,
             )
             .unwrap()
-            .unwrap();
-        let hit = st
-            .search_facts("decathlon phone", 5, Some("long"), true)
-            .unwrap()
-            .remove(0);
-        assert_eq!(hit["status"], "pending");
-        assert_eq!(hit["domain"], "site");
-        let g = st
-            .add_fact(
-                "The user wants quiet boutique hotels.",
-                "other",
-                "",
-                &FactOpts::default(),
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(g["status"], "active");
-        assert_eq!(g["domain"], "preference");
-        st.update_fact(f["id"].as_str().unwrap(), &json!({"status": "active"}))
             .unwrap();
         assert_eq!(
-            st.fact(f["id"].as_str().unwrap()).unwrap().unwrap()["status"],
-            "active"
+            (f["status"].as_str(), f["domain"].as_str()),
+            (Some("pending"), Some("site"))
         );
+        let passport = FactOpts::default()
+            .with_model_fields(&json!({"topics": ["travel", "forms"], "id_document": true}));
+        st.add_fact(
+            "The user's passport expires in March 2027.",
+            "other",
+            "",
+            &passport,
+        )
+        .unwrap();
+        st.add_fact(
+            "An old fact nobody sorted.",
+            "other",
+            "",
+            &FactOpts::default(),
+        )
+        .unwrap();
+        let q = |topics: &[&str], entities: &[&str], query: &str, id: bool| {
+            st.search_facts(&MemoryQuery {
+                query: query.into(),
+                topics: topics.iter().map(|x| x.to_string()).collect(),
+                entities: entities.iter().map(|x| x.to_string()).collect(),
+                include_id: id,
+                tier: Some("long".into()),
+                limit: 5,
+            })
+            .unwrap()
+            .iter()
+            .map(|f| get_str(f, "fact"))
+            .collect::<Vec<_>>()
+        };
+        let got = q(&["clothing"], &[], "", false);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].contains("43码"));
+        let got = q(&[], &["Decathlon.sg"], "", false);
+        assert!(got.len() == 1 && got[0].contains("8 digits"));
+        // the entity first, then the topic
+        let got = q(&["shopping"], &["decathlon.sg"], "", false);
+        assert!(got[0].contains("8 digits") && got.len() == 2);
+        // identity documents and unsorted facts only with include_id
+        assert!(q(&["travel"], &[], "", false).is_empty());
+        assert_eq!(q(&["travel"], &[], "", true).len(), 1);
+        assert!(q(&[], &[], "nobody sorted", false).is_empty());
+        assert_eq!(q(&[], &[], "nobody sorted", true).len(), 1);
+        // the model's query words: a plain text search
+        assert!(q(&[], &[], "phone", false)[0].contains("decathlon"));
+        assert_eq!(st.hidden_fact_count().unwrap(), (1, 1));
+        assert_eq!(st.unsorted_facts(10).unwrap().len(), 1);
+        // the user confirms; a bad status is dropped; a new text keeps the old one in the history
+        let fid = f["id"].as_str().unwrap();
+        st.update_fact(fid, &json!({"status": "active"})).unwrap();
         st.update_fact(
-            f["id"].as_str().unwrap(),
+            fid,
             &json!({"status": "bogus", "fact": "decathlon.sg wants 8 digits"}),
         )
         .unwrap();
-        let r = st.fact(f["id"].as_str().unwrap()).unwrap().unwrap();
+        let r = st.fact(fid).unwrap().unwrap();
         assert_eq!(r["status"], "active");
         assert!(get_str(&r, "history").contains("without +65"));
+    }
+
+    #[test]
+    fn model_fields_are_validated() {
+        let o = FactOpts::default().with_model_fields(&json!({
+            "domain": "Rule", "scope": "trigger", "trigger": "准备出差", "topics": "travel", "relation": "wife"}));
         assert_eq!(
-            domain_of("Mei collects jazz vinyl records.", "person", "Mei"),
-            "person"
+            (
+                o.domain.as_str(),
+                o.scope.as_str(),
+                o.trigger.as_str(),
+                o.kind.as_str()
+            ),
+            ("rule", "trigger", "准备出差", "general")
         );
+        assert_eq!(o.topics, vec!["travel"]);
+        // a trigger scope without its phrase is a topic scope; nothing valid given = still unsorted
+        let o = FactOpts::default().with_model_fields(&json!({"scope": "trigger"}));
+        assert_eq!(o.scope, "topic");
+        let o = FactOpts::default()
+            .with_model_fields(&json!({"domain": "nonsense", "scope": "sometimes"}));
+        assert!(o.domain.is_empty() && o.scope.is_empty() && o.kind.is_empty());
+        let (_d, st) = store();
+        let r = st
+            .add_fact(
+                "Always ask before spending over S$100.",
+                "",
+                "",
+                &FactOpts::default()
+                    .with_model_fields(&json!({"domain": "rule", "scope": "always"})),
+            )
+            .unwrap()
+            .unwrap();
+        let id = r["id"].as_str().unwrap();
+        let f = st.fact(id).unwrap().unwrap();
         assert_eq!(
-            domain_of("Always ask before spending over S$100.", "", ""),
-            "rule"
+            (get_str(&f, "scope"), get_str(&f, "kind")),
+            ("always".into(), "general".into())
         );
+        assert_eq!(f["topics"], json!([]));
+        st.update_fact(
+            id,
+            &json!({"topics": ["finance", "x"], "scope": "nope", "kind": "id_document"}),
+        )
+        .unwrap();
+        let f = st.fact(id).unwrap().unwrap();
+        assert_eq!(f["topics"], json!(["finance"]));
+        assert_eq!(get_str(&f, "scope"), "always");
+        assert_eq!(get_str(&f, "kind"), "id_document");
+        // a person with a relation: kept on the entity, the first one (or the user's own) wins
+        for (fact, rel) in [
+            ("Mei collects jazz vinyl.", "wife"),
+            ("Mei likes tea.", "friend"),
+        ] {
+            st.add_fact(
+                fact,
+                "person",
+                "Mei",
+                &FactOpts {
+                    domain: "person".into(),
+                    relation: rel.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let e = st
+            .entities(None)
+            .unwrap()
+            .into_iter()
+            .find(|e| e["name"] == "Mei")
+            .unwrap();
+        assert_eq!(e["relation"], "wife");
+    }
+
+    #[test]
+    fn standing_custom_fields() {
+        let (_d, st) = store();
+        st.set_profile("custom:Star Alliance status", "Gold", "user")
+            .unwrap();
+        st.set_profile("custom:Shoe size", "43", "user").unwrap();
+        assert!(st.profile_standing().unwrap().is_empty()); // off by default
+        st.set_profile_standing("custom:Star Alliance status", true)
+            .unwrap();
+        assert!(st.set_profile_standing("phone", true).is_err());
+        assert!(st.set_profile_standing("custom:Nope", true).is_err());
+        // a new value keeps the flag
+        st.set_profile("custom:Star Alliance status", "Platinum", "user")
+            .unwrap();
         assert_eq!(
-            domain_of("The user's office is at 20 Anson Rd.", "", ""),
-            "place"
+            st.profile_standing().unwrap(),
+            vec!["custom:Star Alliance status"]
         );
-        assert!(intents("帮我买双鞋").contains(&"shopping"));
-        assert!(tokens("The user prefers aisle seats 我喜欢靠过道").contains("prefers"));
+        st.set_profile_standing("custom:Star Alliance status", false)
+            .unwrap();
+        assert!(st.profile_standing().unwrap().is_empty());
     }
 
     #[test]
@@ -2576,15 +2983,7 @@ mod tests {
     }
 
     #[test]
-    fn prune_and_mentions() {
-        assert!(mentions_fact(
-            "每月打车预算 300 新元",
-            "我每月打车预算 300 新元 → 已记住"
-        ));
-        assert!(!mentions_fact(
-            "每月打车预算 300 新元",
-            "买一双徒步鞋，预算不超过 S$250"
-        ));
+    fn prune_expired() {
         let (_d, st) = store();
         let o = FactOpts {
             tier: "recent".into(),
@@ -2614,6 +3013,11 @@ mod tests {
         let txt = render_facts(&sel, true);
         assert!(txt.starts_with("[Preferences]\n- The user wears size 43. (unconfirmed"));
         assert!(render_facts(&sel, false).starts_with("[偏好 Preferences]"));
+        let rule = vec![
+            json!({"fact": "Check the mail first.", "domain": "rule", "scope": "trigger", "trigger": "prepare for a trip", "score": 10.0}),
+        ];
+        assert!(render_facts(&rule, true)
+            .contains("Check the mail first. (the user said “prepare for a trip”)"));
         assert_eq!(
             render_facts(&[], false),
             "(nothing on file that bears on this request)"

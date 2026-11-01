@@ -23,10 +23,7 @@
 //! times become `HH:00` (a time that is not one is removed: 10:00), its class one of Kayak's (`economy` → `small`, an
 //! unknown one removed), a driver's age outside 18–99 removed.
 
-use std::sync::LazyLock;
-
 use chrono::NaiveDate;
-use regex::Regex;
 use serde_json::{json, Map, Value};
 
 /// The tools [`validate`] knows.
@@ -306,79 +303,6 @@ impl V<'_> {
             ));
         }
         Ok(())
-    }
-}
-
-/// A flight search's cabin, stops and self-transfer made to agree with what the user asked, in code: a higher cabin the
-/// request names ("business class", "lie-flat", "first class", "premium economy") is never searched as economy;
-/// "direct" / "nonstop" searches nonstop; a self-transfer itinerary only when the request asks for one ("self-transfer",
-/// "separate tickets") — each change listed in `fixed`, next to the result.
-pub fn align_with_request(tool: &str, c: &mut Checked, request: &str) {
-    static FIRST: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)\bfirst[- ]class\b|头等舱|頭等艙").unwrap());
-    static BUSINESS: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\bbusiness[- ]class\b|\bin business\b|\blie[- ]flat\b|\bflat[- ]bed\b|商务舱|商務艙").unwrap()
-    });
-    static PREMIUM: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\bpremium economy\b|超级经济舱|特选经济舱|豪華經濟艙").unwrap()
-    });
-    static NONSTOP: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)\b(direct|non-?stop)\b|直飞|直飛").unwrap());
-    static SELF_TRANSFER: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)self[- ]transfer|separate tickets|自行中转|自助转机|自行轉機").unwrap()
-    });
-    if tool != "flights_search" || request.trim().is_empty() {
-        return;
-    }
-    let cabin = c
-        .args
-        .get("cabin")
-        .and_then(Value::as_str)
-        .unwrap_or("economy")
-        .to_string();
-    let want = if FIRST.is_match(request) {
-        Some("first")
-    } else if BUSINESS.is_match(request) {
-        Some("business")
-    } else if PREMIUM.is_match(request) {
-        Some("premium_economy")
-    } else {
-        None
-    };
-    if let Some(w) = want {
-        let rank = |x: &str| match x {
-            "first" => 3,
-            "business" => 2,
-            "premium_economy" => 1,
-            _ => 0,
-        };
-        if rank(&cabin) < rank(w) {
-            c.args["cabin"] = json!(w);
-            c.fixed
-                .push(format!("cabin: {cabin} → {w} (the request asks for it)"));
-        }
-    }
-    if NONSTOP.is_match(request) {
-        let stops = c
-            .args
-            .get("stops")
-            .and_then(Value::as_str)
-            .unwrap_or("any")
-            .to_string();
-        if stops != "nonstop" {
-            c.args["stops"] = json!("nonstop");
-            c.fixed.push(format!(
-                "stops: {stops} → nonstop (the request asks for a direct flight)"
-            ));
-        }
-    }
-    if c.args.get("self_transfer").and_then(Value::as_bool) == Some(true)
-        && !SELF_TRANSFER.is_match(request)
-    {
-        c.args["self_transfer"] = json!(false);
-        c.fixed.push(
-            "self_transfer: true → false (the request does not ask for separate tickets)".into(),
-        );
     }
 }
 
@@ -838,40 +762,5 @@ mod tests {
         assert!(
             err("cars_search", base(json!({"pickup_date": "2026-10-01"}))).contains("in the past")
         );
-    }
-
-    #[test]
-    fn a_flight_search_follows_the_cabin_stops_and_tickets_asked_for() {
-        let today = NaiveDate::from_ymd_opt(2026, 10, 31).unwrap();
-        let args = json!({"origin": "SIN", "destination": "LHR", "date": "2026-12-01", "adults": 1,
-                          "cabin": "economy", "stops": "any", "self_transfer": true});
-        let mut c = validate("flights_search", &args, today).unwrap();
-        align_with_request(
-            "flights_search",
-            &mut c,
-            "A direct business class flight to London on 1 Dec, lie-flat please",
-        );
-        assert_eq!(
-            (c.args["cabin"].as_str(), c.args["stops"].as_str()),
-            (Some("business"), Some("nonstop"))
-        );
-        assert_eq!(c.args["self_transfer"], false);
-        assert_eq!(c.fixed.len(), 3, "{:?}", c.fixed);
-        // what the request does not say is left as the model set it; a higher cabin is not lowered
-        let mut c = validate(
-            "flights_search",
-            &json!({"origin": "SIN", "destination": "LHR", "date": "2026-12-01",
-                                                       "cabin": "first", "self_transfer": true}),
-            today,
-        )
-        .unwrap();
-        align_with_request(
-            "flights_search",
-            &mut c,
-            "Cheapest flight to London, business or better, self-transfer is fine",
-        );
-        assert_eq!(c.args["cabin"], "first");
-        assert_eq!(c.args["self_transfer"], true);
-        assert!(c.fixed.is_empty(), "{:?}", c.fixed);
     }
 }

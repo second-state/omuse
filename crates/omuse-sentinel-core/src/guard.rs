@@ -1,6 +1,7 @@
 //! The parts of `app/sentinel/guard.py` the policy engine needs: data classes, URL / network safety and the
-//! risky-UI-word heuristics (click / money / checkout / order-change / search / filter detection, page totals,
-//! card-box matching, "the user asked for it" checks).
+//! risky-UI-word heuristics over a page element's own label (click / money / checkout / order-change / search /
+//! filter detection, card-box matching). Nothing here reads the user's words: whether the user asked for a click or an
+//! upload is the model's `user_asked` field (docs/json-tools.md, "Safety exceptions").
 //!
 //! `omuse_common::guard` is the designated home of the full guard port (secret redaction, injection scan, …);
 //! while it is still a stub this module carries byte-identical copies of the functions policy depends on, so
@@ -247,45 +248,12 @@ re!(
     r"(?i)pay|payment|buy|purchase|order|checkout|check out|place|send|transfer|donate|subscribe|book|reserve|confirm|sign|agree|accept|delete account|close account|withdraw|付款|支付|购买|下单|结账|结算|发送|转账|捐|订阅|预订|预约|订位|确认|签|同意|注销|提现"
 );
 re!(
-    NEGATED,
-    r#"(?i)(不要|别|不用|勿|先别|don'?t|do not|never|not)\s*(点|按|click|press|hit|tap)?\s*(击)?\s*[「『"'“]?\s*$"#
-);
-re!(
-    NO_SUBMIT,
-    r#"(?i)(不要|别|先别|不用|勿|don'?t|do not|never)\s*(点|按|click|press)?\s*[「『"'“*]*\s*(提交|submit)"#
-);
-re!(
-    TOTAL_LINE,
-    r"(?i)(order total|grand total|total payable|amount payable|total to pay|total amount|\btotal\b|合计|总计|总价|应付|实付|合計)"
-);
-re!(SUBTOTAL, r"(?i)sub-?total|小计|items? total");
-re!(GRAND, r"(?i)grand|order total");
-re!(
-    AMOUNT,
-    r"(?:S\$|SGD|US\$|USD|HK\$|HKD|RM|¥|￥|€|£|\$)\s?(\d{1,3}(?:[,\s]\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
-);
-re!(
     FILTER_NAME,
     r"(?i)price|min|max|filter|sort|range|quantity|qty|size|zip|postal|budget|价格|最低|最高|筛选|数量|尺码|邮编"
 );
 re!(FILTER_NUMBER, r"^\s*[\d.,]+\s*$");
 re!(WS, r"\s+");
 re!(CART_URL, r"(?i)/(cart|basket|bag|trolley)\b");
-
-const SUBMIT_VERBS: &[&str] = &[
-    "提交",
-    "submit",
-    "添加",
-    "新增",
-    "加一条",
-    "add a",
-    "add the",
-    "保存",
-    "save",
-];
-const GENERIC_BTN: &[&str] = &[
-    "submit", "save", "add", "ok", "apply", "done", "提交", "保存", "添加",
-];
 
 fn squash_ws(s: &str) -> String {
     WS.replace_all(s, " ").into_owned()
@@ -351,79 +319,19 @@ pub fn cart_edit_click(name: &str, page_url: &str) -> bool {
     CART_EDIT.is_match(name) && CART_URL.is_match(page_url)
 }
 
-fn find_chars(hay: &[char], needle: &[char], from: usize) -> Option<usize> {
-    if needle.is_empty() || needle.len() > hay.len() {
-        return None;
-    }
-    (from..=hay.len() - needle.len()).find(|&i| hay[i..i + needle.len()] == *needle)
-}
-
-fn asked_verb(request: &str, verbs: &[&str], submit_verbs: bool) -> bool {
-    let low: Vec<char> = request.to_lowercase().chars().collect();
-    let low_s: String = low.iter().collect();
-    if submit_verbs && NO_SUBMIT.is_match(&low_s) {
-        return false;
-    }
-    for v in verbs {
-        let needle: Vec<char> = v.chars().collect();
-        let mut from = 0;
-        while let Some(i) = find_chars(&low, &needle, from) {
-            let before: String = low[i.saturating_sub(12)..i].iter().collect();
-            if !NEGATED.is_match(&before) {
-                return true;
-            }
-            from = i + 1;
-        }
-    }
-    false
-}
-
-/// The user's own request asks to upload one of their attached files on the site they named.
-pub fn user_asked_upload(request: &str, page_url: &str, path: &str) -> bool {
-    let dom = domain_of(page_url);
-    if dom.is_empty() || !path.starts_with("uploads/") {
-        return false;
-    }
-    let low = request.to_lowercase();
-    let named = low.contains(&dom) || low.contains(dom.strip_prefix("www.").unwrap_or(&dom));
-    named
-        && asked_verb(
-            request,
-            &[
-                "上传",
-                "upload",
-                "选择附件",
-                "选好文件",
-                "选择文件",
-                "attach",
-            ],
-            false,
-        )
-}
-
-/// The user's own request explicitly asks to click this (non-money) button.
-pub fn user_named_click(request: &str, label: &str) -> bool {
+/// Whether the model's `user_asked` on a click may skip the consequential-click approval for this element: a short
+/// label that is not about money, sending, booking, signing or accepting terms. The label is the page element's own
+/// accessible name (from the browser), never the user's words; whether the user asked is the model's JSON field.
+pub fn click_skip_allowed(label: &str) -> bool {
     let lab = squash_ws(label);
     let lab = lab.trim();
-    let n = lab.chars().count();
-    if !(2..=40).contains(&n) || NAMED_NEVER.is_match(lab) {
-        return false;
-    }
-    let lab_low = lab.to_lowercase();
-    if GENERIC_BTN.contains(&lab_low.as_str()) && asked_verb(request, SUBMIT_VERBS, true) {
-        return true;
-    }
-    let low: Vec<char> = request.to_lowercase().chars().collect();
-    let needle: Vec<char> = lab_low.chars().collect();
-    let mut from = 0;
-    while let Some(i) = find_chars(&low, &needle, from) {
-        let before: String = low[i.saturating_sub(12)..i].iter().collect();
-        if !NEGATED.is_match(&before) {
-            return true;
-        }
-        from = i + 1;
-    }
-    false
+    (2..=40).contains(&lab.chars().count()) && !NAMED_NEVER.is_match(lab)
+}
+
+/// A file the user attached to the chat (the runtime saves attachments under `uploads/`): the only files the model's
+/// `user_asked` on an upload can cover.
+pub fn attached_file(path: &str) -> bool {
+    path.starts_with("uploads/") && !path.contains("..")
 }
 
 /// A search box (by role or by its name).
@@ -437,33 +345,6 @@ pub fn named_in_request(request: &str, dom: &str) -> bool {
     let d = dom.to_lowercase();
     let d = d.strip_prefix("www.").unwrap_or(&d);
     !d.is_empty() && d.chars().count() > 4 && request.to_lowercase().contains(d)
-}
-
-/// The order total a checkout page shows (largest amount on a "total" line or the line after it).
-pub fn page_total(text: &str) -> Option<f64> {
-    let lines: Vec<&str> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    let mut found: Vec<f64> = Vec::new();
-    for (i, ln) in lines.iter().enumerate() {
-        if !TOTAL_LINE.is_match(ln) || (SUBTOTAL.is_match(ln) && !GRAND.is_match(ln)) {
-            continue;
-        }
-        let next = lines.get(i + 1).copied().unwrap_or("");
-        for cand in [*ln, next] {
-            for m in AMOUNT.captures_iter(cand) {
-                if let Ok(f) = m[1].replace([',', ' '], "").parse::<f64>() {
-                    found.push(f);
-                }
-            }
-            if !found.is_empty() {
-                break;
-            }
-        }
-    }
-    found.into_iter().reduce(f64::max)
 }
 
 static CARD_BOX: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
@@ -600,12 +481,26 @@ mod tests {
     }
 
     #[test]
-    fn totals_and_card_boxes() {
-        assert_eq!(
-            page_total("Items total S$9.00\nDelivery S$4.99\nGrand Total S$13.99"),
-            Some(13.99)
-        );
-        assert_eq!(page_total("no money here"), None);
+    fn a_user_asked_click_or_upload_is_bounded_by_the_element_and_the_file() {
+        assert!(click_skip_allowed("Remove") && click_skip_allowed("Enable"));
+        for label in [
+            "Book Now",
+            "Pay now",
+            "Send",
+            "Place order",
+            "I agree",
+            "Confirm",
+            "x",
+            "",
+        ] {
+            assert!(!click_skip_allowed(label), "{label}");
+        }
+        assert!(attached_file("uploads/a.pdf"));
+        assert!(!attached_file("reports/a.pdf") && !attached_file("uploads/../x"));
+    }
+
+    #[test]
+    fn card_boxes() {
         assert_eq!(card_box_mismatch("expiry", "Card number"), "number");
         assert_eq!(
             card_box_mismatch("cvc", "Card number 1234 5678 9012 3456"),

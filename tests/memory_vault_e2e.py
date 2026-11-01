@@ -135,7 +135,8 @@ prev = j["runs"][0]
 check("preview stored", prev["kind"] == "dry_run" and prev["lines"], prev)
 check("preview changes nothing", len(j["facts"]) == len(before["facts"]), (len(j["facts"]), len(before["facts"])))
 rep = c.get(f"{B}/api/memory/runs/{prev['id']}").json()["report"]
-check("preview lists the merge and the demotion", rep["plan"]["local"]["dups"] and rep["plan"]["llm"]["demote"], rep["plan"])
+# two wordings of one fact are the model's to merge (code merges only identical text); the fake model's merge stands in
+check("preview lists the merge and the demotion", rep["plan"]["llm"]["merge"] and rep["plan"]["llm"]["demote"], rep["plan"])
 j = run_job({"from_run": prev["id"]})
 facts = [f["fact"] for f in j["facts"]]
 check("apply merged the duplicate", sum("quiet hotels" in f for f in facts) == 1, facts)

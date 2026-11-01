@@ -2288,7 +2288,11 @@ function memTryCard(r) {
   const out = h('div', { class: 'stack' });
   const run = safe(async () => {
     if (!inp.value.trim()) return;
-    const x = await api('context/preview?q=' + encodeURIComponent(inp.value));
+    // the model reads the request first (a few seconds): the old list goes, a working line shows until the answer
+    out.dataset.loading = '1';
+    out.replaceChildren(h('div', { class: 'muted small' }, T('正在查看…')));
+    let x;
+    try { x = await api('context/preview?q=' + encodeURIComponent(inp.value)); } finally { delete out.dataset.loading; }
     out.replaceChildren(...(x.facts.length ? x.facts.map(f => h('div', { class: 'small', style: 'border-bottom:1px solid var(--line-2);padding:4px 0' },
       h('span', { class: 'chip', style: 'margin-right:6px' }, domLabel(r, f.domain)), f.fact,
       f.status === 'pending' ? h('span', { class: 'muted' }, T('（未确认）')) : null,
@@ -2369,6 +2373,13 @@ function memProfileCard(r, v) {
   // the one in the destination country
   // a field the user added (address:<label> or custom:<label>) is a full-width row like the entry rows below it — its
   // name, its value, a remove button — under the fixed fields, not a cell of their grid; an empty value deletes the key
+  // a custom field can be a standing preference: the "always use" tick (a flag the user sets; the agent then sees the
+  // field in every task, like the preferred airline / hotel brand / car rental)
+  const standing = new Set(r.profile_standing || []);
+  const standingBox = (k, on) => h('label', { class: 'small row standing', title: T('Agent 每个任务都会参考这一项'), style: 'gap:4px;align-items:center;white-space:nowrap' },
+    h('input', { type: 'checkbox', checked: on, 'data-key': k, onchange: k ? safe(async (e) => {
+      await api('profile', { method: 'PUT', body: { key: k, value: inputs[k].value, standing: e.target.checked } }); toast(T('已改 Saved'));
+    }) : null }), T('始终参考 Always use'));
   const removable = (k, name) => {
     const i = h('input', { type: 'text', value: prof[k], autocomplete: 'off', style: 'flex:2', 'aria-label': name }); inputs[k] = i;
     const del = h('button', { class: 'btn small danger', type: 'button', title: T('删除这个字段 Remove this field'), onclick: safe(async () => {
@@ -2376,7 +2387,8 @@ function memProfileCard(r, v) {
       await api('profile', { method: 'PUT', body: { key: k, value: '' } }); route();
     }) }, '🗑');
     return h('div', { class: 'row removable', 'data-key': k, style: 'align-items:center' },
-      h('span', { class: 'fieldname', title: name, style: 'flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name), i, del);
+      h('span', { class: 'fieldname', title: name, style: 'flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name), i,
+      k.startsWith('custom:') ? standingBox(k, standing.has(k)) : null, del);
   };
   const savedAddr = Object.keys(prof).filter(k => k.startsWith('address:')).map(k => removable(k, k.slice(8)));
   const savedCustom = Object.keys(prof).filter(k => k.startsWith('custom:')).map(k => removable(k, k.slice(7)));
@@ -2442,9 +2454,10 @@ function memProfileCard(r, v) {
   const addRow = (kind) => {
     const label = h('input', { type: 'text', placeholder: kind === 'address' ? T('再加一个地址：名称，如：新加坡的家') : T('自定义字段名，如：常用航空公司'), style: 'flex:1' });
     const val = h('input', { type: 'text', placeholder: kind === 'address' ? T('完整地址（含邮编）') : T('内容'), style: 'flex:1' });
-    const row = h('div', { class: 'row newfield', 'data-kind': kind }, label, val,
+    const tick = kind === 'custom' ? standingBox('', false) : null;
+    const row = h('div', { class: 'row newfield', 'data-kind': kind }, label, val, tick,
       h('button', { class: 'btn small', type: 'button', title: T('删除这个字段 Remove this field'), onclick: () => { row.remove(); newRows[kind] = newRows[kind].filter(x => x.row !== row); } }, '✕'));
-    newRows[kind].push({ row, label, val });
+    newRows[kind].push({ row, label, val, tick: tick && tick.querySelector('input') });
     return row;
   };
   const addrBox = h('div', { class: 'stack', style: 'gap:6px' }, savedAddr.length ? h('b', { class: 'small' }, T('其他地址 Other addresses')) : null, ...savedAddr, addRow('address'));
@@ -2455,8 +2468,12 @@ function memProfileCard(r, v) {
       if ((el.value || '').trim() !== (prof[k] || '')) { await api('profile', { method: 'PUT', body: { key: k, value: el.value } }); n++; }
     }
     for (const [kind, prefix] of [['address', 'address:'], ['custom', 'custom:']]) {
-      for (const { label, val } of newRows[kind]) {
-        if (label.value.trim() && val.value.trim()) { await api('profile', { method: 'PUT', body: { key: prefix + label.value.trim(), value: val.value } }); n++; }
+      for (const { label, val, tick } of newRows[kind]) {
+        if (label.value.trim() && val.value.trim()) {
+          const body = { key: prefix + label.value.trim(), value: val.value };
+          if (tick) body.standing = tick.checked;
+          await api('profile', { method: 'PUT', body }); n++;
+        }
       }
     }
     toast(n ? Tf("已保存 {0} 项", n) : T('没有改动 No changes')); S.profileNudge = undefined; route();
@@ -2465,7 +2482,7 @@ function memProfileCard(r, v) {
     h('p', { class: 'sub' }, T('填表、写邮件时才会用到的固定信息。Agent 只在需要时读取；它发现的新信息会先放到「待确认」，你同意后才会修改。证件号、会员号、信用卡请放进旁边的保险箱。')),
     ocrBox,
     h('div', { class: 'grid2', style: 'gap:4px 12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))' }, rows),
-    h('div', { class: 'small muted', id: 'pref-hint' }, T('常用航空公司可以选一家航空公司或一个航空联盟（如星空联盟）；常用酒店品牌可以选一个品牌（如假日酒店）或一个酒店集团；常用租车公司选一家（如赫兹）。不在列表里？用下面的「添加自定义字段」填写，Agent 同样会照顾到。')),
+    h('div', { class: 'small muted', id: 'pref-hint' }, T('常用航空公司可以选一家航空公司或一个航空联盟（如星空联盟）；常用酒店品牌可以选一个品牌（如假日酒店）或一个酒店集团；常用租车公司选一家（如赫兹）。不在列表里？用下面的「添加自定义字段」填写并勾选「始终参考」，Agent 同样会照顾到。')),
     addrBox, h('div', null, h('button', { class: 'btn small', type: 'button', onclick: () => addrBox.append(addRow('address')) }, T('＋ 再加一个地址 Add address'))),
     customBox, h('div', null, h('button', { class: 'btn small', type: 'button', onclick: () => customBox.append(addRow('custom')) }, T('＋ 添加自定义字段 Add field'))),
     h('div', null, h('button', { class: 'btn primary', onclick: save }, T('保存档案 Save profile'))));
@@ -2522,6 +2539,7 @@ function memPlanView(rep) {
     sec(T('升为长期'), [...(L.auto_promote || []).map(id => ({ fact: id, reason: T('经常被用到') })), ...(M.promote || [])], x => h('span', null, x.fact, h('span', { class: 'muted' }, ' — ' + (x.reason || '')))),
     sec(T('删除（含证件号/卡号/密码）'), L.sensitive, x => x.preview),
     sec(T('档案修改建议（需要你确认）'), M.profile, x => `${x.field} → ${x.value}`),
+    sec(T('归类'), M.classify, x => x.fact),
     h('div', { class: 'small muted' }, Tf("过期清理：记忆 {0} 条，经历 {1} 条", (L.prune_facts || []).length, L.prune_episodes || 0)));
 }
 
@@ -2534,7 +2552,11 @@ function memFactRow(f, recent, r) {
   const del = safe(async () => { await api('memory/' + f.id, { method: 'DELETE' }); route(); });
   const left = recent && f.expires_at ? Math.max(0, Math.ceil((f.expires_at * 1000 - Date.now()) / 86400000)) : null;
   const dom = r ? memDomainSelect(r, f.domain, safe(async (v) => { await api('memory/' + f.id, { method: 'PUT', body: { domain: v } }); toast(T('已改 Saved')); })) : (CAT_LABEL[f.category] || f.category || '');
+  // when the fact applies (its scope, set by the model when it was written): always, on a phrase, an ID document
+  const scope = f.kind === 'id_document' ? T('证件') : f.scope === 'always' ? T('始终适用') : f.scope === 'trigger' && f.trigger ? Tf("说「{0}」时", f.trigger)
+    : !f.scope ? T('待归类') : '';
   return h('tr', null, h('td', null, f.fact, f.status === 'pending' ? h('span', { class: 'chip bad', style: 'margin-left:6px' }, T('待确认')) : null,
+      scope ? h('span', { class: 'chip', style: 'margin-left:6px' }, scope) : null,
       f.history ? h('div', { class: 'small faint', title: f.history }, T('（有修改记录）')) : null),
     h('td', { class: 'small' }, dom),
     h('td', { class: 'small muted', style: 'white-space:nowrap' }, recent ? Tf("{0} 天后过期", left ?? '?') : String(f.uses || 0)),

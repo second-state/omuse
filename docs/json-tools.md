@@ -87,6 +87,7 @@ every `EXTRACT_SYSTEM`, `extract_exchange` and code-written answer text.
 | `apdt_refund` | `agent/apdt.rs` | its request regexes |
 | `bag_trace` (file reference, family name) | `agent/bagtrace.rs` | the reference/name patterns over words and mails |
 | `news_gather` (subject, window) → `news_publish` (the model's stories as JSON) | `agent/news.rs` | the subject regexes and the in-code writing call |
+| `train_times` (line, date, after) | `agent/trains.rs` | the model's web searches for a timetable (JR East's Narita Express page read by code, weekday / holiday table from a fixed calendar) |
 
 Mail text is natural language too: a reference or a date inside a mail is read by the model (it passes them as tool
 arguments), not by code. Structured mail data (an API's fields) is code's.
@@ -96,7 +97,11 @@ arguments), not by code. Structured mail data (an API's fields) is code's.
 Every fact the reply must carry is data (`agent/facts.rs`, `run_facts`), from structured sources only, and the final
 review (`Runtime::review_answer`, the model) gets the list as `must_say`; what the reply left out is added by the model
 (`Runtime::reply_with_facts`, the facts' JSON as the source). Code never scans the reply's prose and never appends text
-to it (the hard stops and secrets aside: `with_masked_cards`, the link repair).
+to it (the hard stops and secrets aside: `with_masked_cards`, the link repair). The review also gets the language setting
+(`prompts::review_system(must_say, lang)`) and answers `language_ok`: a reply against the language rule (English unless
+the user asked for text in another language) is written again by the model (`Runtime::reply_in_language`, event
+`language_fixed`) — code never guesses a text's language. It also flags a reply that says the assistant did a step the
+user did (Submit, Pay, Confirm).
 
 - **The `must_say` of a trusted code tool's result**: a machine's `T_result`, and the small tools the model calls with
   JSON when the user's words ask for them — `emergency_contacts{country, city, emergency, nationality}` (the official
@@ -202,3 +207,41 @@ saves the attachments and reads the PDFs) and returns `mail_read` — and what i
 `needs_input`. Several of the user's own addresses in the country are a choice card (`needs_choice`, the pick comes
 back as `own_address`). Results: `submitted` / `scheduled` / `not_confirmed` / `waiting_on_user` / `handed_over`
 (cards), `confirmed` / `not_eligible` / `stopped` (APDT), each with `must_say`.
+
+## Safety exceptions
+
+Sentinel and the apps crates read no natural language to decide a step: a flight's cabin, stops and self-transfer are
+required enums on `flights_search` (the request's words are not read); a click or an upload the user asked for is the
+model's `user_asked` on `browser_click` / `browser_upload`, honoured only while the task has read nothing flagged as an
+injection (task ctx), only for a click whose label is not about money, sending, booking or terms
+(`guard::click_skip_allowed`), only for an attached file (`uploads/`) on the site the message names; Vault values go into
+a page only through a form function's fixed ids (`browser_fill_form`) or the model's `browser_fill_secret` on a ref
+(no field guessed from labels); `purchase_confirm`'s total is the model's (or a machine's, from structured data) and
+a card fill before a confirmed purchase is refused, never confirmed in code from the page. What is kept, and why:
+
+- **Injection scan** (`omuse_common::guard::scan_injection`, the `injection_warning` flag): regexes over untrusted
+  prose (mails, pages, MCP results). A model classifier reading the same text could itself be injected; the flag only
+  tightens (more approvals, no `user_asked` skip, no egress trust).
+- **Risky-element heuristics** over a page element's own accessible name, as the browser reports it (not prose, not
+  the user's words): `click_is_risky`, `money_click`, `order_change_click`, `checkout_step_click`,
+  `user_submit_click`, `cart_edit_click`, `filter_submit`, `card_box_mismatch`, `click_skip_allowed`, and policy's
+  `passport_field` (an ID or card number box: typing is refused, only `browser_fill_secret`). They raise an approval,
+  hand a click to the user or refuse typing a secret; where they lower a risk it is bounded (add-to-cart, search,
+  cookie decline, a cart line's Remove, a filter box).
+- **The site the user named** (`guard::named_in_request`): an exact substring check of a page's domain (more than 4
+  characters) in the user's message — the one use of the user's words allowed (as `mail_results_to`), never after an
+  injection. It trusts the egress check for that site and bounds the `user_asked` upload.
+- **Receiving money** (`guard::refund_page`): a table of known pages (host + path), no longer a page's address or
+  title; there a card is filled to be credited without a purchase confirmation (each fill still approved).
+- **The checkout page's total next to the model's** (`routes::act::purchase_site` with `guard::page_total`): display
+  only — the approval card shows both, and a purchase whose total differs from the page's is never auto-approved.
+  Known shops' total selectors would replace it; there is no such table yet (it needs a broker call that reads one
+  selector).
+- **The ledger's return vs. cancel** (`routes::act::RETURN_RX`) over the label of the order-change button the user
+  approved: a status name in the ledger, no decision.
+- **Mail money lines** (`actions::money_lines`): lines with an amount kept from a mail body to keep 100 receipts in one
+  result; the model reads them and decides, code totals nothing.
+- **Watcher prices** (`watchers::price_hits`): a `price_below` watch runs unattended with no model; it compares the
+  currency amounts after the user's keyword to the user's threshold and only notifies.
+- **The Vault ID document by label** (`actions::fill_form`): when several ID documents are allowed on a known form's
+  site, the one the user labelled "passport" is used — a choice among the user's own items, never what is allowed.

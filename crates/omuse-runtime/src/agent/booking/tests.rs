@@ -1944,3 +1944,173 @@ fn ask_user_before_the_workflow_call_of_a_booking_skill_is_refused() {
     )];
     assert_eq!(ask_before_tool(&shop).unwrap()["tool"], "shop_order");
 }
+
+#[test]
+fn a_flight_pick_carries_its_times_the_day_searched_and_the_preferred_airlines_fare() {
+    // travel_kiwi_real 2026-11-01: the reply gave neither the day nor the times; travel_ask_real: the preferred airline
+    // (ANA) was in the results but not the cheapest and went unmentioned
+    let p = profile();
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03", "airlines": ["Singapore Airlines"]}),
+        "x",
+        &p,
+    );
+    let res_text = kiwi_result(
+        sq_cx(),
+        json!({"cabin": "economy", "preferred_found": 1}),
+        json!({}),
+    );
+    let (_, res) = run(
+        TRAVEL_SEARCH,
+        &a,
+        started(TRAVEL_SEARCH, &a, "x"),
+        &Env::of(&p),
+        |name, _, _| match name {
+            "flights_search" => res_text.clone(),
+            _ => "{}".into(),
+        },
+    );
+    assert_eq!(res["pick"]["label"], "Cathay Pacific CX710, CX500");
+    let m = must(&res);
+    assert!(m.contains("searched: SIN to TYO on 2026-12-03"), "{m}");
+    assert!(
+        m.contains("Cathay Pacific CX710, CX500: ")
+            && m.contains("09:25")
+            && !m.contains("09:25:00"),
+        "{m}"
+    );
+    assert!(
+        m.contains("your preferred airline Singapore Airlines: Singapore Airlines SQ638 — SGD 620"),
+        "{m}"
+    );
+    // none of the preferred airline in the results: said so
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03", "airlines": ["ANA"]}),
+        "x",
+        &p,
+    );
+    let (_, res) = run(
+        TRAVEL_SEARCH,
+        &a,
+        started(TRAVEL_SEARCH, &a, "x"),
+        &Env::of(&p),
+        |name, _, _| match name {
+            "flights_search" => res_text.clone(),
+            _ => "{}".into(),
+        },
+    );
+    assert!(
+        must(&res).contains("no ANA flight in the results"),
+        "{}",
+        must(&res)
+    );
+}
+
+#[test]
+fn a_bare_price_figure_gets_its_currency() {
+    // travel_brave_real 2026-11-01: Kiwi.com's round-trip "price": 562.0 reached the reply as "— 562.0"
+    let o = offer_of(
+        Kind::Flight,
+        &json!({"airlines": "China Southern Airlines", "price": 562.0, "legs": [{"flight_number": "CZ352"}]}),
+        "SGD",
+    );
+    assert_eq!(o.price_text, "SGD 562");
+    assert!(offer_fact(&o).contains("— SGD 562"), "{}", offer_fact(&o));
+    // a text the result wrote stays as it is
+    let o = offer_of(
+        Kind::Flight,
+        &json!({"airlines": "X", "fare": "SGD 1,250.50", "price": 1250.5}),
+        "SGD",
+    );
+    assert_eq!(o.price_text, "SGD 1,250.50");
+}
+
+#[test]
+fn the_rooms_of_a_booking_are_asked_on_the_connector_the_search_ran_on() {
+    // travel_hotel_real 2026-11-01: the search fell back to the agency's connector, the rooms went to the SerpApi tool
+    // (no key: refused) and the hotel's page for other dates was opened and handed over
+    let p = profile();
+    let mut env = Env::of(&p);
+    env.available = vec![
+        "hotels_search".into(),
+        "mcp_travel__hotels_search".into(),
+        "hotel_rooms".into(),
+        "mcp_travel__hotel_rooms".into(),
+    ];
+    let a = valid(
+        TRAVEL_BOOK,
+        json!({"kind": "hotel", "city": "Tokyo", "date": "2026-11-30", "check_out": "2026-12-03", "party": 2, "min_stars": 4, "free_cancellation": true}),
+        "x",
+        &p,
+    );
+    let web =
+        json!({"results": [{"title": "Result 1", "url": "https://example.com/1", "snippet": "x"}]});
+    let hotels = json!({"currency": "SGD", "hotels": [{"hotel_id": "H-TYO-1", "name": "Ginza Kaede Hotel", "stars": 4,
+        "price_per_night": 226, "free_cancellation": true, "booking_url": format!("{TT}/book/hotel/H-TYO-1")}]});
+    let rooms = json!({"hotel": {"name": "Ginza Kaede Hotel"}, "rooms": [
+        {"room_offer_id": "R2", "room_type": "Superior Twin", "price_per_night": "SGD 251.00", "total_amount": 753,
+         "cancellation": "Free cancellation until 2026-11-27 23:59 hotel local time", "payment": "Pay at the hotel (no prepayment)",
+         "booking_url": format!("{TT}/book/hotel/H-TYO-1-20261130-20261203-2-R2")}]});
+    let form = "[e10] textbox \"Full name\"\n[e11] textbox \"Email\"\n[e12] textbox \"Phone\"";
+    let (t, _) = run(
+        TRAVEL_BOOK,
+        &a,
+        started(TRAVEL_BOOK, &a, "x"),
+        &env,
+        |name, args, t| match name {
+            "hotels_search" => enveloped("web search (duckduckgo): hotels", web.clone()),
+            "mcp_travel__hotels_search" => {
+                enveloped("MCP Travel · hotels_search", json!(hotels.to_string()))
+            }
+            "mcp_travel__hotel_rooms" => {
+                enveloped("MCP Travel · hotel_rooms", json!(rooms.to_string()))
+            }
+            "hotel_rooms" => "DENIED by Sentinel: SerpApi key needed".into(),
+            "browser_navigate" => snap(&sget(args, "url"), form),
+            "browser_fill_form" => "{\"url\": \"x\", \"filled\": []}".into(),
+            "browser_request_takeover" => BACK.into(),
+            "browser_snapshot" if handed_back_in(t) => {
+                snap("x", "Booking confirmed\nBooking reference: TRV-HAB12CD")
+            }
+            _ => "{\"shown\": 1, \"verified\": true}".into(),
+        },
+    );
+    assert!(args_of(&t, "hotel_rooms").is_empty(), "{:?}", names(&t));
+    assert_eq!(args_of(&t, "mcp_travel__hotel_rooms").len(), 1);
+    assert_eq!(
+        args_of(&t, "browser_navigate")[0]["url"],
+        format!("{TT}/book/hotel/H-TYO-1-20261130-20261203-2-R2")
+    );
+}
+
+#[test]
+fn the_model_loading_browser_use_on_a_shop_code_fills_is_refused() {
+    // shopping_real 2026-11-01: "buy it now" after the cart turn went to browser-use instead of shop_order
+    let call = |id: &str| crate::llm::ToolCall {
+        id: id.into(),
+        name: "load_skill".into(),
+        args: json!({"name": BROWSER_USE}),
+    };
+    let args = json!({"url": format!("{SHOP}/kaya_search.html"), "action": "cart"});
+    let t = started(SHOP_ORDER, &args, "add it to my cart");
+    let r = browser_use_guard(&t, &call("call_9")).expect("refused");
+    let v: Value = serde_json::from_str(&r).unwrap();
+    assert_eq!(
+        (v["refused"].as_str(), v["tool"].as_str()),
+        (Some("known_shop"), Some(SHOP_ORDER))
+    );
+    // code's own load after a browser_use result, a shop code has no form for, another site opened since: allowed
+    assert!(browser_use_guard(&t, &call("bkg_skill_3")).is_none());
+    let other = started(
+        SHOP_ORDER,
+        &json!({"url": "https://shop.example/x", "action": "buy"}),
+        "x",
+    );
+    assert!(browser_use_guard(&other, &call("call_9")).is_none());
+    let mut moved = t.clone();
+    moved.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function",
+        "function": {"name": "browser_navigate", "arguments": json!({"url": "https://forms.example/apply"}).to_string()}}]}));
+    assert!(browser_use_guard(&moved, &call("call_9")).is_none());
+}

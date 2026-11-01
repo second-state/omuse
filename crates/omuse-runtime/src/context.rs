@@ -1,6 +1,6 @@
-//! Personal context v1 (roadmap batch 2): long-term memory sorted into domains, and the few facts that matter for a
-//! request handed to the agent at the start of the task, so it does not ask the user again for things it already knows
-//! (shoe size, cabin class, preferred cuisine, which mailbox to send from …).
+//! Personal context: long-term memory sorted into domains, and the few facts that matter for a request handed to the
+//! agent at the start of the task, so it does not ask the user again for things it already knows (shoe size, cabin
+//! class, preferred cuisine, which mailbox to send from …).
 //!
 //! Domains (域):
 //! ```text
@@ -13,260 +13,508 @@
 //!   work        工作与其他      companies, projects, everything else
 //! ```
 //!
-//! Selection is deterministic (no model call): what the request is about (shopping, dining, travel, email …), names and
-//! sites it mentions (with aliases: 迪卡侬 = Decathlon = decathlon.sg), and shared words. Facts learned by OMuse itself
-//! (not stated by the user) are "pending" until the user confirms them on the Memory page; they are still used, marked
-//! "unconfirmed".
+//! Natural language is the model's (CLAUDE.md): code never reads the request's words or a fact's prose to choose.
 //!
-//! The pieces the store itself needs (domains, classification, request intents, tokens, the prompt rendering) live in
-//! [`crate::store`] and are re-exported here under their Python names.
+//! * **Writing.** Every fact carries structured fields set by the model when it writes memory (`memory_remember`, the
+//!   extraction after a task, the sorting step `memory_tidy::classify` for facts written without them): domain,
+//!   topics ([`crate::store::TOPICS`]), scope (always · topic · trigger + its phrase), kind (id_document), entity and
+//!   the user's relation to it. Code validates them against the enums.
+//! * **Reading the request.** At the start of a task the model turns the request into JSON choices from lists it is
+//!   given ([`relevance`]): the topics it is about, the known entities it names (with their relation and aliases, so
+//!   "my wife" finds Mei), the trigger phrases the user said, and — for facts not sorted yet — the ids that bear on it.
+//! * **Selecting.** [`select`] scores the facts on those fields alone, plus structured task data ([`task_data`]: the
+//!   bot, the skills loaded, the workflow tools called). Identity-document facts never enter the prompt (the model asks
+//!   for them with `memory_search` `id_documents`). Facts learned by OMuse itself (not stated by the user) are
+//!   "pending" until the user confirms them on the Memory page; they are still used, marked "unconfirmed".
 
-use std::sync::LazyLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock};
 
-use omuse_common::util::{as_f64, get_str, py_str};
+use omuse_common::util::{as_f64, get_str, py_str, take_chars};
 use regex::Regex;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
-pub use crate::store::{
-    domain_label, domain_of, intent_rx, intents, render_facts as render, tokens, DOMAINS,
-    DOMAIN_KEYS, INTENTS, USE_RULE,
-};
+use crate::llm::{extract_json, ChatOpts, Llm};
+use crate::store::{fact_topics, topic_keys, unsorted, Store, TOPICS};
 
-fn rx(p: &str) -> Regex {
-    Regex::new(p).unwrap()
+pub use crate::store::{domain_label, render_facts as render, DOMAINS, DOMAIN_KEYS, USE_RULE};
+
+/// At most this many entities, unsorted facts and trigger phrases go into the relevance call.
+const MAX_ENTITIES: usize = 60;
+const MAX_UNSORTED: usize = 40;
+
+// ------------------------------------------------------------------------------------------------ task data
+/// What the task is known to be about from structured data alone: the bot, the skills it loaded and the workflow /
+/// connector tools it called (names from the transcript's tool calls, never the words).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TaskData {
+    pub topics: Vec<String>,
 }
 
-static EMAIL_ADDR: LazyLock<Regex> = LazyLock::new(|| rx(r"[\w.+-]+@[\w-]+(\.[\w-]+)+"));
-
-/// Merchants and services people name in different ways.
-pub const ALIASES: [&[&str]; 14] = [
-    &["decathlon", "迪卡侬", "decathlon.sg"],
-    &["amazon", "亚马逊", "amazon.sg"],
-    &["shopee", "虾皮"],
-    &["lazada", "来赞达"],
-    &["taobao", "淘宝"],
-    &["jd.com", "京东"],
-    &[
-        "singapore airlines",
-        "新航",
-        "新加坡航空",
-        "singaporeair",
-        "krisflyer",
-    ],
-    &["scoot", "酷航"],
-    &["grab"],
-    &["chope"],
-    &["notion"],
-    &["uniqlo", "优衣库"],
-    &["ikea", "宜家"],
-    &["fairprice", "职总平价"],
-];
-
-fn alias_groups(entities: &[Value]) -> Vec<Vec<String>> {
-    let mut groups: Vec<Vec<String>> = ALIASES
-        .iter()
-        .map(|g| g.iter().map(|s| s.to_string()).collect())
-        .collect();
-    for e in entities {
-        let mut names: Vec<String> = vec![get_str(e, "name")];
-        if let Some(al) = e
-            .get("attrs")
-            .and_then(|a| a.get("aliases"))
-            .and_then(Value::as_array)
-        {
-            names.extend(al.iter().map(|a| match a {
-                Value::String(s) => s.clone(),
-                other => py_str(other),
-            }));
-        }
-        names.push(get_str(e, "relation"));
-        let names: Vec<String> = names
-            .iter()
-            .filter(|n| !n.is_empty() && n.trim().chars().count() >= 2)
-            .map(|n| n.trim().to_string())
-            .collect();
-        if !names.is_empty() {
-            groups.push(names);
-        }
+/// The topics of a bot (`bots/<id>.md`).
+pub fn bot_topics(bot_id: &str) -> &'static [&'static str] {
+    match bot_id {
+        "travel" => &["travel"],
+        "insurance" => &["travel", "finance", "health"],
+        "cards" => &["finance"],
+        _ => &[],
     }
-    groups
 }
 
-static HOST: LazyLock<Regex> =
-    LazyLock::new(|| rx(r"(?i)\b([a-z0-9-]{3,})\.(?:[a-z]{2,6})(?:\.[a-z]{2})?\b"));
+/// The topics of a skill, by its name (`skills/<name>/SKILL.md`).
+pub fn skill_topics(name: &str) -> &'static [&'static str] {
+    match name {
+        "flight-booking"
+        | "hotel-booking"
+        | "hotel-requests"
+        | "travel-planning"
+        | "getting-around-asia"
+        | "payments-connectivity-asia"
+        | "flight-disruption"
+        | "trip-today"
+        | "entry-requirements" => &["travel"],
+        "arrival-cards" | "eu-etias" | "uk-eta" | "jp-visit-japan-web" | "ph-etravel" => {
+            &["travel", "forms"]
+        }
+        "baggage-delayed-lost" | "csr-trip-claim" | "fwd-travel-insurance" | "hk-apdt-refund" => {
+            &["travel", "finance"]
+        }
+        "travel-health-emergency" => &["travel", "health"],
+        "travel-expense-report" => &["travel", "finance", "documents"],
+        "online-shopping" | "order-tracking" | "tax-refund-shopping" | "web-research-compare" => {
+            &["shopping"]
+        }
+        "restaurant-booking" | "michelin-dining" | "dining-dietary-translate" => &["dining"],
+        "reply-email" | "morning-email-brief" => &["email"],
+        "news-research" | "news-search" => &["news", "documents"],
+        "deep-research" => &["documents"],
+        "pdf-forms" => &["forms"],
+        "phone-call" => &["phone_calls"],
+        "credit-card-picker" => &["finance"],
+        n if n.ends_with("-arrival-card") => &["travel", "forms"],
+        _ => &[],
+    }
+}
 
-/// Alias groups the text mentions (迪卡侬 → [decathlon, 迪卡侬, decathlon.sg]); a website named by its address
-/// counts too (shop.test → [shop.test, shop]).
-pub fn named(text: &str, entities: Option<&[Value]>) -> Vec<Vec<String>> {
-    let low = text.to_lowercase();
-    let mut out: Vec<Vec<String>> = alias_groups(entities.unwrap_or(&[]))
-        .into_iter()
-        .filter(|g| g.iter().any(|a| low.contains(&a.to_lowercase())))
-        .collect();
-    let plain = EMAIL_ADDR.replace_all(&low, " ");
-    for m in HOST.captures_iter(&plain) {
-        let whole = m.get(0).map(|x| x.as_str()).unwrap_or("");
-        let name = m.get(1).map(|x| x.as_str()).unwrap_or("");
-        if !out
-            .iter()
-            .any(|g| g.iter().any(|a| a.to_lowercase().contains(name)))
-        {
-            let mut g = vec![whole.to_string()];
-            if name.chars().count() >= 5 {
-                g.push(name.to_string());
+/// The topics of a tool, by its name.
+pub fn tool_topics(name: &str) -> &'static [&'static str] {
+    match name {
+        "travel_search" | "travel_book" | "flights_search" | "flight_offer" | "hotels_search"
+        | "hotel_rooms" | "cars_search" | "bag_trace" | "apdt_refund" => &["travel"],
+        "arrival_card_fill" => &["travel", "forms"],
+        "claim_file" | "insurance_buy" => &["travel", "finance"],
+        "shop_order" | "orders_list" => &["shopping"],
+        "news_gather" | "news_publish" => &["news", "documents"],
+        "phone_call" => &["phone_calls"],
+        "make_pdf" | "make_docx" | "make_xlsx" => &["documents"],
+        "pdf_form_fields" | "pdf_form_fill" => &["forms"],
+        n if n.starts_with("gmail_") => &["email"],
+        n if n.starts_with("calendar_") => &["calendar"],
+        _ => &[],
+    }
+}
+
+/// [`TaskData`] from the task's bot and its transcript (the tool calls made so far: `load_skill {name}` and the
+/// tools by name).
+pub fn task_data(bot_id: &str, transcript: &[Value]) -> TaskData {
+    let mut topics: Vec<String> = Vec::new();
+    let mut add = |ts: &[&str]| {
+        for t in ts {
+            if !topics.iter().any(|x| x == t) {
+                topics.push(t.to_string());
             }
-            out.push(g);
+        }
+    };
+    add(bot_topics(bot_id));
+    for m in transcript {
+        let Some(calls) = m.get("tool_calls").and_then(Value::as_array) else {
+            continue;
+        };
+        for c in calls {
+            let f = c.get("function").unwrap_or(c);
+            let name = get_str(f, "name");
+            if name == "load_skill" {
+                let args = match f.get("arguments") {
+                    Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(Value::Null),
+                    Some(v) => v.clone(),
+                    None => Value::Null,
+                };
+                add(skill_topics(&get_str(&args, "name")));
+            } else {
+                add(tool_topics(&name));
+            }
         }
     }
-    out
+    TaskData { topics }
 }
 
-fn mentions(fact_text: &str, group: &[String]) -> bool {
-    let low = fact_text.to_lowercase();
-    group.iter().any(|a| low.contains(&a.to_lowercase()))
+// ------------------------------------------------------------------------------------------------ the model's reading
+/// A known entity the model may name: its name, the user's relation to it, its aliases, and one fact about it (so
+/// the model can tell who "my wife" is).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntityChoice {
+    pub name: String,
+    pub relation: String,
+    pub aliases: Vec<String>,
+    pub about: String,
 }
 
-/// Identity documents (passport number / expiry, ID card, date of birth …): only when the request needs them filled in.
-pub static ID_DOC: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)护照|身份证|出生日期|生日|签发|有效期至|证件号|\b(passport|date of birth|DOB|born on|national id|NRIC|FIN|id (card|number)|identity card|expir(y|es|ation))\b",
-    )
-});
+/// The lists the model chooses from when it reads a request.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Menu {
+    pub entities: Vec<EntityChoice>,
+    pub triggers: Vec<String>,
+    /// (id, text) of facts not sorted yet
+    pub unsorted: Vec<(String, String)>,
+    /// whether any fact applies by topic (else the topics need no answer)
+    pub by_topic: bool,
+}
 
-static TRIGGER: LazyLock<Regex> =
-    LazyLock::new(|| rx(r#"(?:说|says?|ask(?:s)? for)\s*[「“"']([^」”"']{2,20})[」”"']"#));
-/// A rule that applies to every task (how the assistant should behave in general).
-pub static GENERAL_RULE: LazyLock<Regex> =
-    LazyLock::new(|| rx(r"(?i)the assistant|OMuse|助手|autonomous|自主|直接执行"));
+impl Menu {
+    /// Nothing for the model to choose: no topic-scoped fact, no entity, no trigger, nothing unsorted.
+    pub fn is_empty(&self) -> bool {
+        !self.by_topic
+            && self.entities.is_empty()
+            && self.triggers.is_empty()
+            && self.unsorted.is_empty()
+    }
+}
 
-fn with_extra(f: &Value, dom: &str, score: f64, why: &str) -> Value {
+/// What the model made of the request: the topics, the entities (canonical names from the menu), the trigger
+/// phrases the user said and the unsorted fact ids that bear on it — every item one of the listed choices.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Relevance {
+    pub topics: Vec<String>,
+    pub entities: Vec<String>,
+    pub triggers: Vec<String>,
+    pub facts: Vec<String>,
+}
+
+fn aliases_of(e: &Value) -> Vec<String> {
+    e.get("attrs")
+        .and_then(|a| a.get("aliases"))
+        .and_then(Value::as_array)
+        .map(|al| {
+            al.iter()
+                .map(|a| match a {
+                    Value::String(s) => s.trim().to_string(),
+                    other => py_str(other),
+                })
+                .filter(|a| !a.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn uses(f: &Value) -> f64 {
+    f.get("uses").and_then(as_f64).unwrap_or(0.0)
+}
+
+/// The menu for a request from the live long-term facts and the entities (Memory page: aliases, relation).
+pub fn build_menu(facts: &[Value], entities: &[Value]) -> Menu {
+    let mut by_uses: Vec<&Value> = facts
+        .iter()
+        .filter(|f| get_str(f, "kind") != "id_document")
+        .collect();
+    by_uses.sort_by(|a, b| {
+        uses(b)
+            .partial_cmp(&uses(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut ents: Vec<EntityChoice> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let about = |name: &str| -> String {
+        by_uses
+            .iter()
+            .find(|f| get_str(f, "entity").trim().eq_ignore_ascii_case(name))
+            .map(|f| take_chars(&get_str(f, "fact"), 140).to_string())
+            .unwrap_or_default()
+    };
+    // the facts' entities first (most used), then the ones only on the Memory page
+    for f in &by_uses {
+        let name = get_str(f, "entity").trim().to_string();
+        if name.chars().count() < 2 || !seen.insert(name.to_lowercase()) {
+            continue;
+        }
+        let e = entities
+            .iter()
+            .find(|e| get_str(e, "name").trim().eq_ignore_ascii_case(&name));
+        ents.push(EntityChoice {
+            relation: e.map(|e| get_str(e, "relation")).unwrap_or_default(),
+            aliases: e.map(aliases_of).unwrap_or_default(),
+            about: about(&name),
+            name,
+        });
+    }
+    for e in entities {
+        let name = get_str(e, "name").trim().to_string();
+        if name.chars().count() < 2 || !seen.insert(name.to_lowercase()) {
+            continue;
+        }
+        ents.push(EntityChoice {
+            relation: get_str(e, "relation"),
+            aliases: aliases_of(e),
+            about: String::new(),
+            name,
+        });
+    }
+    ents.truncate(MAX_ENTITIES);
+    let mut triggers: Vec<String> = Vec::new();
+    for f in &by_uses {
+        let t = get_str(f, "trigger").trim().to_string();
+        if get_str(f, "scope") == "trigger" && !t.is_empty() && !triggers.contains(&t) {
+            triggers.push(t);
+        }
+    }
+    let unsorted_list: Vec<(String, String)> = by_uses
+        .iter()
+        .filter(|f| unsorted(f))
+        .take(MAX_UNSORTED)
+        .map(|f| {
+            (
+                get_str(f, "id"),
+                take_chars(&get_str(f, "fact"), 200).to_string(),
+            )
+        })
+        .collect();
+    Menu {
+        entities: ents,
+        triggers,
+        unsorted: unsorted_list,
+        by_topic: by_uses.iter().any(|f| get_str(f, "scope") == "topic"),
+    }
+}
+
+/// The user message of the relevance call: the request (and the user's recent messages), then the lists to choose
+/// from as JSON.
+pub fn relevance_prompt(request: &str, recent: &str, menu: &Menu) -> String {
+    let topics: Map<String, Value> = TOPICS
+        .iter()
+        .map(|(k, d)| (k.to_string(), json!(d)))
+        .collect();
+    let entities: Vec<Value> = menu
+        .entities
+        .iter()
+        .map(|e| {
+            let mut m = Map::new();
+            m.insert("name".into(), json!(e.name));
+            if !e.relation.is_empty() {
+                m.insert("relation".into(), json!(e.relation));
+            }
+            if !e.aliases.is_empty() {
+                m.insert("aliases".into(), json!(e.aliases));
+            }
+            if !e.about.is_empty() {
+                m.insert("about".into(), json!(e.about));
+            }
+            Value::Object(m)
+        })
+        .collect();
+    let unsorted: Vec<Value> = menu
+        .unsorted
+        .iter()
+        .map(|(id, f)| json!({"id": id, "fact": f}))
+        .collect();
+    let choices = json!({"topics": topics, "entities": entities, "triggers": menu.triggers, "facts": unsorted});
+    let mut s = format!("The request:\n{}\n", take_chars(request.trim(), 2000));
+    if !recent.trim().is_empty() {
+        s += &format!(
+            "\nThe user's recent messages in this chat (for a follow-up):\n{}\n",
+            take_chars(recent.trim(), 1500)
+        );
+    }
+    s += &format!("\nChoices:\n{}", choices);
+    s
+}
+
+fn str_items(v: &Value, key: &str) -> Option<Vec<String>> {
+    match v.get(key) {
+        None | Some(Value::Null) => Some(vec![]),
+        Some(Value::Array(a)) => Some(
+            a.iter()
+                .filter_map(|x| match x {
+                    Value::String(s) => Some(s.trim().to_string()),
+                    Value::Object(o) => o
+                        .get("name")
+                        .or_else(|| o.get("id"))
+                        .and_then(Value::as_str)
+                        .map(|s| s.trim().to_string()),
+                    _ => None,
+                })
+                .collect(),
+        ),
+        Some(Value::String(s)) => Some(vec![s.trim().to_string()]),
+        Some(_) => None,
+    }
+}
+
+/// The model's answer, every item checked against the menu: topics in [`TOPICS`], entities by name or alias (any
+/// case) → the canonical name, triggers exactly as listed (any case), fact ids as listed. `None` when the reply is
+/// not a JSON object with these lists.
+pub fn parse_relevance(reply: &str, menu: &Menu) -> Option<Relevance> {
+    let v = extract_json(reply)?;
+    if !v.is_object() {
+        return None;
+    }
+    let keys = topic_keys();
+    let mut rel = Relevance::default();
+    for t in str_items(&v, "topics")? {
+        let t = t.to_lowercase();
+        if keys.contains(&t.as_str()) && !rel.topics.contains(&t) {
+            rel.topics.push(t);
+        }
+    }
+    for n in str_items(&v, "entities")? {
+        let hit = menu.entities.iter().find(|e| {
+            e.name.eq_ignore_ascii_case(&n) || e.aliases.iter().any(|a| a.eq_ignore_ascii_case(&n))
+        });
+        if let Some(e) = hit {
+            if !rel.entities.contains(&e.name) {
+                rel.entities.push(e.name.clone());
+            }
+        }
+    }
+    for t in str_items(&v, "triggers")? {
+        if let Some(x) = menu.triggers.iter().find(|x| x.eq_ignore_ascii_case(&t)) {
+            if !rel.triggers.contains(x) {
+                rel.triggers.push(x.clone());
+            }
+        }
+    }
+    for id in str_items(&v, "facts")? {
+        if menu.unsorted.iter().any(|(i, _)| *i == id) && !rel.facts.contains(&id) {
+            rel.facts.push(id);
+        }
+    }
+    Some(rel)
+}
+
+/// The model reads the request and answers with choices from the menu (temperature 0, no tools, JSON only); a reply
+/// that is not that JSON gets one retry, then nothing is chosen (the facts that always apply still come). This is
+/// the model's side of the line — language into JSON — never a code tool calling the model.
+pub async fn relevance(
+    llm: &Llm,
+    task_id: &str,
+    request: &str,
+    recent: &str,
+    menu: &Menu,
+) -> Relevance {
+    if menu.is_empty() || request.trim().is_empty() {
+        return Relevance::default();
+    }
+    let o = ChatOpts {
+        temperature: Some(0.0),
+        max_tokens: Some(400),
+        purpose: "memory".into(),
+        task_id: task_id.to_string(),
+        model: None,
+        no_think: true,
+        stream_to: None,
+    };
+    let mut msgs = vec![
+        json!({"role": "system", "content": crate::prompts::MEMORY_RELEVANCE}),
+        json!({"role": "user", "content": relevance_prompt(request, recent, menu)}),
+    ];
+    for _ in 0..2 {
+        let Ok(r) = llm.chat(&msgs, None, &o).await else {
+            break;
+        };
+        if let Some(rel) = parse_relevance(&r.content, menu) {
+            return rel;
+        }
+        msgs.push(json!({"role": "assistant", "content": take_chars(&r.content, 300)}));
+        msgs.push(json!({"role": "user", "content":
+            "Answer with the JSON object only: {\"topics\": [...], \"entities\": [...], \"triggers\": [...], \"facts\": [...]}, each item copied from the choices."}));
+    }
+    Relevance::default()
+}
+
+// ------------------------------------------------------------------------------------------------ selection
+fn with_extra(f: &Value, score: f64, why: &str) -> Value {
     let mut m: Map<String, Value> = f.as_object().cloned().unwrap_or_default();
-    m.insert("domain".into(), Value::String(dom.to_string()));
+    if get_str(f, "domain").is_empty() {
+        m.insert("domain".into(), json!("work"));
+    }
     m.insert("score".into(), Value::from(score));
     m.insert("why".into(), Value::String(why.to_string()));
     Value::Object(m)
 }
 
-fn domain_for(f: &Value) -> String {
-    let d = get_str(f, "domain");
-    if !d.is_empty() {
-        return d;
-    }
-    domain_of(
-        &get_str(f, "fact"),
-        &get_str(f, "category"),
-        &get_str(f, "entity"),
-    )
-    .to_string()
-}
-
-/// The facts that matter for this request, best first. Each returned fact gets `score` and `why`.
-/// `context` = the recent conversation (a follow-up like "好，就买那双" carries little on its own).
-/// A family or work relation the request and the fact both name ("my wife" … "the user's wife"), else `None`.
-fn shared_relation(request: &str, fact: &str) -> Option<String> {
-    static REL: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(wife|husband|spouse|partner|son|daughter|kids?|children|mother|mom|mum|father|dad|parents|brother|sister|boss|manager|assistant|grandmother|grandfather|girlfriend|boyfriend)\b|(妻子|老婆|太太|丈夫|老公|先生|儿子|女儿|孩子|妈妈|母亲|爸爸|父亲|父母|哥哥|弟弟|姐姐|妹妹|老板|上司|助理|奶奶|爷爷|外婆|外公|女朋友|男朋友)").unwrap()
-    });
-    let norm = |w: &str| w.to_lowercase().trim_end_matches('s').to_string();
-    let in_fact: Vec<String> = REL.find_iter(fact).map(|m| norm(m.as_str())).collect();
-    REL.find_iter(request)
-        .map(|m| norm(m.as_str()))
-        .find(|w| in_fact.contains(w))
-}
-
+/// The facts that matter for this request, best first, from their structured fields: a trigger the user said (10),
+/// an entity the request names (6, with its aliases), a rule that always applies (5), shared topics with the
+/// request or the task (3 + up to 2; a site habit only when its site is named), an unsorted fact the model picked
+/// (4); plus a little for facts used often. Identity-document facts never. Each returned fact gets `score` and `why`.
 pub fn select(
-    request: &str,
     facts: &[Value],
-    entities: Option<&[Value]>,
+    rel: &Relevance,
+    task: &TaskData,
+    entities: &[Value],
     limit: usize,
-    context: &str,
 ) -> Vec<Value> {
-    let req = request;
-    let whole = if context.is_empty() {
-        req.to_string()
-    } else {
-        format!("{}\n{}", req, context)
-    };
-    let mut its = intents(req);
-    if its.is_empty() {
-        its = intents(context);
+    let mut topics: Vec<&str> = rel.topics.iter().map(String::as_str).collect();
+    for t in &task.topics {
+        if !topics.contains(&t.as_str()) {
+            topics.push(t.as_str());
+        }
     }
-    let groups = named(&whole, entities);
-    let rtoks = tokens(req);
-    // passport / ID facts never enter by the request's wording: the model asks for them (memory_search id_documents)
-    let want_id = false;
+    // the chosen entities with their aliases, lower-cased
+    let mut names: HashSet<String> = HashSet::new();
+    for n in &rel.entities {
+        names.insert(n.to_lowercase());
+        if let Some(e) = entities
+            .iter()
+            .find(|e| get_str(e, "name").trim().eq_ignore_ascii_case(n))
+        {
+            names.extend(aliases_of(e).iter().map(|a| a.to_lowercase()));
+        }
+    }
     let mut scored: Vec<Value> = Vec::new();
     for f in facts {
-        let fact = get_str(f, "fact");
-        let entity = get_str(f, "entity");
-        let text = format!("{} {}", fact, entity);
-        if !want_id && ID_DOC.is_match(&fact) {
-            continue; // passport / ID / birth date stay out of answers unless a form needs them
+        let kind = get_str(f, "kind");
+        if kind == "id_document" {
+            continue; // passport / ID / birth date: only when a form needs them (memory_search id_documents)
         }
-        let dom = domain_for(f);
-        let mut s = 0.0_f64;
-        let mut why: Vec<String> = Vec::new();
-        let trig: Vec<String> = TRIGGER
-            .captures_iter(&fact)
-            .map(|c| c[1].to_string())
-            .collect();
-        if dom == "rule" && !trig.is_empty() {
-            // "以后每次说「准备出差」…": only when the user says it
-            if trig
-                .iter()
-                .any(|t| !t.is_empty() && req.contains(t.as_str()))
-            {
-                scored.push(with_extra(f, &dom, 10.0, &format!("触发词：{}", trig[0])));
+        let id = get_str(f, "id");
+        if unsorted(f) {
+            if rel.facts.contains(&id) {
+                scored.push(with_extra(f, 4.0 + (uses(f) / 50.0).min(1.0), "picked"));
             }
             continue;
         }
-        let g: Vec<&Vec<String>> = groups.iter().filter(|x| mentions(&text, x)).collect();
-        if !g.is_empty() {
-            s += 6.0;
-            why.push(format!("提到 {}", g[0][0]));
-        } else if let Some(r) = shared_relation(req, &text) {
-            // "a present for my wife" and "The user's wife, Mei, collects jazz vinyl": the same person by relation
-            // (2026-10-30, memory_real: Try it found nothing)
-            s += 6.0;
-            why.push(format!("关系：{r}"));
+        let scope = get_str(f, "scope");
+        if scope == "trigger" {
+            let t = get_str(f, "trigger");
+            if rel.triggers.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
+                scored.push(with_extra(f, 10.0, &format!("trigger: {t}")));
+            }
+            continue;
         }
-        let hits: Vec<&str> = its
-            .iter()
-            .copied()
-            .filter(|k| {
-                intent_rx(k)
-                    .map(|(_, b)| b.is_match(&text))
-                    .unwrap_or(false)
-            })
+        let mut s = 0.0_f64;
+        let mut why: Vec<String> = Vec::new();
+        let ent = get_str(f, "entity").trim().to_lowercase();
+        let by_entity = !ent.is_empty() && names.contains(&ent);
+        if by_entity {
+            s += 6.0;
+            why.push(format!("entity: {}", get_str(f, "entity").trim()));
+        }
+        if scope == "always" {
+            s += 5.0;
+            why.push("always".into());
+        }
+        let shared: Vec<String> = fact_topics(f)
+            .into_iter()
+            .filter(|t| topics.contains(&t.as_str()))
             .collect();
-        if !hits.is_empty() {
-            s += 3.0 + std::cmp::min(2, hits.len() - 1) as f64;
-            why.push(format!("相关：{}", hits.join("/")));
-            if dom == "site" && g.is_empty() {
-                s -= 2.0; // a site habit matters when that site is in play
-            }
-        }
-        let ftoks = tokens(&text);
-        let mut shared: Vec<&String> = rtoks.intersection(&ftoks).collect();
-        if !shared.is_empty() {
-            s += std::cmp::min(3, shared.len()) as f64;
-            if why.is_empty() {
-                shared.sort();
-                let top: Vec<&str> = shared.iter().take(3).map(|x| x.as_str()).collect();
-                why.push(format!("词：{}", top.join(",")));
-            }
-        }
-        if dom == "rule" && GENERAL_RULE.is_match(&text) {
-            s += 3.0;
-            why.push("通用规则".to_string());
+        let site_elsewhere = get_str(f, "domain") == "site" && !by_entity;
+        if !shared.is_empty() && !site_elsewhere {
+            s += 3.0 + std::cmp::min(2, shared.len() - 1) as f64;
+            why.push(format!("topics: {}", shared.join("/")));
         }
         if s >= 3.0 {
-            let uses = f.get("uses").and_then(as_f64).unwrap_or(0.0);
             scored.push(with_extra(
                 f,
-                &dom,
-                s + (uses / 50.0).min(1.0),
-                &why.join("；"),
+                s + (uses(f) / 50.0).min(1.0),
+                &why.join("; "),
             ));
         }
     }
@@ -279,9 +527,72 @@ pub fn select(
     scored
 }
 
+// ------------------------------------------------------------------------------------------------ for a task
+/// The model's reading per task (the executor asks for a plan, or loads a skill: the same task, no second call).
+static READINGS: LazyLock<parking_lot::Mutex<HashMap<String, (String, Relevance)>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+
+fn cached(task_id: &str, goal: &str) -> Option<Relevance> {
+    READINGS
+        .lock()
+        .get(task_id)
+        .filter(|(g, _)| g == goal)
+        .map(|(_, r)| r.clone())
+}
+
+fn keep_reading(task_id: &str, goal: &str, rel: &Relevance) {
+    if task_id.is_empty() {
+        return;
+    }
+    let mut m = READINGS.lock();
+    if m.len() > 256 {
+        m.clear();
+    }
+    m.insert(task_id.to_string(), (goal.to_string(), rel.clone()));
+}
+
+/// The long-term facts for a task: the model reads the request against the menu (once per task), [`select`] picks
+/// on the structured fields and the task data, and the store records what the task used (an episode of the task
+/// then carries the fact ids). Facts not sorted yet are sorted in the background (`memory_tidy::classify`).
+pub async fn facts_for_task(
+    store: &Arc<Store>,
+    llm: &Arc<Llm>,
+    task_id: &str,
+    goal: &str,
+    recent: &str,
+    task: &TaskData,
+) -> (Vec<Value>, Relevance) {
+    let facts = store.facts(500, Some("long")).unwrap_or_default();
+    if facts.is_empty() {
+        return (vec![], Relevance::default());
+    }
+    if facts.iter().any(unsorted) {
+        crate::memory_tidy::classify_in_background(store.clone(), llm.clone());
+    }
+    let ents = store.entities(None).unwrap_or_default();
+    let rel = match cached(task_id, goal) {
+        Some(r) => r,
+        None => {
+            let menu = build_menu(&facts, &ents);
+            let r = relevance(llm, task_id, goal, recent, &menu).await;
+            keep_reading(task_id, goal, &r);
+            r
+        }
+    };
+    let out = select(&facts, &rel, task, &ents, 12);
+    let ids: Vec<String> = out.iter().map(|f| get_str(f, "id")).collect();
+    let _ = store.mark_used(&ids);
+    let mut topics = rel.topics.clone();
+    topics.extend(task.topics.iter().cloned());
+    let _ = store.note_task_memory(task_id, &topics, &rel.entities, &ids);
+    (out, rel)
+}
+
+// ------------------------------------------------------------------------------------------------ sites
 /// `'https://www.decathlon.sg/p/123'` → `'decathlon'`.
 pub fn site_name(url: &str) -> String {
-    static SCHEME_HOST: LazyLock<Regex> = LazyLock::new(|| rx(r"^[a-z]+://([^/:?#]+)"));
+    static SCHEME_HOST: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^[a-z]+://([^/:?#]+)").unwrap());
     let low = url.trim().to_lowercase();
     let Some(m) = SCHEME_HOST.captures(&low) else {
         return String::new();
@@ -300,46 +611,56 @@ pub fn site_name(url: &str) -> String {
     parts.last().map(|p| p.to_string()).unwrap_or_default()
 }
 
-/// Site habits (and other facts) about the website at `url`.
-pub fn site_facts(url: &str, facts: &[Value]) -> Vec<Value> {
+/// The site an entity names (a structured field): `decathlon.sg` / `https://www.decathlon.sg/` → `decathlon`; a
+/// plain name → itself, lower-cased.
+fn entity_site(entity: &str) -> String {
+    let e = entity.trim().to_lowercase();
+    if e.is_empty() || e.contains(' ') || e.contains('@') {
+        return e;
+    }
+    if e.contains("://") {
+        return site_name(&e);
+    }
+    if e.contains('.') {
+        return site_name(&format!("https://{e}"));
+    }
+    e
+}
+
+/// Site habits (and other facts) about the website at `url`: the facts whose entity is that site (the entity, or
+/// one of its aliases on the Memory page, names the same site).
+pub fn site_facts(url: &str, facts: &[Value], entities: &[Value]) -> Vec<Value> {
     let name = site_name(url);
     if name.chars().count() < 3 {
         return vec![];
     }
-    let group: Vec<String> = ALIASES
-        .iter()
-        .find(|g| {
-            g.iter().any(|a| {
-                a.to_lowercase()
-                    .split('.')
-                    .next()
-                    .map(|p| p == name)
-                    .unwrap_or(false)
-            })
-        })
-        .map(|g| g.iter().map(|s| s.to_string()).collect())
-        .unwrap_or_else(|| vec![name.clone()]);
-    let mut out: Vec<Value> = Vec::new();
-    for f in facts {
-        let text = format!("{} {}", get_str(f, "fact"), get_str(f, "entity")).to_lowercase();
-        if group.iter().any(|a| text.contains(&a.to_lowercase())) {
-            let dom = domain_for(f);
-            if ["site", "account", "rule", "preference"].contains(&dom.as_str()) {
-                let mut m: Map<String, Value> = f.as_object().cloned().unwrap_or_default();
-                m.insert("domain".into(), Value::String(dom));
-                out.push(Value::Object(m));
-            }
+    let same = |entity: &str| -> bool {
+        if entity.trim().is_empty() {
+            return false;
         }
-    }
+        if entity_site(entity) == name {
+            return true;
+        }
+        entities
+            .iter()
+            .find(|e| {
+                get_str(e, "name")
+                    .trim()
+                    .eq_ignore_ascii_case(entity.trim())
+            })
+            .is_some_and(|e| aliases_of(e).iter().any(|a| entity_site(a) == name))
+    };
+    let mut out: Vec<Value> = facts
+        .iter()
+        .filter(|f| get_str(f, "kind") != "id_document" && same(&get_str(f, "entity")))
+        .filter(|f| {
+            ["site", "account", "rule", "preference"].contains(&get_str(f, "domain").as_str())
+        })
+        .cloned()
+        .collect();
     out.sort_by(|a, b| {
-        let ka = (
-            get_str(a, "domain") != "site",
-            -a.get("uses").and_then(as_f64).unwrap_or(0.0),
-        );
-        let kb = (
-            get_str(b, "domain") != "site",
-            -b.get("uses").and_then(as_f64).unwrap_or(0.0),
-        );
+        let ka = (get_str(a, "domain") != "site", -uses(a));
+        let kb = (get_str(b, "domain") != "site", -uses(b));
         ka.0.cmp(&kb.0)
             .then(ka.1.partial_cmp(&kb.1).unwrap_or(std::cmp::Ordering::Equal))
     });
@@ -349,315 +670,398 @@ pub fn site_facts(url: &str, facts: &[Value]) -> Vec<Value> {
 
 #[cfg(test)]
 mod tests {
-
-    #[test]
-    fn food_and_drink_preferences_are_found() {
-        // assistant_real 2026-10-31: "What do you know about my food and drink preferences?" selected nothing
-        let facts = vec![
-            json!({"id": "f1", "fact": "The user is vegetarian and does not drink alcohol.", "entity": "user", "domain": "preference"}),
-            json!({"id": "f2", "fact": "The user wears size 42 running shoes.", "entity": "", "category": "preference"}),
-        ];
-        let got = select(
-            "What do you know about my food and drink preferences?",
-            &facts,
-            None,
-            12,
-            "",
-        );
-        assert!(got.iter().any(|f| f["id"] == "f1"), "{got:?}");
-        assert!(!got.iter().any(|f| f["id"] == "f2"));
-    }
-
-    #[test]
-    fn a_relation_finds_the_person() {
-        let facts = vec![
-            json!({"id": "f1", "fact": "The user's wife, Mei, collects jazz vinyl records.", "entity": "Mei", "category": "person"}),
-            json!({"id": "f2", "fact": "The user wears size 42 running shoes.", "entity": "", "category": "preference"}),
-        ];
-        let got = select(
-            "Suggest a birthday present for my wife",
-            &facts,
-            None,
-            12,
-            "",
-        );
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0]["id"], "f1");
-        assert!(
-            select(
-                "给我老婆挑个生日礼物",
-                &[json!({"id": "z", "fact": "用户的老婆喜欢黑胶唱片。", "entity": ""})],
-                None,
-                12,
-                ""
-            )
-            .len()
-                == 1
-        );
-        assert!(select(
-            "Suggest a birthday present for my boss",
-            &facts,
-            None,
-            12,
-            ""
-        )
-        .is_empty());
-    }
-
     use super::*;
-    use serde_json::json;
 
-    /// `tests/fixtures/memory_like.py`: facts shaped like a real user's memory (invented wording).
-    const FACTS: [(&str, &str, &str); 39] = [
-        ("other", "", "decathlon.sg 网站支持访客结账，无需登录。结账时选「送货到家 (Home delivery)」会自动带出已保存的地址；电话号码填 8 位，不要 +65。"),
-        ("preference", "", "我身高177，体重76公斤，鞋子42码，运动鞋43码。"),
-        ("other", "", "用户要求：以后每次说「准备出差」，按固定流程执行——查邮件里的航班和酒店、查目的地天气、查日历冲突、生成一页行程 PDF。"),
-        ("price-monitoring", "Olares One 价格监控", "Olares One price baseline (2026-10-05): single unit $4,999 USD."),
-        ("preference", "hiking", "The user prefers hiking with medium-low intensity and a duration of 3 to 5 hours."),
-        ("preference", "", "我美国手机号码是 +1-669-000-0000"),
-        ("preference", "Parker pen", "The user prefers metal pens with an aesthetic design."),
-        ("preference", "AI", "The user is interested in news regarding AI and robotics."),
-        ("preference", "unsubscribes", "The user prefers to review and select unsubscribes individually rather than using bulk actions."),
-        ("other", "email accounts", "The user manages four connected email accounts."),
-        ("preference", "", "The user operates in the Singapore Time Zone (SGT)."),
-        ("company", "Ogena Solutions", "The user works with or receives communications from Ogena Solutions."),
-        ("company", "lucas@example.io", "The user manages the email account lucas@example.io."),
-        ("preference", "", "The user prefers business class seats."),
-        ("person", "LU A, LU B", "The user travels with LU A and LU B."),
-        ("preference", "Hunan cuisine", "The user prefers dining at Hunan cuisine restaurants."),
-        ("preference", "OtterBox Defender", "The user prefers aesthetically pleasing phone cases, specifically the OtterBox Defender series."),
-        ("preference", "iPhone 17 Pro Max", "The user uses an iPhone 17 Pro Max."),
-        ("project", "Olares One", "The user is working on the Olares One PCBA project."),
-        ("company", "BEC Lab", "The user works at BEC Lab, located at #10-01 20 Anson Rd, Singapore 079912."),
-        ("habit", "", "The user travels with a group of three other people."),
-        ("preference", "", "The user prefers to sit together with their travel companions, ideally in the same row."),
-        ("preference", "", "The user prefers to avoid leaving personal information or registering accounts during online shopping."),
-        ("preference", "email management", "The user prefers to mark non-important emails as read."),
-        ("other", "Amazon Singapore", "The user is interested in purchasing an iPhone 17 Pro Max case from Amazon Singapore."),
-        ("habit", "Amazon Singapore", "The user shops on Amazon Singapore (amazon.sg)."),
-        ("company", "XIANGXI HOMETOWN", "The user is interested in dining at the restaurant 'XIANGXI HOMETOWN' in Singapore."),
-        ("preference", "", "The user prefers the assistant to execute tasks autonomously and directly, without requiring confirmation for each step."),
-        ("preference", "", "For travel, the user prefers direct flights and quiet boutique hotels."),
-        ("person", "Frank, Daniel", "The user collaborates with colleagues named Frank, Daniel and Michael."),
-        ("preference", "", "The user prefers receiving deliverables in PDF format."),
-        ("preference", "", "The user prefers receiving reports in Chinese."),
-        ("preference", "Japanese cuisine", "The user enjoys dining at Japanese restaurants."),
-        ("other", "Singapore", "The user lives in Singapore."),
-        ("preference", "Chope", "The user prefers to use Chope or restaurant official websites for checking availability."),
-        ("preference", "example.io", "The user prefers sending emails from their example.io address rather than the gmail one."),
-        ("person", "James", "The user works with James Zhan on business matters."),
-        ("habit", "Notion", "The user uses Notion."),
-        ("company", "Clapper", "The user works at or manages the company Clapper and approves PRDs."),
-    ];
-
-    /// `tests/fixtures/ctx_requests.py`: request, regex a useful fact must match.
-    const REQUESTS: [(&str, &str, &str); 10] = [
-        (
-            "P01",
-            "帮我在迪卡侬挑一双适合日常跑步的跑鞋，选好尺码加入购物车就行，先不用下单。",
-            r"43码|运动鞋43",
-        ),
-        (
-            "P02",
-            "帮我网上挑一个好看的手机壳，给我 3 个候选，先不用下单。",
-            r"iPhone 17 Pro Max",
-        ),
-        (
-            "P03",
-            "帮我找下个月从新加坡飞东京的机票，给我两三个选择，先不要订。",
-            r"business class|商务舱",
-        ),
-        (
-            "P04",
-            "帮我在东京找一家酒店，下个月住 3 晚，给几个选项，先不要订。",
-            r"boutique|精品",
-        ),
-        (
-            "P05",
-            "帮我找个这周末在新加坡的徒步路线。",
-            r"medium-low|3 to 5",
-        ),
-        (
-            "P06",
-            "这周六晚上想出去吃饭，帮我找两家餐厅看看有没有空位，先别订。",
-            r"Hunan|Japanese|湘|日本",
-        ),
-        (
-            "P07",
-            "帮我在迪卡侬买一件运动T恤，挑合适的尺码加入购物车，先不用下单。",
-            r"身高177|177",
-        ),
-        (
-            "P08",
-            "给 James 写封邮件约他下周二下午开会，先存草稿就行。",
-            r"sending emails from|James",
-        ),
-        (
-            "P09",
-            "帮我整理一份本周 AI 和机器人领域的新闻简报。",
-            r"PDF|Chinese|中文",
-        ),
-        (
-            "P10",
-            "帮我挑一支笔送朋友，给我 3 个推荐。",
-            r"metal pens|金属",
-        ),
-    ];
-
-    fn ctx_facts() -> Vec<Value> {
-        FACTS
-            .iter()
-            .enumerate()
-            .map(|(i, (c, e, t))| {
-                json!({"id": format!("f{}", i), "category": c, "entity": e, "fact": t, "uses": 0,
-                       "status": "active", "domain": domain_of(t, c, e)})
-            })
-            .collect()
+    fn fact(
+        id: &str,
+        fact: &str,
+        domain: &str,
+        entity: &str,
+        scope: &str,
+        topics: &[&str],
+    ) -> Value {
+        json!({"id": id, "fact": fact, "domain": domain, "entity": entity, "scope": scope, "kind": "general",
+               "topics": topics, "uses": 0, "status": "active", "trigger": ""})
     }
 
-    #[test]
-    fn memory_is_sorted_into_domains() {
-        assert_eq!(
-            domain_of(
-                "decathlon.sg 网站支持访客结账，电话号码填 8 位，不要 +65。",
+    /// Facts shaped like a real user's memory (invented wording), with the fields the model sets when it writes them.
+    fn memory() -> Vec<Value> {
+        let mut v = vec![
+            fact(
+                "shoes",
+                "我身高177，体重76公斤，鞋子42码，运动鞋43码。",
+                "preference",
                 "",
-                ""
+                "topic",
+                &["clothing", "shopping"],
             ),
-            "site"
-        );
-        assert_eq!(
-            domain_of("我身高177，体重76公斤，运动鞋43码。", "preference", ""),
-            "preference"
-        );
-        assert_eq!(
-            domain_of("用户要求：以后每次说「准备出差」，按固定流程执行", "", ""),
-            "rule"
-        );
-        assert_eq!(
-            domain_of(
-                "The user prefers the assistant to execute tasks autonomously.",
+            fact(
+                "site",
+                "shop.test 网站支持访客结账；电话号码填 8 位，不要 +65。",
+                "site",
+                "shop.test",
+                "topic",
+                &["shopping", "forms"],
+            ),
+            fact(
+                "cabin",
+                "The user prefers business class seats.",
                 "preference",
-                ""
+                "",
+                "topic",
+                &["travel"],
             ),
-            "rule"
-        );
-        assert_eq!(
-            domain_of("The user travels with LU A and LU B.", "person", ""),
-            "person"
-        );
-        assert_eq!(
-            domain_of(
-                "The user works at BEC Lab, located at 20 Anson Rd.",
-                "company",
-                ""
-            ),
-            "place"
-        );
-        assert_eq!(
-            domain_of(
-                "The user manages the email account lucas@example.io.",
-                "company",
-                ""
-            ),
-            "account"
-        );
-        assert_eq!(
-            domain_of("我美国手机号码是 +1-669-000-0000", "preference", ""),
-            "account"
-        );
-        assert_eq!(
-            domain_of(
-                "The user prefers sending emails from their example.io address.",
+            fact(
+                "hunan",
+                "The user prefers dining at Hunan cuisine restaurants.",
                 "preference",
-                ""
+                "",
+                "topic",
+                &["dining"],
             ),
-            "preference"
-        );
-        assert_eq!(
-            domain_of(
-                "The user is working on the Olares One PCBA project.",
-                "project",
-                ""
+            fact(
+                "pens",
+                "The user prefers metal pens with an aesthetic design.",
+                "preference",
+                "",
+                "topic",
+                &["shopping", "gifts"],
             ),
-            "work"
+            fact(
+                "mei",
+                "The user's wife Mei collects jazz vinyl records.",
+                "person",
+                "Mei",
+                "topic",
+                &["gifts"],
+            ),
+            fact(
+                "auto",
+                "The user prefers the assistant to act autonomously.",
+                "rule",
+                "",
+                "always",
+                &[],
+            ),
+            fact(
+                "pdf",
+                "The user prefers receiving reports in Chinese, as PDF.",
+                "preference",
+                "",
+                "topic",
+                &["documents", "news"],
+            ),
+        ];
+        let mut trip = fact(
+            "trip",
+            "以后每次说「准备出差」，先查邮件里的航班和酒店，再生成一页行程 PDF。",
+            "rule",
+            "",
+            "trigger",
+            &["travel"],
         );
-        assert_eq!(domain_of("anything", "site", ""), "site"); // a domain the user picked stays
+        trip["trigger"] = json!("准备出差");
+        v.push(trip);
+        let mut passport = fact(
+            "pp",
+            "The user's passport expires in March 2027.",
+            "account",
+            "",
+            "topic",
+            &["travel", "forms"],
+        );
+        passport["kind"] = json!("id_document");
+        v.push(passport);
+        v.push(json!({"id": "old", "fact": "The user lives in Singapore.", "domain": "place", "entity": "", "scope": "",
+                      "kind": "", "topics": [], "uses": 3, "status": "active"}));
+        v
     }
 
-    #[test]
-    fn context_picks_what_the_request_needs() {
-        let facts = ctx_facts();
-        for (pid, req, pat) in REQUESTS {
-            let sel = select(req, &facts, None, 12, "");
-            let r = Regex::new(&format!("(?i){}", pat)).unwrap();
-            assert!(
-                sel.iter().any(|f| r.is_match(&get_str(f, "fact"))),
-                "{} {:?}",
-                pid,
-                sel.iter().map(|f| get_str(f, "fact")).collect::<Vec<_>>()
-            );
-            assert!(sel.len() <= 12);
+    fn ids(sel: &[Value]) -> Vec<String> {
+        sel.iter().map(|f| get_str(f, "id")).collect()
+    }
+
+    fn rel(topics: &[&str], entities: &[&str]) -> Relevance {
+        Relevance {
+            topics: topics.iter().map(|s| s.to_string()).collect(),
+            entities: entities.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
         }
-        let shoes = select(REQUESTS[0].1, &facts, None, 12, "")
-            .iter()
-            .map(|f| get_str(f, "fact"))
-            .collect::<Vec<_>>()
-            .join(" | ");
-        assert!(shoes.contains("decathlon.sg") && shoes.contains("43")); // the shop's habits + the size
-        assert!(
-            !shoes.contains("metal pens")
-                && !shoes.contains("phone cases")
-                && !shoes.contains("business class")
-        );
-        // a rule with a trigger phrase only when the user says it
-        assert!(!select("帮我订下个月去东京的机票", &facts, None, 12, "")
-            .iter()
-            .any(|f| get_str(f, "fact").contains("准备出差")));
-        assert!(get_str(
-            &select("准备出差，下周去东京", &facts, None, 12, "")[0],
-            "fact"
-        )
-        .starts_with("用户要求"));
-        let txt = render(&select(REQUESTS[0].1, &facts, None, 12, ""), false);
-        assert!(txt.contains("[网站习惯 Site habits]") && txt.contains("[偏好 Preferences]"));
     }
 
     #[test]
-    fn aliases_relations_and_sites() {
-        let facts = vec![
-            json!({"id": "a", "fact": "Mei collects jazz vinyl records.", "category": "person", "entity": "Mei", "uses": 0}),
-            json!({"id": "b", "fact": "The user likes jazz.", "category": "preference", "entity": "", "uses": 0}),
-        ];
-        let ents = vec![json!({"name": "Mei", "type": "person", "attrs": {}, "relation": ""})];
-        assert!(
-            !select("帮我给太太挑个生日礼物", &facts, Some(&ents), 12, "")
-                .iter()
-                .any(|f| get_str(f, "fact").contains("Mei"))
+    fn selection_uses_the_structured_fields_only() {
+        let facts = memory();
+        // "help me pick running shoes on shop.test": the model chose clothing + shopping and the site
+        let sel = select(
+            &facts,
+            &rel(&["clothing", "shopping"], &["shop.test"]),
+            &TaskData::default(),
+            &[],
+            12,
         );
+        let got = ids(&sel);
+        assert!(
+            got.contains(&"shoes".into())
+                && got.contains(&"site".into())
+                && got.contains(&"auto".into()),
+            "{got:?}"
+        );
+        assert!(
+            !got.contains(&"cabin".into())
+                && !got.contains(&"mei".into())
+                && !got.contains(&"trip".into())
+        );
+        assert_eq!(got[0], "site"); // the named site and a shared topic first
+        assert!(get_str(&sel[0], "why").contains("entity: shop.test"));
+        // a site habit is not handed over when its site is not in play, even on a shared topic
+        let got = ids(&select(
+            &facts,
+            &rel(&["shopping"], &[]),
+            &TaskData::default(),
+            &[],
+            12,
+        ));
+        assert!(
+            got.contains(&"shoes".into())
+                && got.contains(&"pens".into())
+                && !got.contains(&"site".into())
+        );
+        // never an identity document; the unsorted fact only when the model picked it
+        let mut r = rel(&["travel", "forms"], &[]);
+        assert!(!ids(&select(&facts, &r, &TaskData::default(), &[], 12))
+            .iter()
+            .any(|x| x == "pp" || x == "old"));
+        r.facts = vec!["old".into()];
+        assert!(ids(&select(&facts, &r, &TaskData::default(), &[], 12)).contains(&"old".into()));
+        // a trigger rule only when the model says the user said it
+        assert!(!ids(&select(
+            &facts,
+            &rel(&["travel"], &[]),
+            &TaskData::default(),
+            &[],
+            12
+        ))
+        .contains(&"trip".into()));
+        let mut r = rel(&["travel"], &[]);
+        r.triggers = vec!["准备出差".into()];
+        let sel = select(&facts, &r, &TaskData::default(), &[], 12);
+        assert_eq!(get_str(&sel[0], "id"), "trip");
+        let txt = render(&sel, false);
+        assert!(
+            txt.contains("[默认规则 Rules & defaults]")
+                && txt.contains("(the user said “准备出差”)")
+        );
+        // the task's own data adds topics: the Travel bot gets the cabin class with nothing chosen
+        let got = ids(&select(
+            &facts,
+            &Relevance::default(),
+            &task_data("travel", &[]),
+            &[],
+            12,
+        ));
+        assert!(
+            got.contains(&"cabin".into())
+                && got.contains(&"auto".into())
+                && !got.contains(&"shoes".into())
+        );
+        assert!(select(&facts, &Relevance::default(), &TaskData::default(), &[], 1).len() == 1);
+    }
+
+    #[test]
+    fn an_alias_on_the_memory_page_finds_the_person() {
+        let facts = memory();
         let ents = vec![
-            json!({"name": "Mei", "type": "person", "attrs": {"aliases": ["梅梅"]}, "relation": "太太"}),
+            json!({"name": "Mei", "type": "person", "attrs": {"aliases": ["梅梅"]}, "relation": "wife"}),
         ];
-        let sel = select("帮我给太太挑个生日礼物", &facts, Some(&ents), 12, "");
-        assert!(
-            !sel.is_empty()
-                && get_str(&sel[0], "fact").contains("Mei")
-                && get_str(&sel[0], "why").contains("提到")
+        let menu = build_menu(&facts, &ents);
+        let mei = menu.entities.iter().find(|e| e.name == "Mei").unwrap();
+        assert_eq!(mei.relation, "wife");
+        assert_eq!(mei.aliases, vec!["梅梅"]);
+        assert!(mei.about.contains("jazz"));
+        assert!(menu.entities.iter().any(|e| e.name == "shop.test"));
+        assert_eq!(menu.triggers, vec!["准备出差"]);
+        assert_eq!(
+            menu.unsorted,
+            vec![("old".into(), "The user lives in Singapore.".into())]
         );
+        assert!(!menu.is_empty() && Menu::default().is_empty());
+        // the model answered with the alias: the canonical name comes back, and the fact by its entity
+        let r =
+            parse_relevance("{\"topics\": [\"gifts\"], \"entities\": [\"梅梅\"]}", &menu).unwrap();
+        assert_eq!(r.entities, vec!["Mei"]);
+        let sel = select(&facts, &r, &TaskData::default(), &ents, 12);
+        assert_eq!(get_str(&sel[0], "id"), "mei");
+        // the prompt lists the choices as JSON (no passport fact anywhere in it)
+        let p = relevance_prompt("Suggest a birthday present for my wife", "", &menu);
+        assert!(
+            p.contains("\"relation\":\"wife\"")
+                && p.contains("\"travel\"")
+                && p.contains("准备出差")
+        );
+        assert!(!p.contains("passport"));
+    }
+
+    #[test]
+    fn the_models_answer_is_checked_against_the_lists() {
+        let menu = build_menu(&memory(), &[]);
+        let r = parse_relevance(
+            "```json\n{\"topics\": [\"Travel\", \"weather\", \"travel\"], \"entities\": [\"shop.TEST\", \"Bob\"], \"triggers\": [\"准备出差\", \"go\"], \"facts\": [\"old\", \"pp\"]}\n```",
+            &menu,
+        )
+        .unwrap();
+        assert_eq!(r.topics, vec!["travel"]);
+        assert_eq!(r.entities, vec!["shop.test"]);
+        assert_eq!(r.triggers, vec!["准备出差"]);
+        assert_eq!(r.facts, vec!["old"]); // an id that is not an unsorted choice is dropped
+        assert_eq!(parse_relevance("{}", &menu), Some(Relevance::default()));
+        assert!(parse_relevance("travel and shopping", &menu).is_none());
+        assert!(parse_relevance("{\"topics\": 3}", &menu).is_none());
+    }
+
+    #[test]
+    fn task_data_reads_names_only() {
+        let transcript = vec![
+            json!({"role": "user", "content": "book me a flight and a restaurant"}),
+            json!({"role": "assistant", "tool_calls": [
+                {"id": "1", "function": {"name": "load_skill", "arguments": "{\"name\": \"restaurant-booking\"}"}},
+                {"id": "2", "function": {"name": "gmail_search", "arguments": "{}"}}]}),
+            json!({"role": "assistant", "tool_calls": [{"id": "3", "function": {"name": "load_skill", "arguments": {"name": "th-arrival-card"}}}]}),
+        ];
+        assert_eq!(
+            task_data("main", &transcript).topics,
+            vec!["dining", "email", "travel", "forms"]
+        );
+        assert_eq!(
+            task_data("insurance", &[]).topics,
+            vec!["travel", "finance", "health"]
+        );
+        assert!(task_data("main", &[]).topics.is_empty());
+    }
+
+    #[test]
+    fn sites_by_their_entity() {
         assert_eq!(site_name("https://www.decathlon.sg/p/123"), "decathlon");
         assert_eq!(site_name("https://www.amazon.com.sg/x"), "amazon");
         assert_eq!(site_name("https://shop.test/"), "shop");
         assert_eq!(site_name("not a url"), "");
         let facts = vec![
-            json!({"id": "a", "fact": "decathlon.sg 支持访客结账；电话填 8 位，不要 +65。", "category": "other", "entity": "", "uses": 0}),
-            json!({"id": "b", "fact": "The user likes jazz.", "category": "preference", "entity": "", "uses": 0}),
+            fact(
+                "a",
+                "decathlon.sg 支持访客结账；电话填 8 位，不要 +65。",
+                "site",
+                "decathlon.sg",
+                "topic",
+                &["shopping"],
+            ),
+            fact("b", "The user likes jazz.", "preference", "", "topic", &[]),
+            fact(
+                "c",
+                "迪卡侬 always delivers to the office.",
+                "preference",
+                "迪卡侬",
+                "topic",
+                &[],
+            ),
         ];
-        let found = site_facts("https://www.decathlon.sg/checkout", &facts);
-        assert_eq!(found.len(), 1);
-        assert!(get_str(&found[0], "fact").contains("8 位"));
-        assert_eq!(get_str(&found[0], "domain"), "site");
-        assert!(site_facts("https://www.ikea.com/sg", &facts).is_empty());
-        let groups = named("在 shop.test 买双袜子，迪卡侬也看看", None);
-        assert!(groups.iter().any(|g| g[0] == "decathlon"));
-        assert!(groups.iter().any(|g| g[0] == "shop.test"));
+        let found = site_facts("https://www.decathlon.sg/checkout", &facts, &[]);
+        assert_eq!(ids(&found), vec!["a"]);
+        // an alias set on the Memory page ties a name to the site
+        let ents =
+            vec![json!({"name": "迪卡侬", "type": "site", "attrs": {"aliases": ["decathlon.sg"]}})];
+        assert_eq!(
+            ids(&site_facts("https://www.decathlon.sg/", &facts, &ents)),
+            vec!["a", "c"]
+        );
+        assert!(site_facts("https://www.ikea.com/sg", &facts, &ents).is_empty());
+    }
+    /// A model that answers every call with the same text, counting the calls.
+    struct Scripted(String, Arc<std::sync::atomic::AtomicUsize>);
+
+    impl crate::llm::LlmTransport for Scripted {
+        fn send(
+            &self,
+            _req: crate::llm::HttpRequest,
+        ) -> futures::future::BoxFuture<'_, Result<crate::llm::HttpResponse, String>> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body = json!({"choices": [{"message": {"role": "assistant", "content": self.0}}], "usage": {}});
+            Box::pin(async move {
+                Ok(crate::llm::HttpResponse {
+                    status: 200,
+                    retry_after: None,
+                    text: omuse_common::pyjson::dumps(&body),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_task_gets_the_facts_the_model_reading_points_to() {
+        let d = tempfile::tempdir().unwrap();
+        let st = Arc::new(
+            Store::new(d.path(), Arc::new(omuse_common::Config::parse("").unwrap())).unwrap(),
+        );
+        let add = |fact: &str, entity: &str, fields: Value| {
+            let o = crate::store::FactOpts::default().with_model_fields(&fields);
+            get_str(&st.add_fact(fact, "", entity, &o).unwrap().unwrap(), "id")
+        };
+        let mei = add(
+            "The user's wife Mei collects jazz vinyl records.",
+            "Mei",
+            json!({"domain": "person", "topics": ["gifts"], "scope": "topic", "relation": "wife"}),
+        );
+        add(
+            "The user prefers business class.",
+            "",
+            json!({"domain": "preference", "topics": ["travel"], "scope": "topic"}),
+        );
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let settings: crate::llm::SettingsFn = Arc::new(
+            || json!({"model_base_url": "http://x/v1", "model_name": "m", "temperature": 0, "max_tokens": 10}),
+        );
+        let llm = Arc::new(Llm::with_transport(settings, None, None, Arc::new(Scripted(
+            "{\"topics\": [\"gifts\"], \"entities\": [\"mei\"], \"triggers\": [], \"facts\": []}".into(), calls.clone()))));
+        let (sel, rel) = facts_for_task(
+            &st,
+            &llm,
+            "t1",
+            "Suggest a birthday present for my wife",
+            "",
+            &TaskData::default(),
+        )
+        .await;
+        assert_eq!(rel.entities, vec!["Mei"]);
+        assert_eq!(ids(&sel), vec![mei.clone()]);
+        // recorded for the task: its episode will carry the fact id
+        assert_eq!(st.task_memory("t1").unwrap()["fact_ids"], json!([mei]));
+        assert_eq!(st.task_memory("t1").unwrap()["entities"], json!(["Mei"]));
+        // the same task asks again (a plan, a skill): no second model call
+        let n = calls.load(std::sync::atomic::Ordering::SeqCst);
+        facts_for_task(
+            &st,
+            &llm,
+            "t1",
+            "Suggest a birthday present for my wife",
+            "",
+            &TaskData::default(),
+        )
+        .await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), n);
+        // an empty memory needs no call at all
+        let d2 = tempfile::tempdir().unwrap();
+        let empty = Arc::new(
+            Store::new(
+                d2.path(),
+                Arc::new(omuse_common::Config::parse("").unwrap()),
+            )
+            .unwrap(),
+        );
+        assert!(
+            facts_for_task(&empty, &llm, "t2", "hello", "", &TaskData::default())
+                .await
+                .0
+                .is_empty()
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), n);
     }
 }

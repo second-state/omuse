@@ -700,7 +700,21 @@ async fn memory_profile_and_library_basics() {
     assert_eq!((st.as_u16(), v), (200, json!({"hits": []})));
     let (st, v) = call(&e.app, "GET", "/api/context/preview?q=seat", None, &[]).await;
     assert_eq!(st, 200);
-    assert_eq!(v["mode"], "v1");
+    assert!(v["facts"].is_array() && v["topics"].is_array());
+    // a custom field marked standing (the profile's "always use" tick)
+    let (st, v) = call(
+        &e.app,
+        "PUT",
+        "/api/profile",
+        Some(json!({"key": "custom:Star Alliance status", "value": "Gold", "standing": true})),
+        &[],
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        v["profile_standing"],
+        json!(["custom:Star Alliance status"])
+    );
 }
 
 #[test]

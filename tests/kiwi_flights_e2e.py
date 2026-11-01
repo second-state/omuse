@@ -208,6 +208,9 @@ K.check("the agent's instructions carry the rules: Kiwi.com data with each offer
 # a business-class, direct request from a city with two airports: one search, the cabin and the stop limit as asked;
 # the profile's preferred airline rides with the skill sheet and goes into the search
 K.set_profile(preferred_airline="Star Alliance", **{"custom:Shoe size": "43", "custom:Star Alliance status": "Gold"})
+# the loyalty field is a standing preference because the user ticked "always use" on it (Memory → Profile), the shoe
+# size is not
+c.put(B + "/api/profile", json={"key": "custom:Star Alliance status", "value": "Gold", "standing": True}, headers=H)
 t = K.run(f"BIZFLIGHTS cheapest business class direct flight from Tokyo to Singapore on {DATE} DATE={DATE}")
 K.trace(t)
 names = K.names(t)

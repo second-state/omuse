@@ -768,7 +768,7 @@ window.OMUSE_EN = {
 "证件 ••••{0} 已存入保险箱（加密；每次使用都要你批准；可在下面的保险箱里删除）。": "ID ••••{0} saved to the Vault (encrypted; every use needs your approval; remove it in the Vault below).",
 "其他地址 Other addresses": "Other addresses",
 "自定义字段 Custom fields": "Custom fields",
-"常用航空公司可以选一家航空公司或一个航空联盟（如星空联盟）；常用酒店品牌可以选一个品牌（如假日酒店）或一个酒店集团；常用租车公司选一家（如赫兹）。不在列表里？用下面的「添加自定义字段」填写，Agent 同样会照顾到。": "Preferred airline takes an airline (e.g. United) or an alliance (e.g. Star Alliance); preferred hotel brand takes a brand (e.g. Holiday Inn) or a group (e.g. IHG); preferred car rental takes a company (e.g. Hertz). Not on the list? Add it as a custom field below (e.g. \"Preferred airline: Bangkok Airways\") and the agent honours it the same way.",
+"常用航空公司可以选一家航空公司或一个航空联盟（如星空联盟）；常用酒店品牌可以选一个品牌（如假日酒店）或一个酒店集团；常用租车公司选一家（如赫兹）。不在列表里？用下面的「添加自定义字段」填写并勾选「始终参考」，Agent 同样会照顾到。": "Preferred airline takes an airline (e.g. United) or an alliance (e.g. Star Alliance); preferred hotel brand takes a brand (e.g. Holiday Inn) or a group (e.g. IHG); preferred car rental takes a company (e.g. Hertz). Not on the list? Add it as a custom field below (e.g. \"Preferred airline: Bangkok Airways\") and tick \"Always use\": the agent honours it the same way.",
 "航空联盟 Alliances": "Alliances",
 "航空公司 Airlines": "Airlines",
 "租车公司 Rental companies": "Rental companies",
@@ -1104,5 +1104,13 @@ window.OMUSE_EN = {
 "助手": "Bots",
 "工具": "Tools",
 "可信": "Trust",
-"配置": "Config"
+"配置": "Config",
+"Agent 每个任务都会参考这一项": "The agent sees this field in every task",
+"始终参考 Always use": "Always use",
+"证件": "ID document",
+"始终适用": "Applies always",
+"说「{0}」时": "When you say “{0}”",
+"待归类": "Not sorted yet",
+"归类": "Sorted",
+"正在查看…": "Looking…"
 };

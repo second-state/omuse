@@ -854,7 +854,7 @@ Live state: when a task has a plan or sources that failed repeatedly, the last m
 - Phone calls (phone_call, when available): load the phone-call skill first; every call needs the user's approval and costs money.
 - A link from an email that lands on an error page usually needs a session: go in through the company's home page and its own menu (My Booking / Sign in) instead of retrying the link. Before "retry later", make sure the site is really down (its home page fails too); never create a second schedule for the same job.
 - For recurring requests (every day / every week / every hour…), create a schedule with schedule_create.
-- Save durable facts the user explicitly asks you to remember with memory_remember (with its domain). When you learn how a website works for the user (guest checkout, phone format, which delivery option fills the address), memory_remember it with domain=site — it waits for the user's OK but is used next time. Before asking the user about their own sizes, tastes or habits, check the memory section above and memory_search; ask only if it is not there.
+- Save durable facts the user explicitly asks you to remember with memory_remember, with its fields (domain, topics, scope — a routine the user starts with a phrase is scope=trigger with that phrase —, the entity and, for a person, the relation). When you learn how a website works for the user (guest checkout, phone format, which delivery option fills the address), memory_remember it with domain=site and entity = the site's host — it waits for the user's OK but is used next time. Before asking the user about their own sizes, tastes or habits, check the memory section above and memory_search; ask only if it is not there.
 - Personal details (name as on passport, phone, email, address, company, title, birthday…) are in the profile, which is NOT in this prompt: call profile_get only when filling in a form or writing an email/message that needs them (for a test or sample form use obvious placeholders like Test User / test@example.com / +65 0000 0000 instead). When the user tells you a new detail, profile_suggest it (it changes only after they confirm). ID / passport / membership / card numbers: vault_list; code fills them from the vault into a known form (on a site with no form function, browser_fill_secret inside the browser-use skill) — each fill is approved by the user. If the user gives you such a number to keep, never put it in memory or files: tell them to add it to the vault (Memory page → Profile card → Vault), where it is encrypted and every use needs their approval.
 - When finished, stop calling tools and write the final answer: concise Markdown, what you did, key findings, and anything still waiting for the user. If you sent a file, still give the key results in the answer itself (a short summary or the main table) — the user should not have to open the file to get the answer. The chat shows only this final message, not text you wrote between tool calls, so never say "see the table above" — put the table in the final answer. {lang}
 {extra}
@@ -1014,31 +1014,63 @@ Kinds:
 - durable facts worth keeping for months, by domain:
   person (people and how they relate: "Sara handles the user's paperwork."), preference (likes, sizes, styles: "The user prefers aisle seats.", "The user wears size 43 running shoes."), place (home / office / city — no full street address, that is profile), account (memberships, subscriptions, which mailbox is for what — never the numbers), site (how a website works for the user: "decathlon.sg allows guest checkout."), rule (a standing instruction: "Always ask before spending over S$100."), work (companies, projects, anything else).
 - ephemeral: true now but one-off (a booking reference, this week's trip dates, an order in progress) — kept 30 days only.
+For every fact (durable or ephemeral) also give:
+- topics: the kinds of tasks it matters for, from this list only: shopping, clothing, electronics, gifts, dining, travel, email, calendar, documents, news, fitness, health, phone_calls, forms, finance, home, work.
+- scope: "always" (how the assistant should behave in every task, or the language / format of every answer), "trigger" (a routine for when the user says a phrase — put the phrase as the user wrote it in "trigger"), else "topic".
+- entity: the person, company or website it is about (a website as its host, e.g. "decathlon.sg"); relation: for a person, the user's relation to them in one or two words (wife, colleague); id_document: true when it is about the user's identity documents (passport, ID card, visa, date of birth).
 NEVER output ID / passport / membership / card numbers, CVV, passwords or codes, and nothing about health, money balances or other sensitive matters.
 Skip requests and instructions that say nothing lasting about the user.
-Return ONLY JSON: {"items": [{"kind": "...", "fact": "<short third-person sentence>", "entity": "<main entity or empty>", "field": "<profile field, only for kind=profile>", "value": "<profile value for kind=profile, the card's name for kind=card>", "country": "<only for kind=card, optional>"}]}
+Return ONLY JSON: {"items": [{"kind": "...", "fact": "<short third-person sentence>", "entity": "<main entity or empty>", "relation": "", "topics": ["..."], "scope": "topic", "trigger": "", "id_document": false, "field": "<profile field, only for kind=profile>", "value": "<profile value for kind=profile, the card's name for kind=card>", "country": "<only for kind=card, optional>"}]}
 Return {"items": []} if there is nothing. Max 6 items.
 
 User messages:
 "#;
 
+/// The system prompt of the relevance call (`context::relevance`): the model reads the request and answers with
+/// choices from the lists it is given — JSON only.
+pub const MEMORY_RELEVANCE: &str = "You pick which parts of a personal assistant's long-term memory about its user bear on the user's request, for a program. You get the request (and the user's recent messages, for a follow-up) and the choices as JSON: topics (key → what it covers), entities (people, companies and websites in memory, with the user's relation to them, their aliases and one fact about them), triggers (phrases that start a routine the user set up) and facts (facts not sorted yet, by id). Answer with JSON only, exactly {\"topics\": [...], \"entities\": [...], \"triggers\": [...], \"facts\": [...]}: the topics the request is about; the entities it refers to in any wording or language (\"my wife\" is the entity whose relation is wife; a website by its name); the triggers the user actually said in this request; the ids of facts that bear on it — never a fact about identity documents (passport, ID card, birth date) unless the request is to fill in a form or check a document. Each item copied exactly from the choices; empty lists when nothing applies. No other keys, no explanation.";
+
+/// The sorting step (`memory_tidy::classify`): facts written without their structured fields (before 0.6.0, typed on
+/// the Memory page) get them from the model — JSON only.
+pub const MEMORY_SORT: &str = r#"You sort a personal assistant's memory facts about its user, for a program. Below are facts, one per line as `id | domain | entity | fact` (domain or entity may be empty).
+Return ONLY JSON: {"facts": [{"id": "<id as given>", "domain": "...", "topics": ["..."], "scope": "topic", "trigger": "", "entity": "", "relation": "", "id_document": false}]} — one item per fact, ids exactly as given.
+- domain: person (people and how they relate) | preference (likes, sizes, styles) | place (home / office / city) | account (memberships, subscriptions, which mailbox is for what) | site (how a website works for the user) | rule (a standing instruction) | work (companies, projects, anything else).
+- topics: the kinds of tasks the fact matters for, from this list only: shopping, clothing, electronics, gifts, dining, travel, email, calendar, documents, news, fitness, health, phone_calls, forms, finance, home, work.
+- scope: "always" (how the assistant should behave in every task, or the language / format of every answer), "trigger" (a routine for when the user says a phrase — the phrase as written in the fact goes in "trigger"), else "topic".
+- entity: the person, company or website the fact is about (a website as its host, e.g. "decathlon.sg"), empty when none; relation: for a person, the user's relation to them in one or two words (wife, colleague), else empty.
+- id_document: true when the fact is about the user's identity documents (passport, ID card, visa, date of birth).
+
+Facts:
+"#;
+
 /// The final review's instruction (`Runtime::review_answer`): JSON only. With `must_say`, the reply to a workflow
-/// machine's result is also checked for the facts of that result it must carry (agent/workflow.rs).
-pub fn review_system(must_say: bool) -> String {
-    let base = "You check an assistant's final reply to a user. Answer with JSON only: {\"ok\": bool, \"problem\": \"\"";
+/// machine's result is also checked for the facts of that result it must carry (agent/workflow.rs). `language` is the
+/// agent's ("en" / "zh", from Settings): the model judges whether the reply follows the language rule — code never
+/// guesses a text's language.
+pub fn review_system(must_say: bool, language: &str) -> String {
+    let lang = lang_name(language);
+    let base = "You check an assistant's final reply to a user. Answer with JSON only: {\"ok\": bool, \"problem\": \"\", \"language_ok\": bool";
     let rule = "ok is false ONLY when the reply does not make sense to the user: it contradicts itself, stops in the middle of a sentence or a list, \
-answers a different question than the one asked, or says something was done and also that it was not. Style, length, tone and \
-missing details are NOT problems (ok = true). problem: one short sentence naming the contradiction or gap, empty when ok.";
+answers a different question than the one asked, says something was done and also that it was not, or says the assistant did a step \
+that the user did themselves or must still do (pressing Submit, Pay or Confirm, placing the order, signing in) — those clicks are always \
+the user's. Style, length, tone and missing details are NOT problems (ok = true). problem: one short sentence naming the contradiction \
+or gap, empty when ok.";
+    let lang_rule = format!(
+        "language_ok is false when the reply is not written in {lang}, the language the user's settings ask for. Exceptions \
+(language_ok = true): text the user explicitly asked for in another language (a translation, \"write it in Japanese\"), text the \
+user asked for in Chinese to use as written (a poem, story, post, toast, message, email, slogan, couplet) written in Chinese, and \
+names, quotes, addresses, links and codes in their own language."
+    );
     if must_say {
         format!(
-            "{base}, \"missing\": []}}. {rule} must_say lists facts from the tool's JSON result that the reply MUST carry (a name, a price, \
+            "{base}, \"missing\": []}}. {rule} {lang_rule} must_say lists facts from the tool's JSON result that the reply MUST carry (a name, a price, \
 a reference, a link, a date, a step for the user). missing: each must_say item whose fact the reply does not state (in any wording or \
 language) — check item by item: every number, amount, percentage, date (a month and year too), name, code and link in the \
-item must appear in the reply (a link or reference exactly); a fact only alluded to, or stated without its figure or date, \
-is missing. Copy each missing item as given; [] when the reply carries them all."
+item must appear in the reply (a link or reference exactly), and who did a step (you, the user, or the assistant) as the item says; \
+a fact only alluded to, or stated without its figure or date, is missing. Copy each missing item as given; [] when the reply carries them all."
         )
     } else {
-        format!("{base}}}. {rule}")
+        format!("{base}}}. {rule} {lang_rule}")
     }
 }
 
@@ -1157,6 +1189,13 @@ mod tests {
         );
         assert!(zh.contains("Work in parallel whenever parts of the job are independent"));
         assert!(MEMORY_EXTRACT.starts_with("Sort what the USER says"));
+        // the memory prompts list every topic the store validates against (crate::store::TOPICS)
+        for (k, _) in crate::store::TOPICS {
+            assert!(MEMORY_EXTRACT.contains(k) && MEMORY_SORT.contains(k), "{k}");
+        }
+        assert!(MEMORY_RELEVANCE.contains(
+            "{\"topics\": [...], \"entities\": [...], \"triggers\": [...], \"facts\": [...]}"
+        ));
         let sa = subagent_system("RULE", "researcher", "now");
         assert!(sa.starts_with(
             "RULE\n\nYou are a focused sub-agent of OMuse with the role: researcher."

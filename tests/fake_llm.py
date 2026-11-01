@@ -208,15 +208,23 @@ async def _chat(req: Request, b: dict):
         answer = body.split("The reply:\n", 1)[-1].split("\n\nThe facts the reply must carry", 1)[0]
         m = re.search(r"The facts the reply must carry \(must_say[^\n]*\n(\[.*\])\s*$", body, re.S)
         must = json.loads(m.group(1)) if m else []
-        return reply(json.dumps({"ok": True, "problem": "", "missing": [f for f in must if f not in answer]}))
+        # the language rule (the review gets the setting): a reply mostly in Chinese while the rule asks for English is
+        # against it, unless the request asked for Chinese text to use as written (ZHPOEM stands in for the model
+        # understanding the request; a real model reads it)
+        request = body.split("The user's request:\n", 1)[-1].split("\n\nThe reply:", 1)[0]
+        cjk_n = len(re.findall(r"[\u3400-\u9fff]", answer))
+        lat_n = len(re.findall(r"[A-Za-z]", answer))
+        zh_reply = cjk_n > 0 and cjk_n / (cjk_n + lat_n / 4) > 0.5
+        lang_ok = not ("not written in English" in sys and zh_reply and "ZHPOEM" not in request)
+        return reply(json.dumps({"ok": True, "problem": "", "language_ok": lang_ok, "missing": [f for f in must if f not in answer]}))
     if sys.startswith(("You rewrite a reply to the user from a tool's JSON result", "你根据工具的 JSON")):   # `reply_with_facts`: the facts added
         body = str(msgs[-1]["content"])
         answer = body.split("\n\nThe reply:\n", 1)[-1].split("\n\nMissing facts: ", 1)[0]
         m = re.search(r"\n\nMissing facts: (\[.*?\])\nProblem: ", body, re.S)
         missing = json.loads(m.group(1)) if m else []
         return reply(answer.rstrip() + ("\n\n" + "\n".join(missing) if missing else ""))
-    if sys.startswith("Translate the user's text into English"):   # agent/runtime.rs `rewrite_in_english`: the reply alone
-        text = str(msgs[-1]["content"])
+    if sys.startswith("Rewrite the reply to the user in English"):   # `reply_in_language`: the review found it against the rule
+        text = str(msgs[-1]["content"]).split("\n\nThe reply:\n", 1)[-1]
         for zh, en in TRANSLATIONS:
             if text.startswith(zh):
                 return reply(en + text[len(zh):])
@@ -318,9 +326,15 @@ async def _chat(req: Request, b: dict):
                       {"kind": "card", "fact": "Lucas holds a Chase Sapphire Reserve", "value": "Chase Sapphire Reserve", "country": ""},
                       {"kind": "card", "fact": "Lucas's card number", "value": "Visa 4111 1111 1111 1111"}]
         return reply(json.dumps({"items": items}))
+    if sys.startswith("You pick which parts of a personal assistant's long-term memory"):   # context::relevance
+        return reply(json.dumps(fake_relevance(str(msgs[-1]["content"])), ensure_ascii=False))
+    if msgs and str(msgs[-1]["content"]).startswith("You sort a personal assistant's memory facts"):   # memory_tidy::classify
+        return reply(json.dumps(fake_sort(str(msgs[-1]["content"])), ensure_ascii=False))
     if msgs and str(msgs[-1]["content"]).startswith("You are tidying"):
         ids = re.findall(r"^(fact_\w+) \| long \| .*Opened zipair", msgs[-1]["content"], re.M)
-        return reply(json.dumps({"demote": [{"id": i, "reason": "process log"} for i in ids]}))
+        quiet = re.findall(r"^(fact_\w+) \| long \| .*\| Lucas likes (?:the )?quiet hotels", msgs[-1]["content"], re.M)
+        merge = [{"ids": quiet, "fact": "Lucas likes quiet hotels.", "category": "preference"}] if len(quiet) > 1 else []
+        return reply(json.dumps({"demote": [{"id": i, "reason": "process log"} for i in ids], "merge": merge}))
     # the live state (agent/runtime.rs, prompts::live_state) is runtime data at the end, never the user's request
     users = [m["content"] for m in msgs if m["role"] == "user" and not str(m["content"]).startswith(("（系统）", "(System)", '{"state"'))]
     goal = users[-1] if users else ""
@@ -370,6 +384,10 @@ async def _chat(req: Request, b: dict):
         if finals:   # asked again (its claim is back in the transcript): the honest answer
             return reply("我还没有发送邮件：这个任务里没有执行发送，下面是准备好的草稿内容。")
         return reply("好的，邮件已发送给 Jennifer。")
+    if "ZHPOEM" in goal:   # a Chinese request for a poem: the system prompt's exceptions line keeps it in Chinese
+        if "text the user asked for in Chinese" in sys or "语言：简体中文" in sys:
+            return reply("《雨季》\n午后的雷声敲开乌节路的天空，\n雨落在组屋的晾衣竿上，\n城市在水汽里慢慢醒来。")
+        return reply("Monsoon: the afternoon thunder cracks the sky over Orchard Road, and the city wakes slowly in the steam.")
     if "ZHANSWER" in goal:   # a model that answers in Chinese although the setting is English
         if finals:   # asked again (its Chinese answer is back in the transcript): the English one
             return reply("Here is the most important email: the security alert from Google Workspace about a suspicious login.")
@@ -686,7 +704,8 @@ async def _chat(req: Request, b: dict):
         return reply(f"Opened. {last_tool[:200]}")
     if "LEARNSITE" in goal:      # batch 2: a habit learned by OMuse itself
         if n == 0:
-            return reply("", [tc("memory_remember", {"fact": "shop.test allows guest checkout; the phone goes in as 8 digits.", "domain": "site"})])
+            return reply("", [tc("memory_remember", {"fact": "shop.test allows guest checkout; the phone goes in as 8 digits.", "domain": "site",
+                                                     "entity": "shop.test", "topics": ["shopping", "forms"], "scope": "topic"})])
         return reply(f"Learned. {last_tool[:200]}")
     if "SEND" in goal:
         if n == 0:
@@ -873,7 +892,8 @@ async def calls_for(marker: str):
         ms = b.get("messages") or []
         if any(marker in str(m.get("content")) for m in ms if m.get("role") == "user") and ms and ms[0].get("role") == "system" \
                 and "planning module" not in str(ms[0].get("content")) \
-                and not str(ms[0].get("content")).startswith("You classify an assistant's reply"):   # answer_traits
+                and not str(ms[0].get("content")).startswith("You classify an assistant's reply") \
+                and not str(ms[0].get("content")).startswith("You pick which parts of a personal assistant's long-term memory"):   # answer_traits, context::relevance
             out.append({"system": ms[0]["content"], "last": str(ms[-1].get("content")), "n": len(ms),
                         "tools": "\n".join(str(m.get("content")) for m in ms if m.get("role") == "tool"),
                         "stream": b.get("stream"), "stream_options": b.get("stream_options"), "has_tools": bool(b.get("tools"))})
@@ -1679,3 +1699,58 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
                      f"Menu check: avoid {flagged.group(1) if flagged else '担々麺'} (tantanmen — peanut sauce); 塩ラーメン and 餃子 do not list peanuts, but ask the kitchen. "
                      "I noted the allergy in your profile for next time (confirm it on the Memory page).")
     return None
+
+
+# ---- memory: the two JSON readings a real model makes (context::relevance, memory_tidy::classify). The fake stands in
+# for the model's understanding with word lists — a test double only; the product's code never reads words.
+FAKE_TOPICS = [
+    ("clothing", r"鞋|码|衣|shoe|size|shirt|sneaker"),
+    ("shopping", r"买|购物|挑|结账|访客|shop|buy|cart|checkout|guest|order"),
+    ("travel", r"机票|航班|酒店|出差|旅行|flight|hotel|trip|travel|business class|cabin"),
+    ("dining", r"餐|吃|菜|restaurant|dinner|cuisine|food|vegetarian|drink"),
+    ("gifts", r"礼物|生日|gift|present|birthday|vinyl|jazz"),
+    ("documents", r"报告|简报|pdf|report|brief"),
+    ("news", r"新闻|news"),
+    ("email", r"邮件|email|mail"),
+    ("forms", r"填|表|form|phone|电话"),
+]
+
+
+def fake_topics(text):
+    return [k for k, rx in FAKE_TOPICS if re.search(rx, text, re.I)]
+
+
+def fake_relevance(body):
+    req = body.split("The request:\n", 1)[-1].split("\nChoices:\n", 1)[0]
+    try:
+        ch = json.loads(body.split("\nChoices:\n", 1)[1])
+    except Exception:
+        return {"topics": [], "entities": [], "triggers": [], "facts": []}
+    low = req.lower()
+    rel = {"wife": r"wife|太太|老婆|妻子", "husband": r"husband|丈夫|老公"}
+    ents = []
+    for e in ch.get("entities") or []:
+        names = [e["name"]] + list(e.get("aliases") or [])
+        r = (e.get("relation") or "").lower()
+        if any(n.lower() in low for n in names if len(n) >= 2) or any(re.search(rx, low) for k, rx in rel.items() if k in r or r in rx):
+            ents.append(e["name"])
+    return {"topics": fake_topics(req), "entities": ents,
+            "triggers": [t for t in ch.get("triggers") or [] if t.lower() in low], "facts": []}
+
+
+def fake_sort(body):
+    out = []
+    for line in body.split("\nFacts:\n", 1)[-1].splitlines():
+        parts = [p.strip() for p in line.split(" | ", 3)]
+        if len(parts) != 4:
+            continue
+        fid, dom, ent, fact = parts
+        host = re.search(r"\b([a-z0-9-]+\.(?:test|sg|com|io))\b", fact, re.I)
+        trig = re.search(r"(?:说|say|says)\s*[「“\"']([^」”\"']{2,30})[」”\"']", fact, re.I)
+        if not dom:
+            dom = "site" if host and re.search(r"网站|结账|checkout|guest|digits|位", fact, re.I) else "rule" if trig else "preference"
+        out.append({"id": fid, "domain": dom, "topics": fake_topics(fact) or ["work"],
+                    "scope": "trigger" if trig else "always" if re.search(r"assistant|OMuse|助手", fact) else "topic",
+                    "trigger": trig.group(1) if trig else "", "entity": ent or (host.group(1) if host else ""),
+                    "relation": "", "id_document": bool(re.search(r"passport|护照|出生|birth", fact, re.I))})
+    return {"facts": out}

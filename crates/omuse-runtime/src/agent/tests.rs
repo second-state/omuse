@@ -415,14 +415,26 @@ async fn grounded_choices() {
 async fn learned_facts_wait_for_the_user() {
     let (rt, _d) = rt();
     let t = json!({"id": "t1", "goal": "在 decathlon.sg 买一双袜子", "conv_id": ""});
-    let out = rt.local(&t, "memory_remember", &json!({"fact": "decathlon.sg asks for the phone as 8 digits without +65.", "domain": "site"})).await.unwrap();
+    let out = rt.local(&t, "memory_remember", &json!({"fact": "decathlon.sg asks for the phone as 8 digits without +65.",
+        "domain": "site", "entity": "decathlon.sg", "topics": ["shopping", "forms", "nonsense"], "scope": "topic"})).await.unwrap();
     let f = rt
         .store
-        .search_facts("decathlon phone", 5, Some("long"), true)
+        .search_facts(&crate::store::MemoryQuery {
+            entities: vec!["decathlon.sg".into()],
+            limit: 5,
+            ..Default::default()
+        })
         .unwrap()[0]
         .clone();
     assert_eq!(f["status"], "pending");
     assert_eq!(f["domain"], "site");
+    // the call's JSON fields, validated against their enums; the task is linked to the fact it wrote
+    assert_eq!(f["topics"], json!(["shopping", "forms"]));
+    assert_eq!(f["scope"], "topic");
+    assert_eq!(
+        rt.store.task_memory("t1").unwrap()["fact_ids"],
+        json!([f["id"].clone()])
+    );
     assert!(out.contains("确认"));
     let t2 = json!({"id": "t2", "goal": "记住：我订酒店只要安静的精品酒店", "conv_id": ""});
     rt.local(
@@ -449,8 +461,11 @@ async fn site_habits_show_up_when_the_site_opens() {
         .add_fact(
             "decathlon.sg 支持访客结账；电话填 8 位，不要 +65。",
             "other",
-            "",
-            &Default::default(),
+            "decathlon.sg", // the site is the fact's entity (a structured field), not words in its text
+            &crate::store::FactOpts {
+                domain: "site".into(),
+                ..Default::default()
+            },
         )
         .unwrap();
     rt.store
@@ -479,17 +494,25 @@ async fn block_is_learned_as_a_site_habit() {
         .await;
     let f = rt
         .store
-        .search_facts("decathlon 反机器人 bot", 5, Some("long"), true)
+        .search_facts(&crate::store::MemoryQuery {
+            entities: vec!["decathlon".into()],
+            limit: 5,
+            ..Default::default()
+        })
         .unwrap();
     assert!(
         !f.is_empty()
             && f[0]["domain"] == "site"
+            && f[0]["kind"] == "site_block"
             && f[0]["status"] == "pending"
             && f[0]["fact"].as_str().unwrap().contains("拦截")
     );
     let n = rt.store.facts(500, Some("long")).unwrap().len();
     rt.learn_site_block("t2", "decathlon", "Cloudflare bot check")
         .await; // once per site
+    rt.inner.lock().block_noted.clear(); // a restart: the stored fact (kind site_block, entity) says it is known
+    rt.learn_site_block("t3", "decathlon", "Cloudflare bot check")
+        .await;
     assert_eq!(rt.store.facts(500, Some("long")).unwrap().len(), n);
 }
 
@@ -1138,7 +1161,7 @@ async fn an_ordinary_skill_is_followed_from_its_sheet_without_a_planner_call() {
 }
 
 #[test]
-fn standing_preferences_come_from_the_fixed_fields_and_matching_custom_ones_only() {
+fn standing_preferences_come_from_the_fixed_fields_and_the_custom_ones_marked_standing() {
     let (rt, _d) = rt();
     assert!(rt.standing_prefs().is_empty());
     rt.store
@@ -1159,6 +1182,10 @@ fn standing_preferences_come_from_the_fixed_fields_and_matching_custom_ones_only
     rt.store
         .set_profile("custom:Shoe size", "43", "test")
         .unwrap();
+    // the user ticks "always use" on the two loyalty fields (a flag, not words in the label)
+    for k in ["custom:Other airlines", "custom:Hilton Honors status"] {
+        rt.store.set_profile_standing(k, true).unwrap();
+    }
     rt.store
         .set_profile("phone", "+65 8000 0000", "test")
         .unwrap();
@@ -2671,7 +2698,7 @@ fn helper_reply(body: &Value) -> Option<Value> {
     }
     if body.get("tools").is_none()
         && !sys.starts_with("You write the final answer")
-        && !sys.starts_with("Translate the user's text")
+        && !sys.starts_with("Rewrite the reply to the user in")
         && !sys.contains("You are OMuse")
     {
         return Some(json!({"role": "assistant", "content": "{}"}));
@@ -4008,6 +4035,61 @@ async fn a_fact_tools_must_say_goes_to_the_review_and_a_missing_fact_is_added_by
     assert_eq!(events_of(&evs, "answer_review").len(), 1);
     assert!(
         get_str(&t, "result").contains("up to 30 days"),
+        "{}",
+        get_str(&t, "result")
+    );
+}
+
+#[tokio::test]
+async fn the_review_judges_the_language_rule_and_a_reply_in_the_wrong_language_is_written_again() {
+    // e2e_028 on the JSON tools: code no longer guesses a reply's language — the final review (the model) gets the
+    // setting and says `language_ok`; a reply against the rule is written again by the model in the agent's language
+    const ZH: &str = "最重要的邮件是 Google Workspace 发来的可疑登录安全告警，建议尽快检查。";
+    const EN: &str = "The most important email is the security alert from Google Workspace about a suspicious login.";
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            let sys = system_of(body);
+            if sys.starts_with("You check an assistant") {
+                assert!(sys.contains("written in English") && sys.contains("language_ok"), "{sys}");
+                let bad = last_of(body).contains(ZH);
+                return json!({"role": "assistant", "content": json!({"ok": true, "problem": "", "language_ok": !bad}).to_string()});
+            }
+            if sys.starts_with("Rewrite the reply to the user in English") {
+                assert!(last_of(body).contains(ZH));
+                return json!({"role": "assistant", "content": EN});
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            json!({"role": "assistant", "content": if last_of(body).contains("POEM") { "雨季的新加坡，雨落在榴莲壳上，城市在水汽里慢慢醒来。" } else { ZH }})
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let (t, evs) = run_task(&rt, "帮我看看最重要的邮件").await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    assert_eq!(events_of(&evs, "language_fixed").len(), 1);
+    assert_eq!(get_str(&t, "result"), EN);
+    // a reply the review finds in line with the rule (text the user asked for in Chinese) stays as it is
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            let sys = system_of(body);
+            if sys.starts_with("You check an assistant") {
+                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
+            }
+            assert!(!sys.starts_with("Rewrite the reply"), "rewritten although the review found it fine");
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            json!({"role": "assistant", "content": "雨季的新加坡，雨落在榴莲壳上，城市在水汽里慢慢醒来，街灯一盏一盏亮起来，像谁在夜里轻轻写字。"})
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let (t, evs) = run_task(&rt, "帮我写一首关于新加坡雨季的现代诗").await;
+    assert!(events_of(&evs, "language_fixed").is_empty());
+    assert!(
+        get_str(&t, "result").starts_with("雨季的新加坡"),
         "{}",
         get_str(&t, "result")
     );

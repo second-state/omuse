@@ -183,8 +183,8 @@ Call it in any emergency abroad; the JSON result has the lines and must_say — 
                    "nationality": {"type": "string", "description": "the traveller's nationality when the user said; empty = the profile's"}}),
             &["country", "emergency"]),
         fn_("visa_rules", "Entry rules for destinations from the official sources OMuse keeps: each destination's official \
-visa page and, where the official table has the nationality, the visa-free stay in days with its date and source. Call \
-it for any visa / entry question; the JSON result has must_say — write the reply from it (read the official page for \
+visa page and, where the official table has the nationality, the visa-free stay in days with its date and source; for a \
+Schengen country, ETIAS's status. Call it for any visa / entry question (ETIAS included); the JSON result has must_say — write the reply from it (read the official page for \
 what it does not give).",
             json!({"destinations": {"type": "array", "items": s.clone(), "description": "countries or cities, in the order the user named them"},
                    "nationality": {"type": "string", "description": "the passport's nationality when the user said; empty = the profile's"}}),
@@ -243,6 +243,7 @@ fn local_tools() -> Vec<Value> {
     tools.extend(super::claims::tool_schemas());
     tools.extend(super::driver::tool_schemas());
     tools.extend(super::apdt::tool_schemas());
+    tools.extend(super::trains::tool_schemas());
     tools
 }
 
@@ -558,16 +559,17 @@ checkboxes true/false, radio/dropdown one of the listed options. Only use facts 
 missing ones, never invent); never fill signatures. Then send_file it for the user to check before any email.",
             json!({"path": s, "values": {"type": "object"}, "output": {"type": "string", "description": "default: <name>-filled.pdf next to it"}}),
             &["path", "values"]),
-        fn_("memory_search", "搜索记忆 Search memory about the user (long-term facts, recent details and past tasks).", json!({"query": s,
-             "id_documents": {"type": "boolean", "description": "the task fills in a form or checks an identity document (passport, ID card, visa): facts about the user's ID documents are included; otherwise they stay hidden"}}), &["query"]),
+        fn_("memory_search", "搜索记忆 Search memory about the user (long-term facts, recent details and past tasks): by the topics and \
+entities the request is about (the facts carry the same fields) and by words.",
+            memory_search_props(), &[]),
         fn_("memory_remember", "记住用户明确要求记住的事实 Save a durable fact the user explicitly asked to remember, or a site's form habit you just learned at checkout \
 (e.g. \"decathlon.sg accepts the phone number as 8 digits without +65\"). Not for profile \
 fields (name, phone, email, address… → profile_suggest) and never for ID / membership / card numbers or passwords \
-(those live in the Sentinel vault, which the user manages). domain: person | preference | place | account | site \
-(how a website works for the user) | rule (a standing instruction) | work. Something you learned yourself (not \
-said by the user) is kept as 'to confirm' until the user OKs it on the Memory page — it is still used meanwhile.",
-            json!({"fact": s, "category": s, "entity": s, "domain": s,
-             "user_asked": {"type": "boolean", "description": "the user asked you to remember it (\"remember…\", \"from now on…\", \"next time…\"); false for something you learned yourself"}}), &["fact"]),
+(those live in the Sentinel vault, which the user manages). Give the fact its fields: domain, topics, scope (a routine \
+the user starts with a phrase: scope=trigger with that phrase), the entity (a website as its host) and, for a person, \
+the relation. Something you learned yourself (not said by the user) is kept as 'to confirm' until the user OKs it on \
+the Memory page — it is still used meanwhile.",
+            memory_remember_props(), &["fact", "domain", "topics", "scope"]),
         fn_("profile_get", "读取用户档案 Read the user's profile (name as on passport, phone, emails, addresses, company, title, \
 birthday, gender, nationality, further addresses as address:<label>…). Call it ONLY when filling in a form or writing an email/message that needs these details; \
 use just the fields you need.", json!({"fields": {"type": "array", "items": s, "description": "optional: only these fields; \"address:*\" = every further address"}}), &[]),
@@ -668,4 +670,36 @@ with file, read a reference file that skill ships (e.g. file=\"cards/sg.md\", as
         fn_("library_search", "在研究库的报告里搜索 Search the reports in the research library (passages with their subject).", json!({"query": s}), &["query"]),
         fn_("library_get", "读取研究库里一份完整报告 Read a research subject's whole report by title or slug.", json!({"subject": s}), &["subject"]),
     ]
+}
+
+/// The `memory_search` arguments: the model's query words, and the topics and entities it names (the same enums and
+/// names the facts carry), whether identity-document facts are wanted.
+fn memory_search_props() -> Value {
+    let topics = crate::store::fact_field_schema()["topics"].clone();
+    json!({
+        "query": {"type": "string", "description": "words to look for in the stored facts and past tasks (optional when topics or entities are given)"},
+        "topics": topics,
+        "entities": {"type": "array", "items": {"type": "string"},
+            "description": "people, companies or websites the request is about, as memory names them (a website as its host, e.g. decathlon.sg)"},
+        "id_documents": {"type": "boolean", "description": "the task fills in a form or checks an identity document (passport, ID card, visa): facts about the user's ID documents are included; otherwise they stay hidden"},
+    })
+}
+
+/// The `memory_remember` arguments: the fact and its structured fields ([`crate::store::fact_field_schema`]).
+fn memory_remember_props() -> Value {
+    let mut p = json!({
+        "fact": {"type": "string", "description": "one short third-person sentence"},
+        "category": {"type": "string"},
+        "entity": {"type": "string", "description": "the person, company or website it is about (a website as its host, e.g. decathlon.sg); empty when none"},
+        "user_asked": {"type": "boolean", "description": "the user asked you to remember it (\"remember…\", \"from now on…\", \"next time…\"); false for something you learned yourself"},
+    });
+    if let (Some(o), Some(f)) = (
+        p.as_object_mut(),
+        crate::store::fact_field_schema().as_object(),
+    ) {
+        for (k, v) in f {
+            o.insert(k.clone(), v.clone());
+        }
+    }
+    p
 }

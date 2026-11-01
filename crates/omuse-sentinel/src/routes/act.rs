@@ -153,26 +153,52 @@ async fn task_page_url(ctx: &Ctx, task_id: &str) -> Result<String, ActionError> 
 /// `site` it writes from a link is this host, not the shop's.
 pub const STAND_IN_HOST: &str = "link.omuse.local";
 
+/// The internal argument that carries what the open checkout page's text shows as its total, next to the model's
+/// `total` on the approval card (never set by the model: [`purchase_site`] always replaces it).
+pub const PAGE_SHOWS: &str = "_page_shows";
+
 /// `purchase_confirm`'s site is the site of the page the task has open, where the total is shown and the card is
 /// filled — never the model's copy of it (travel_michelin_e2e 2026-10-30: approved for "omuse.local", then the card
 /// fill on the booking site was refused; a model may also write "amazon.com" for www.amazon.sg). With no page open
 /// the site stays as written and the policy refuses it.
+///
+/// The total stays the model's (it read the page). What the page's text shows as a total is put next to it for the
+/// user to compare on the approval card ([`PAGE_SHOWS`]) — a security display only: an arbitrary checkout's prose
+/// never overwrites an amount (docs/json-tools.md, "Safety exceptions").
 async fn purchase_site(ctx: &Ctx, args: &mut Value, page_id: &str) {
+    if let Some(o) = args.as_object_mut() {
+        o.remove(PAGE_SHOWS);
+    }
     if let Ok(url) = task_page_url(ctx, page_id).await {
         let host = guard::hostname_of(&url);
         if !host.is_empty() && !host.ends_with(STAND_IN_HOST) {
             args["site"] = json!(host);
         }
     }
-    // and its total is the one the checkout page shows, not the model's copy: the approval and the 30-minute allowance
-    // are for what the user will pay (audit 2026-10-31: `page_total` had no caller)
     let body = json!({"task_id": page_id});
     let Ok(r) = deps::broker(ctx, "POST", "/agent/page_text", Some(&body), 20.0).await else {
         return;
     };
     if let Some(total) = omuse_common::guard::page_total(&get_str(&r.json(), "text")) {
-        args["total"] = json!((total * 100.0).round() / 100.0);
+        args[PAGE_SHOWS] = json!((total * 100.0).round() / 100.0);
     }
+}
+
+/// The approval card's line for what the checkout page shows next to the model's total, and a warning when the two
+/// differ: `(field value, warning)`; `None` when the page text showed no total.
+pub fn page_shows_line(args: &Value) -> Option<(String, Option<String>)> {
+    let shown = args.get(PAGE_SHOWS).and_then(Value::as_f64)?;
+    let cur = get_str(args, "currency");
+    let line = format!("{cur} {shown:.2}").trim().to_string();
+    let model = args.get("total").and_then(omuse_common::util::as_f64);
+    let warn = match model {
+        Some(t) if (t - shown).abs() < 0.005 => None,
+        _ => Some(format!(
+            "页面上显示的总价（{line}）和要批准的总价不一样，请先在页面上核对 \
+             (the page shows a total of {line}, not the amount to approve — check the page first)"
+        )),
+    };
+    Some((line, warn))
 }
 
 /// `_context_for`: ask the broker what a ref points to so the policy can judge the click/type.
@@ -457,6 +483,14 @@ pub async fn summary(
             field("商品 Items", lines.join("\n")),
             field("运费 Shipping", ship),
             field("总价 Total", total),
+        ];
+        if let Some((shown, warn)) = page_shows_line(args) {
+            fields.push(field("页面显示 Page shows", shown));
+            if let Some(w) = warn {
+                s.insert("warning".into(), json!(w));
+            }
+        }
+        fields.extend([
             field("送货方式 Delivery", s_or(args, "delivery", "")),
             field("付款卡 Card", card),
             field(
@@ -464,7 +498,7 @@ pub async fn summary(
                 "30 分钟内、仅这个网站：结账、填卡、下单不再逐个审批，页面总价超过上面的金额会再问你 \
                  (for 30 min on this site only, checkout, the card and the order need no further approval — it asks again if the page total is higher)",
             ),
-        ];
+        ]);
         s.insert("body".into(), json!(s_or(args, "note", "")));
         s.insert("screenshot".into(), json!(true));
     } else if tool.starts_with("browser_") {
@@ -1230,36 +1264,9 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
             }
         }
     }
-    // a card fill from the Vault before the purchase was confirmed: the confirmation is made here, in code, from the
-    // page (its site and total) — approved by the user, or auto-approved by the setting — and the fill then runs
-    // (travel_michelin_real 2026-10-31: the deposit's card fills were refused and the model gave up)
-    if d.decision == DENY
-        && tool == "browser_fill_secret"
-        && d.reason.starts_with("填银行卡之前先调用 purchase_confirm")
-        && !b.get("after_purchase").is_some_and(truthy)
-    {
-        let mut pargs = json!({"card_item_id": s_or(&args, "item_id", ""), "shipping": 0});
-        purchase_site(&ctx, &mut pargs, &page_id).await;
-        if let Some(total) = pargs.get("total").and_then(Value::as_f64) {
-            let title = page.as_ref().map(|p| s_opt(p, "title")).unwrap_or_default();
-            let name = if title.trim().is_empty() {
-                "Order".to_string()
-            } else {
-                title
-            };
-            pargs["items"] = json!([{"name": name, "qty": 1, "price": total}]);
-            let mut pb = b.clone();
-            pb["tool"] = json!("purchase_confirm");
-            pb["args"] = pargs;
-            let Json(r) = Box::pin(act(State(ctx.clone()), Bytes::from(pb.to_string()))).await?;
-            if get_str(&r, "status") == "approval_required" || get_str(&r, "status") == "denied" {
-                return Ok(Json(r));
-            }
-            let mut fb = b.clone();
-            fb["after_purchase"] = json!(true);
-            return Box::pin(act(State(ctx.clone()), Bytes::from(fb.to_string()))).await;
-        }
-    }
+    // a card fill from the Vault before the purchase was confirmed is refused by the policy: the confirmation is the
+    // model's purchase_confirm with the total it read (or a machine's, from structured data) — never one made here
+    // from an arbitrary checkout page's text (it used to be, with `page_total` as the amount)
     let mut detail =
         json!({"args": safe_args(&args), "reason": d.reason, "destination": d.destination});
     if let Some(e) = elem.as_ref().filter(|e| truthy(e)) {
@@ -1319,7 +1326,11 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
                 let _ = std::fs::write(ctx.shots.join(format!("{aid}.jpg")), img);
             }
         }
-        if browser_auto_approve(&ctx, &tool, &d) {
+        // a purchase whose total differs from what the checkout page's text shows is never auto-approved: the user sees
+        // the two side by side on the card
+        let page_differs = tool == "purchase_confirm"
+            && page_shows_line(&args).is_some_and(|(_, warn)| warn.is_some());
+        if !page_differs && browser_auto_approve(&ctx, &tool, &d) {
             // Settings → "auto-approve browser actions": the approval exists and is resolved by "auto" at once, so the
             // chat, the approvals history and the audit show it exactly like a manual approval, and the action runs now
             ctx.audit(
@@ -1786,6 +1797,24 @@ mod tests {
         );
         assert_eq!(
             shifted_end("x", "2026-11-03 15:45", "2026-11-03 15:30"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_page_total_is_shown_next_to_the_models_never_instead() {
+        // the same amount: shown, no warning
+        let a = json!({"total": 13.99, "currency": "SGD", PAGE_SHOWS: 13.99});
+        assert_eq!(page_shows_line(&a), Some(("SGD 13.99".to_string(), None)));
+        // the page text shows more than the model's total: both on the card, and a warning; the model's total stays
+        let a = json!({"total": 9.0, "currency": "SGD", PAGE_SHOWS: 13.99});
+        let (line, warn) = page_shows_line(&a).unwrap();
+        assert_eq!(line, "SGD 13.99");
+        assert!(warn.unwrap().contains("SGD 13.99"));
+        assert_eq!(a["total"], 9.0);
+        // nothing read from the page: no line
+        assert_eq!(
+            page_shows_line(&json!({"total": 9.0, "currency": "SGD"})),
             None
         );
     }

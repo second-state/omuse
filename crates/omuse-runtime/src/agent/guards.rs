@@ -290,6 +290,7 @@ pub fn code_call(call: &ToolCall) -> bool {
         "apd_",
         "bkg_",
         "nws_",
+        "trn_",
         "auto_handover_",
         "news_",
         "handback_snapshot_",
@@ -914,7 +915,7 @@ pub fn delivers(args: &Value) -> bool {
 pub const ETIAS_STATUS_EN: &str =
     "ETIAS is not in operation yet (launch expected in 2027), so there is nothing to apply \
 for now; check https://travel-europe.europa.eu/etias before you travel.";
-const ETIAS_STATUS_ZH: &str = "ETIAS 目前还没有上线（预计 2027 年启用），现在不需要也无法申请；出发前请看 https://travel-europe.europa.eu/etias。";
+pub const ETIAS_STATUS_ZH: &str = "ETIAS 目前还没有上线（预计 2027 年启用），现在不需要也无法申请；出发前请看 https://travel-europe.europa.eu/etias。";
 
 /// ETIAS's status when the eu-etias skill ran, as a fact the reply must carry — the skill's central fact
 /// (arrival_cards4_real 2026-10-31: an answer about the visa only).

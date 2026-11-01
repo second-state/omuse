@@ -49,6 +49,7 @@ pub mod market_text;
 pub mod news;
 pub mod runtime;
 pub mod tools;
+pub mod trains;
 pub(crate) mod util;
 pub mod videos;
 pub mod workflow;

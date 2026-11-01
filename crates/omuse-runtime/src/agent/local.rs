@@ -686,33 +686,48 @@ NOT in the PDF: {}.",
                 })
             }
             "memory_search" => {
+                // what to look for is the model's JSON: its query words, the topics and the entities it named
                 let q = sget(a, "query");
-                let mut rows = self
+                let include_id = a.get("id_documents").and_then(Value::as_bool) == Some(true);
+                let topics = crate::store::clean_topics(a.get("topics"));
+                let entities: Vec<String> = match a.get("entities") {
+                    Some(Value::Array(v)) => v
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(|x| x.trim().to_string())
+                        .filter(|x| !x.is_empty())
+                        .collect(),
+                    Some(Value::String(x)) if !x.trim().is_empty() => vec![x.trim().to_string()],
+                    _ => vec![],
+                };
+                let rows = self
                     .store
-                    .search_facts(&q, 15, None, true)
+                    .search_facts(&crate::store::MemoryQuery {
+                        query: q.clone(),
+                        topics: topics.clone(),
+                        entities: entities.clone(),
+                        include_id,
+                        tier: None,
+                        limit: 15,
+                    })
                     .map_err(stores_err)?;
-                let mut hidden = 0;
-                if a.get("id_documents").and_then(Value::as_bool) != Some(true) {
-                    // passport / ID / birth-date facts: only for tasks that fill in a form or check a document
-                    let before = rows.len();
-                    rows.retain(|r| !crate::context::ID_DOC.is_match(&sget(r, "fact")));
-                    hidden = before - rows.len();
+                let (n_id, n_unsorted) = if include_id {
+                    (0, 0)
+                } else {
+                    self.store.hidden_fact_count().map_err(stores_err)?
+                };
+                if n_unsorted > 0 {
+                    crate::memory_tidy::classify_in_background(
+                        self.store.clone(),
+                        self.llm.clone(),
+                    );
                 }
-                let words: Vec<&str> = q
-                    .split_whitespace()
-                    .filter(|w| w.chars().count() > 1)
-                    .collect();
+                let ids: Vec<String> = rows.iter().map(|r| get_str(r, "id")).collect();
+                let _ = self.store.note_task_memory(&tid, &topics, &entities, &ids);
                 let eps: Vec<Value> = self
                     .store
-                    .episodes(200)
-                    .map_err(stores_err)?
-                    .into_iter()
-                    .filter(|e| {
-                        let s = get_str(e, "summary");
-                        words.iter().any(|w| s.contains(w))
-                    })
-                    .take(5)
-                    .collect();
+                    .episodes_for(&ids, &topics, &entities, &q, 5)
+                    .map_err(stores_err)?;
                 let mut out: Vec<String> = rows
                     .iter()
                     .map(|r| {
@@ -746,9 +761,12 @@ NOT in the PDF: {}.",
                         truncate(&get_str(e, "summary"), 300)
                     )
                 }));
-                if hidden > 0 {
-                    out.push(format!("({hidden} 条证件类记忆未显示：只有填表、值机、证件到期检查等任务才使用 — {hidden} identity-document \
+                if n_id > 0 {
+                    out.push(format!("({n_id} 条证件类记忆未显示：只有填表、值机、证件到期检查等任务才使用 — {n_id} identity-document \
 facts hidden; they are only used for forms, check-in or document-expiry checks)"));
+                }
+                if n_unsorted > 0 && rows.is_empty() {
+                    out.push(format!("({n_unsorted} 条记忆还在归类，稍后再搜 — {n_unsorted} facts are still being sorted; search again later)"));
                 }
                 Ok(if out.is_empty() {
                     "没有相关记忆 no memories found".into()
@@ -930,6 +948,8 @@ memory. Tell the user to add it to the vault (Memory page → Vault (记忆 → 
                 // whether the user asked for it: the call's JSON (the model read the user's words)
                 let asked = a.get("user_asked").and_then(Value::as_bool) == Some(true);
                 let cat = sget(a, "category");
+                // the fact's structured fields are the call's JSON (domain, topics, scope, trigger, id_document,
+                // relation), validated against their enums; a fact without them is sorted in the background
                 let o = FactOpts {
                     source: if asked {
                         format!("user-request:{}", tid)
@@ -937,14 +957,21 @@ memory. Tell the user to add it to the vault (Memory page → Vault (记忆 → 
                         format!("learned:{}", tid)
                     },
                     confidence: if asked { 0.95 } else { 0.8 },
-                    domain: sget(a, "domain"),
                     status: if asked {
                         "active".into()
                     } else {
                         "pending".into()
                     },
+                    task_id: tid.to_string(),
                     ..Default::default()
-                };
+                }
+                .with_model_fields(a);
+                if o.scope.is_empty() {
+                    crate::memory_tidy::classify_in_background(
+                        self.store.clone(),
+                        self.llm.clone(),
+                    );
+                }
                 let r = self
                     .store
                     .add_fact(
@@ -1062,7 +1089,7 @@ memory. Tell the user to add it to the vault (Memory page → Vault (记忆 → 
             }
             "memory_forget" => {
                 self.store
-                    .delete_fact(&req_str(a, "id")?)
+                    .forget_fact(&req_str(a, "id")?)
                     .map_err(stores_err)?;
                 self.publish(json!({"kind": "memory_update"})).await;
                 Ok("已删除 forgotten".into())

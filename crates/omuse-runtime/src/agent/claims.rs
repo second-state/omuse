@@ -1868,7 +1868,7 @@ fn csr_result(
     }
     match (status, reference) {
         (_, Some(r)) => must.push(format!(
-            "you submitted it on eClaimsLine: claim number {r}"
+            "you pressed Submit yourself on eClaimsLine (the assistant did not submit it): claim number {r}"
         )),
         ("handed_over", None) => must.push(
             "the claim is filled in on eClaimsLine and waiting for your Submit — nothing has been submitted for you"
@@ -1876,6 +1876,7 @@ fn csr_result(
         ),
         _ => {}
     }
+    must.push(format!("{} decides the claim", s.decides));
     let doctor = if t.has_doctor_letter {
         "your doctor's letter (have — upload it; the administrator's physician statement form may follow)"
     } else {
@@ -2081,7 +2082,9 @@ fn next_sg_claim(
     }
     let mut must: Vec<String> = Vec::new();
     match &reference {
-        Some(r) => must.push(format!("you submitted it on FWD's claim form: reference {r}")),
+        Some(r) => must.push(format!(
+            "you pressed Submit yourself on FWD's claim form (the assistant did not submit it): reference {r}"
+        )),
         None => must.push("the claim is filled in on FWD's online form (policy, your details, the passport from the Vault, the incident, the amount, the delay certificate) and waiting for your Submit — nothing has been submitted for you".into()),
     }
     must.push(match deadline_reminder {

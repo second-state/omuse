@@ -68,9 +68,6 @@ pub trait RuntimeApi: Send + Sync + 'static {
     /// never fails (empty catalog when Sentinel is down).
     fn catalog(&self) -> BoxFuture<'_, Value>;
 
-    /// `context.select(goal, rt.store.facts(500), rt.store.entities(), limit=12)` — personal context v1.
-    fn facts_select(&self, goal: &str) -> Vec<Value>;
-
     /// `await rt._plan(task, facts, history_txt)` — the planner; `task` is `{"id", "goal", "conv_id", "attachments"}`.
     fn plan(
         &self,
@@ -256,9 +253,6 @@ pub(crate) mod testing {
         }
         fn catalog(&self) -> BoxFuture<'_, Value> {
             Box::pin(async { json!({"tools": [], "connections": {}}) })
-        }
-        fn facts_select(&self, _goal: &str) -> Vec<Value> {
-            vec![]
         }
         fn plan(
             &self,

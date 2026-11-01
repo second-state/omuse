@@ -682,9 +682,16 @@ pub fn decide(
             String::new()
         };
         let cart_edit = guard::cart_edit_click(&elem_name, &page_url);
+        // the user asked for this very click: the model's `user_asked` (JSON), honoured on a browser_click only, only
+        // while the task has read nothing that looks like an injection, and never for a money / send / booking / terms
+        // label — the user's words are never read here
+        let user_asked = tool == "browser_click"
+            && args.get("user_asked").and_then(Value::as_bool) == Some(true)
+            && injection.is_empty()
+            && guard::click_skip_allowed(&elem_name);
         if !cart_edit
             && guard::click_is_risky(&get_str(e, "role"), &elem_name, &itype)
-            && !guard::user_named_click(&store.user_request(task_id)?, &elem_name)
+            && !user_asked
         {
             bump(&mut risk, "high");
             reasons.push(format!(
@@ -827,7 +834,7 @@ for the user and say so in the takeover reason.)"
         }
         // a page that pays the user (a tax refund's "refund method", a payout) takes the card to receive money: no
         // purchase to confirm there (app.apdtrefund.hk, 2026-10-30)
-        let receives = omuse_common::guard::refund_page(&page_url, &opt_str(page, "title"));
+        let receives = omuse_common::guard::refund_page(&page_url);
         if field_str(&it, "kind") == "card"
             && purchase.is_none()
             && injection.is_empty()
@@ -859,14 +866,17 @@ for the user and say so in the takeover reason.)"
         }
     }
     if tool == "browser_upload" {
+        // the user attached this file and asked for it to be uploaded on this very site: the model's `user_asked`
+        // (JSON), honoured only for an attached file, while the task has read no injection, on the site the user's
+        // message names (an exact substring check of the page's domain, as for the egress check)
+        let dom = guard::domain_of(&page_url);
         if page.is_some()
-            && guard::user_asked_upload(
-                &store.user_request(task_id)?,
-                &page_url,
-                &get_str(args, "path"),
-            )
+            && args.get("user_asked").and_then(Value::as_bool) == Some(true)
+            && injection.is_empty()
+            && guard::attached_file(&get_str(args, "path"))
+            && guard::named_in_request(&store.user_request(task_id)?, &dom)
         {
-            risk = "medium".to_string(); // the user attached this file and asked for it to be uploaded on this very site
+            risk = "medium".to_string();
         } else {
             reasons.push("上传本地文件到网站 (uploads a local file)".into());
         }
@@ -1638,18 +1648,145 @@ mod tests {
         store
             .set_user_request("tu", "请在 shop.com 上传我刚附上的文件")
             .unwrap();
-        assert_eq!(
+        let up = |args: Value, task: &str| {
             dec(
                 &store,
                 "browser_upload",
-                json!({"ref": "e1", "path": "uploads/a.pdf"}),
-                "tu",
+                args,
+                task,
                 None,
-                Some(page.clone())
+                Some(page.clone()),
             )
-            .decision,
+            .decision
+        };
+        // the request's words alone decide nothing: the model's `user_asked` does
+        assert_eq!(up(json!({"ref": "e1", "path": "uploads/a.pdf"}), "tu"), ASK);
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "uploads/a.pdf", "user_asked": false}),
+                "tu"
+            ),
+            ASK
+        );
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "uploads/a.pdf", "user_asked": true}),
+                "tu"
+            ),
             ALLOW
         );
+        // only an attached file, only on the site the message names
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "out/report.pdf", "user_asked": true}),
+                "tu"
+            ),
+            ASK
+        );
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "uploads/../secrets.txt", "user_asked": true}),
+                "tu"
+            ),
+            ASK
+        );
+        store.set_user_request("tn", "上传我刚附上的文件").unwrap();
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "uploads/a.pdf", "user_asked": true}),
+                "tn"
+            ),
+            ASK
+        );
+        // never after the task read something that looks like an injection
+        store
+            .set_user_request("ti", "请在 shop.com 上传我刚附上的文件")
+            .unwrap();
+        store
+            .update_task_ctx("ti", None, Some(&["hidden instruction".to_string()]), None)
+            .unwrap();
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "uploads/a.pdf", "user_asked": true}),
+                "ti"
+            ),
+            ASK
+        );
+    }
+
+    #[test]
+    fn a_click_the_user_asked_for_is_the_models_json_field() {
+        let (_t, store) = store();
+        // the request names the button, but its words decide nothing (they were read by user_named_click before)
+        store
+            .set_user_request("tk", "click Remove on that record")
+            .unwrap();
+        let page = json!({"url": "https://records.example.com/list", "title": "Records"});
+        let rm = json!({"tag": "button", "role": "button", "name": "Remove", "input_type": "", "in_form": false});
+        let click = |tool: &str, args: Value, task: &str, elem: &Value| {
+            dec(
+                &store,
+                tool,
+                args,
+                task,
+                Some(elem.clone()),
+                Some(page.clone()),
+            )
+            .decision
+        };
+        assert_eq!(click("browser_click", json!({"ref": "e3"}), "tk", &rm), ASK);
+        assert_eq!(
+            click(
+                "browser_click",
+                json!({"ref": "e3", "user_asked": false}),
+                "tk",
+                &rm
+            ),
+            ASK
+        );
+        assert_eq!(
+            click(
+                "browser_click",
+                json!({"ref": "e3", "user_asked": true}),
+                "tk",
+                &rm
+            ),
+            ALLOW
+        );
+        // a string is not the flag
+        assert_eq!(
+            click(
+                "browser_click",
+                json!({"ref": "e3", "user_asked": "true"}),
+                "tk",
+                &rm
+            ),
+            ASK
+        );
+        // never a send / pay / booking / terms label, whatever the model says
+        let send = json!({"tag": "button", "role": "button", "name": "Send", "input_type": "", "in_form": false});
+        assert_eq!(
+            click(
+                "browser_click",
+                json!({"ref": "e4", "user_asked": true}),
+                "tk",
+                &send
+            ),
+            ASK
+        );
+        // never after an injection was read in the task
+        store
+            .update_task_ctx("tk", None, Some(&["hidden instruction".to_string()]), None)
+            .unwrap();
+        let r = dec(
+            &store,
+            "browser_click",
+            json!({"ref": "e3", "user_asked": true}),
+            "tk",
+            Some(rm.clone()),
+            Some(page.clone()),
+        );
+        assert_eq!(r.decision, ASK);
     }
 
     #[test]

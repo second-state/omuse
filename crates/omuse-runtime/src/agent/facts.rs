@@ -244,6 +244,23 @@ pub fn visa_rules(args: &Value, profile_nationality: &str, zh: bool) -> Value {
     let (mut rows, mut unknown, mut must) = (Vec::new(), Vec::new(), Vec::new());
     for d in asked.iter().take(6) {
         let low = d.trim().to_lowercase();
+        // the Schengen area: ETIAS's status from the fixed fact, nothing to apply for (arrival_cards4_real
+        // 2026-11-01: France came back unknown and the reply never said ETIAS is not in operation)
+        if schengen(&low) {
+            rows.push(
+                json!({"destination": d.trim(), "area": "Schengen", "etias": "not_in_operation",
+                             "official_page": "https://travel-europe.europa.eu/etias"}),
+            );
+            let fact = if zh {
+                super::guards::ETIAS_STATUS_ZH
+            } else {
+                super::guards::ETIAS_STATUS_EN
+            };
+            if !must.iter().any(|m: &String| m == fact) {
+                must.push(fact.to_string());
+            }
+            continue;
+        }
         let page = VISA_PAGES.iter().find(|p| {
             p.code.eq_ignore_ascii_case(&low)
                 || p.country.eq_ignore_ascii_case(&low)
@@ -272,6 +289,53 @@ pub fn visa_rules(args: &Value, profile_nationality: &str, zh: bool) -> Value {
         must.push(line);
     }
     json!({"nationality": nationality, "destinations": rows, "unknown": unknown, "must_say": must})
+}
+
+/// The countries ETIAS will cover (the Schengen states and Cyprus), by name or ISO code, and the area's own names.
+const SCHENGEN: [(&str, &str); 30] = [
+    ("austria", "at"),
+    ("belgium", "be"),
+    ("bulgaria", "bg"),
+    ("croatia", "hr"),
+    ("cyprus", "cy"),
+    ("czechia", "cz"),
+    ("denmark", "dk"),
+    ("estonia", "ee"),
+    ("finland", "fi"),
+    ("france", "fr"),
+    ("germany", "de"),
+    ("greece", "gr"),
+    ("hungary", "hu"),
+    ("iceland", "is"),
+    ("italy", "it"),
+    ("latvia", "lv"),
+    ("liechtenstein", "li"),
+    ("lithuania", "lt"),
+    ("luxembourg", "lu"),
+    ("malta", "mt"),
+    ("netherlands", "nl"),
+    ("norway", "no"),
+    ("poland", "pl"),
+    ("portugal", "pt"),
+    ("romania", "ro"),
+    ("slovakia", "sk"),
+    ("slovenia", "si"),
+    ("spain", "es"),
+    ("sweden", "se"),
+    ("switzerland", "ch"),
+];
+
+/// Whether a `visa_rules` destination (lower case) is in the area ETIAS covers: a member's name or code (also after a
+/// city: "Paris, France"), "Czech Republic", "the Netherlands", or the area itself ("Schengen Area", "EU").
+fn schengen(low: &str) -> bool {
+    // "Paris, France": the country after the city counts
+    low.split(',').any(|part| {
+        let d = part.trim().trim_start_matches("the ").trim();
+        SCHENGEN.iter().any(|(name, code)| d == *name || d == *code)
+            || d == "czech republic"
+            || d.contains("schengen")
+            || matches!(d, "eu" | "european union" | "europe")
+    })
 }
 
 // ---------------------------------------------------------------- loan_payment
@@ -398,6 +462,28 @@ mod tests {
         assert!(must[1].contains("ica.gov.sg") && !must[1].contains("up to"));
         assert_eq!(v["unknown"], json!(["Atlantis"]));
         assert_eq!(v["destinations"][0]["visa_free_days"], 30);
+    }
+
+    #[test]
+    fn a_schengen_destination_gets_etias_status_as_a_fact() {
+        // arrival_cards4_real 2026-11-01: visa_rules{France} came back unknown, the reply never said ETIAS is not live
+        let v = visa_rules(
+            &json!({"destinations": ["France", "Schengen Area"]}),
+            "Australia",
+            false,
+        );
+        assert_eq!(
+            must_say(&v),
+            vec![super::super::guards::ETIAS_STATUS_EN.to_string()]
+        );
+        assert_eq!(v["destinations"][0]["etias"], "not_in_operation");
+        assert_eq!(v["unknown"], json!([]));
+        assert!(
+            schengen("the netherlands")
+                && schengen("cz")
+                && schengen("paris, france")
+                && !schengen("tokyo, japan")
+        );
     }
 
     #[test]

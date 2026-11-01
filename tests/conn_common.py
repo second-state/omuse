@@ -369,7 +369,12 @@ async def memory_try(u: U.User, request: str) -> str:
     card = pg.locator(".card", has=pg.locator("h3", has_text="Try it")).first
     await card.locator("input").fill(request)
     await card.locator("button.btn.primary").click()
-    await pg.wait_for_timeout(1500)
+    # the model reads the request first: wait, as the user does, until the card stops showing that it is working
+    await pg.wait_for_timeout(500)
+    for _ in range(60):
+        if not await card.locator("[data-loading]").count():
+            break
+        await pg.wait_for_timeout(500)
     return " ".join((await card.inner_text()).split())
 
 

@@ -322,6 +322,7 @@ impl Runtime {
             .chain(super::claims::tool_schemas())
             .chain(super::driver::tool_schemas())
             .chain(super::apdt::tool_schemas())
+            .chain(super::trains::tool_schemas())
             .find(|s| tool_name(s) == tool)
             .map(|s| s["function"]["parameters"].clone())
             .unwrap_or_else(|| json!({}));
@@ -372,6 +373,8 @@ impl Runtime {
                     transcript,
                 };
                 super::apdt::check(tool, &a, &cx)
+            } else if super::trains::TOOLS.contains(&tool) {
+                super::trains::check(tool, &a, today)
             } else {
                 super::booking::check(tool, &a, &cx)
             };
@@ -557,6 +560,16 @@ impl Runtime {
                 super::news::next(tool, args, &t[from..], &m)
             }
             Machine::Workflow { tool, args, from }
+                if super::trains::TOOLS.contains(&tool.as_str()) =>
+            {
+                let from = (*from).min(t.len());
+                let m = super::trains::Machine {
+                    today,
+                    first: first(t, from, super::trains::PREFIX),
+                };
+                super::trains::next(tool, args, &t[from..], &m)
+            }
+            Machine::Workflow { tool, args, from }
                 if super::claims::TOOLS.contains(&tool.as_str()) =>
             {
                 let m = super::claims::Machine {
@@ -625,6 +638,7 @@ impl Runtime {
         request: &str,
         answer: &str,
         must: &[String],
+        lg: &str,
     ) -> Option<Review> {
         if answer.chars().count() < 40 && must.is_empty() {
             return None;
@@ -648,7 +662,7 @@ impl Runtime {
             ));
         }
         let msgs = [
-            json!({"role": "system", "content": prompts::review_system(!must.is_empty())}),
+            json!({"role": "system", "content": prompts::review_system(!must.is_empty(), lg)}),
             user_msg(body),
         ];
         let r = self.llm.chat(&msgs, None, &o).await.ok()?;
@@ -664,10 +678,51 @@ impl Runtime {
             .collect();
         let ok = v.get("ok").and_then(Value::as_bool).unwrap_or(true);
         let problem = take_chars(get_str(&v, "problem").trim(), 300).to_string();
-        if (ok || problem.is_empty()) && missing.is_empty() {
+        // the language rule (Settings → Language), judged by the model: only an explicit false counts
+        let language = v.get("language_ok").and_then(Value::as_bool) == Some(false);
+        if (ok || problem.is_empty()) && missing.is_empty() && !language {
             return None;
         }
-        Some(Review { problem, missing })
+        Some(Review {
+            problem: if ok { String::new() } else { problem },
+            missing,
+            language,
+        })
+    }
+
+    /// The reply again in the agent's language (`lg`), when the final review found it written in another one against
+    /// the language rule (the model judges; code never guesses a text's language). Text the user asked for in another
+    /// language stays as it is.
+    async fn reply_in_language(
+        &self,
+        task_id: &str,
+        request: &str,
+        reply: &str,
+        lg: &str,
+    ) -> String {
+        let sysmsg = format!(
+            "Rewrite the reply to the user in {}. No tools. Keep its content, structure, markdown, links, numbers, names, \
+email subjects and quotes exactly; text the user asked for in another language (a translation, a poem, story, post or \
+message to use as written) stays in that language. Output only the rewritten reply.",
+            prompts::lang_name(lg)
+        );
+        let body = format!(
+            "The user's request:\n{}\n\nThe reply:\n{}",
+            take_chars(request, 2000),
+            take_chars(reply, 6000)
+        );
+        match self
+            .llm
+            .chat(
+                &[json!({"role": "system", "content": sysmsg}), user_msg(body)],
+                None,
+                &opts("rescue_final", task_id),
+            )
+            .await
+        {
+            Ok(r) => strip_tool_markup(&r.content).trim().to_string(),
+            Err(_) => String::new(),
+        }
     }
 
     /// The reply again, carrying the facts of the machine's result the review found missing (the model writes it; the
@@ -1700,9 +1755,9 @@ impl Runtime {
     }
 
     /// The profile's standing preferences for the executor prompt, as (label, value): the fixed
-    /// `preferred_airline` / `preferred_hotel_brand` / `preferred_car_rental` fields, then any custom field whose label carries one of
-    /// `store::PREFERENCE_WORDS` (a second airline, a loyalty programme, a seat wish…). Empty values are skipped;
-    /// nothing else of the profile is ever put in the prompt.
+    /// `preferred_airline` / `preferred_hotel_brand` / `preferred_car_rental` fields, then the custom fields the user
+    /// marked standing on the Memory page (`Store::profile_standing`: a second airline, a loyalty programme, a seat
+    /// wish…). Empty values are skipped; nothing else of the profile is ever put in the prompt.
     pub fn standing_prefs(&self) -> Vec<(String, String)> {
         let prof = self.store.profile().unwrap_or_else(|_| json!({}));
         let Some(map) = prof.as_object() else {
@@ -1720,73 +1775,39 @@ impl Runtime {
                 out.push((label, v.trim().to_string()));
             }
         }
-        for (k, v) in map {
-            let Some(label) = k.strip_prefix("custom:") else {
+        for k in self.store.profile_standing().unwrap_or_default() {
+            let (Some(label), Some(v)) = (
+                k.strip_prefix("custom:"),
+                map.get(&k).and_then(Value::as_str),
+            ) else {
                 continue;
             };
-            let v = v.as_str().unwrap_or("");
-            let low = label.to_lowercase();
-            if !v.trim().is_empty()
-                && crate::store::PREFERENCE_WORDS
-                    .iter()
-                    .any(|w| low.contains(w))
-            {
+            if !v.trim().is_empty() {
                 out.push((label.to_string(), v.trim().to_string()));
             }
         }
         out
     }
 
-    /// Long-term facts for this task (personal context v1): the ones that matter for what is asked, grouped by
-    /// domain.
-    pub fn facts_for(&self, goal: &str, history_txt: &str) -> Vec<Value> {
+    /// Long-term facts for this task: the model reads the request against what memory holds (JSON choices), and
+    /// code selects on the facts' structured fields and the task's data (bot, skills, tools) — `context::facts_for_task`.
+    pub async fn facts_for(&self, t: &Value, history_txt: &str) -> Vec<Value> {
         let users: Vec<&str> = history_txt
             .lines()
             .filter_map(|ln| ln.strip_prefix("user: "))
             .collect();
         let users = users[users.len().saturating_sub(3)..].join("\n");
-        let facts = self.store.facts(500, Some("long")).unwrap_or_default();
-        let ents = self.store.entities(None).unwrap_or_default();
-        let out = crate::context::select(goal, &facts, Some(&ents), 12, &users);
-        let ids: Vec<String> = out.iter().take(12).map(|f| get_str(f, "id")).collect();
-        let _ = self.store.mark_used(&ids);
-        out
-    }
-
-    /// The selection before batch 2 (kept for the A/B comparison).
-    pub fn facts_legacy(&self, goal: &str) -> Vec<Value> {
-        let found = self
-            .store
-            .search_facts(goal, 10, Some("long"), false)
-            .unwrap_or_default();
-        let mut prefs: Vec<Value> = self
-            .store
-            .facts(300, Some("long"))
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|f| {
-                matches!(
-                    get_str(f, "category").as_str(),
-                    "preference" | "person" | "habit"
-                )
-            })
-            .collect();
-        let num = |f: &Value, k: &str| f.get(k).and_then(omuse_common::util::as_f64).unwrap_or(0.0);
-        prefs.sort_by(|a, b| {
-            (num(b, "uses"), num(b, "last_verified"))
-                .partial_cmp(&(num(a, "uses"), num(a, "last_verified")))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        prefs.truncate(10);
-        let mut seen = HashSet::new();
-        let mut out = Vec::new();
-        for f in found.into_iter().chain(prefs) {
-            if seen.insert(get_str(&f, "id")) {
-                out.push(f);
-            }
-        }
-        out.truncate(15);
-        out
+        let task = crate::context::task_data(&self.bot_of(t).id, arr(t, "transcript"));
+        crate::context::facts_for_task(
+            &self.store,
+            &self.llm,
+            &get_str(t, "id"),
+            &get_str(t, "goal"),
+            &users,
+            &task,
+        )
+        .await
+        .0
     }
 
     /// Tell the ledger how a purchase ended: the order number from the confirmation page, or none.
@@ -1834,15 +1855,14 @@ impl Runtime {
         if !self.inner.lock().block_noted.insert(site.to_string()) {
             return;
         }
-        let existing = self
+        // recorded before (in an earlier run): a fact of kind site_block with this site as its entity
+        if self
             .store
-            .search_facts(&format!("{} 反机器人 bot", site), 5, Some("long"), true)
-            .unwrap_or_default();
-        if existing.iter().any(|f| {
-            let fact = get_str(f, "fact");
-            fact.contains(site)
-                && (fact.contains("反机器人") || fact.to_lowercase().contains("bot"))
-        }) {
+            .facts(5000, None)
+            .unwrap_or_default()
+            .iter()
+            .any(|f| get_str(f, "kind") == "site_block" && get_str(f, "entity") == site)
+        {
             return;
         }
         let fact = format!(
@@ -1854,6 +1874,9 @@ impl Runtime {
             confidence: 0.8,
             domain: "site".into(),
             status: "pending".into(),
+            kind: "site_block".into(),
+            scope: "topic".into(),
+            task_id: task_id.to_string(),
             ..Default::default()
         };
         match self.store.add_fact(&fact, "habit", site, &o) {
@@ -1881,13 +1904,14 @@ impl Runtime {
         let found = crate::context::site_facts(
             url,
             &self.store.facts(500, Some("long")).unwrap_or_default(),
+            &self.store.entities(None).unwrap_or_default(),
         );
         if found.is_empty() {
             return String::new();
         }
-        let _ = self
-            .store
-            .mark_used(&found.iter().map(|f| get_str(f, "id")).collect::<Vec<_>>());
+        let ids: Vec<String> = found.iter().map(|f| get_str(f, "id")).collect();
+        let _ = self.store.mark_used(&ids);
+        let _ = self.store.note_task_memory(task_id, &[], &[], &ids);
         let lines: Vec<String> = found
             .iter()
             .map(|f| {
@@ -2074,7 +2098,7 @@ impl Runtime {
         let t = self.store.task(task_id).ok().flatten()?;
         let goal_text = get_str(&t, "goal");
         let (_, history_txt) = self.history(&get_str(&t, "conv_id"), task_id);
-        let facts = self.facts_for(&goal_text, &history_txt);
+        let facts = self.facts_for(&t, &history_txt).await;
         let mut pt = t.clone();
         let atts = arr(&t, "attachments");
         if !atts.is_empty() {
@@ -2231,7 +2255,7 @@ impl Runtime {
         let conv_id = get_str(&t, "conv_id");
         let (history, history_txt) = self.history(&conv_id, task_id);
         let goal_text = get_str(&t, "goal");
-        let facts = self.facts_for(&goal_text, &history_txt);
+        let facts = self.facts_for(&t, &history_txt).await;
         let t_transcript_empty = arr(&t, "transcript").is_empty();
         if facts
             .first()
@@ -2569,7 +2593,8 @@ yourself; ask_bot is not available for it."
                             && (super::booking::TOOLS.contains(&tool_name(x))
                                 || super::claims::TOOLS.contains(&tool_name(x))
                                 || super::driver::TOOLS.contains(&tool_name(x))
-                                || super::apdt::TOOLS.contains(&tool_name(x))))
+                                || super::apdt::TOOLS.contains(&tool_name(x))
+                                || super::trains::TOOLS.contains(&tool_name(x))))
                             && super::news::offered(&transcript, tool_name(x))
                     })
                     .collect();
@@ -2614,6 +2639,7 @@ yourself; ask_bot is not available for it."
                 .or_else(|| super::workflow::active(&transcript, &super::claims::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::driver::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::apdt::TOOLS))
+                .or_else(|| super::workflow::active(&transcript, &super::trains::TOOLS))
                 .map(|(from, tool, args)| Machine::Workflow { tool, args, from });
             let driven = match &machine {
                 Some(m) if !force_final => {
@@ -3022,6 +3048,7 @@ yourself; ask_bot is not available for it."
                 || super::workflow::active(&transcript, &super::booking::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::news::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::claims::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::trains::TOOLS).is_some()
                 || workflow_reply.is_some();
             // the confirmation after a hand-back is read by code: a snapshot the model skipped is taken here, once,
             // before the answer (the reference then comes from the page, `with_confirmation_ref`)
@@ -3080,16 +3107,18 @@ yourself; ask_bot is not available for it."
             {
                 answer_reviewed = true;
                 if let Some(review) = self
-                    .review_answer(task_id, &goal_text, &final_, &must)
+                    .review_answer(task_id, &goal_text, &final_, &must, lg)
                     .await
                 {
                     self.event(
                         task_id,
                         "answer_review",
-                        json!({"problem": review.problem, "missing": review.missing}),
+                        json!({"problem": review.problem, "missing": review.missing, "language": review.language}),
                     )
                     .await;
+                    let content_fix = !review.problem.is_empty() || !review.missing.is_empty();
                     let again = match &workflow_reply {
+                        _ if !content_fix => String::new(),
                         // the facts the reply left out, added by the model from the JSON they came from
                         Some(res) => {
                             self.reply_with_facts(task_id, &goal_text, &final_, res, &review, lg)
@@ -3107,6 +3136,17 @@ yourself; ask_bot is not available for it."
                     };
                     if !again.is_empty() {
                         final_ = again;
+                    }
+                    // written in another language than the rule asks for: the model writes it again in the agent's
+                    if review.language {
+                        let fixed = self
+                            .reply_in_language(task_id, &goal_text, &final_, lg)
+                            .await;
+                        if !fixed.is_empty() {
+                            self.event(task_id, "language_fixed", json!({"to": lg}))
+                                .await;
+                            final_ = fixed;
+                        }
                     }
                 }
             }
@@ -3729,8 +3769,10 @@ try a clearly different query or source, or say in the answer that it wasn't fou
                 } else {
                     "active".into()
                 },
+                task_id: task_id.to_string(),
                 ..Default::default()
-            };
+            }
+            .with_model_fields(f); // topics, scope, trigger, id_document, relation: the model's JSON, validated
             if let Ok(Some(res)) = self.store.add_fact(&fact, &cat, &sget(f, "entity"), &o) {
                 if !get_truthy(&res, "duplicate") {
                     if tier == "recent" {
@@ -3818,6 +3860,8 @@ pub fn compress_with(
                 || (id.starts_with(super::claims::PREFIX) && name == "gmail_get_message")
                 || super::driver::TOOLS.contains(&name.as_str())
                 || (id.starts_with(super::driver::PREFIX) && name == "gmail_get_message")
+                || super::trains::TOOLS.contains(&name.as_str())
+                || id.starts_with(super::trains::PREFIX)
                 || super::apdt::TOOLS.contains(&name.as_str())
                 || (id.starts_with(super::apdt::PREFIX)
                     && matches!(name.as_str(), "gmail_get_message" | "files_read"))
@@ -3941,11 +3985,6 @@ impl RuntimeApi for Runtime {
     fn catalog(&self) -> BoxFuture<'_, Value> {
         Box::pin(Runtime::catalog(self, false))
     }
-    fn facts_select(&self, goal: &str) -> Vec<Value> {
-        let facts = self.store.facts(500, Some("long")).unwrap_or_default();
-        let ents = self.store.entities(None).unwrap_or_default();
-        crate::context::select(goal, &facts, Some(&ents), 12, "")
-    }
     fn plan(
         &self,
         task: Value,
@@ -4024,6 +4063,8 @@ fn own_mailbox(catalog: &Value) -> String {
 struct Review {
     problem: String,
     missing: Vec<String>,
+    /// the reply is not in the language the rule asks for (the model's `language_ok: false`)
+    language: bool,
 }
 
 /// The code machine that decides a driven run's steps: a workflow tool's run (`arrival_card_fill`: agent/driver.rs;
