@@ -36,6 +36,9 @@ JSON data:
   the fixed parts of a known result or confirmation page, structured API and tool results. Regex cannot understand
   natural language; every new phrasing breaks it.
 
+The design that implements this rule (the workflow tools, the protocol in the run loop, `must_say`, how to add a
+machine) is `docs/json-tools.md`: read it before changing a skill, a code machine or the run loop.
+
 ## Skills: code decides, the model chooses from JSON, prose only for the user
 
 In each skill, use code tools as much as possible — a web form is filled by a form function per URL, a mail search is

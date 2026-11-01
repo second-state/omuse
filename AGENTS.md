@@ -1,5 +1,7 @@
 # Notes for coding agents working on this repo
 
+**Natural language is the model's; code tools work only on JSON (hard rule).** The model turns the user's words (and any natural language: mail text, a page's prose) into a code tool's JSON arguments; the code tool uses only that JSON, runs every step in code and returns JSON; it never calls the model; the model words the result for the user. Known websites and their HTML are code's (form functions with fixed ids, the fixed parts of known pages). No regex or keyword list over natural language, anywhere. Read `docs/json-tools.md` (the design: workflow tools, the run-loop protocol, `must_say`, the API for adding a machine) before changing a skill, a machine or the run loop. The rule is in `CLAUDE.md` ("Natural language is the model's; code tools work only on JSON").
+
 **Skills are code first.** A skill uses code tools for every step that can be computed; a decision the model must make is a JSON multiple choice; the model's prose is only the reply to the user. The full rule is in `CLAUDE.md` ("Skills: code decides").
 
 ## Releasing (tag `omuse-vX.Y.Z`)
