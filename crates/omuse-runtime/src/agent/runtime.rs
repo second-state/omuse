@@ -341,7 +341,12 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
             })
             .filter(|c| !c.starts_with("(System)") && !c.starts_with("（系统）"))
             .collect();
-        let profile = self.store.profile().unwrap_or_else(|_| json!({}));
+        let mut profile = self.store.profile().unwrap_or_else(|_| json!({}));
+        // the connected mail account's address: the user's own email where the profile has none
+        let mailbox = own_mailbox(catalog);
+        if !mailbox.is_empty() && profile.is_object() {
+            profile["mailbox"] = json!(mailbox);
+        }
         let tz = get_str(&self.settings(), "timezone");
         let today = tz
             .parse::<chrono_tz::Tz>()
@@ -2223,6 +2228,22 @@ yourself; ask_bot is not available for it."
                 .await
             {
                 return self.suspend(task_id, sp, transcript).await;
+            }
+        }
+        // what the latest request asks for: ONE JSON choice, recorded for the code machines (agent/intent.rs) — they
+        // start from it or from the loaded skill, never from patterns over the user's words
+        if (!bot.is_main() || routed_main || !routing) && super::intent::needed(&transcript) {
+            if let Some(ctx) = super::intent::context(&transcript) {
+                let task = self
+                    .decide(
+                        task_id,
+                        super::intent::QUESTION,
+                        &ctx,
+                        super::intent::CHOICES,
+                        super::intent::OTHER,
+                    )
+                    .await;
+                transcript.extend(super::intent::exchange(&task));
             }
         }
         // "book it" after a turn that offered options with booking pages: code opens the chosen offer's page from the

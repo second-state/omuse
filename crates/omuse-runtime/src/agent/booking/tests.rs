@@ -1174,7 +1174,8 @@ fn the_options_are_mailed_to_the_address_the_user_names() {
     let s = spec("flight-booking");
     let p = profile();
     let user = vec!["Find the cheapest flight from Singapore to Tokyo on 3 December 2026 and email the three cheapest options to my wife at mei@example.com.".to_string()];
-    let w = flight_world(&user, &p);
+    let mut w = flight_world(&user, &p);
+    w.mail_ready = true;
     let (t, a) = run(
         loaded(s.skill, &user[0]),
         |t| next(s, t, &w),
@@ -1872,15 +1873,18 @@ fn contact_details_from_the_chat_fill_what_the_profile_lacks() {
         .name(),
         "Lucas Lu"
     );
-    let named = vec!["Name: Lucas Lu, email: lucas@example.com".to_string()];
+    let named = vec!["Name: Lucas Lu, email: lucas@example.com, phone: +65 8000 0000.".to_string()];
+    let p = profile_with_words(&json!({}), &named);
+    let g = Guest {
+        profile: &p,
+        requests: "",
+    };
+    // travel_michelin_real 2026-11-01: "email: …" is the user's own address, not one to mail the results to
     assert_eq!(
-        Guest {
-            profile: &profile_with_words(&json!({}), &named),
-            requests: ""
-        }
-        .name(),
-        "Lucas Lu"
+        (g.name(), g.email()),
+        ("Lucas Lu".into(), "lucas@example.com".into())
     );
+    assert_eq!(mail_to(&named), None);
     // the profile's own details win
     let p = profile_with_words(&profile(), &texts);
     let g = Guest {
@@ -2013,5 +2017,54 @@ fn a_hotels_bare_figures_get_their_meaning_and_currency() {
         offer.details.contains(&"USD 394 total".to_string()),
         "{:?}",
         offer.details
+    );
+}
+
+#[test]
+fn nothing_is_mailed_without_a_connected_mail_account() {
+    let s = spec("flight-booking");
+    let p = profile();
+    let user = vec!["Find the cheapest flight from Singapore to Tokyo on 3 December 2026 and email the three cheapest options to my wife at mei@example.com.".to_string()];
+    let w = flight_world(&user, &p); // mail_ready: false
+    let (t, a) = run(
+        loaded(s.skill, &user[0]),
+        |t| next(s, t, &w),
+        |name, _, _| match name {
+            "flights_search" => flight_result(),
+            _ => "{\"shown\": 3, \"verified\": true}".into(),
+        },
+    );
+    assert!(args_of(&t, "gmail_send").is_empty());
+    assert!(
+        a.contains("Not sent to mei@example.com: no mail account is connected"),
+        "{a}"
+    );
+}
+
+#[test]
+fn the_users_email_comes_from_the_connected_mail_account() {
+    let texts =
+        vec!["Book a table for 2. Name: Lucas Lu, email: lucas.other@example.com".to_string()];
+    let p = profile_with_words(&json!({"mailbox": "lucas@gmail.example"}), &texts);
+    assert_eq!(
+        Guest {
+            profile: &p,
+            requests: ""
+        }
+        .email(),
+        "lucas@gmail.example"
+    );
+    // the profile's own address first
+    let p = profile_with_words(
+        &json!({"email_personal": "jordan@example.com", "mailbox": "lucas@gmail.example"}),
+        &texts,
+    );
+    assert_eq!(
+        Guest {
+            profile: &p,
+            requests: ""
+        }
+        .email(),
+        "jordan@example.com"
     );
 }

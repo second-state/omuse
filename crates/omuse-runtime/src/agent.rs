@@ -36,6 +36,7 @@ pub mod ext;
 pub mod fx;
 pub mod guards;
 pub mod images;
+pub mod intent;
 pub mod judgements;
 pub mod lang;
 pub mod local;

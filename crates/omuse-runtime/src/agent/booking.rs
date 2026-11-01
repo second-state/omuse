@@ -203,7 +203,7 @@ static HABIT: LazyLock<Regex> = LazyLock::new(|| {
 /// A request to mail the results ("email the options to mei@example.com"): the address.
 fn mail_to(texts: &[String]) -> Option<String> {
     static MAIL_TO: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(e-?mail|mail|send)\b[^.?!\n]*?([\w.+-]+@[\w-]+(?:\.[\w-]+)+)|发[^。？！\n]*?([\w.+-]+@[\w-]+(?:\.[\w-]+)+)")
+        Regex::new(r"(?i)\b(e-?mail|mail|send|forward)\b[^.?!\n]*?\bto\b[^.?!\n]*?([\w.+-]+@[\w-]+(?:\.[\w-]+)+)|发(?:给|到)[^。？！\n]*?([\w.+-]+@[\w-]+(?:\.[\w-]+)+)")
             .unwrap()
     });
     texts.iter().rev().find_map(|t| {
@@ -2139,7 +2139,13 @@ pub fn profile_with_words(profile: &Value, texts: &[String]) -> Value {
             .map(|m| m.as_str().trim().to_string())
     });
     fill(&["name_en", "name"], "name_en", name);
-    fill(&["email_personal", "email"], "email_personal", own_email);
+    // the user's own email: the profile's, else the connected mail account's, else the one in their words
+    let mailbox = get_str(profile, "mailbox");
+    fill(
+        &["email_personal", "email"],
+        "email_personal",
+        Some(mailbox).filter(|m| !m.is_empty()).or(own_email),
+    );
     fill(&["phone"], "phone", latest(&PHONE, 0));
     p
 }
@@ -2822,6 +2828,12 @@ pub fn next_in(spec: &BookingSpec, t: &[Value], w: &World, available: &[String])
         let Some(to) = mail_to(w.user_texts) else {
             return Step::Final(then_next(answer));
         };
+        // no mail account connected: nothing can be sent — the answer says so, no call is made
+        if !w.mail_ready {
+            return Step::Final(format!(
+                "{answer}\n\nNot sent to {to}: no mail account is connected (connect Gmail in Settings and ask again)."
+            ));
+        }
         let Some((_, sent)) = last_after(t, "gmail_send", search_pos) else {
             return calls(
                 n,
