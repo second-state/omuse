@@ -4981,3 +4981,194 @@ fn the_pages_a_request_lists_are_read_by_code_at_once() {
     )
     .is_none());
 }
+
+// ---------------------------------------------------------------- the workflow-tool protocol (agent/workflow.rs)
+
+const STRIDE: &str = "http://shop.test:8099/stride_socks.html";
+
+fn tool_msgs(body: &Value) -> Vec<Value> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .cloned()
+        .collect()
+}
+
+fn offered(body: &Value) -> Vec<String> {
+    body["tools"]
+        .as_array()
+        .map(|a| a.iter().map(|t| tool_name(t).to_string()).collect())
+        .unwrap_or_default()
+}
+
+fn call_msg(id: &str, name: &str, args: &str) -> Value {
+    json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
+           "function": {"name": name, "arguments": args}}]})
+}
+
+async fn run_task(rt: &Arc<Runtime>, goal: &str) -> (Value, Vec<Value>) {
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task(goal, &conv, "chat", "", "", None)
+        .unwrap();
+    let tid = get_str(&t, "id");
+    rt.run(&tid).await.unwrap();
+    (
+        rt.store.task(&tid).unwrap().unwrap(),
+        rt.store.events(&tid, 0).unwrap(),
+    )
+}
+
+fn events_of(evs: &[Value], ty: &str) -> Vec<Value> {
+    evs.iter()
+        .filter(|e| get_str(e, "type") == ty)
+        .map(|e| e["data"].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_workflow_call_runs_its_machine_then_the_model_words_the_result_and_the_review_checks_must_say(
+) {
+    let (rt, _d, seen) = scripted_rt(
+        |body| {
+            let sys = system_of(body);
+            if sys.starts_with("You check an assistant") {
+                // the review of the reply to a machine's result gets its must_say and finds a fact missing
+                assert!(last_of(body).contains("must_say"), "{}", last_of(body));
+                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"missing\": [\"the item: on Stride Sports\"]}"});
+            }
+            if sys.starts_with("You rewrite a reply") {
+                return json!({"role": "assistant", "content": format!("The socks are on Stride Sports: {STRIDE}")});
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let tools = tool_msgs(body);
+            match tools.last() {
+                None => call_msg("c1", "shop_order", &json!({"url": STRIDE, "action": "compare"}).to_string()),
+                Some(m) if get_str(m, "tool_call_id").starts_with("res_") => {
+                    json!({"role": "assistant", "content": "Here are the socks."})
+                }
+                Some(m) => panic!("the model was called while the machine ran: {m}"),
+            }
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let (t, evs) = run_task(&rt, &format!("compare the socks at {STRIDE}")).await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    let tr = t["transcript"].as_array().unwrap();
+    // the call's result is `running`, the machine's code calls follow, then the `T_result` exchange
+    let running = tr
+        .iter()
+        .find(|m| get_str(m, "tool_call_id") == "c1")
+        .unwrap();
+    assert!(get_str(running, "content").contains("\"running\""));
+    let names: Vec<String> = tr
+        .iter()
+        .flat_map(crate::agent::util::tool_calls)
+        .map(|tc| crate::agent::util::stored_call(tc).0)
+        .collect();
+    assert_eq!(
+        names,
+        ["shop_order", "browser_navigate", "shop_order_result"]
+    );
+    let res = events_of(&evs, "workflow_result");
+    assert_eq!(res[0]["status"], "shown");
+    // ONE model turn after the result, without the workflow tools
+    let ex = executor_calls(&seen);
+    assert_eq!(ex.len(), 2, "{ex:?}");
+    assert!(offered(&ex[0]).contains(&"shop_order".to_string()));
+    assert!(!offered(&ex[1])
+        .iter()
+        .any(|n| crate::agent::booking::TOOLS.contains(&n.as_str())));
+    // the review found the result's fact missing: the reply carries it now
+    assert_eq!(events_of(&evs, "answer_review").len(), 1);
+    assert!(
+        get_str(&t, "result").contains("Stride Sports"),
+        "{}",
+        get_str(&t, "result")
+    );
+}
+
+#[tokio::test]
+async fn bad_workflow_json_is_regenerated_by_the_planner_then_invalid_then_asked() {
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            if system_of(body).starts_with("You write the JSON arguments") {
+                assert!(last_of(body).contains("shop_order") && last_of(body).contains("action"));
+                // the planner gets it wrong too
+                return json!({"role": "assistant", "content": "{\"url\": \"http://shop.test:8099/stride_socks.html\", \"action\": \"steal\"}"});
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let tools = tool_msgs(body);
+            match tools.len() {
+                0 => call_msg("c1", "shop_order", &json!({"url": STRIDE, "action": "grab"}).to_string()),
+                1 => call_msg("c2", "shop_order", &json!({"url": STRIDE, "action": "take"}).to_string()),
+                _ => json!({"role": "assistant", "content": "Do you want to compare, add to the cart or buy?"}),
+            }
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let (t, evs) = run_task(&rt, &format!("do something with {STRIDE}")).await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    let statuses: Vec<String> = events_of(&evs, "workflow_call")
+        .iter()
+        .map(|e| get_str(&e["result"], "status"))
+        .collect();
+    assert_eq!(statuses, ["invalid", "needs_input"]);
+    let regen = events_of(&evs, "json_regenerated");
+    assert_eq!(regen.len(), 2);
+    assert_eq!(regen[0]["ok"], false);
+    assert!(
+        events_of(&evs, "workflow_result").is_empty(),
+        "no machine ran"
+    );
+}
+
+#[tokio::test]
+async fn the_planner_regenerates_wrong_json_and_repaired_syntax_is_reported() {
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            if system_of(body).starts_with("You write the JSON arguments") {
+                return json!({"role": "assistant", "content": format!("```json\n{{\"url\": \"{STRIDE}\", \"action\": \"compare\"}}\n```")});
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let tools = tool_msgs(body);
+            match tools.last() {
+                // single quotes and a missing closing brace (repaired), the action left out (required: regenerated)
+                None => call_msg("c1", "shop_order", &format!("{{'url': '{STRIDE}'")),
+                Some(m) if get_str(m, "tool_call_id").starts_with("res_") => {
+                    json!({"role": "assistant", "content": "The socks are on Stride Sports."})
+                }
+                Some(_) => panic!("the machine did not run"),
+            }
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let (t, evs) = run_task(&rt, &format!("show me the socks at {STRIDE}")).await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    let rep = events_of(&evs, "json_repaired");
+    assert!(
+        rep.iter().any(|e| e["repairs"]
+            .as_array()
+            .is_some_and(|r| r.iter().any(|x| x == "single quotes"))),
+        "{rep:?}"
+    );
+    let regen = events_of(&evs, "json_regenerated");
+    assert_eq!((regen.len(), regen[0]["ok"].as_bool()), (1, Some(true)));
+    assert_eq!(
+        events_of(&evs, "workflow_call")[0]["result"]["status"],
+        "running"
+    );
+    assert_eq!(events_of(&evs, "workflow_result")[0]["status"], "shown");
+}

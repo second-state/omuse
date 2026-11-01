@@ -323,6 +323,12 @@ async def _chat(req: Request, b: dict):
     # answer of its own is already in the transcript (`finals`: the runtime put it back when it asked again)
     called = [c["function"]["name"] for m in msgs if m.get("role") == "assistant" for c in (m.get("tool_calls") or [])]
     finals = [m for m in msgs if m.get("role") == "assistant" and not m.get("tool_calls") and str(m.get("content") or "").strip()]
+    if tools_done and str(tools_done[-1].get("tool_call_id") or "").startswith("res_"):
+        head = ""
+        if "BOTKID1" in goal and "You are the Travel bot" in sys:   # bots_e2e.py: the bot's answer Main shows and follows up on
+            d = re.search(r"DATE=(20\d\d-\d\d-\d\d)", allu)
+            head = f"TRAVELBOT ANSWER {d.group(1) if d else ''}: Singapore Airlines SQ638 SGD 620 direct; Cathay Pacific via HKG SGD 510.\n"
+        return workflow_reply(tools_done[-1]["content"], head)
     if "focused sub-agent of OMuse" in sys and "SUBTASK" in goal:   # parallel_steps_e2e.py: a sub-agent opens its page in its own lane
         url = re.search(r"https?://\S+", goal).group(0)
         if n == 0:
@@ -1285,8 +1291,8 @@ def bots_flow(goal, sys, msgs, tools_done, n, allu):
             if "BOTSTREAM" in goal:   # bots_ui.py: a model-written answer streams into Main (code's answers are not streamed)
                 return reply(f"TRAVELBOT ANSWER {date}: Singapore Airlines SQ638 SGD 620 direct; Cathay Pacific via HKG SGD 510.")
             return reply("", [tc("load_skill", {"name": "flight-booking"})])
-        if n == 1:
-            return reply("", [tc("flights_search", {"origin": "SIN", "destination": "TYO", "date": date, "cabin": "economy", "currency": "SGD"})])
+        if n == 1:   # the search is ONE workflow call; code runs it (the reply to its result: `workflow_reply`)
+            return reply("", [tc("travel_search", {"kind": "flight", "origin": "SIN", "destination": "TYO", "date": date})])
         return reply(f"TRAVELBOT ANSWER {date}: Singapore Airlines SQ638 SGD 620 direct; Cathay Pacific via HKG SGD 510.")
     if travel and "BOTKID2" in goal:
         earlier = "TRAVELBOT ANSWER" in allu or any("TRAVELBOT ANSWER" in str(m["content"]) for m in msgs if m["role"] == "assistant")
@@ -1301,6 +1307,69 @@ def bots_flow(goal, sys, msgs, tools_done, n, allu):
             return reply("", [tc("browser_request_takeover", {"reason": "please log in to the airline site"})])
         return reply("TRAVELBOT DONE after the takeover.")
     return None
+
+
+# ---------------------------------------------------------------- workflow tools (agent/booking.rs, docs/json-tools.md)
+# The fake stands in for the model's understanding: a travel or shopping marker becomes ONE workflow call with the request's
+# details as JSON arguments (the skill loaded first, as a model does); code runs every step; the result's JSON comes back
+# as `<tool>_result` and the reply is written from it (`workflow_reply`).
+
+
+def workflow_args(goal, msgs):
+    """(tool, skill, args) for the travel / shopping markers, or None."""
+    goal = goal if isinstance(goal, str) else json.dumps(goal)   # a vision request's content is a list of parts
+    dates = re.findall(r"20\d\d-\d\d-\d\d", goal)
+    m = re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal)
+    d = m.group(1) if m else (dates[0] if dates else "")
+    flight = {"kind": "flight", "origin": "Singapore", "destination": "Tokyo", "date": d}
+    if any(k in goal for k in ("KIWIFLIGHTS", "ZEROCAP", "PREFNONE")):
+        return "travel_search", "flight-booking", flight
+    if "BIZFLIGHTS" in goal:
+        return "travel_search", "flight-booking", {**flight, "origin": "Tokyo", "destination": "SIN", "cabin": "business", "nonstop": True}
+    if "FLEXFLIGHTS" in goal:
+        return "travel_search", "flight-booking", {**flight, "date": dates[0], "date_to": dates[1]}
+    if "BOOKIT" in goal:
+        return "travel_book", "flight-booking", {**flight, "use_connector": True}
+    if "TRAVELSEARCH" in goal:
+        return "travel_search", "flight-booking", {**flight, "next": ["hotel"]}
+    if "BRAVETRAVEL" in goal:
+        return "travel_search", "flight-booking", {**flight, "next": ["hotel", "car"]}
+    if "TRAVELHOTEL" in goal or "BRAVEHOTEL" in goal:
+        out = (_dtm.date.fromisoformat(d) + _dtm.timedelta(days=3)).isoformat()
+        args = {"kind": "hotel", "city": "Tokyo", "area": "Ginza", "min_stars": 4, "date": d, "check_out": out}
+        if "BRAVEHOTEL" in goal:
+            args["next"] = ["car"]
+        return "travel_search", "hotel-booking", args
+    return None
+
+
+def workflow_call(goal, msgs):
+    """The marker's workflow call (after loading the skill); None when the goal is no such scenario."""
+    w = workflow_args(goal, msgs)
+    if w is None:
+        return None
+    tool, skill, args = w
+    called = [c["function"]["name"] for m in msgs if m.get("role") == "assistant" for c in (m.get("tool_calls") or [])]
+    if "load_skill" not in called:
+        return reply("", [tc("load_skill", {"name": skill})])
+    if tool not in called:
+        return reply("", [tc(tool, args)])
+    last = next((m for m in reversed(msgs) if m.get("role") == "tool"), {})
+    return reply("WORKFLOW " + str(last.get("content") or "")[:400])
+
+
+def workflow_reply(content, head=""):
+    """The reply written from a machine's JSON result: its status, every must_say fact, the next search offered."""
+    try:
+        res = json.loads(content)
+    except ValueError:
+        return reply("RESULT unreadable: " + str(content)[:200])
+    lines = [f"RESULT {res.get('status')}"] + [str(x) for x in res.get("must_say") or []]
+    for item in res.get("next_items") or []:
+        lines.append(f"Shall I search the {'rental car' if item == 'car' else item} now?")
+    if res.get("next_question") == "search_all_airlines":
+        lines.append("Shall I search all airlines?")
+    return reply(head + "\n".join(lines))
 
 
 def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
@@ -1408,12 +1477,9 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         allt = "\n".join(str(m["content"]) for m in tools_done)
         return reply(f"CARS at Narita {d1} to {d3}: compact cars from the companies in the search results (\"from\" prices); "
                      f"the live prices for your dates are at {_car_url(allt)}.")
-    if any(m in goal for m in ("KIWIFLIGHTS", "BIZFLIGHTS", "ZEROCAP", "PREFNONE", "FLEXFLIGHTS", "BOOKIT", "TRAVELSEARCH", "BRAVETRAVEL")):
-        # flight-booking: the model only loads the skill; the booking machine (agent/booking.rs) searches, picks,
-        # answers (and offers the next search), and books — no model call after this one
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
-        return reply("FLIGHT FAIL: the booking machine did not take over after load_skill")
+    wf = workflow_call(goal, msgs)
+    if wf is not None:
+        return wf
     if "EXPENSES" in goal:   # travel-expense-report: receipt photo (vision), statement CSV, mail receipts, files
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "travel-expense-report"})])

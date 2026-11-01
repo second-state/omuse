@@ -4,6 +4,7 @@ filters, brands, alliances, invalid numbers replaced), and forced failures (Goog
 nothing found). Connecting the key as the user does it (a bad key refused, the plan and searches left) and the answers
 the user sees are real-model suites: tests/travel_connect_real.py and tests/travel_user_real.py."""
 import datetime as dt
+import json
 import os
 import sys
 
@@ -56,19 +57,23 @@ K.check("with the key the connection view says flights come from Google Flights 
 t = K.run(f"TRAVELSEARCH cheapest flight Singapore to Tokyo on {DATE} and a 4-star hotel near Ginza for 3 nights DATE={DATE}")
 K.trace(t)
 names = K.names(t)
-K.check("the first answer has the flights, the pick's sellers and offers the hotel search next", t["status"] == "COMPLETED" and "SQ 638" in (t.get("result") or "")
-        and "Sold by: Singapore Airlines" in (t.get("result") or "") and "Book it at https://www.google.com/travel/flights/booking?" in (t.get("result") or "")
-        and "Shall I search the hotel near Ginza now?" in (t.get("result") or ""), (t["status"], t.get("error"), (t.get("result") or "")[:600]))
+res = K.result(t)
+K.check("the first result has the flights, the pick's sellers and its Google Flights booking link, and lists the hotel as the next search",
+        t["status"] == "COMPLETED" and "SQ 638" in json.dumps(res.get("options")) and any(x.get("book_with") == "Singapore Airlines" for x in res.get("sellers") or [])
+        and "https://www.google.com/travel/flights/booking?" in json.dumps(res.get("options")) and res.get("next_items") == ["hotel"],
+        (t["status"], t.get("error"), res))
+K.check("the reply carries every must_say fact and offers the hotel search next", K.says_all(t) and "Shall I search the hotel now?" in (t.get("result") or ""),
+        (t.get("result") or "")[:600])
 fo = [x["args"] for x in K.calls(t) if x.get("name") == "flight_offer"]
 fs = [x["args"] for x in K.calls(t) if x.get("name") == "flights_search"]
 K.check("skill, the flight search, the choice card, the pick's booking options (its offer id, SGD) — one travel search, no browser",
-        [x for x in names if x != "load_skill"] == ["flights_search", "present_choices", "flight_offer"] and fo and fo[0].get("offer_id", "").startswith("fl_")
+        K.work(t) == ["flights_search", "present_choices", "flight_offer"] and fo and fo[0].get("offer_id", "").startswith("fl_")
         and fo[0].get("currency") == "SGD" and fs[0].get("sort") == "price" and fs[0].get("currency") == "SGD", (names, fs, fo))
 th = K.run(f"TRAVELHOTEL yes, the hotel please DATE={DATE}", conv=t["_conv"])
 K.trace(th)
 K.check("the next message searches the hotel: hotels, the choice card, the pick's rooms — and the answer gives the room",
-        th["status"] == "COMPLETED" and K.names(th) == ["hotels_search", "present_choices", "hotel_rooms"]
-        and "Hotel Ginza Grand" in (th.get("result") or "") and "Room at " in (th.get("result") or ""), (K.names(th), (th.get("result") or "")[:400]))
+        th["status"] == "COMPLETED" and K.work(th) == ["hotels_search", "present_choices", "hotel_rooms"]
+        and "Hotel Ginza Grand" in (th.get("result") or "") and (K.result(th).get("pick") or {}).get("room") and K.says_all(th), (K.names(th), (th.get("result") or "")[:400]))
 log = c.get(FAKE + "/serpapi/_log").json()
 fl = [q for q in log if q.get("engine") == "google_flights" and not q.get("booking_token")]
 K.check("flights: one Google Flights search, city names resolved to IATA codes, one way, sorted by price, in SGD",

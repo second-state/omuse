@@ -18,6 +18,10 @@
 //! * [`images`] — `make_image` / `edit_image` / `vary_image` / `caption_image` / `upscale_image`.
 //! * [`videos`] — `make_video` (a short clip from an AI video model through `videogen`).
 //! * [`market_text`] — the text the agent gets for `market_data` / `stock_fundamentals` (Sentinel's `market.describe*`).
+//! * [`json_in`] — the one checking layer for the model's JSON: syntax repair, schema conformance, the planner's
+//!   regeneration prompt.
+//! * [`workflow`] — the workflow-tool protocol: a tool call with JSON arguments, validated in code, runs a code
+//!   machine whose JSON result (`T_result`) the model words as the reply (docs/json-tools.md).
 //! * [`ext`] — thin adapters to the sibling runtime modules (context, library, skills, imagegen, attachments, goals,
 //!   scheduler, outcome), kept in one place.
 //!
@@ -36,6 +40,7 @@ pub mod ext;
 pub mod fx;
 pub mod guards;
 pub mod images;
+pub mod json_in;
 pub mod judgements;
 pub mod lang;
 pub mod local;
@@ -45,6 +50,7 @@ pub mod runtime;
 pub mod tools;
 pub(crate) mod util;
 pub mod videos;
+pub mod workflow;
 
 #[cfg(test)]
 mod tests;

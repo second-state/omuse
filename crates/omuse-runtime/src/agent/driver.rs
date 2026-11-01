@@ -253,10 +253,14 @@ pub fn active(transcript: &[Value]) -> Option<&'static CardSpec> {
 pub enum Step {
     /// run these calls (one turn)
     Calls(Vec<ToolCall>),
-    /// the run ends with this answer
+    /// the machine is done: its JSON result goes back as the workflow tool's `T_result` code exchange and the model
+    /// writes the reply from it (`agent/workflow.rs`, docs/json-tools.md)
+    Done(Value),
+    /// TRANSITIONAL — for the machines not yet converted to the workflow-tool protocol (driver, claims, apdt, news):
+    /// the run ends with this code-written answer. A converted machine returns `Done` instead.
     Final(String),
-    /// the regexes found no flight in these texts: one extraction call (the last resort), its JSON then recorded as
-    /// an `extract_facts` result
+    /// TRANSITIONAL — as `Final`: one extraction call over the user's words, its JSON then recorded as an
+    /// `extract_facts` result. A converted machine gets its values from the workflow tool's arguments instead.
     Extract(String),
 }
 
@@ -1191,6 +1195,7 @@ pub(crate) fn drive_to_end(
                 return (t, a);
             }
             Step::Extract(_) => panic!("an extraction after the form opened"),
+            Step::Done(v) => panic!("this machine is not converted yet: {v}"),
         }
     }
     panic!("the run did not end")

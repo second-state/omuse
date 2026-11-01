@@ -194,6 +194,13 @@ pub fn is_local(name: &str) -> bool {
 }
 
 fn local_tools() -> Vec<Value> {
+    let mut tools = local_tools_base();
+    // the workflow tools (agent/booking.rs): JSON arguments in, a code machine, a JSON result out
+    tools.extend(super::booking::tool_schemas());
+    tools
+}
+
+fn local_tools_base() -> Vec<Value> {
     let s = json!({"type": "string"});
     let app_id = prompts::app_id();
     vec![

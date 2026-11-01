@@ -316,42 +316,185 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
             .then_some(success)
     }
 
-    /// The code driver's turn for a known-form skill (`super::driver`): the next step from the transcript; when the
-    /// regexes found no flight in the bookings, one extraction call (the last resort), recorded in the transcript
-    /// as an `extract_facts` result, then the step again.
-    async fn drive(
-        &self,
-        task_id: &str,
-        machine: Machine,
-        transcript: &mut Vec<Value>,
-        catalog: &Value,
-        lg: &str,
-    ) -> ChatReply {
-        use super::driver::{Step, World};
-        let user_texts: Vec<String> = transcript
-            .iter()
-            .filter(|m| get_str(m, "role") == "user")
-            .map(|m| {
-                let c = content_of(m);
-                // the user's own words, without a system note appended to them
-                match c.find("\n\n(System)").or_else(|| c.find("\n\n（系统）")) {
-                    Some(i) => c[..i].to_string(),
-                    None => c,
-                }
-            })
-            .filter(|c| !c.starts_with("(System)") && !c.starts_with("（系统）"))
-            .collect();
+    /// The profile a code machine reads: the stored profile with the connected mail account's address as `mailbox`
+    /// (the user's own email where the profile has none).
+    fn machine_profile(&self, catalog: &Value) -> Value {
         let mut profile = self.store.profile().unwrap_or_else(|_| json!({}));
-        // the connected mail account's address: the user's own email where the profile has none
         let mailbox = own_mailbox(catalog);
         if !mailbox.is_empty() && profile.is_object() {
             profile["mailbox"] = json!(mailbox);
         }
+        profile
+    }
+
+    /// The user's today, in the timezone of the settings.
+    fn user_today(&self) -> chrono::NaiveDate {
         let tz = get_str(&self.settings(), "timezone");
-        let today = tz
-            .parse::<chrono_tz::Tz>()
+        tz.parse::<chrono_tz::Tz>()
             .map(|z| chrono::Utc::now().with_timezone(&z).date_naive())
-            .unwrap_or_else(|_| chrono::Local::now().date_naive());
+            .unwrap_or_else(|_| chrono::Local::now().date_naive())
+    }
+
+    /// A workflow tool's arguments through the JSON checking layer (agent/json_in.rs, docs/json-tools.md): the syntax
+    /// was repaired where the call was read; here the schema (types, enums, dates made ISO), then the tool's own field
+    /// checks (`booking::check`). Unparseable, a required field missing or invalid, or field checks that fail: the
+    /// planner model writes the JSON once more from the user's words and the same checks run on it
+    /// (`json_regenerated`). Still invalid: `invalid` for the executor's one more try — and `needs_input` once the
+    /// executor already had that try in this request.
+    pub(crate) async fn checked_workflow_args(
+        &self,
+        task_id: &str,
+        tool: &str,
+        args: &Value,
+        transcript: &[Value],
+        catalog: &Value,
+    ) -> super::workflow::Checked {
+        use super::workflow::Checked;
+        let params = super::booking::tool_schemas()
+            .into_iter()
+            .find(|s| tool_name(s) == tool)
+            .map(|s| s["function"]["parameters"].clone())
+            .unwrap_or_else(|| json!({}));
+        let profile = self.machine_profile(catalog);
+        let user_texts = super::driver::user_words(transcript);
+        let today = self.user_today();
+        let cx = super::booking::Ctx {
+            profile: &profile,
+            today,
+            user_texts: &user_texts,
+        };
+        let check = |a: &Value| -> (Checked, Vec<String>, Vec<String>) {
+            if let Some(raw) = a.get(super::json_in::UNPARSED_KEY) {
+                return (
+                    Checked::Invalid(vec![format!(
+                        "the arguments are not valid JSON: {}",
+                        take_chars(&py_str(raw), 200)
+                    )]),
+                    Vec::new(),
+                    Vec::new(),
+                );
+            }
+            let mut a = a.clone();
+            let c = super::json_in::conform(&params, &mut a);
+            let checked = super::booking::check(tool, &a, &cx);
+            let checked = match checked {
+                Checked::Invalid(mut p) if c.required_bad => {
+                    p.splice(0..0, c.problems.clone());
+                    Checked::Invalid(p)
+                }
+                _ if c.required_bad => Checked::Invalid(c.problems.clone()),
+                Checked::Invalid(mut p) => {
+                    p.extend(c.problems.clone());
+                    Checked::Invalid(p)
+                }
+                other => other,
+            };
+            (checked, c.fixed, c.problems)
+        };
+        let (mut checked, fixed, dropped) = check(args);
+        if !fixed.is_empty() || !dropped.is_empty() {
+            self.event(
+                task_id,
+                "json_repaired",
+                json!({"name": tool, "fixed": fixed, "dropped": dropped}),
+            )
+            .await;
+        }
+        if let Checked::Invalid(problems) = &checked {
+            // the planner writes the JSON once more from the user's words
+            let last_user = transcript
+                .iter()
+                .rposition(|m| get_str(m, "role") == "user")
+                .unwrap_or(0);
+            let last_answer = transcript[..last_user]
+                .iter()
+                .rev()
+                .find(|m| get_str(m, "role") == "assistant" && !content_of(m).trim().is_empty())
+                .map(content_of)
+                .unwrap_or_default();
+            let (system, user) = super::json_in::regen_prompt(
+                tool,
+                &params,
+                user_texts.last().map(String::as_str).unwrap_or(""),
+                &last_answer,
+                &pyjson::dumps(args),
+                problems,
+                &today.format("%Y-%m-%d").to_string(),
+            );
+            let pm = sget(&self.settings(), "planner_model");
+            let o = ChatOpts {
+                max_tokens: Some(800),
+                temperature: Some(0.0),
+                model: if pm.is_empty() { None } else { Some(pm) },
+                no_think: true,
+                ..opts("planner", task_id)
+            };
+            let msgs = [json!({"role": "system", "content": system}), user_msg(user)];
+            let again = match self.chat_or_cancel(task_id, &msgs, None, &o).await {
+                Some(Ok(r)) => super::json_in::extract(&r.content),
+                _ => None,
+            };
+            let mut ok = false;
+            if let Some((v, repairs)) = again {
+                let (c2, fixed2, _) = check(&v);
+                ok = !matches!(c2, Checked::Invalid(_));
+                self.event(
+                    task_id,
+                    "json_regenerated",
+                    json!({"name": tool, "problems": problems, "repairs": repairs, "fixed": fixed2,
+                           "args": v, "ok": ok}),
+                )
+                .await;
+                if ok
+                    || matches!(checked, Checked::Invalid(_))
+                        && matches!(c2, Checked::NeedsInput(_))
+                {
+                    checked = c2;
+                }
+            } else {
+                self.event(
+                    task_id,
+                    "json_regenerated",
+                    json!({"name": tool, "problems": problems, "ok": ok}),
+                )
+                .await;
+            }
+        }
+        // the executor already had its one more try in this request: what is still wrong is asked of the user
+        if let Checked::Invalid(problems) = &checked {
+            let last_user = transcript
+                .iter()
+                .rposition(|m| get_str(m, "role") == "user")
+                .unwrap_or(0);
+            let tried = transcript[last_user..].iter().any(|m| {
+                get_str(m, "role") == "tool"
+                    && serde_json::from_str::<Value>(&content_of(m))
+                        .is_ok_and(|v| get_str(&v, "status") == "invalid")
+            });
+            if tried {
+                return Checked::NeedsInput(problems.clone());
+            }
+        }
+        checked
+    }
+
+    /// The code machine's turn: the next step from the transcript, as a model reply with code calls (or, for the machines
+    /// not yet converted, a code-written answer). `None` when a workflow machine is done: its JSON result is appended
+    /// as the `T_result` code exchange and the model writes the reply on the next turn (agent/workflow.rs). When a
+    /// transitional machine finds no value by its regexes, one extraction call (recorded as an `extract_facts`
+    /// result), then the step again.
+    async fn drive(
+        &self,
+        task_id: &str,
+        machine: &Machine,
+        transcript: &mut Vec<Value>,
+        catalog: &Value,
+        lg: &str,
+    ) -> Option<ChatReply> {
+        use super::driver::{Step, World};
+        let user_texts = super::driver::user_words(transcript);
+        let profile = self.machine_profile(catalog);
+        let today = self.user_today();
         let mail_ready = truthy(&catalog["connections"]["gmail"]["ready"]);
         let w = World {
             user_texts: &user_texts,
@@ -367,7 +510,21 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
             .collect();
         let next = |t: &[Value]| match machine {
             Machine::Card(c) => super::driver::next(c, t, &w),
-            Machine::Booking(b) => super::booking::next_in(b, t, &w, &available),
+            Machine::Workflow { tool, args, from } => {
+                let from = (*from).min(t.len());
+                let first = t[..from]
+                    .iter()
+                    .flat_map(tool_calls)
+                    .filter(|tc| get_str(tc, "id").starts_with(super::booking::PREFIX))
+                    .count();
+                let m = super::booking::Machine {
+                    profile: &profile,
+                    mail_ready,
+                    available: &available,
+                    first,
+                };
+                super::booking::next(tool, args, &t[from..], &m)
+            }
             Machine::Claim(c) => super::claims::next(c, t, &w),
             Machine::Apdt(s) => super::apdt::next(s, t, &w),
             Machine::News => super::news::next(t, &w),
@@ -378,7 +535,7 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
             // regexes only: the refund's machine never asks for an extraction
             Machine::Apdt(_) => ("apd_", ""),
             Machine::News => (super::news::PREFIX, ""),
-            Machine::Booking(_) => ("bkg_", super::booking::EXTRACT_SYSTEM),
+            Machine::Workflow { .. } => (super::booking::PREFIX, ""),
         };
         let mut step = next(transcript);
         if let Step::Extract(text) = &step {
@@ -411,14 +568,36 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
             transcript.extend(match machine {
                 Machine::Card(_) => super::driver::extract_exchange(n, text, &facts),
                 Machine::Claim(_) => super::claims::extract_exchange(n, text, &facts),
-                Machine::Apdt(_) => Vec::new(),
                 Machine::News => super::news::extract_exchange(n, text, &facts),
-                Machine::Booking(_) => super::booking::extract_exchange(n, text, &facts),
+                Machine::Apdt(_) | Machine::Workflow { .. } => Vec::new(),
             });
             step = next(transcript);
         }
+        let card = match machine {
+            Machine::Card(c) => c.skill,
+            Machine::Claim(c) => c.skill,
+            Machine::Apdt(s) => s.skill,
+            Machine::Workflow { tool, .. } => tool.as_str(),
+            Machine::News => super::news::SKILL,
+        };
         let (content, tool_calls) = match step {
             Step::Calls(c) => (String::new(), c),
+            Step::Done(result) => {
+                // the machine's JSON result: the `T_result` code exchange, then the model writes the reply
+                let tool = match machine {
+                    Machine::Workflow { tool, .. } => tool.clone(),
+                    _ => card.to_string(),
+                };
+                self.event(
+                    task_id,
+                    "workflow_result",
+                    json!({"tool": tool, "status": get_str(&result, "status"), "result": result}),
+                )
+                .await;
+                let ex = super::workflow::result_exchange(transcript, &tool, &result);
+                transcript.extend(ex);
+                return None;
+            }
             Step::Final(a) if a.is_empty() => (
                 String::new(),
                 vec![ToolCall {
@@ -433,50 +612,107 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
         self.event(
             task_id,
             "driver",
-            json!({"card": match machine { Machine::Card(c) => c.skill, Machine::Claim(c) => c.skill, Machine::Apdt(s) => s.skill, Machine::Booking(b) => b.skill, Machine::News => super::news::SKILL }, "calls": tool_calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), "final": !content.is_empty()}),
+            json!({"card": card, "calls": tool_calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), "final": !content.is_empty()}),
         )
         .await;
-        ChatReply {
+        Some(ChatReply {
             content,
             reasoning: String::new(),
             tool_calls,
             usage: json!({}),
             finish_reason: json!("stop"),
-        }
+        })
     }
 
-    /// One reading of the final answer by the model, as the user would read it: `Some(problem)` when it does not hold
+    /// One reading of the final answer by the model, as the user would read it: `Some(review)` when it does not hold
     /// together (it contradicts itself, stops mid-way, answers another question, or claims the opposite of what it
-    /// reports); `None` when it makes sense. JSON only, no judgement of style.
-    async fn review_answer(&self, task_id: &str, request: &str, answer: &str) -> Option<String> {
-        if answer.chars().count() < 40 {
+    /// reports) or — for the reply to a workflow machine's result — leaves out a fact of the result's `must_say`;
+    /// `None` when it is fine. JSON only, no judgement of style.
+    async fn review_answer(
+        &self,
+        task_id: &str,
+        request: &str,
+        answer: &str,
+        result: Option<&Value>,
+    ) -> Option<Review> {
+        let must = result.map(super::workflow::must_say).unwrap_or_default();
+        if answer.chars().count() < 40 && must.is_empty() {
             return None;
         }
-        let system = "You check an assistant's final reply to a user. Answer with JSON only: {\"ok\": bool, \"problem\": \"\"}. \
-ok is false ONLY when the reply does not make sense to the user: it contradicts itself, stops in the middle of a sentence or a list, \
-answers a different question than the one asked, or says something was done and also that it was not. Style, length, tone and \
-missing details are NOT problems (ok = true). problem: one short sentence naming the contradiction or gap, empty when ok.";
         let o = ChatOpts {
-            max_tokens: Some(120),
+            max_tokens: Some(if must.is_empty() { 120 } else { 400 }),
             temperature: Some(0.0),
             no_think: true,
             ..opts("classify", task_id)
         };
+        let mut body = format!(
+            "The user's request:\n{}\n\nThe reply:\n{}",
+            take_chars(request, 2000),
+            take_chars(answer, 6000)
+        );
+        if !must.is_empty() {
+            body.push_str(&format!(
+                "\n\nThe facts the reply must carry (must_say, from the tool's JSON result):\n{}",
+                serde_json::to_string_pretty(&must).unwrap_or_default()
+            ));
+        }
         let msgs = [
-            json!({"role": "system", "content": system}),
-            user_msg(format!(
-                "The user's request:\n{}\n\nThe reply:\n{}",
-                take_chars(request, 2000),
-                take_chars(answer, 6000)
-            )),
+            json!({"role": "system", "content": prompts::review_system(!must.is_empty())}),
+            user_msg(body),
         ];
         let r = self.llm.chat(&msgs, None, &o).await.ok()?;
         let v = crate::llm::extract_json(&r.content)?;
-        if v.get("ok").and_then(Value::as_bool).unwrap_or(true) {
+        let missing: Vec<String> = v
+            .get("missing")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .filter(|m| !m.trim().is_empty())
+            .collect();
+        let ok = v.get("ok").and_then(Value::as_bool).unwrap_or(true);
+        let problem = take_chars(get_str(&v, "problem").trim(), 300).to_string();
+        if (ok || problem.is_empty()) && missing.is_empty() {
             return None;
         }
-        let problem = get_str(&v, "problem");
-        (!problem.trim().is_empty()).then(|| take_chars(problem.trim(), 300).to_string())
+        Some(Review { problem, missing })
+    }
+
+    /// The reply again, carrying the facts of the machine's result the review found missing (the model writes it; the
+    /// result's JSON is the only source).
+    async fn reply_with_facts(
+        &self,
+        task_id: &str,
+        request: &str,
+        reply: &str,
+        result: &Value,
+        review: &Review,
+        lg: &str,
+    ) -> String {
+        let sysmsg = prompts::l(lg,
+            "你根据工具的 JSON 结果改写给用户的回复。不能调用工具。保留原回复的内容和语言，补上列出的缺失事实（数字、编号、链接原样照抄），改正指出的问题。只输出改写后的回复。",
+            "You rewrite a reply to the user from a tool's JSON result. No tools. Keep the reply's content and language, add the missing facts listed (numbers, references and links copied exactly from the result) and fix the problem named. Output only the rewritten reply.");
+        let body = format!(
+            "The user's request:\n{}\n\nThe tool's result (JSON):\n{}\n\nThe reply:\n{}\n\nMissing facts: {}\nProblem: {}",
+            take_chars(request, 2000),
+            take_chars(&result.to_string(), 8000),
+            take_chars(reply, 6000),
+            serde_json::to_string(&review.missing).unwrap_or_default(),
+            if review.problem.is_empty() { "none" } else { &review.problem }
+        );
+        match self
+            .llm
+            .chat(
+                &[json!({"role": "system", "content": sysmsg}), user_msg(body)],
+                None,
+                &opts("rescue_final", task_id),
+            )
+            .await
+        {
+            Ok(r) => strip_tool_markup(&r.content).trim().to_string(),
+            Err(_) => String::new(),
+        }
     }
 
     pub async fn chat_or_cancel(
@@ -2429,6 +2665,12 @@ yourself; ask_bot is not available for it."
                             || !(super::guards::MODEL_INPUT_TOOLS.contains(&n) || n == "form_fill")
                     })
                     .collect();
+                // the reply to a machine's result: the workflow tools are not offered on that turn
+                let reply_turn = super::workflow::reply_turn(&transcript);
+                let tl: Vec<Value> = tl
+                    .into_iter()
+                    .filter(|x| !(reply_turn && super::booking::TOOLS.contains(&tool_name(x))))
+                    .collect();
                 // ask_bot is the main bot's; a tool a bot file claims (the travel searches) only its bots'
                 let tl: Vec<Value> = tl
                     .into_iter()
@@ -2469,17 +2711,54 @@ yourself; ask_bot is not available for it."
                 .map(Machine::Card)
                 .or_else(|| super::claims::active(&transcript).map(Machine::Claim))
                 .or_else(|| super::apdt::active(&transcript).map(Machine::Apdt))
-                .or_else(|| super::booking::active(&transcript).map(Machine::Booking))
-                .or_else(|| super::news::active(&transcript).then_some(Machine::News))
                 .or_else(|| {
-                    (!bot.is_main())
-                        .then(|| super::booking::search_request(&transcript))
-                        .flatten()
-                        .map(Machine::Booking)
-                });
-            let driven = match machine {
+                    super::workflow::active(&transcript, &super::booking::TOOLS)
+                        .map(|(from, tool, args)| Machine::Workflow { tool, args, from })
+                })
+                .or_else(|| super::news::active(&transcript).then_some(Machine::News));
+            let driven = match &machine {
                 Some(m) if !force_final => {
-                    Some(self.drive(task_id, m, &mut transcript, &catalog, lg).await)
+                    match self.drive(task_id, m, &mut transcript, &catalog, lg).await {
+                        Some(r) => Some(r),
+                        None => {
+                            // the machine is done (its `T_result` is in the transcript). A page handed to browser-use:
+                            // code loads the skill for the model, which fills that one page
+                            if let Some(res) = super::workflow::latest_result(&transcript)
+                                .filter(|r| get_str(r, "status") == "browser_use")
+                            {
+                                let tc = ToolCall {
+                                    id: format!("{}skill_{steps}", super::booking::PREFIX),
+                                    name: "load_skill".into(),
+                                    args: json!({"name": super::booking::BROWSER_USE}),
+                                };
+                                self.event(
+                                    task_id,
+                                    "browser_use_handoff",
+                                    json!({"url": get_str(&res, "url")}),
+                                )
+                                .await;
+                                transcript
+                                    .push(assistant_with_calls("", std::slice::from_ref(&tc)));
+                                if let Err(sp) = self
+                                    .exec_call(
+                                        &t,
+                                        &tc,
+                                        &mut transcript,
+                                        &catalog,
+                                        &[],
+                                        None,
+                                        CallMode::MAIN,
+                                    )
+                                    .await
+                                {
+                                    return self.suspend(task_id, sp, transcript).await;
+                                }
+                            }
+                            self.store
+                                .update_task(task_id, &json!({"transcript": transcript}))?;
+                            continue;
+                        }
+                    }
                 }
                 _ => None,
             };
@@ -2834,12 +3113,17 @@ yourself; ask_bot is not available for it."
                     )
                 };
             }
+            // the reply to a workflow machine's result (its `T_result` in this request): the machine did the work, so
+            // no runtime step acts on the reply; the final review checks it carries the result's `must_say` (a page
+            // handed to browser-use is the model's from there on)
+            let workflow_reply = super::workflow::latest_result(&transcript)
+                .filter(|r| get_str(r, "status") != "browser_use");
             let driven_run = super::driver::active(&transcript).is_some()
                 || super::claims::active(&transcript).is_some()
                 || super::apdt::active(&transcript).is_some()
-                || super::booking::active(&transcript).is_some()
-                || super::news::active(&transcript)
-                || (!bot.is_main() && super::booking::search_request(&transcript).is_some());
+                || super::workflow::active(&transcript, &super::booking::TOOLS).is_some()
+                || workflow_reply.is_some()
+                || super::news::active(&transcript);
             // a news report's delivery is code's: the scheduled edition's mail, or the schedule asked for (once each)
             if !final_.is_empty() && asked.is_none() && !force_final && !timed_out {
                 let own = own_mailbox(&catalog);
@@ -2940,17 +3224,32 @@ yourself; ask_bot is not available for it."
             if !final_.is_empty()
                 && asked.is_none()
                 && !answer_reviewed
-                && !driven_run
+                && (!driven_run || workflow_reply.is_some())
                 && !force_final
                 && !timed_out
             {
                 answer_reviewed = true;
-                if let Some(problem) = self.review_answer(task_id, &goal_text, &final_).await {
-                    self.event(task_id, "answer_review", json!({"problem": problem}))
-                        .await;
-                    let again = self
-                        .rescue_final(task_id, &goal_text, &transcript, lg)
-                        .await;
+                if let Some(review) = self
+                    .review_answer(task_id, &goal_text, &final_, workflow_reply.as_ref())
+                    .await
+                {
+                    self.event(
+                        task_id,
+                        "answer_review",
+                        json!({"problem": review.problem, "missing": review.missing}),
+                    )
+                    .await;
+                    let again = match &workflow_reply {
+                        // the facts of the machine's result the reply left out, added by the model
+                        Some(res) => {
+                            self.reply_with_facts(task_id, &goal_text, &final_, res, &review, lg)
+                                .await
+                        }
+                        None => {
+                            self.rescue_final(task_id, &goal_text, &transcript, lg)
+                                .await
+                        }
+                    };
                     if !again.is_empty() {
                         final_ = again;
                     }
@@ -3908,10 +4207,14 @@ pub fn compress_with(
     let kept: Vec<String> = transcript
         .iter()
         .flat_map(tool_calls)
-        .filter(|tc| get_str(tc, "id").starts_with("bkg_"))
         .filter(|tc| {
+            let id = get_str(tc, "id");
             let (name, _) = super::util::stored_call(tc);
-            MACHINE_DATA.contains(&name.rsplit("__").next().unwrap_or(&name))
+            // a workflow tool's call (its validated arguments) and its result (`T_result`) are the machine's state too
+            (id.starts_with("bkg_")
+                && MACHINE_DATA.contains(&name.rsplit("__").next().unwrap_or(&name)))
+                || super::booking::TOOLS.contains(&name.as_str())
+                || id.starts_with(super::workflow::RESULT_PREFIX)
         })
         .map(|tc| get_str(tc, "id"))
         .collect();
@@ -4109,13 +4412,26 @@ fn own_mailbox(catalog: &Value) -> String {
         .unwrap_or_default()
 }
 
+/// What the final review found: a problem with the reply, and the `must_say` facts of a machine's result it lacks.
+#[derive(Debug, Clone, Default)]
+struct Review {
+    problem: String,
+    missing: Vec<String>,
+}
+
 /// The code machine that decides a driven run's steps: an arrival card (`agent/driver.rs`), a claim / the FWD
-/// purchase (`agent/claims.rs`) or the Hong Kong departure tax refund (`agent/apdt.rs`).
-#[derive(Clone, Copy)]
+/// purchase (`agent/claims.rs`), the Hong Kong departure tax refund (`agent/apdt.rs`), or a workflow tool's run.
+#[derive(Clone)]
 enum Machine {
     Card(&'static super::driver::CardSpec),
     Claim(&'static super::claims::ClaimSpec),
     Apdt(&'static super::apdt::ApdtSpec),
-    Booking(&'static super::booking::BookingSpec),
+    /// a workflow tool's run (`travel_search`, `travel_book`, `shop_order`: agent/booking.rs): the tool, its validated
+    /// arguments and the index of its call in the transcript (agent/workflow.rs)
+    Workflow {
+        tool: String,
+        args: Value,
+        from: usize,
+    },
     News,
 }

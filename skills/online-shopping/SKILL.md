@@ -1,10 +1,25 @@
 ---
 name: online-shopping
-description: 网购：搜索商品、用视觉挑选、加入购物车（不结账）Shop online — search products, choose (with vision), add to cart; never checks out without approval.
+description: 网购：用户给了商店链接时用 shop_order（比较 / 加入购物车 / 购买，条件作为参数），代码排名、加购、填写结账页，下单由用户点；没有链接时按下面的步骤搜索 Shop online — with a shop link the user gave, call shop_order (compare, cart or buy, the criteria as JSON arguments): code ranks the listings, adds to the cart and fills the checkout, Place order is the user's; without a link, search as below.
 form: on
 ---
 # Online shopping / 网购（搜索、挑选、加入购物车）
 
+## A shop link the user gave → shop_order
+Call `shop_order` once with the user's words as arguments — never open, read or click the shop's pages yourself:
+- `url` = the link; `action` = `compare` (show / find / which is best), `cart` (add it to my cart) or `buy` (order it,
+  buy it now); `by` = `rating` (best-rated), `price` (cheapest) or `ratings` (most reviewed); `max_price`,
+  `min_price`, `min_stars`, `min_ratings`, `count` (how many to show), `title_has` (words every chosen name has: the
+  product word and the exact device model, e.g. ["case", "iPhone 17 Pro Max"]), `title_not`.
+- `let_user_choose: true` when the user wants to pick ("show me options", "I'll pick one"); `pick` = the listing the
+  user chose on a card ("I choose: …"); `colour`, `quantity`, `card` (the Vault card named), `contact` (name, phone,
+  delivery address the user gave; the profile comes first).
+- The result: `shown` (the listings ranked, the pick — or `choose: true`: the cards are on screen, the user picks),
+  `in_cart` (in the cart, not checked out), `booked` (the order number), `not_confirmed`, `nothing_found`, `error`,
+  `browser_use` (a shop code has no form for: its page is open and the browser-use skill is loaded — continue there).
+  Every fact in `must_say` goes into the reply. `needs_input` / `invalid`: ask the user / fix the arguments.
+
+## No link: searching shops yourself
 1. **Search with a direct URL** (fast, no typing):
    Amazon: `https://www.amazon.<sg|com|co.jp…>/s?k=<words+joined+by+plus>` · Lazada: `https://www.lazada.sg/catalog/?q=<words>` ·
    Shopee: `https://shopee.sg/search?keyword=<words>` · other shops: their own search-URL template when you know it, else web_search("<words> site:<shop domain>").

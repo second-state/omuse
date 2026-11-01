@@ -97,3 +97,67 @@ Today's answer guards (`agent/guards.rs` `with_*`, `agent/judgements.rs`) scan t
 text. They become data: each fact comes out of a code tool's JSON (`must_say`), from structured sources only (the
 catalog, the consular and emergency tables, the official visa table, the fx rate, the airline status page's fixed
 parts), and the final review makes sure the reply carries it. A guard that cannot be expressed that way is removed.
+
+## API for the next machines (phase 1: the run loop and the booking machine)
+
+The protocol and the checking layer are in place; `agent/booking.rs` is the reference conversion. To convert a
+machine (driver/apdt, claims/bagtrace, news, …):
+
+**1. Declare the workflow tool.** A function returning the catalog entries, built with `tools::fn_(name, description,
+properties, required)` (see `booking::tool_schemas`): JSON-schema properties with types, enums and descriptions that say
+what the field holds (`"YYYY-MM-DD (resolve relative dates from today in the live state)"`), and a description that
+says what the tool does and that the reply is written from the JSON result. Add the entries to `tools::local_tools()`
+(they become local tools, so `is_local` and the catalog see them), the tool names to a `TOOLS` const of the machine,
+and — when only one bot may use it — the names to that bot file's `tools:` line (`bots/travel.md`). In
+`agent/exec.rs` the branch for `booking::TOOLS` sends the call to `Runtime::checked_workflow_args`; add the machine's
+`TOOLS` there and to the machine selection in `agent/runtime.rs` (`workflow::active(&transcript, &TOOLS)` →
+`Machine::Workflow { tool, args, from }`; give `Machine::Workflow` the machine's `next` by tool name).
+
+**2. Validate.** The JSON layer (`agent/json_in.rs`) runs first and needs nothing from the machine: the syntax was
+repaired where the call was read (`llm::parse_args` → `json_in::parse_args`, event `json_repaired`), then
+`json_in::conform(schema.parameters, &mut args)` fixes types, enums and dates against the declared schema. The machine
+supplies its field checks as a pure function `check(tool, &args, &Ctx) -> workflow::Checked` (see `booking::check`):
+`Valid(normalised args)` (codes, defaults from the profile, ISO dates, bad optional fields dropped),
+`Invalid(problems)` for what the model can fix (a past date, a city not in the table, an address the user never wrote),
+`NeedsInput(missing)` for what only the user can give — before any page opens. `checked_workflow_args` then asks the
+planner model once to regenerate an invalid call (`json_regenerated`), gives the executor one more try with
+`{"status": "invalid", …}`, and turns a second failure into `needs_input`. Regex on structured values (an ISO date, an
+email's shape) is fine; nothing reads the user's wording — the only use of the user's messages allowed is an exact
+substring check (`mail_results_to`).
+
+**3. The machine.** `next(tool, &validated_args, &transcript[from..], &Machine{…}) -> driver::Step`:
+`Step::Calls(vec![code call])` with ids `<prefix><n>` (`workflow::code_call`; the `first` field of the context carries
+the count of the machine's earlier calls in the transcript so the ids go on), or `Step::Done(json)`. It reads only its
+validated arguments (`Req::from_args`), the profile (with `profile["mailbox"]`, the connected account, set by the
+runtime), structured tool results and known pages' fixed parts — the transcript after its own call, so a run suspended
+for a takeover resumes from the transcript. A page with no form function: `Done({"status": "browser_use", "url"})`;
+the runtime then loads the `browser-use` skill in code and the model fills that page.
+
+**4. The Done JSON.** `status` (shown · booked · in_cart · not_confirmed · handed_over · nothing_found · browser_use ·
+error), the data the reply needs (options with their links, the pick and its rule, the booking with reference and
+amount, links, `mailed`, `next_items`, `next_question`), and `must_say`: short strings with the facts the reply MUST
+carry, copied from structured data (a reference, an amount with currency, a link, a deadline, a step for the user).
+No answer text: the runtime appends the `T_result` exchange (`workflow::result_exchange`), withdraws the workflow tools
+for the next turn (`workflow::reply_turn`), the model writes the reply, and `Runtime::review_answer` gets
+`must_say` (prompt `prompts::review_system(true)`); the facts it finds missing are added by the model
+(`Runtime::reply_with_facts`). Runtime steps that act on a reply (held picks, auto hand-over, hand-back snapshot) skip
+the reply to a machine's result, except a `browser_use` one.
+
+**5. Tests.** Unit tests per machine as in `agent/booking/tests.rs`: `check` on good, bad and missing fields; a `run`
+helper that starts from the transcript the run loop leaves (user message, the tool call, `{"status": "running",
+"args"}`), answers each code call by name and returns the Done JSON — assert the calls (fixed ids, one per turn, no
+question after a page opened) and the JSON (status, data, `must_say`). Protocol tests with the scripted model
+(`scripted_rt` in `agent/tests.rs`): a call that runs its machine and the reply turn without the workflow tools, the
+review with `must_say`, invalid → planner regeneration → invalid → `needs_input`, repaired syntax. In the fake model
+(`tests/fake_llm.py`) a marker becomes the workflow call with JSON arguments (`workflow_args`), and the reply to a
+`*_result` is written from the JSON (`workflow_reply`); fake suites check the call (`skills_common.workflow`), the
+machine's steps (`work`), the result (`result`) and that the reply carries every `must_say` fact (`says_all`).
+
+Two runtime rules come with every machine: a machine's own `present_choices` (a `bkg_`-style code call) carries `_code`
+(set by the run loop, never taken from the model) and is not checked against pages read — its cards come from the
+structured result; and `ask_user` in a skill's run before its workflow tool was called is refused as data
+(`booking::ask_before_tool`: call the tool, its `needs_input` decides what to ask; defaults are code's). Extend both to
+the new prefixes / skills.
+
+Transitional: `Step::Final` and `Step::Extract`, `EXTRACT_SYSTEM` / `extract_exchange` and the `World` struct remain
+only for the machines not converted yet (driver, claims, apdt, news); remove them with the last conversion.

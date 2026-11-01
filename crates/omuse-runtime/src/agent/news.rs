@@ -816,6 +816,7 @@ mod tests {
                     t.extend(extract_exchange(n, &text, &facts));
                 }
                 Step::Final(a) => return (t, a),
+                Step::Done(v) => panic!("this machine is not converted yet: {v}"),
             }
         }
         panic!("the run did not end")

@@ -7,16 +7,15 @@ plan: on
 ---
 # Travel planning / 旅行规划
 
-Flights, hotels and cars — one data tool each, and nothing beside it:
-**ONE travel search per request** — flights_search, hotels_search, cars_search and places_search together (a second one
-is not run). A trip that needs several ("a flight, a hotel and a car"): search the first part the user named, answer it,
-and offer the next ("Shall I search the hotel now?"); each later message runs the next search. No plan for this.
-- **Flights:** `flights_search` only — ONE search per call (Google Flights with the
-  Flights & hotels key for one date; Kiwi.com for a range of dates, self-transfer, without the key or when Google fails).
-  Every offer has its `booking_url` (Google Flights' page for that itinerary, or Kiwi.com's booking page; `book_at` is
-  the airline's own website): give it with the offer.
-- **Hotels:** `hotels_search` only — ONE search per call (Google Hotels with the key,
-  else web search by itself); each hotel's `booking_url` is Google's page for it and the dates (every seller); `hotel_rooms` needs the key.
+Flights, hotels, restaurants and cars — one tool each, and nothing beside it:
+**ONE travel search per request** — flights, hotels, restaurants and cars together (a second one is not run). A trip
+that needs several ("a flight, a hotel and a car"): search the first part the user named, answer it, and offer the next
+("Shall I search the hotel now?"); each later message runs the next search. No plan for this.
+- **Flights, hotels, restaurants:** `travel_search` with `kind` = flight / hotel / michelin / restaurant and the user's
+  details as arguments (dates as YYYY-MM-DD, city codes, cabin, party, budget, `next` = the other searches the
+  request asks for). Code runs the ONE search, picks by rule and shows the cards; write the answer from its JSON
+  result (every fact in `must_say`, each offer's `booking_url`). Never call flights_search / hotels_search /
+  places_search yourself. The flight-booking, hotel-booking and michelin-dining skills have the arguments in detail.
 - **Cars:** `cars_search` only — ONE search per call: the pickup airport, dates, times,
   car class and the preferred companies. It returns web results (companies and "from" prices) and the `booking_url`:
   Kayak's page for exactly this rental with the live offers (Rentalcars.com's when Kayak's page does not answer).
@@ -40,10 +39,10 @@ to search; the browser is for the final booking page only.
   session step by step (clicking through a site) stays with you, in sequence.
 
 ## 1. Flights
-- `flights_search` first, ONE call per route — a range of dates is `date` + `date_to` in that same call, never a call or
-  a plan step per day: take the **date, cabin and stop limit from the user's words**
-  (business class asked → `cabin=business`, never economy instead; "direct" → `stops="nonstop"`, nothing said → `stops="any"`), and give a city with
-  several airports its **city code** or name — one search covers all its airports, never one per airport:
+- `travel_search` with `kind: "flight"`, ONE call per request — a range of dates is `date` + `date_to` in that same
+  call: take the **date, cabin and stop limit from the user's words** (business class asked → `cabin: "business"`;
+  "direct" → `nonstop: true`), and give a city with several airports its **city code** — one search covers all its
+  airports:
   TYO = Tokyo (HND, NRT)
   OSA = Osaka (KIX, ITM)
   SEL = Seoul (ICN, GMP)
@@ -84,13 +83,13 @@ to search; the browser is for the final booking page only.
   preference to compare. The user asks for all airlines / hotels / companies ("any", "search everything") → leave the
   preference out of that one search. No good preferred result → answer with what was found and ask whether to search
   all airlines / hotels / rental companies; search again only after the user says yes.
-- flights_search takes IATA codes (SIN, NRT, HND, KIX, ICN, HKG, YVR); "Tokyo" = `TYO` covers both airports.
-- When flights_search finds nothing usable, say so and name the airlines' own sites; never search flight sites in the
+- travel_search takes city or airport codes (SIN, NRT, HND, KIX, ICN, HKG, YVR); "Tokyo" = `TYO` covers both airports.
+- When the search finds nothing usable, say so and name the airlines' own sites; never search flight sites in the
   browser.
 - Do not spend more than ~6 steps on one site; switch source instead.
 
 ## 2. Hotels
-- `hotels_search` first, ONE call for the stay (the area, dates, guests and budget from the user's words); read a
+- `travel_search` with `kind: "hotel"` first, ONE call for the stay (the area, dates, guests and budget from the user's words); read a
   hotel's own page only for what the search does not give (a policy, a room detail). Never search hotel sites in the
   browser.
 - Report per hotel: total and per-night price (taxes in or out), review score, nearest station + walk minutes,

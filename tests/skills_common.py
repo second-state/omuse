@@ -176,6 +176,31 @@ def names(t: dict) -> list[str]:
     return [x["name"] for x in calls(t)]
 
 
+WORKFLOW_TOOLS = ("travel_search", "travel_book", "shop_order")
+
+
+def work(t: dict) -> list[str]:
+    """The calls of the run without the skill load and the workflow tool calls: the code machine's steps."""
+    return [n for n in names(t) if n != "load_skill" and n not in WORKFLOW_TOOLS]
+
+
+def workflow(t: dict) -> list[dict]:
+    """The workflow tool calls of the run as the model made them (`workflow_call` events: the tool and its result)."""
+    return [e["data"] for e in t.get("events", []) if e["type"] == "workflow_call"]
+
+
+def result(t: dict) -> dict:
+    """The JSON result of the run's (last) workflow machine (`workflow_result` event), {} when none ran."""
+    r = [e["data"]["result"] for e in t.get("events", []) if e["type"] == "workflow_result"]
+    return r[-1] if r else {}
+
+
+def says_all(t: dict) -> bool:
+    """The reply carries every fact of the machine result's must_say."""
+    reply = t.get("result") or ""
+    return all(m in reply for m in result(t).get("must_say") or [])
+
+
 def results(t: dict, name: str) -> list[dict]:
     return [e["data"] for e in t.get("events", []) if e["type"] == "tool_result" and e["data"].get("name") == name]
 

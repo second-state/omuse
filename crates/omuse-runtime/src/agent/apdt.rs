@@ -1365,6 +1365,7 @@ the photo page of my passport. Refund it to my Visa card.";
                 }
                 Step::Final(a) => return (t, a),
                 Step::Extract(_) => panic!("no extraction in this flow"),
+                Step::Done(v) => panic!("this machine is not converted yet: {v}"),
             }
         }
         panic!("the run did not end")

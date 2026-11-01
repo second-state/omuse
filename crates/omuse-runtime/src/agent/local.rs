@@ -239,7 +239,9 @@ request — keep it short and leave out what the request does not need. The skil
                 let transcript = arr(t, "transcript");
                 // a listing searched and not shown yet: the options first, the question after
                 let events = self.store.events(&tid, 0).unwrap_or_default();
-                if let Some(refusal) = super::guards::ask_before_listing(&events) {
+                if let Some(refusal) = super::guards::ask_before_listing(&events)
+                    .or_else(|| super::booking::ask_before_tool(&events))
+                {
                     self.event(&tid, "ask_user_refused", refusal.clone()).await;
                     return Ok(pyjson::dumps(&refusal));
                 }
@@ -1214,7 +1216,7 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                             }
                             clean = built;
                         }
-                    } else if self.unranked_listings(&tid, &clean) {
+                    } else if !code_card_of(a) && self.unranked_listings(&tid, &clean) {
                         self.event(
                             &tid,
                             "choices_rejected",
@@ -1245,7 +1247,9 @@ these are listings from a results page, and a comparison of them takes `ranking`
                         }
                     }
                 }
-                if kind == "comparison" {
+                // a code machine's card (agent/booking.rs) is built from the structured result it read: nothing to verify
+                let code_card = code_card_of(a);
+                if kind == "comparison" && !code_card {
                     let problems = self.check_choices(&tid, &clean);
                     if !problems.is_empty() {
                         self.event(
@@ -2939,6 +2943,11 @@ pub(crate) fn goal_args_from_trigger(a: &Value, success: &str) -> Value {
         "check_kind": "interval",
         "check_spec": "1440",
     })
+}
+
+/// A code machine's own `present_choices` (`_code`, set only by the run loop for a `bkg_` call).
+fn code_card_of(a: &Value) -> bool {
+    a.get("_code").and_then(Value::as_bool) == Some(true)
 }
 
 #[cfg(test)]

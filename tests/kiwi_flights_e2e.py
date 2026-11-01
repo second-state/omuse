@@ -178,15 +178,24 @@ K.check("hotel_rooms (Google ids) still needs the key, and the refusal says the 
 t = K.run(f"KIWIFLIGHTS cheapest flight Singapore to Tokyo on {DATE} DATE={DATE}")
 K.trace(t)
 names = K.names(t)
-K.check("the task completed and gives each offer's Kiwi.com booking link and the airline's own site (book_at), the pick by rule and any price",
-        t["status"] == "COMPLETED" and "Book it at https://kiwi.com/u/abc123 (Kiwi.com) or on singaporeair.com" in (t.get("result") or "")
-        and "Book it at https://kiwi.com/u/def456 (Kiwi.com) or on cathaypacific.com" in (t.get("result") or "")
-        and "Picked: **Cathay Pacific" in (t.get("result") or "") and "any price" in (t.get("result") or ""), (t["status"], (t.get("result") or "")[:600]))
+res = K.result(t)
+opts = {o["label"]: o for o in res.get("options") or []}
+wf = K.workflow(t)
+K.check("the model's ONE travel_search call (the request's details as JSON) was valid and ran the machine",
+        len(wf) == 1 and wf[0]["tool"] == "travel_search" and wf[0]["result"]["status"] == "running"
+        and wf[0]["result"]["args"].get("destination") == "TYO" and wf[0]["result"]["args"].get("origin") == "SIN", wf)
+K.check("the task completed; the result gives each offer's Kiwi.com booking link and the airline's own site (book_at) and the pick by rule",
+        t["status"] == "COMPLETED" and res.get("status") == "shown"
+        and any(o.get("booking_url") == "https://kiwi.com/u/abc123" and o.get("book_at") == ["singaporeair.com"] for o in opts.values())
+        and any(o.get("booking_url") == "https://kiwi.com/u/def456" and o.get("book_at") == ["cathaypacific.com"] for o in opts.values())
+        and res.get("pick", {}).get("label", "").startswith("Cathay Pacific") and res["pick"].get("rule") == "the cheapest", (t["status"], res))
+K.check("the reply was written from the result and carries every must_say fact (the pick, its booking link and airline site)",
+        K.says_all(t) and "https://kiwi.com/u/def456" in (t.get("result") or ""), ((t.get("result") or "")[:600], res.get("must_say")))
 fs = [x["args"] for x in K.calls(t) if x.get("name") == "flights_search"]
 K.check("skill, then ONE flights_search sorted by price in the home currency (SGD), the choice card — no web_search beside it, no browser",
-        [x for x in names if x != "load_skill"] == ["flights_search", "present_choices"] and fs[0].get("sort") == "price" and fs[0].get("currency") == "SGD"
+        K.work(t) == ["flights_search", "present_choices"] and fs[0].get("sort") == "price" and fs[0].get("currency") == "SGD"
         and fs[0]["origin"] == "SIN" and fs[0]["destination"] == "TYO" and fs[0]["date"] == DATE, (names, fs))
-K.check("Kayak's page for the same search is in the answer", f"{FAKE}/kayak/flights/" in (t.get("result") or ""), (t.get("result") or "")[-300:])
+K.check("Kayak's page for the same search is in the result and the answer", f"{FAKE}/kayak/flights/" in str(res.get("links")) and f"{FAKE}/kayak/flights/" in (t.get("result") or ""), (t.get("result") or "")[-300:])
 K.check("an ordinary skill is followed from its sheet: no plan, no planner call, never PLANNING", not any(e["type"] == "plan" for e in t["events"])
         and not (t.get("plan") or {}).get("steps") and "PLANNING" not in t["_seen"], ([e["type"] for e in t["events"]], t["_seen"]))
 # the flight search is code's (no model call); the instructions a model-path travel request gets, from a question
@@ -205,20 +214,20 @@ names = K.names(t)
 fs = [x for x in K.calls(t) if x.get("name") == "flights_search"]
 kl = c.get(FAKE + "/kiwi-mcp/_log").json()
 K.check("business class + direct + Tokyo: ONE flights_search (city code TYO, cabin business, stops nonstop), the choice card and nothing else, no plan",
-        [x for x in names if x != "load_skill"] == ["flights_search", "present_choices"] and len(fs) == 1 and fs[0]["args"]["cabin"] == "business" and fs[0]["args"]["stops"] == "nonstop"
+        K.work(t) == ["flights_search", "present_choices"] and len(fs) == 1 and fs[0]["args"]["cabin"] == "business" and fs[0]["args"]["stops"] == "nonstop"
         and fs[0]["args"]["origin"] == "TYO" and kl[-1]["flyFrom"] == "Tokyo" and kl[-1]["cabinClass"] == "BUSINESS" and not any(e["type"] == "plan" for e in t["events"]),
         (names, [f["args"] for f in fs], kl[-1:]))
-K.check("the answer is in the cabin searched", t["status"] == "COMPLETED" and "BUSINESS CLASS" in (t.get("result") or "") and "searched as business" in (t.get("result") or ""), (t.get("result") or "")[:300])
+K.check("the result and the answer name the cabin searched", t["status"] == "COMPLETED" and K.result(t).get("cabin_searched") == "business" and "searched as business" in (t.get("result") or ""), (t.get("result") or "")[:300])
 K.check("the preferred alliance was passed to the search; SQ (a Star Alliance member) came back flagged and the answer says preferred", fs[0]["args"].get("airlines") == ["Star Alliance"]
-        and "your preferred airline" in (t.get("result") or ""), (fs[0]["args"], (t.get("result") or "")[-200:]))
+        and any(o.get("preferred") for o in K.result(t).get("options") or []) and K.says_all(t), (fs[0]["args"], (t.get("result") or "")[-200:]))
 K.run("BIZPROMPT which airline do I prefer?")
 sysp = [x["system"] for x in c.get(LLM + "/calls_for", params={"marker": "BIZPROMPT"}).json() if not x["system"].startswith("You name conversations")]
 K.check("the executor's instructions carry the standing preferences (the alliance, the loyalty custom field) and nothing else from the profile",
         sysp and "Standing preferences" in sysp[0] and "- Preferred airline: Star Alliance" in sysp[0] and "- Star Alliance status: Gold" in sysp[0]
         and "Shoe size" not in sysp[0], (sysp[0][sysp[0].find("Standing"):][:300] if sysp else None))
 K.check("the standing preferences say: ONE search with the preference (flights, hotels, car rental), none without it, all only when asked or after asking",
-        sysp and "never a second search without it to compare" in sysp[0] and "ONE flights_search with the airline in airlines=[…]" in sysp[0]
-        and "ONE hotels_search with the brand" in sysp[0] and "ONE cars_search with the rental company in companies=[…]" in sysp[0]
+        sysp and "never a second search without it to compare" in sysp[0] and "ONE travel_search (kind flight) with the airline in airlines=[…]" in sysp[0]
+        and "ONE travel_search (kind hotel) with the brand" in sysp[0] and "ONE cars_search with the rental company in companies=[…]" in sysp[0]
         and "When the user asks for all airlines, hotels or rental companies" in sysp[0] and "ask whether to search all airlines / hotels / companies" in sysp[0], (sysp[0][sysp[0].find("Standing"):][:700] if sysp else None))
 
 # no price limit and no party size in the request: the machine's call has no cap and 1 adult, and the answer says any price
@@ -227,7 +236,7 @@ fz = [x["args"] for x in K.calls(tz) if x.get("name") == "flights_search"]
 kz = c.get(FAKE + "/kiwi-mcp/_log").json()[-1]
 K.check("through the agent: the recorded flights_search has no max_price and adults 1; Kiwi.com got no price_to; offers came back",
         tz["status"] == "COMPLETED" and len(fz) == 1 and "max_price" not in fz[0] and fz[0].get("adults") == 1 and "price_to" not in kz and kz.get("adults") == 1
-        and "any price" in (tz.get("result") or ""), (fz, kz, (tz.get("result") or "")[:200]))
+        and "max_price" not in K.result(tz).get("searched", {}), (fz, kz, (tz.get("result") or "")[:200]))
 
 # the preferred airline has nothing on the route: still ONE search (with the preference), and the answer asks before broadening
 K.set_profile(preferred_airline="Emirates")
@@ -235,13 +244,14 @@ tp = K.run(f"PREFNONE cheapest flight Singapore to Tokyo on {DATE} DATE={DATE}")
 np_ = K.names(tp)
 fsp = [x["args"] for x in K.calls(tp) if x.get("name") == "flights_search"]
 K.check("a preferred airline with no offer: ONE flights_search carrying the preference, no second search without it, no choice card",
-        [x for x in np_ if x != "load_skill"] == ["flights_search"] and len(fsp) == 1 and fsp[0].get("airlines") == ["Emirates"], (np_, fsp))
+        K.work(tp) == ["flights_search"] and len(fsp) == 1 and fsp[0].get("airlines") == ["Emirates"], (np_, fsp))
 rp = [e["data"] for e in tp.get("events", []) if e["type"] == "tool_result" and e["data"].get("name") == "flights_search"]
 K.check("Emirates flies nothing here: the narrowed search's empty result is the answer (Kiwi.com, preferred_found 0), not a web search",
         rp and "Kiwi.com flights" in str(rp[0].get("preview")) and "web search" not in str(rp[0].get("preview")).lower() and "web_search" not in np_,
         [str(x.get("preview"))[:300] for x in rp])
 K.check("the search found no preferred offer and the answer says so and asks whether to search all airlines",
-        tp["status"] == "COMPLETED" and "no Emirates flight" in (tp.get("result") or "") and "Shall I search all airlines?" in (tp.get("result") or ""),
+        tp["status"] == "COMPLETED" and K.result(tp).get("next_question") == "search_all_airlines" and K.says_all(tp)
+        and "no Emirates flight" in (tp.get("result") or "") and "Shall I search all airlines?" in (tp.get("result") or ""),
         (tp["status"], (tp.get("result") or "")[:300]))
 
 # a range of dates from the chat: one flights_search with date + date_to, no plan (no standing airline preference now)
@@ -251,8 +261,9 @@ tf = K.run(f"FLEXFLIGHTS cheapest flight Singapore to Tokyo any day between {f1}
 nf = K.names(tf)
 fsa = [x["args"] for x in K.calls(tf) if x.get("name") == "flights_search"]
 K.check("a date range from the chat is ONE flights_search with date and date_to, no plan, and the answer covers all five days",
-        [x for x in nf if x != "load_skill"] == ["flights_search", "present_choices"] and len(fsa) == 1 and fsa[0].get("date") == f1 and fsa[0].get("date_to") == f2
-        and not any(e["type"] == "plan" for e in tf["events"]) and "5 days searched in one call" in (tf.get("result") or ""), (nf, fsa, (tf.get("result") or "")[:200]))
+        K.work(tf) == ["flights_search", "present_choices"] and len(fsa) == 1 and fsa[0].get("date") == f1 and fsa[0].get("date_to") == f2
+        and not any(e["type"] == "plan" for e in tf["events"]) and (K.result(tf).get("days_searched") or {}).get("count") == 5
+        and "5 days searched in one call" in (tf.get("result") or ""), (nf, fsa, (tf.get("result") or "")[:200]))
 
 # a model that searches six times in one turn and three more next turn: ONE travel search per request — the first runs, the
 # rest of the turn is skipped, the next turn's are refused, and nothing more reaches Kiwi.com
@@ -285,10 +296,10 @@ n2 = K.names(t2)
 K.check("the booking stops at the hand-over with the page filled (WAITING_EXTERNAL)", t2["status"] == "WAITING_EXTERNAL", (t2["status"], n2))
 K.check("the booking made no plan", not any(e["type"] == "plan" for e in t2["events"]), [e["type"] for e in t2["events"] if e["type"] in ("plan", "status")][:10])
 K.check("ONE search, on the travel agency's connector, then the choice card — no Kiwi.com search, no web search",
-        [x for x in n2 if x != "load_skill"][:2] == ["mcp_travel__flights_search", "present_choices"] and "flights_search" not in n2 and "web_search" not in n2, n2)
+        K.work(t2)[:2] == ["mcp_travel__flights_search", "present_choices"] and "flights_search" not in n2 and "web_search" not in n2, n2)
 navs = [x["args"].get("url") for x in K.calls(t2) if x.get("name") == "browser_navigate"]
 K.check("the cheapest offer's booking page opened after the vault and the approved purchase",
-        [x for x in n2 if x != "load_skill"][2:5] == ["vault_list", "purchase_confirm", "browser_navigate"] and navs == [off["booking_url"]], (n2, navs, off["booking_url"]))
+        K.work(t2)[2:5] == ["vault_list", "purchase_confirm", "browser_navigate"] and navs == [off["booking_url"]], (n2, navs, off["booking_url"]))
 fill_res = K.results(t2, "browser_fill_secret")
 K.check("the purchase was confirmed (approved) before the card, and every vault fill succeeded", "purchase_confirm" in n2 and "browser_fill_secret" in n2
         and n2.index("purchase_confirm") < n2.index("browser_fill_secret") and any(a["tool"] == "purchase_confirm" for a in t2["_approvals"])
@@ -302,6 +313,7 @@ K.check("the page was filled by its form function (fixed ids): the traveller fro
         and {f.get("field") for f in fills} >= {"number", "expiry", "cvc"} and "4111" not in vals and "browser_type" not in n2, (form, fills))
 K.hand_back()
 t2 = K.wait_end(t2["id"])
-K.check("after the hand-back without paying the task completes and the answer says it is not confirmed (nothing booked)",
-        t2["status"] == "COMPLETED" and "not confirmed" in (t2.get("result") or ""), (t2["status"], (t2.get("result") or "")[:300]))
+K.check("after the hand-back without paying the task completes: the result is not_confirmed (no reference) and the answer says NOT confirmed",
+        t2["status"] == "COMPLETED" and K.result(t2).get("status") == "not_confirmed" and K.result(t2).get("reason") == "no_reference"
+        and "NOT confirmed" in (t2.get("result") or ""), (t2["status"], K.result(t2), (t2.get("result") or "")[:300]))
 K.finish()

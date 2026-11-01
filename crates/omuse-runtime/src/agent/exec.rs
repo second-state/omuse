@@ -241,6 +241,24 @@ impl Runtime {
             } else {
                 json!({})
             };
+            // `_code` marks a code machine's own call (its cards are built from structured results, not the model's
+            // words); never taken from the model
+            if let Some(o) = args.as_object_mut() {
+                o.remove("_code");
+                if call.id.starts_with(super::booking::PREFIX) && name == "present_choices" {
+                    o.insert("_code".into(), json!(true));
+                }
+            }
+            // the JSON checking layer repaired the arguments' syntax where they were read (agent/json_in.rs)
+            let repairs = super::json_in::take_repairs(&mut args);
+            if !repairs.is_empty() {
+                self.event(
+                    &task_id,
+                    "json_repaired",
+                    json!({"call_id": call.id, "name": name, "repairs": repairs}),
+                )
+                .await;
+            }
             // invalid numbers become what the user means (no budget = every price, 0 travellers = 1)
             omuse_common::util::sanitize_search_args(&mut args);
             // the model's links, repaired where its arguments are read (crate::links): a link cut short or mistyped
@@ -376,7 +394,8 @@ impl Runtime {
             let travel_bot = self.bot_of(t).is_main() || self.bot_of(t).id == "travel";
             let repeated = invented_id_guard(transcript, call, seen.as_ref())
                 .or_else(|| {
-                    travel_bot
+                    // the booking machine's own mail (the results the user asked to be mailed) is code's
+                    (travel_bot && !call.id.starts_with(super::booking::PREFIX))
                         .then(|| mail_before_travel_guard(&goal, call))
                         .flatten()
                 })
@@ -396,7 +415,11 @@ impl Runtime {
                     one_search_guard(move || st.events(&tid, 0).unwrap_or_default(), call)
                 })
                 .or_else(|| {
-                    // the first of several searches is the one the request names first
+                    // the first of several searches is the one the request names first (the booking machine's search
+                    // is the one the model's workflow call asked for)
+                    if call.id.starts_with(super::booking::PREFIX) {
+                        return None;
+                    }
                     let searched = transcript
                         .iter()
                         .flat_map(crate::agent::util::tool_calls)
@@ -456,6 +479,21 @@ impl Runtime {
                     &task_id,
                     json!({"resource": "loop_guard", "risk": "low", "decision": "DENY",
                     "result": "repeat_blocked", "detail": {"args": preview_args(&args)}}),
+                )
+                .await;
+            } else if super::booking::TOOLS.contains(&name)
+                && crate::bots::has_tool(self.bot_of(t), name)
+            {
+                // a workflow tool: its arguments checked by the JSON layer (repair, schema, the tool's field checks, the
+                // planner's regeneration once); a valid call starts the machine on the next turn (agent/workflow.rs)
+                let checked = self
+                    .checked_workflow_args(&task_id, name, &args, transcript, catalog)
+                    .await;
+                content = checked.to_result().to_string();
+                self.event(
+                    &task_id,
+                    "workflow_call",
+                    json!({"tool": name, "result": checked.to_result()}),
                 )
                 .await;
             } else if args.get("_unparsed").is_some()

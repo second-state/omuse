@@ -4,6 +4,7 @@ car request (flights_search, then hotels_search after the user says yes, then ca
 engines asked once per web search, no browser tool, and the agent's instructions naming the search services. What the user
 sees with a Brave key — real flights, hotel and car with prices and booking links that open — is tests/travel_brave_real.py."""
 import datetime as dt
+import json
 import os
 import sys
 
@@ -36,24 +37,26 @@ K.check("the agent's instructions name the Web search API (brave) and the no-bro
         sysp and "Web search (web_search, always available): search services connected (2 services" in sysp[0] and "car rental" in sysp[0] and "do NOT open Google Flights" in sysp[0]
         and "brave" not in sysp[0].split("Web search (web_search")[1][:200].lower(), sysp[0][:200] if sysp else None)
 K.check("a flight, a hotel and a car in one message: ONE travel search — the flight (Kiwi.com data), the choice card — and the hotel offered next",
-        t["status"] == "COMPLETED" and [x for x in names if x != "load_skill"] == ["flights_search", "present_choices"] and "(Kiwi.com data)" in (t.get("result") or "")
-        and "SQ638" in (t.get("result") or "") and "Shall I search the hotel near Ginza now?" in (t.get("result") or ""), (names, (t.get("result") or "")[:400]))
-K.check("the answer gives the offer's Kiwi.com booking link and the airline's own site (book_at)",
-        "Book it at https://kiwi.com/u/abc123 (Kiwi.com) or on singaporeair.com" in (t.get("result") or ""), (t.get("result") or "")[-400:])
+        t["status"] == "COMPLETED" and K.work(t) == ["flights_search", "present_choices"] and K.result(t).get("source") == "Kiwi.com"
+        and "SQ638" in json.dumps(K.result(t).get("options")) and K.result(t).get("next_items") == ["hotel", "car"]
+        and "Shall I search the hotel now?" in (t.get("result") or ""), (names, K.result(t), (t.get("result") or "")[:400]))
+K.check("the result gives the offer's Kiwi.com booking link and the airline's own site (book_at); the reply carries every must_say fact",
+        any(o.get("booking_url") == "https://kiwi.com/u/abc123" and o.get("book_at") == ["singaporeair.com"] for o in K.result(t).get("options") or [])
+        and K.says_all(t), (t.get("result") or "")[-400:])
 th = K.run(f"BRAVEHOTEL yes, the hotel DATE={D1}", conv=t["_conv"])
 tc = K.run(f"BRAVECAR and now the car DATE={D1}", conv=t["_conv"])
 K.trace(th)
 K.trace(tc)
-K.check("the next two messages search the hotel, then the car — one travel search each", K.names(th) == ["hotels_search"] and K.names(tc) == ["cars_search"]
+K.check("the next two messages search the hotel, then the car — one travel search each", K.work(th) == ["hotels_search"] and K.names(tc) == ["cars_search"]
         and "SEARCHED VIA ['brave']" in (tc.get("result") or ""), (K.names(th), K.names(tc), th.get("result"), tc.get("result")))
 K.check("the hotel answer gives the web pages the search found (\"from\" prices), Kayak's page for the stay, and offers the car next",
-        "web pages" in (th.get("result") or "") and "Brave snippet" in (th.get("result") or "") and "/kayak/hotels/" in (th.get("result") or "")
-        and "Shall I search the rental car now?" in (th.get("result") or ""), (th.get("result") or "")[:600])
+        K.result(th).get("source") == "web" and "Brave snippet" in json.dumps(K.result(th).get("web_pages")) and "/kayak/hotels/" in (th.get("result") or "")
+        and K.says_all(th) and "Shall I search the rental car now?" in (th.get("result") or ""), (th.get("result") or "")[:600])
 log = c.get(FAKE + "/search/_log").json()
 K.check("Brave received the hotel fallback and the car query, never a flight query", [x["q"] for x in log if x["provider"] == "brave"][-2:]
         == [f"4 star hotels near Ginza Tokyo {D1} to {D3} price", "small car rental companies Tokyo NRT airport prices"]
         and not any("flights" in x["q"] for x in log if x["provider"] == "brave"), log[-3:])
-allnames = names + K.names(th) + K.names(tc)
+allnames = K.work(t) + K.work(th) + K.names(tc)
 K.check("the browser's engines were asked first (once per web search) and no page was opened with a browser tool", c.get(FAKE + "/ddg/_hits").json()["n"] == hits0 + 2
         and "browser_navigate" not in allnames and "browser_read" not in allnames, (allnames, c.get(FAKE + "/ddg/_hits").json()))
 res = K.results(tc, "cars_search") + K.results(th, "hotels_search")

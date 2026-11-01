@@ -32,7 +32,6 @@ static XML_PARAM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<parameter=([\w.\-]+)>\n?(.*?)\n?</parameter>").unwrap());
 static ANY_TOOLCALL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<tool_call>.*?(?:</tool_call>|$)").unwrap());
-static TRAILING_COMMA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r",\s*([}\]])").unwrap());
 
 /// The `(name, body)` pairs of `_TOOLCALL_XML.findall(text)`.
 pub fn toolcall_xml(text: &str) -> Vec<(String, String)> {
@@ -193,68 +192,17 @@ fn context_exceeded(text: &str) -> bool {
         || t.contains("prompt is too long")
 }
 
-fn parse_loose(s: &str) -> Option<Value> {
-    serde_json::from_str(s).ok()
-}
-
-/// Tool-call arguments from whatever the model sent: a dict as is, JSON text (also with trailing commas or
-/// wrapped in prose), else `{"_unparsed": ...}`.
+/// Tool-call arguments from whatever the model sent: the JSON checking layer's repair (`agent::json_in::parse_args`):
+/// an object as is, JSON text repaired (the repairs under `_repaired` until the run loop reports them), else
+/// `{"_unparsed": ...}`.
 pub fn parse_args(raw: &Value) -> Value {
-    static OBJ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\{.*\}").unwrap());
-    if raw.is_object() {
-        return raw.clone();
-    }
-    if !truthy(raw) {
-        return json!({});
-    }
-    let s = py_str(raw).trim().to_string();
-    if let Some(v) = parse_loose(&s) {
-        return if v.is_object() {
-            v
-        } else {
-            json!({"value": v})
-        };
-    }
-    let s2 = TRAILING_COMMA.replace_all(&s, "$1");
-    if let Some(v) = parse_loose(&s2) {
-        return v;
-    }
-    if let Some(m) = OBJ.find(&s) {
-        if let Some(v) = parse_loose(m.as_str()) {
-            return v;
-        }
-    }
-    json!({"_unparsed": take_chars(&s, 500)})
+    crate::agent::json_in::parse_args(raw)
 }
 
-/// Pull the first JSON object/array out of a model reply (handles ```json fences).
+/// Pull the first JSON object/array out of a model reply, its syntax repaired where it is broken (code fences, prose,
+/// quotes, trailing commas, a reply cut short: `agent::json_in::extract`).
 pub fn extract_json(text: &str) -> Option<Value> {
-    static FENCE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?s)```(?:json)?\s*(.*?)```").unwrap());
-    if text.is_empty() {
-        return None;
-    }
-    let text = THINK.replace_all(text, "");
-    let cand: &str = match FENCE.captures(&text) {
-        Some(c) => c.get(1).map(|m| m.as_str()).unwrap_or(""),
-        None => &text,
-    };
-    for (opener, closer) in [('{', '}'), ('[', ']')] {
-        let (Some(i), Some(j)) = (cand.find(opener), cand.rfind(closer)) else {
-            continue;
-        };
-        if j <= i {
-            continue;
-        }
-        let piece = &cand[i..=j];
-        if let Some(v) = parse_loose(piece) {
-            return Some(v);
-        }
-        if let Some(v) = parse_loose(&TRAILING_COMMA.replace_all(piece, "$1")) {
-            return Some(v);
-        }
-    }
-    None
+    crate::agent::json_in::extract(text).map(|(v, _)| v)
 }
 
 // ------------------------------------------------------------------------------------------------ transport
@@ -1403,12 +1351,16 @@ mod tests {
     fn args_and_json_extraction() {
         assert_eq!(parse_args(&json!({"a": 1})), json!({"a": 1}));
         assert_eq!(parse_args(&json!("")), json!({}));
-        assert_eq!(parse_args(&json!("{\"a\": 1,}")), json!({"a": 1}));
-        assert_eq!(parse_args(&json!("[1]")), json!({"value": [1]}));
+        let mut a = parse_args(&json!("{\"a\": 1,}"));
         assert_eq!(
-            parse_args(&json!("call with {\"q\": \"x\"} please")),
-            json!({"q": "x"})
+            crate::agent::json_in::take_repairs(&mut a),
+            vec!["trailing comma"]
         );
+        assert_eq!(a, json!({"a": 1}));
+        assert_eq!(parse_args(&json!("[1]")), json!({"value": [1]}));
+        let mut a = parse_args(&json!("call with {\"q\": \"x\"} please"));
+        crate::agent::json_in::take_repairs(&mut a);
+        assert_eq!(a, json!({"q": "x"}));
         assert_eq!(
             parse_args(&json!("garbage")),
             json!({"_unparsed": "garbage"})
