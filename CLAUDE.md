@@ -35,6 +35,11 @@ JSON data:
   processed only by the model. A known website and its HTML is processed by code: form functions with fixed input ids,
   the fixed parts of a known result or confirmation page, structured API and tool results. Regex cannot understand
   natural language; every new phrasing breaks it.
+- **Reading a page: HTML elements first, then the model.** Data on a page is read by deterministic rules on its HTML
+  elements first — a selector, an element id, a table's cells, an attribute (the browser service reads them).
+  When no element rule can find it (an unknown site, data only in running text), the model extracts it from the page or
+  text into JSON. Use as little regex as possible: regex is for checking a value that is already structured (an ISO
+  date, an email's shape, a reference's format), not for finding data in a page's text.
 
 The design that implements this rule (the workflow tools, the protocol in the run loop, `must_say`, how to add a
 machine) is `docs/json-tools.md`: read it before changing a skill, a code machine or the run loop.

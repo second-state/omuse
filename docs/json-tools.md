@@ -92,6 +92,17 @@ every `EXTRACT_SYSTEM`, `extract_exchange` and code-written answer text.
 Mail text is natural language too: a reference or a date inside a mail is read by the model (it passes them as tool
 arguments), not by code. Structured mail data (an API's fields) is code's.
 
+## Reading pages
+
+Order of preference for any data on a page (a reference, a price, a status, a timetable, a result row):
+
+1. **Deterministic rules on HTML elements** — a selector, an element id, a table's cells, an attribute of a known
+   page, read by the browser service (not by a regex over the page's text).
+2. **The model extracts it into JSON** — when no element rule can find it (an unknown site, data only in running text):
+   the page text goes to the model with a JSON schema, the answer goes through the JSON layer above.
+3. **Regex** — only to check a value that is already structured (an ISO date, a reference's format), never to find
+   data in a page's text.
+
 ## Facts the reply must carry
 
 Every fact the reply must carry is data (`agent/facts.rs`, `run_facts`), from structured sources only, and the final
