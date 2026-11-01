@@ -464,7 +464,6 @@ pub fn code_call(call: &ToolCall) -> bool {
         "auto_handover_",
         "news_",
         "pages_read",
-        "intent_",
         "handback_snapshot_",
     ]
     .iter()

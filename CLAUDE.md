@@ -19,6 +19,23 @@ to do. When you fix a problem, always prefer a fix in code over a change to a sk
   decide it differently (skills must not contradict code).
 - Every fix gets a unit test that reproduces the failure, and the real-model suite that found it is rerun.
 
+## Natural language is the model's; code tools work only on JSON
+
+**Hard rule.** All natural language is processed by the model into structured JSON data, and code tools use only that
+JSON data:
+
+- **Input:** the model reads the user's words (and any other natural language: mails, pages, replies) and turns them
+  into the code tool's JSON arguments. Code never parses natural language: no regexes or keyword lists over the user's
+  wording to decide a step or read a value. Code may validate the JSON it receives (a date parses, a city is in the
+  table, an address is well-formed) and fix or drop a bad field.
+- **The code tool:** works only on its JSON input and returns structured JSON output. A code tool never calls the
+  model.
+- **Output:** the model interprets the code tool's JSON output and writes what the user reads.
+- **Language vs. pages:** natural language (the user's words, mail text, a page's prose, the model's own replies) is
+  processed only by the model. A known website and its HTML is processed by code: form functions with fixed input ids,
+  the fixed parts of a known result or confirmation page, structured API and tool results. Regex cannot understand
+  natural language; every new phrasing breaks it.
+
 ## Skills: code decides, the model chooses from JSON, prose only for the user
 
 In each skill, use code tools as much as possible — a web form is filled by a form function per URL, a mail search is

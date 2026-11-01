@@ -2230,22 +2230,6 @@ yourself; ask_bot is not available for it."
                 return self.suspend(task_id, sp, transcript).await;
             }
         }
-        // what the latest request asks for: ONE JSON choice, recorded for the code machines (agent/intent.rs) — they
-        // start from it or from the loaded skill, never from patterns over the user's words
-        if (!bot.is_main() || routed_main || !routing) && super::intent::needed(&transcript) {
-            if let Some(ctx) = super::intent::context(&transcript) {
-                let task = self
-                    .decide(
-                        task_id,
-                        super::intent::QUESTION,
-                        &ctx,
-                        super::intent::CHOICES,
-                        super::intent::OTHER,
-                    )
-                    .await;
-                transcript.extend(super::intent::exchange(&task));
-            }
-        }
         // "book it" after a turn that offered options with booking pages: code opens the chosen offer's page from the
         // previous run's structured results (`held_offer_call`), the model goes on from that page
         if t_transcript_empty && !t.get("pending").is_some_and(truthy) && goal.is_none() {

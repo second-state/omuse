@@ -230,30 +230,6 @@ async def _chat(req: Request, b: dict):
                                                 r"over to you|your turn|you (can|need to|should) (press|click|submit|pay|complete)", a)),
             "reconfirms": bool(re.search(r"\b(please )?confirm (that )?(you want|whether)|shall i go ahead|do you want me to (go ahead|proceed)", a)),
         }))
-    if sys.startswith("You make one decision") and "Which task does the user's latest message" in str(msgs[-1]["content"]):
-        # agent/intent.rs: the request's task as one JSON choice — read off the latest message's words (the fake's stand-in
-        # for the model's understanding)
-        ctx = str(msgs[-1]["content"])
-        latest = ctx.split("The user's latest message:")[-1].lower()
-        prev = ctx.split("The user's latest message:")[0].lower()
-        rules = (
-            (r"shop\.test:8099/(kaya|stride)_", "buy_or_compare_items_on_a_shop_link"),
-            (r"michelin", "find_or_book_a_michelin_restaurant"),
-            (r"arrival card|e-?arrival|tdac|sg arrival|visit japan web|etravel|eta\b|etias|entry form", "fill_an_arrival_card_or_entry_form"),
-            (r"departure tax|apdt", "hong_kong_departure_tax_refund"),
-            (r"\bclaim\b", "file_an_insurance_or_card_claim"),
-            (r"travel insurance|insure", "buy_travel_insurance"),
-            (r"worldtracer|bag (did not|didn't) arrive|lost bag|delayed bag|baggage", "check_a_delayed_or_lost_bag"),
-            (r"news report|research .*news|newspaper|\bnews on\b", "research_news_into_a_report"),
-            (r"\b(flights?|fly)\b", "search_or_book_a_flight"),
-            (r"\bhotels?\b", "search_or_book_a_hotel"),
-            (r"\b(restaurant|table for)\b", "find_or_book_another_restaurant"),
-        )
-        pick = next((c for rx, c in rules if re.search(rx, latest)), "something_else")
-        if pick == "something_else" and re.search(r"\b(yes|please|sure|ok)\b", latest):   # accepting the last answer's offer
-            m = re.search(r"shall i search the (hotel|flight)", prev)
-            pick = {"hotel": "search_or_book_a_hotel", "flight": "search_or_book_a_flight"}.get(m.group(1), pick) if m else pick
-        return reply(json.dumps({"choice": pick}))
     if sys.startswith("You name conversations"):   # chat titles (agent._retitle)
         last = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
         if "很长很长" in str(last):   # resize_ui.py needs its long first-question title kept: "nothing usable" from the model
