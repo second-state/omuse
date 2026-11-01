@@ -93,10 +93,34 @@ arguments), not by code. Structured mail data (an API's fields) is code's.
 
 ## Facts the reply must carry
 
-Today's answer guards (`agent/guards.rs` `with_*`, `agent/judgements.rs`) scan the model's reply with regexes and append
-text. They become data: each fact comes out of a code tool's JSON (`must_say`), from structured sources only (the
-catalog, the consular and emergency tables, the official visa table, the fx rate, the airline status page's fixed
-parts), and the final review makes sure the reply carries it. A guard that cannot be expressed that way is removed.
+Every fact the reply must carry is data (`agent/facts.rs`, `run_facts`), from structured sources only, and the final
+review (`Runtime::review_answer`, the model) gets the list as `must_say`; what the reply left out is added by the model
+(`Runtime::reply_with_facts`, the facts' JSON as the source). Code never scans the reply's prose and never appends text
+to it (the hard stops and secrets aside: `with_masked_cards`, the link repair).
+
+- **The `must_say` of a trusted code tool's result**: a machine's `T_result`, and the small tools the model calls with
+  JSON when the user's words ask for them — `emergency_contacts{country, city, emergency, nationality}` (the official
+  medical line, or the consular line and the embassy, from the checked tables), `visa_rules{destinations,
+  nationality}` (each destination's official page and the official table's visa-free days), `fx_convert{amount, from,
+  to}` (the market rate, computed in code), `loan_payment{principal, annual_rate_pct, years}` — and a `phone_call` to an
+  emergency number, refused in code before dialling (`facts::emergency_call_refusal`). A page's or a mail's JSON is
+  never a source (`facts::FACT_TOOLS`).
+- **The run's structured facts** (`guards::*_fact(s)`): the hand-back page's reference, the approval edits, a delayed
+  flight's scheduled and estimated times (an airline status page's labels), ETIAS's status, the card catalog's date,
+  unverified rows, foreign fees, uncatalogued Vault cards and the user's cards side by side, an approved purchase's
+  amount, an injection notice, a scheduled run's notifications, and the options a model-made `present_choices` showed.
+- **What the user asked for, as JSON fields** instead of words: the file formats to receive (`deliver_as` on
+  `files_write` / `make_*`: the file is sent and the other formats made), an "until" condition (`until` on
+  `schedule_create` / `trigger_create`: a goal), "remember this" (`user_asked` on `memory_remember`), a request that names
+  a website (`user_named_site` on `load_skill`), ID documents in a form task (`id_documents` on `memory_search`).
+- **Removed** (they read the reply or the request and cannot be data): the travel appenders over direct search results
+  (`with_hotel_links`, `with_flight_links`, `with_leg_times`, `with_fallback_*`, `with_compare_links`,
+  `with_flight_date`, `with_preferred_airline` — the Travel bot's flight and hotel searches are the booking machine's,
+  `guards::MACHINE_ONLY`, and its result carries those facts), the grounding of figures, flight codes and phone numbers
+  in the reply, the request regexes (`mail_before_travel_guard`, `search_order_guard`, `fix_relative_day`,
+  `trip_dates_from_request`, `wants_file`, `names_website`, `until_in_request`, `REMEMBER_ASK`, `outcome::asks_send`),
+  and the decisions over the reply or the request (`held_pick_call`, `held_offer_call`: `travel_book` takes the pick;
+  the emergency, visa and format decisions).
 
 ## API for the next machines (phase 1: the run loop and the booking machine)
 
@@ -159,5 +183,22 @@ structured result; and `ask_user` in a skill's run before its workflow tool was 
 (`booking::ask_before_tool`: call the tool, its `needs_input` decides what to ask; defaults are code's). Extend both to
 the new prefixes / skills.
 
-Transitional: `Step::Final` and `Step::Extract`, `EXTRACT_SYSTEM` / `extract_exchange` and the `World` struct remain
-only for the machines not converted yet (driver, claims, apdt, news); remove them with the last conversion.
+`Step::Final` and `Step::Extract`, `EXTRACT_SYSTEM` / `extract_exchange` and the `World` struct are removed: every
+machine ends with `Step::Done`, and `Runtime::drive` runs workflow machines only. The news machine
+(`agent/news.rs`) is converted: two tools in a row (`news_gather` → `news_publish`) — on the reply turn after a
+`gathered` result only `news_publish` stays offered (`news::offered`), and its `check` reads the gathered articles from
+the transcript (`news::gathered`).
+The claims machine (`agent/claims.rs`: `claim_file`, `insurance_buy`, `bag_trace`, prefix `clm_`) is converted: its
+`check` takes the transcript too (`claims::Ctx`). When facts are missing and the mailbox is connected but not read for
+that tool yet, the call is valid with `_read_mail`: the machine runs the skill's fixed mail searches, reads the hits and
+returns `{"status": "mail_read", "emails": [...], "facts_needed": [...]}` — the model reads those emails (natural
+language) and calls the tool again with the facts; `workflow::reply_turn` keeps the workflow tools offered after a
+`mail_read` result. Facts still missing after the mail was read are `needs_input`, before any page opens.
+The arrival-card machine (`agent/driver.rs`: `arrival_card_fill`, prefix `drv_`) and the Hong Kong departure tax
+refund (`agent/apdt.rs`: `apdt_refund`, prefix `apd_`) are converted the same way: `check` takes the transcript
+(`driver::Ctx` / `apdt::Ctx`), the arguments of the chat's earlier calls carry over, a call with the trip (or the
+documents) unknown and a mailbox connected is valid with `read_mail` — the machine runs the fixed searches (APDT also
+saves the attachments and reads the PDFs) and returns `mail_read` — and what is still missing after that is
+`needs_input`. Several of the user's own addresses in the country are a choice card (`needs_choice`, the pick comes
+back as `own_address`). Results: `submitted` / `scheduled` / `not_confirmed` / `waiting_on_user` / `handed_over`
+(cards), `confirmed` / `not_eligible` / `stopped` (APDT), each with `must_say`.

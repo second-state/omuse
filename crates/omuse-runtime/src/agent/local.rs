@@ -29,10 +29,6 @@ use crate::store::FactOpts;
 
 type R = Result<String, LocalErr>;
 
-static REMEMBER_ASK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)记住|记下|记得|记一下|以后|下次|从现在起|\b(remember|from now on|next time|always|note that)\b").unwrap()
-});
-
 /// `send is not False and str(send).lower() != "false"`.
 pub(crate) fn wants_send(a: &Value) -> bool {
     match a.get("send") {
@@ -241,25 +237,19 @@ request — keep it short and leave out what the request does not need. The skil
                 let events = self.store.events(&tid, 0).unwrap_or_default();
                 if let Some(refusal) = super::guards::ask_before_listing(&events)
                     .or_else(|| super::booking::ask_before_tool(&events))
+                    .or_else(|| super::news::ask_before_tool(&events))
+                    .or_else(|| super::claims::ask_before_tool(&events))
+                    .or_else(|| super::driver::ask_before_tool(&events))
+                    .or_else(|| super::apdt::ask_before_tool(&events))
                 {
                     self.event(&tid, "ask_user_refused", refusal.clone()).await;
                     return Ok(pyjson::dumps(&refusal));
                 }
-                // the trip's dates the request itself gives ("2 nights … next week"), in the user's timezone
-                let today = get_str(&self.settings(), "timezone")
-                    .parse::<chrono_tz::Tz>()
-                    .map(|z| chrono::Utc::now().with_timezone(&z).date_naive())
-                    .unwrap_or_else(|_| chrono::Local::now().date_naive());
-                let request = get_str(t, "goal");
+                // what the profile or the form's defaults already answer (structured data, never the user's words)
                 let known: Vec<Value> = fields
                     .iter()
                     .filter_map(|f| {
-                        let from_request = (f == "trip_dates")
-                            .then(|| super::guards::trip_dates_from_request(&request, today))
-                            .flatten()
-                            .map(|v| ("request", v));
-                        from_request
-                            .or_else(|| super::guards::known_answer(f, &profile, transcript))
+                        super::guards::known_answer(f, &profile, transcript)
                             .map(|(src, v)| json!({"field": f, "value": v, "source": src}))
                     })
                     .collect();
@@ -522,15 +512,15 @@ NOT in the PDF: {}.",
                            get_str(&r, "path"), size / 1024, count))
                             }
                 .await;
-                self.auto_send(t, r).await
+                self.auto_send(t, a, r).await
             }
             "make_xlsx" => {
                 let r = self.make_xlsx(a);
-                self.auto_send(t, r).await
+                self.auto_send(t, a, r).await
             }
             "make_docx" => {
                 let r = self.make_docx(a);
-                self.auto_send(t, r).await
+                self.auto_send(t, a, r).await
             }
             "make_chart" => self.make_chart(t, a).await,
             "make_image" => Ok(self.make_image(t, a).await),
@@ -548,6 +538,22 @@ NOT in the PDF: {}.",
                     .await
                     .map_err(|e| LocalErr::other("RuntimeError", e.to_string()))?
             }
+            // the small code tools whose JSON results carry the facts the reply must carry (agent/facts.rs)
+            "emergency_contacts" | "visa_rules" => {
+                let nat = get_str(&self.store.profile().unwrap_or_default(), "nationality");
+                let zh = super::lang::agent_lang(&self.settings()) != "en";
+                let v = if name == "emergency_contacts" {
+                    super::facts::emergency_contacts(a, &nat, zh)
+                } else {
+                    super::facts::visa_rules(a, &nat, zh)
+                };
+                Ok(v.to_string())
+            }
+            "loan_payment" => {
+                let zh = super::lang::agent_lang(&self.settings()) != "en";
+                Ok(super::facts::loan_payment(a, zh).to_string())
+            }
+            "fx_convert" => Ok(self.fx_convert(&tid, a).await.to_string()),
             "calculate" => {
                 let a2 = a.clone();
                 tokio::task::spawn_blocking(move || omuse_common::calc::calculate_tool(&a2))
@@ -686,7 +692,7 @@ NOT in the PDF: {}.",
                     .search_facts(&q, 15, None, true)
                     .map_err(stores_err)?;
                 let mut hidden = 0;
-                if !crate::context::needs_id(&get_str(t, "goal")) {
+                if a.get("id_documents").and_then(Value::as_bool) != Some(true) {
                     // passport / ID / birth-date facts: only for tasks that fill in a form or check a document
                     let before = rows.len();
                     rows.retain(|r| !crate::context::ID_DOC.is_match(&sget(r, "fact")));
@@ -921,7 +927,8 @@ the user adds them in Memory → Vault.",
 memory. Tell the user to add it to the vault (Memory page → Vault (记忆 → 保险箱)); you can then fill it with browser_fill_secret.".into());
                 }
                 let fact = req_str(a, "fact")?;
-                let asked = REMEMBER_ASK.is_match(&sget(t, "goal"));
+                // whether the user asked for it: the call's JSON (the model read the user's words)
+                let asked = a.get("user_asked").and_then(Value::as_bool) == Some(true);
                 let cat = sget(a, "category");
                 let o = FactOpts {
                     source: if asked {
@@ -1073,10 +1080,7 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                 // "… until X" is a goal (it stops when X happens): asked in a schedule's words, made a goal in code —
                 // only for the user's own request, not inside a schedule's or goal's run
                 if get_str(t, "schedule_id").is_empty() {
-                    if let Some(success) = self
-                        .until_condition(&tid, &get_str(t, "goal"), &sget(a, "goal"))
-                        .await
-                    {
+                    if let Some(success) = until_arg(a) {
                         let ga = super::util::goal_args_from_schedule(a, &success);
                         return self.local(t, "goal_create", &ga).await;
                     }
@@ -1113,7 +1117,7 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                 // goal's run (automations_real 2026-11-01: "keep an eye on my inbox until my landlord replies"
                 // became a gmail.new_email trigger)
                 if get_str(t, "schedule_id").is_empty() {
-                    if let Some(success) = until_in_request(&get_str(t, "goal")) {
+                    if let Some(success) = until_arg(a) {
                         let ga = goal_args_from_trigger(a, &success);
                         return self.local(t, "goal_create", &ga).await;
                     }
@@ -1598,7 +1602,8 @@ these are listings from a results page, and a comparison of them takes `ranking`
                         // and says so
                         // nor does a guide switch it off when the user's own request names a website
                         // (browser_auto_real 2026-10-31: "look the hotel up on Google Maps" met the Tokyo guide)
-                        let off = off && !super::guards::names_website(&get_str(t, "goal"));
+                        let off =
+                            off && a.get("user_named_site").and_then(Value::as_bool) != Some(true);
                         let (off, lifted) = {
                             let mut inner = self.inner.lock();
                             if off && !inner.browser_skill.contains_key(&tid) {
@@ -2350,6 +2355,32 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
         ))
     }
 
+    /// `fx_convert{amount, from, to}`: the codes checked, the pair's market rate fetched (Sentinel's structured result),
+    /// the figure computed in code (agent/fx.rs). Invalid arguments or no rate: a JSON status the model acts on.
+    async fn fx_convert(&self, task_id: &str, a: &Value) -> Value {
+        let (amount, from, to) = match super::fx::check(a) {
+            Ok(x) => x,
+            Err(problems) => return json!({"status": "invalid", "problems": problems}),
+        };
+        let r = self
+            .sentinel(
+                "POST",
+                "/internal/market_data",
+                Some(json!({"task_id": task_id, "symbols": super::fx::symbols(from, to), "range": "5d"})),
+                90.0,
+            )
+            .await;
+        let results = r.map(|r| arr(&r, "results").to_vec()).unwrap_or_default();
+        match super::fx::rate_in(&results, from, to) {
+            Some((rate, date)) => {
+                let zh = super::lang::agent_lang(&self.settings()) != "en";
+                super::fx::conversion(amount, from, to, rate, &date, zh)
+            }
+            None => json!({"status": "no_rate", "from": from, "to": to,
+                           "detail": "the market data had no rate for this pair now"}),
+        }
+    }
+
     async fn market_data(&self, task_id: &str, a: &Value) -> R {
         let syms = symbols_arg(a);
         let range = a
@@ -2512,13 +2543,14 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
         Ok(omuse_common::pyjson::dumps(&out))
     }
 
-    /// A file the run made when the request asks for a file goes to the chat at once (the "use send_file" note was
-    /// ignored at times: travel_receipts_real, chat_real 2026-10-31): the path is read from the result's own line.
-    async fn auto_send(&self, t: &Value, r: R) -> R {
+    /// A file the run made for the user to receive (the call's `deliver_as`, the model's JSON) goes to the chat at once
+    /// (the "use send_file" note was ignored at times: travel_receipts_real, chat_real 2026-10-31): the path is read
+    /// from the result's own line.
+    async fn auto_send(&self, t: &Value, a: &Value, r: R) -> R {
         static MADE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"created locally: (\S+?) \(").unwrap());
         let Ok(text) = r else { return r };
-        if !super::guards::wants_file(&get_str(t, "goal")) {
+        if !super::guards::delivers(a) {
             return Ok(text);
         }
         let Some(path) = MADE.captures(&text).map(|c| c[1].to_string()) else {
@@ -2904,20 +2936,11 @@ pub(crate) fn skill_profile_note(
     )
 }
 
-/// The condition of an "until …" in the user's own request ("Keep an eye on my inbox until my landlord replies about
-/// the rent renewal." → "my landlord replies about the rent renewal"): the words after "until" / "till" / 直到 up to
-/// the end of the sentence. Read from the user's words, never the model's.
-pub(crate) fn until_in_request(request: &str) -> Option<String> {
-    static UNTIL: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(?:until|till)\s+([^.!?\n]{3,160})|直到([^。！？\n]{2,80})").unwrap()
-    });
-    let c = UNTIL.captures(request)?;
-    let cond = c.get(1).or_else(|| c.get(2))?.as_str();
-    let cond = cond
-        .trim()
-        .trim_end_matches(|ch: char| ch == ',' || ch == '，' || ch.is_whitespace())
-        .trim_end_matches("为止")
-        .trim();
+/// The condition an "until …" schedule or trigger ends on: the call's `until` (the model read it from the user's words,
+/// "until my landlord replies about the rent renewal"), `None` for a plain recurring job.
+pub(crate) fn until_arg(a: &Value) -> Option<String> {
+    let cond = sget(a, "until");
+    let cond = cond.trim();
     (!cond.is_empty()).then(|| cond.to_string())
 }
 
@@ -2955,14 +2978,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_trigger_with_until_in_the_request_becomes_a_daily_goal() {
-        // automations_real on b24962d: a gmail.new_email trigger instead of the landlord goal
-        let ask = "Keep an eye on my inbox until my landlord replies about the rent renewal. Check once a day.";
-        let success = until_in_request(ask).unwrap();
-        assert_eq!(success, "my landlord replies about the rent renewal");
+    fn a_trigger_with_until_becomes_a_daily_goal() {
+        // automations_real on b24962d: a gmail.new_email trigger instead of the landlord goal; the condition is the
+        // call's `until` (the model read it from "… until my landlord replies about the rent renewal")
         let trigger = json!({"name": "Landlord rent-renewal reply watch", "source": "gmail.new_email",
             "params": {"query": "rent OR renewal OR lease", "account": "tester@example.com"}, "every": 1440,
+            "until": " my landlord replies about the rent renewal ",
             "goal": "Review each new matching email and notify the user only if it is a reply from their landlord about the rent renewal."});
+        let success = until_arg(&trigger).unwrap();
+        assert_eq!(success, "my landlord replies about the rent renewal");
         let g = goal_args_from_trigger(&trigger, &success);
         assert_eq!(g["title"], "Landlord rent-renewal reply watch");
         assert_eq!(
@@ -2972,13 +2996,6 @@ mod tests {
         assert_eq!(g["success_criteria"], success.as_str());
         assert!(sget(&g, "objective").ends_with("(search: rent OR renewal OR lease)"));
         // a plain trigger stays a trigger
-        assert_eq!(
-            until_in_request("Summarize every new message in #general."),
-            None
-        );
-        assert_eq!(
-            until_in_request("帮我盯着邮箱，直到房东回复为止").as_deref(),
-            Some("房东回复")
-        );
+        assert_eq!(until_arg(&json!({"name": "x", "until": ""})), None);
     }
 }

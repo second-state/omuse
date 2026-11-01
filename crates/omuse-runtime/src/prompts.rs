@@ -650,11 +650,11 @@ pub fn executor_system(p: &ExecutorPrompt) -> String {
             }
         ),
         format!(
-            "- Flights, hotels & restaurants (flights_search / flight_offer / hotels_search / hotel_rooms / places_search / place_details): {}",
+            "- Flights, hotels & restaurants (travel_search / travel_book run the flight and hotel searches in code; places_search / place_details): {}",
             if get_str(&travel, "workspace").starts_with("google") {
                 "Google Flights, Google Hotels and Google Maps data (ONE travel search per turn and per request — flights, hotels, cars and places together; a range of dates or self-transfer goes to Kiwi.com by itself; each flight offer says whether it is one ticket and who sells it; every flight and hotel result carries its booking_url — give it with the offer) — search and compare there, never on airline, Google, Kayak, Booking or Tabelog pages; the browser is for the final booking page only (the offer's booking_url, the airline's or hotel's own site, the restaurant's site or the platform the user names)".to_string()
             } else {
-                "flights_search answers with Kiwi.com data (free): each offer has its booking_url (Kiwi.com's booking page for that itinerary) and book_at (the airline's own website) — give them with the offer. It is the only call a flight question needs: ONE travel search per turn and per request (flights, hotels, cars, places together). Hotel and restaurant tools need the SerpApi key of Settings → Connections → Flights & hotels; until then hotels_search and places_search answer from web search by themselves".to_string()
+                "flights come from Kiwi.com data (free): each offer has its booking_url (Kiwi.com's booking page for that itinerary) and book_at (the airline's own website) — give them with the offer. travel_search is the only call a flight question needs: ONE travel search per turn and per request (flights, hotels, cars, places together). Hotel and restaurant data need the SerpApi key of Settings → Connections → Flights & hotels; until then hotels and places_search answer from web search by themselves".to_string()
             }
         ),
         format!(
@@ -910,7 +910,7 @@ Live state: when a task has a plan or sources that failed repeatedly, the last m
 pub const PLANNER_SYSTEM: &str = r#"You are the planning module of OMuse, a personal agent with these tool families:
 gmail (search/read/draft/send/reply/archive/label/unsubscribe), browser (navigate/snapshot/click/type/wait/takeover),
 files (workspace read/write/search, make_pdf, make_docx for Word, make_xlsx for Excel, make_chart for charts/diagrams shown in the chat, make_image for AI-generated pictures (posters, avatars, illustrations), make_video for short AI-generated video clips, edit_video for cutting / joining / captioning videos with ffmpeg, market_data for stock/index/FX/gold/crypto prices and history, stock_fundamentals for valuations and earnings, calculate for exact arithmetic), memory (search/remember), schedules (recurring tasks), notify_user, delegate (sub-agents),
-ONE travel search per request in all (flights, hotels, restaurants, cars together: a trip searches one part and offers the next); travel_search / travel_book (the Travel bot's flights, hotels and restaurants: ONE call with the request's details, code searches, picks, books and hands over); flights_search / flight_offer (flight data, ONE search per call: Google Flights with a key for one date, Kiwi.com for a range of dates, self-transfer, without a key or when Google fails; each offer has its booking_url), hotels_search / hotel_rooms (Google Hotels data, ONE search per call; each hotel has its booking_url; key needed), places_search / place_details (restaurants and places, Google Maps data, key needed), web_search (titles, URLs, snippets — a search API, else the browser's engines),
+ONE travel search per request in all (flights, hotels, restaurants, cars together: a trip searches one part and offers the next); travel_search / travel_book (the Travel bot's flights, hotels and restaurants: ONE call with the request's details, code searches, picks, books and hands over); the flight and hotel data behind them (Google Flights / Kiwi.com, Google Hotels) is searched by code only, never a tool of its own, places_search / place_details (restaurants and places, Google Maps data, key needed), web_search (titles, URLs, snippets — a search API, else the browser's engines),
 calendar (Google Calendar: list events, find free time, create/update/delete events — writes need approval),
 notion (search/read/query database/create page/append/update), slack (channels/read/thread/search/send),
 automations: schedule_create (time-based), trigger_create ("when a new email/Slack message/Notion change arrives, do X"),
@@ -1061,7 +1061,9 @@ missing details are NOT problems (ok = true). problem: one short sentence naming
         format!(
             "{base}, \"missing\": []}}. {rule} must_say lists facts from the tool's JSON result that the reply MUST carry (a name, a price, \
 a reference, a link, a date, a step for the user). missing: each must_say item whose fact the reply does not state (in any wording or \
-language; a link or reference must appear exactly) — copy the item as given; [] when the reply carries them all."
+language) — check item by item: every number, amount, percentage, date (a month and year too), name, code and link in the \
+item must appear in the reply (a link or reference exactly); a fact only alluded to, or stated without its figure or date, \
+is missing. Copy each missing item as given; [] when the reply carries them all."
         )
     } else {
         format!("{base}}}. {rule}")

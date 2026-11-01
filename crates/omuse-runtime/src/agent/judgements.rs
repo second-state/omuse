@@ -1,13 +1,12 @@
-//! The judgements the run still needs from the model, each one a [`Runtime::decide`] call over a fixed list of choices
-//! and a fixed code action on the choice (never a message to the model):
+//! The judgements the run still needs from the model on a PAGE, each one a [`Runtime::decide`] call over a fixed list
+//! of choices and a fixed code action on the choice (never a message to the model): a deep link that lands on an error
+//! page (code opens the site's home page) and a shop's product page the agent comes back to without adding to the cart
+//! (code clicks the page's own Add-to-Cart button).
 //!
-//! * a held pick — a comparison whose pick code holds (`present_choices` with `picked`), a request to buy or book,
-//!   nothing bought, and a reply asking whether to proceed: code opens the picked option's page and the run goes on;
-//! * the file formats the request asks for — what the run did not make is converted from what it made and sent;
-//! * a visa exemption mentioned without its days in an entry-requirements run — the days from the official page
-//!   (one the run read, else read by code from a fixed table), with its link, never invented;
-//! * a deep link that lands on an error page (code opens the site's home page) and a shop's product page the agent
-//!   comes back to without adding to the cart (code clicks the page's own Add-to-Cart button).
+//! And the structured data and pure parts of facts and steps decided from JSON (docs/json-tools.md): the official
+//! medical, consular and embassy lines and the official visa pages and visa-free table (`emergency_contacts` and
+//! `visa_rules`, agent/facts.rs), and the file formats the user asked for (the file calls' `deliver_as`): what the run
+//! did not make is converted from what it made and sent.
 //!
 //! This file holds the pure parts (what the transcript shows, the calls code makes); the decisions and the calls run
 //! in `runtime.rs` (the end of a run) and `exec.rs` (a page just opened).
@@ -44,116 +43,11 @@ fn ok_result<'a>(transcript: &'a [Value], id: &str) -> Option<&'a Value> {
     })
 }
 
-fn ran_ok(transcript: &[Value], tools: &[&str]) -> bool {
-    calls(transcript)
-        .iter()
-        .any(|(id, n, _)| tools.contains(&n.as_str()) && ok_result(transcript, id).is_some())
-}
-
 // ---------------------------------------------------------------- a held pick
-
-/// The question on the request of a held pick, its choices and the default.
-pub const BUY_Q: &str = "Does the user's request ask to buy, book, order or pay for something (not only to compare or look up options)?";
-pub const BUY_CHOICES: [&str; 2] = ["buy_or_book", "compare_only"];
-/// The question on the final reply, its choices and the default.
-pub const PROCEED_Q: &str = "Does this reply end by asking the user whether to go ahead with the chosen option (proceed, book, buy, order)?";
-pub const PROCEED_CHOICES: [&str; 3] = ["asks_to_proceed", "done", "other"];
-
-/// The pick a comparison holds (`present_choices` with `picked`, shown) and the page of the picked option
-/// (`source_url`), when nothing was bought or handed over for payment yet — `None` otherwise, or when the picked
-/// option has no web page to open.
-pub fn held_pick(transcript: &[Value]) -> Option<(String, String)> {
-    if ran_ok(
-        transcript,
-        &["purchase_confirm", "browser_request_takeover"],
-    ) {
-        return None;
-    }
-    calls(transcript)
-        .into_iter()
-        .rev()
-        .filter(|(id, n, _)| n == "present_choices" && ok_result(transcript, id).is_some())
-        .find_map(|(_, _, a)| {
-            let picked = sget(&a, "picked").trim().to_string();
-            if picked.is_empty() {
-                return None;
-            }
-            let url = a
-                .get("options")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .find(|o| sget(o, "label").trim().eq_ignore_ascii_case(&picked))
-                .map(|o| sget(o, "source_url").trim().to_string())
-                .filter(|u| u.starts_with("http://") || u.starts_with("https://"))?;
-            Some((picked, url))
-        })
-}
 
 // ---------------------------------------------------------------- a held offer (the previous turn's option)
 
-/// The question choosing among several held offers; the extra choice when the request names none of them.
-pub const OFFER_Q: &str = "Which of these options does the user's request ask to book or buy?";
-pub const NO_OFFER: &str = "none_of_these";
-
-/// The offers the previous turn's answer linked (`answer`): every travel result object in its run (`transcript`) with a
-/// `booking_url` — a room (`room_type`), a hotel (`name`), a flight (`flight_no`) — whose page the answer gives, as
-/// `(label, booking_url)`, deduplicated by URL in the results' order. Empty when that run already booked or handed a
-/// page over (nothing is held then). The booking page of a later "book it" comes from here, never from a web search
-/// (travel_hotel_real 2026-11-01: the agent searched the web for the hotel and found no booking page).
-pub fn held_offers(transcript: &[Value], answer: &str) -> Vec<(String, String)> {
-    if ran_ok(
-        transcript,
-        &["purchase_confirm", "browser_request_takeover"],
-    ) {
-        return Vec::new();
-    }
-    let mut found: Vec<(String, String)> = Vec::new();
-    for m in transcript.iter().filter(|m| get_str(m, "role") == "tool") {
-        let c = content_of(m);
-        if !c.contains("booking_url") {
-            continue;
-        }
-        let mut rooms = Vec::new();
-        super::guards::result_objects(&c, "room_type", "booking_url", &mut rooms);
-        let hotel = {
-            let mut h = Vec::new();
-            super::guards::result_objects(&c, "name", "booking_url", &mut h);
-            h
-        };
-        let mut names = Vec::new();
-        super::guards::result_objects(&c, "name", "hotel_id", &mut names);
-        // a room is labelled with its hotel when the result names one hotel
-        let hotel_name = (names.len() == 1).then(|| names[0].0.clone());
-        for (room, url) in rooms {
-            let label = match &hotel_name {
-                Some(h) => format!("{h} — {room}"),
-                None => room,
-            };
-            found.push((label, url));
-        }
-        found.extend(hotel);
-        super::guards::result_objects(&c, "flight_no", "booking_url", &mut found);
-    }
-    let mut out: Vec<(String, String)> = Vec::new();
-    for (label, url) in found {
-        let url = url.trim().to_string();
-        if !(url.starts_with("http://") || url.starts_with("https://"))
-            || !answer.contains(url.as_str())
-            || out.iter().any(|(_, u)| *u == url)
-        {
-            continue;
-        }
-        out.push((label.trim().to_string(), url));
-    }
-    out
-}
-
 // ---------------------------------------------------------------- local medical help in a health emergency
-
-/// The question on the request of a travel-health-emergency run, its choices and the default.
-pub const EMERGENCY_Q: &str = "What is the emergency in the user's request?";
-pub const EMERGENCY_CHOICES: [&str; 3] = ["illness_or_injury", "lost_or_stolen_documents", "other"];
 
 /// An official medical information line of a destination: who runs it, its phone as the official page lists it, its
 /// English hours and the page. Fixed data, checked against the official pages (Oct 2026).
@@ -187,46 +81,6 @@ English support)",
         url: "https://www.jnto.go.jp/emergency/eng/mi_guide.html",
     },
 ];
-
-/// Whether the run is a travel-health-emergency one (it loaded that skill).
-pub fn health_run(transcript: &[Value]) -> bool {
-    calls(transcript)
-        .iter()
-        .any(|(_, n, a)| n == "load_skill" && sget(a, "name") == "travel-health-emergency")
-}
-
-/// The medical line for the place the request names — the most specific one (a city before its country).
-pub fn medical_line_for(request: &str) -> Option<&'static MedicalLine> {
-    let low = request.to_lowercase();
-    MEDICAL_LINES.iter().find(|m| {
-        m.words.iter().any(|w| {
-            if w.is_ascii() {
-                Regex::new(&format!(r"\b{}\b", regex::escape(w))).is_ok_and(|r| r.is_match(&low))
-            } else {
-                low.contains(w)
-            }
-        })
-    })
-}
-
-/// The answer with the place's official medical information line, unless the answer already links its page.
-pub fn with_medical_line(answer: &str, line: &MedicalLine, zh: bool) -> String {
-    if answer.contains(line.url) {
-        return answer.to_string();
-    }
-    let text = if zh {
-        format!(
-            "**{}当地医疗咨询：** [{}]({}) — 电话 **{}**（{}）；危及生命请打 119。",
-            line.place, line.service, line.url, line.phone, line.hours
-        )
-    } else {
-        format!(
-            "**Medical help in {}:** [{}]({}) — call **{}** ({}); for a life-threatening emergency call 119.",
-            line.place, line.service, line.url, line.phone, line.hours
-        )
-    };
-    format!("{}\n\n{text}", answer.trim_end())
-}
 
 // ---------------------------------------------------------------- the consulate in a lost-passport emergency
 
@@ -296,7 +150,8 @@ pub struct ConsularHelp {
     pub embassy: Option<&'static EmbassyLine>,
 }
 
-fn names_place(low: &str, words: &[&str]) -> bool {
+/// Whether `low` (a lowercased place, e.g. a tool argument's city and country) names one of `words`.
+pub(crate) fn names_place(low: &str, words: &[&str]) -> bool {
     words.iter().any(|w| {
         if w.is_ascii() {
             Regex::new(&format!(r"\b{}\b", regex::escape(w))).is_ok_and(|r| r.is_match(low))
@@ -306,68 +161,21 @@ fn names_place(low: &str, words: &[&str]) -> bool {
     })
 }
 
-/// The consular help for the profile's nationality and the place the request names; `None` for a nationality the
-/// table does not know (nothing is added — never a guess).
-pub fn consular_help_for(nationality: &str, request: &str) -> Option<ConsularHelp> {
+/// The consular help for a nationality and a place (`emergency_contacts`' arguments, lowercased); `None` for a
+/// nationality the table does not know (nothing is added — never a guess).
+pub fn consular_help_for(nationality: &str, place: &str) -> Option<ConsularHelp> {
     let nat = nationality.trim().to_lowercase();
     let line = CONSULAR_LINES
         .iter()
         .find(|l| l.nationality.contains(&nat.as_str()))?;
-    let low = request.to_lowercase();
+    let low = place.to_lowercase();
     let embassy = EMBASSY_LINES
         .iter()
         .find(|e| e.citizens == line.citizens && names_place(&low, e.words));
     Some(ConsularHelp { line, embassy })
 }
 
-/// The digits of every international phone number written in `text` ("+81 3 5232 4111" → "81352324111").
-fn intl_phones(text: &str) -> Vec<String> {
-    static PHONE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"\+\d{1,3}[\s-]?\(?\d{1,4}\)?(?:[\s-]?\d{2,4}){2,4}").unwrap()
-    });
-    PHONE
-        .find_iter(text)
-        .map(|m| m.as_str().chars().filter(char::is_ascii_digit).collect())
-        .collect()
-}
-
-/// The answer with the consulate's emergency line in its international form (and the embassy's, with its page),
-/// unless the answer already gives one of them that way: a number written only in its local form ("03-5232-4111")
-/// cannot be dialled from the user's own phone abroad (emergency_real 2026-11-01).
-pub fn with_consular_line(answer: &str, help: &ConsularHelp, zh: bool) -> String {
-    let have = intl_phones(answer);
-    let digits = |p: &str| p.chars().filter(char::is_ascii_digit).collect::<String>();
-    let ours = std::iter::once(help.line.phone).chain(help.embassy.map(|e| e.phone));
-    if ours.map(digits).any(|d| have.contains(&d)) {
-        return answer.to_string();
-    }
-    let l = help.line;
-    let text = match (help.embassy, zh) {
-        (Some(e), false) => format!(
-            "**Consular emergency line ({} citizens):** {} **{}** (24 hours); [{}]({}) **{}** (locally {}).",
-            l.citizens, l.service, l.phone, e.name, e.url, e.phone, e.local
-        ),
-        (Some(e), true) => format!(
-            "**领事紧急电话（{}公民）：** {} **{}**（24 小时）；[{}]({}) **{}**（当地拨打 {}）。",
-            l.citizens, l.service, l.phone, e.name, e.url, e.phone, e.local
-        ),
-        (None, false) => format!(
-            "**Consular emergency line ({} citizens):** [{}]({}) **{}** (24 hours).",
-            l.citizens, l.service, l.url, l.phone
-        ),
-        (None, true) => format!(
-            "**领事紧急电话（{}公民）：** [{}]({}) **{}**（24 小时）。",
-            l.citizens, l.service, l.url, l.phone
-        ),
-    };
-    format!("{}\n\n{text}", answer.trim_end())
-}
-
 // ---------------------------------------------------------------- the file formats asked for
-
-pub const FORMATS_Q: &str =
-    "Which file formats does the user's request ask to receive? Choose none when it asks for no file.";
-pub const FORMAT_CHOICES: [&str; 5] = ["pdf", "xlsx", "docx", "md", "none"];
 
 /// A file the run made, with what it can be converted from.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -775,7 +583,6 @@ pub const VISA_PAGES: &[VisaPage] = &[
     },
 ];
 
-/// Whether the run loaded the entry-requirements skill.
 /// Visa-free stays from the destinations' official tables, for when no page the run read states the days: (destination
 /// code, the nationalities by the words a profile uses, days, as of, the official source). Only entries checked against
 /// the source go here.
@@ -805,122 +612,6 @@ pub fn visa_free_from_table(
         .iter()
         .find(|(c, nats, ..)| *c == code && nats.contains(&nat.as_str()))
         .map(|(_, _, d, asof, src)| (*d, *asof, *src))
-}
-
-/// An entry-requirements request, by its words or by the skill the run loaded: a visa, entry or arrival-card question.
-pub fn entry_request(request: &str, transcript: &[Value]) -> bool {
-    static ENTRY: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(visas?|entry requirements?|entry rules|arrival cards?|do i need (a|an|to)|can i enter|requirements to enter|enter(ing)? (the country|thailand|japan|singapore|china|korea|vietnam|malaysia|indonesia))\b|签证|入境").unwrap()
-    });
-    entry_run(transcript) || ENTRY.is_match(request)
-}
-
-/// Whether `answer` already gives `days` as a stay's length ("60 days", "60-day").
-pub fn states_days(answer: &str, days: u32) -> bool {
-    Regex::new(&format!(r"(?i)\b{days}[ -]?days?\b|\b{days}\s*天"))
-        .is_ok_and(|r| r.is_match(answer))
-}
-
-pub fn entry_run(transcript: &[Value]) -> bool {
-    calls(transcript)
-        .iter()
-        .any(|(_, n, a)| n == "load_skill" && sget(a, "name") == "entry-requirements")
-}
-
-/// The destinations of `request` that have an official page in the table, in the order the request names them.
-pub fn destinations(request: &str) -> Vec<&'static VisaPage> {
-    let low = request.to_lowercase();
-    let at = |w: &str| -> Option<usize> {
-        if w.is_ascii() {
-            Regex::new(&format!(r"\b{}\b", regex::escape(w)))
-                .ok()?
-                .find(&low)
-                .map(|m| m.start())
-        } else {
-            low.find(w)
-        }
-    };
-    let mut found: Vec<(usize, &'static VisaPage)> = VISA_PAGES
-        .iter()
-        .filter_map(|p| p.words.iter().filter_map(|w| at(w)).min().map(|i| (i, p)))
-        .collect();
-    found.sort_by_key(|(i, _)| *i);
-    found.into_iter().map(|(_, p)| p).collect()
-}
-
-/// The visa-free stay in days a page states — for `nationality` when the page names it — only when the page gives
-/// one number for it (several different numbers and no sentence naming the nationality: `None`, never a guess).
-pub fn visa_days(text: &str, nationality: &str) -> Option<u32> {
-    static VISA_FREE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)visa[- ]?(free|exempt|exemption|waiver)|without (a )?visa|exempt(ed)? from (the )?visa|免签|免簽")
-            .unwrap()
-    });
-    static DAYS: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)\b(\d{1,3})[- ]?days?\b|(\d{1,3})\s?天").unwrap());
-    static SENTENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[.;\n。；]+").unwrap());
-    let found: Vec<(String, Vec<u32>)> = SENTENCE
-        .split(text)
-        .filter(|s| VISA_FREE.is_match(s))
-        .map(|s| {
-            let days: Vec<u32> = DAYS
-                .captures_iter(s)
-                .filter_map(|c| c.get(1).or_else(|| c.get(2))?.as_str().parse().ok())
-                .filter(|d| (1..=365).contains(d))
-                .collect();
-            (s.to_lowercase(), days)
-        })
-        .filter(|(_, d)| !d.is_empty())
-        .collect();
-    let unique = |set: &[&(String, Vec<u32>)]| -> Option<u32> {
-        let mut all: Vec<u32> = set.iter().flat_map(|(_, d)| d.iter().copied()).collect();
-        all.sort_unstable();
-        all.dedup();
-        (all.len() == 1).then(|| all[0])
-    };
-    let nat = nationality.trim().to_lowercase();
-    if !nat.is_empty() {
-        let stem = nat.strip_suffix('n').unwrap_or(&nat).to_string();
-        let named: Vec<&(String, Vec<u32>)> = found
-            .iter()
-            .filter(|(s, _)| s.contains(&nat) || (stem.len() >= 4 && s.contains(&stem)))
-            .collect();
-        if !named.is_empty() {
-            return unique(&named);
-        }
-    }
-    unique(&found.iter().collect::<Vec<_>>())
-}
-
-/// The visa-free days an official page the run read gives (`browser_read` / `browser_navigate` /
-/// `browser_snapshot` results of the page's host).
-pub fn days_from_results(transcript: &[Value], page: &VisaPage, nationality: &str) -> Option<u32> {
-    let mut url_now = String::new();
-    for (id, n, a) in calls(transcript) {
-        let urls: Vec<String> = match n.as_str() {
-            "browser_read" => a
-                .get("urls")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .map(super::util::pystr_or_empty)
-                .collect(),
-            "browser_navigate" => {
-                url_now = sget(&a, "url");
-                vec![url_now.clone()]
-            }
-            "browser_snapshot" => vec![url_now.clone()],
-            _ => continue,
-        };
-        if !urls.iter().any(|u| u.contains(page.host)) {
-            continue;
-        }
-        if let Some(d) =
-            ok_result(transcript, &id).and_then(|m| visa_days(&content_of(m), nationality))
-        {
-            return Some(d);
-        }
-    }
-    None
 }
 
 /// The line the answer gets for a destination: its days with the official page, or the page alone.
@@ -1085,6 +776,26 @@ pub fn page_check_for(
     })
 }
 
+/// The file formats the run's file calls say the user asked to receive (`deliver_as` of `files_write`, `make_pdf`,
+/// `make_docx`, `make_xlsx`), in order, once each.
+pub fn wanted_formats(transcript: &[Value]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (_, n, a) in calls(transcript) {
+        if !matches!(
+            n.as_str(),
+            "files_write" | "make_pdf" | "make_docx" | "make_xlsx"
+        ) {
+            continue;
+        }
+        for f in super::guards::deliver_as(&a) {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
 impl super::Runtime {
     /// The call code makes for a page just opened, after its decision (once per page and kind): the site's home page
     /// for an error page a deep link landed on, the page's own Add-to-Cart click for a product page.
@@ -1156,128 +867,14 @@ impl super::Runtime {
         }
     }
 
-    /// A held pick the run ends on by asking whether to proceed (`held_pick`): two decisions (the request asks to buy
-    /// or book; the reply asks to proceed), then the call that opens the picked option's page.
-    pub(crate) async fn held_pick_call(
-        &self,
-        task_id: &str,
-        request: &str,
-        transcript: &[Value],
-        answer: &str,
-    ) -> Option<ToolCall> {
-        let (picked, url) = held_pick(transcript)?;
-        let wants = self
-            .decide(task_id, BUY_Q, request, &BUY_CHOICES, "compare_only")
-            .await;
-        if wants != "buy_or_book" {
-            return None;
-        }
-        let ends = self
-            .decide(task_id, PROCEED_Q, answer, &PROCEED_CHOICES, "other")
-            .await;
-        if ends != "asks_to_proceed" {
-            return None;
-        }
-        self.event(task_id, "held_pick", json!({"picked": picked, "url": url}))
-            .await;
-        Some(ToolCall {
-            id: format!("pick_{}", calls(transcript).len() + 1),
-            name: "browser_navigate".into(),
-            args: json!({"url": url}),
-        })
-    }
-
-    /// A request to book or buy right after a turn that offered options with booking pages (`held_offers`): one
-    /// decision on the request (buy or book?), one more only when several pages were offered (which one?), then the
-    /// call that opens the chosen page — code opens the page the structured results gave, the model fills it.
-    pub(crate) async fn held_offer_call(
-        &self,
-        task_id: &str,
-        request: &str,
-        prev_transcript: &[Value],
-        prev_answer: &str,
-    ) -> Option<ToolCall> {
-        let offers = held_offers(prev_transcript, prev_answer);
-        if offers.is_empty() {
-            return None;
-        }
-        let wants = self
-            .decide(task_id, BUY_Q, request, &BUY_CHOICES, "compare_only")
-            .await;
-        if wants != "buy_or_book" {
-            return None;
-        }
-        let (label, url) = if offers.len() == 1 {
-            offers[0].clone()
-        } else {
-            let labels: Vec<&str> = offers
-                .iter()
-                .map(|(l, _)| l.as_str())
-                .chain([NO_OFFER])
-                .collect();
-            let context = format!(
-                "The options offered before:\n{}\n\nThe user's request:\n{}",
-                take_chars(prev_answer, 3000),
-                request
-            );
-            let pick = self
-                .decide(task_id, OFFER_Q, &context, &labels, NO_OFFER)
-                .await;
-            offers.into_iter().find(|(l, _)| *l == pick)?
-        };
-        self.event(task_id, "held_offer", json!({"offer": label, "url": url}))
-            .await;
-        Some(ToolCall {
-            id: "offer_1".into(),
-            name: "browser_navigate".into(),
-            args: json!({"url": url}),
-        })
-    }
-
-    /// The official lines to add to a travel-health-emergency answer: one decision on the request (an illness or
-    /// injury, or lost / stolen documents?), then from the fixed tables the medical line of the place it names (an
-    /// illness) or the consulate's emergency line for the profile's nationality and its embassy there (a lost
-    /// passport) — never a number from the model or the reply.
-    pub(crate) async fn emergency_lines(
-        &self,
-        task_id: &str,
-        request: &str,
-        transcript: &[Value],
-        nationality: &str,
-    ) -> (Option<&'static MedicalLine>, Option<ConsularHelp>) {
-        if !health_run(transcript) {
-            return (None, None);
-        }
-        let medical = medical_line_for(request);
-        let consular = consular_help_for(nationality, request);
-        if medical.is_none() && consular.is_none() {
-            return (None, None);
-        }
-        let kind = self
-            .decide(task_id, EMERGENCY_Q, request, &EMERGENCY_CHOICES, "other")
-            .await;
-        match kind.as_str() {
-            "illness_or_injury" => (medical, None),
-            "lost_or_stolen_documents" => (None, consular),
-            _ => (None, None),
-        }
-    }
-
-    /// The conversions the request's formats need (`conversion_calls`), when the run made a file: one multi-select on
-    /// the request, then the calls for each format it did not make.
-    pub(crate) async fn format_calls(
-        &self,
-        task_id: &str,
-        request: &str,
-        transcript: &[Value],
-    ) -> Vec<ToolCall> {
+    /// The conversions the formats the user asked for need (`conversion_calls`): the formats come from the file calls'
+    /// `deliver_as` (the model's JSON, from the user's words), the files from the run's results — no decision on words.
+    pub(crate) async fn format_calls(&self, task_id: &str, transcript: &[Value]) -> Vec<ToolCall> {
         let made = made_files(transcript);
-        if made.is_empty() {
+        let wanted = wanted_formats(transcript);
+        if made.is_empty() || wanted.is_empty() {
             return Vec::new();
         }
-        let wanted = self
-            .decide_many(task_id, FORMATS_Q, request, &FORMAT_CHOICES, &["none"])
-            .await;
         let read = |p: &str| -> Option<String> {
             let path = self.workspace.join(p);
             std::fs::read_to_string(path).ok()
@@ -1305,169 +902,6 @@ mod tests {
                    "function": {"name": name, "arguments": args.to_string()}}]}),
             json!({"role": "tool", "tool_call_id": id, "content": result}),
         ]
-    }
-
-    #[test]
-    fn a_tokyo_illness_gets_the_official_medical_line_from_data() {
-        // emergency_real 2026-11-01: the clinic's number was not on a page the run read, so it was cut, and the answer
-        // gave no Tokyo number at all — the city's official medical line comes from the table
-        let req = "I've had a high fever since last night in my hotel in Tokyo. Where can I see an English-speaking doctor?";
-        let line = medical_line_for(req).unwrap();
-        assert_eq!(line.place, "Tokyo");
-        assert_eq!(
-            medical_line_for("I feel sick in Osaka").unwrap().place,
-            "Japan"
-        );
-        assert!(medical_line_for("I feel sick in Lisbon").is_none());
-        let out = with_medical_line("See a doctor today.", line, false);
-        assert!(out.contains("call **03-5285-8181**"), "{out}");
-        assert!(out.contains(line.url));
-        // an answer that already links the page is left as it is
-        let linked = format!("Call [Himawari]({}).", line.url);
-        assert_eq!(with_medical_line(&linked, line, false), linked);
-        let t = step(
-            "s1",
-            "load_skill",
-            json!({"name": "travel-health-emergency"}),
-            "---",
-        );
-        assert!(health_run(&t));
-        assert!(!health_run(&step(
-            "s1",
-            "load_skill",
-            json!({"name": "tokyo"}),
-            "---"
-        )));
-    }
-
-    #[test]
-    fn a_lost_passport_gets_the_consulates_emergency_line_from_data() {
-        // emergency_real 2026-11-01: the answer gave the embassy's line only as "03-5232-4111" (the local form), so
-        // the user abroad had no number to dial from their own phone — the line comes from the table, international
-        let req = "I lost my passport in Tokyo this morning — what do I do?";
-        let help = consular_help_for("Australia", req).unwrap();
-        assert_eq!(help.line.phone, "+61 2 6261 3305");
-        assert_eq!(help.embassy.unwrap().phone, "+81 3 5232 4111");
-        let reply =
-            "1. Get a police report.\n2. Call the Consular Emergency Centre at 03-5232-4111.";
-        let out = with_consular_line(reply, &help, false);
-        assert!(out.starts_with(reply));
-        assert!(
-            out.contains("**+61 2 6261 3305**") && out.contains("**+81 3 5232 4111**"),
-            "{out}"
-        );
-        assert!(out.contains("https://japan.embassy.gov.au/tkyo/consular.html"));
-        // an answer that already gives one of the lines in its international form is left alone
-        let given = "Call the Consular Emergency Centre on +61 2 6261 3305.";
-        assert_eq!(with_consular_line(given, &help, false), given);
-        let given = "The embassy: +81-3-5232-4111.";
-        assert_eq!(with_consular_line(given, &help, false), given);
-        // a destination with no embassy entry: the nationality's line and its page
-        let lisbon = consular_help_for("australian", "I lost my passport in Lisbon").unwrap();
-        assert!(lisbon.embassy.is_none());
-        let out = with_consular_line("Go to the police.", &lisbon, false);
-        assert!(
-            out.contains("+61 2 6261 3305") && out.contains(lisbon.line.url),
-            "{out}"
-        );
-        // another nationality never gets the Australian embassy; an unknown one gets nothing
-        let uk = consular_help_for("United Kingdom", req).unwrap();
-        assert_eq!((uk.line.phone, uk.embassy), ("+44 20 7008 5000", None));
-        assert!(consular_help_for("Atlantis", req).is_none());
-        assert!(with_consular_line("x", &help, true).contains("领事紧急电话"));
-    }
-
-    #[test]
-    fn the_offer_a_previous_answer_linked_is_held_for_book_it() {
-        // travel_hotel_real 2026-11-01: an MCP hotel_rooms result (JSON inside the connector's text), the answer links
-        // one room's page; "book it" searched the web instead and found no booking page
-        let inner = json!({"hotel": {"hotel_id": "H-TYO-1", "name": "Ginza Kaede Hotel", "stars": 4},
-            "rooms": [{"room_type": "Standard Double", "booking_url": "http://shop.test:8097/book/hotel/H-TYO-1-R1"},
-                      {"room_type": "Superior Twin", "booking_url": "http://shop.test:8097/book/hotel/H-TYO-1-R2"}]});
-        let wrapped = format!(
-            "<untrusted_content source=\"MCP Travel · hotel_rooms\">\n{}\n</untrusted_content>",
-            json!({"trust": "untrusted", "content": inner.to_string()})
-        );
-        let t = step(
-            "c1",
-            "mcp_travel__hotel_rooms",
-            json!({"hotel_id": "H-TYO-1"}),
-            &wrapped,
-        );
-        let answer = "**Ginza Kaede Hotel**, Superior Twin, SGD 753 total. \
-[View this room](http://shop.test:8097/book/hotel/H-TYO-1-R2)";
-        assert_eq!(
-            held_offers(&t, answer),
-            vec![(
-                "Ginza Kaede Hotel — Superior Twin".to_string(),
-                "http://shop.test:8097/book/hotel/H-TYO-1-R2".to_string()
-            )]
-        );
-        // an answer that links no offered page holds nothing
-        assert!(held_offers(&t, "Ginza Kaede Hotel is the cheapest.").is_empty());
-        // a flight offer linked by the answer is held too
-        let f = step(
-            "f1",
-            "flights_search",
-            json!({}),
-            &json!({"offers": [{"flight_no": "TR 765", "booking_url": "https://kiwi.test/b/1"},
-                               {"flight_no": "SQ 638", "booking_url": "https://kiwi.test/b/2"}]})
-            .to_string(),
-        );
-        assert_eq!(
-            held_offers(
-                &f,
-                "TR 765 [book](https://kiwi.test/b/1) or SQ 638 [book](https://kiwi.test/b/2)"
-            )
-            .len(),
-            2
-        );
-        // once that run handed a page over, nothing is held
-        let mut done = t.clone();
-        done.extend(step(
-            "c2",
-            "browser_request_takeover",
-            json!({"reason": "Confirm"}),
-            "Takeover finished",
-        ));
-        assert!(held_offers(&done, answer).is_empty());
-    }
-
-    #[test]
-    fn a_held_pick_is_the_picked_options_page_until_something_is_bought() {
-        let mut t = step(
-            "c1",
-            "present_choices",
-            json!({"question": "Plans", "kind": "comparison", "picked": "Premium",
-                   "options": [{"label": "Basic", "source_url": "https://shop.test/basic"},
-                               {"label": "premium", "source_url": "https://shop.test/premium"}]}),
-            "Shown to the user as 2 cards",
-        );
-        assert_eq!(
-            held_pick(&t),
-            Some((
-                "Premium".to_string(),
-                "https://shop.test/premium".to_string()
-            ))
-        );
-        // a refused card shows nothing; no pick holds nothing
-        let refused = step(
-            "c1",
-            "present_choices",
-            json!({"picked": "Premium"}),
-            "ERROR: unverifiable",
-        );
-        assert_eq!(held_pick(&refused), None);
-        let no_pick = step("c1", "present_choices", json!({"options": []}), "Shown");
-        assert_eq!(held_pick(&no_pick), None);
-        // bought (or handed over for payment): nothing to continue
-        t.extend(step(
-            "c2",
-            "purchase_confirm",
-            json!({}),
-            "{\"status\": \"ok\"}",
-        ));
-        assert_eq!(held_pick(&t), None);
     }
 
     #[test]
@@ -1551,53 +985,6 @@ mod tests {
     }
 
     #[test]
-    fn visa_days_come_from_the_page_and_only_when_it_gives_one_number() {
-        let page = "Visa exemption. Nationals of Australia may enter visa-free for up to 60 days. \
-Nationals of India are exempt from visa for 30 days. Visa on arrival: 15 days.";
-        assert_eq!(visa_days(page, "Australian"), Some(60));
-        assert_eq!(visa_days(page, "India"), Some(30));
-        // no nationality: two different numbers → none, never a guess
-        assert_eq!(visa_days(page, ""), None);
-        assert_eq!(
-            visa_days("Singapore citizens can stay visa-free for 30 days.", ""),
-            Some(30)
-        );
-        assert_eq!(
-            visa_days("Apply for a visa 30 days before travel.", ""),
-            None
-        );
-        // the destinations a request names, in its order
-        let d: Vec<&str> =
-            destinations("Flying to Bangkok on Monday, then on to Singapore — what do I need?")
-                .iter()
-                .map(|p| p.code)
-                .collect();
-        assert_eq!(d, ["TH", "SG"]);
-        assert!(destinations("A trip to Chinatown in London").is_empty());
-        // a page the run read
-        let mut t = step(
-            "r1",
-            "browser_read",
-            json!({"urls": ["https://www.thaievisa.go.th/visa/exemption"]}),
-            "Thailand visa exemption: Australian passport holders may stay visa-free for 60 days.",
-        );
-        let th = &VISA_PAGES[1];
-        assert_eq!(days_from_results(&t, th, "Australia"), Some(60));
-        assert_eq!(days_from_results(&t, &VISA_PAGES[0], "Australia"), None);
-        t = step(
-            "r1",
-            "browser_read",
-            json!({"urls": ["https://blog.test/thai-visa"]}),
-            "visa-free for 60 days",
-        );
-        assert_eq!(days_from_results(&t, th, ""), None); // not the official page
-        assert!(visa_line(th, Some(60), "", false)
-            .contains("up to 60 days (official source: https://www.thaievisa.go.th/)"));
-        assert!(visa_line(th, None, "", false)
-            .contains("on the official page: https://www.thaievisa.go.th/"));
-    }
-
-    #[test]
     fn a_deep_link_redirect_and_the_cart_button_are_read_by_code() {
         assert!(deep_link_redirect(
             "https://www.airline.test/manage/booking?pnr=ABC123",
@@ -1632,41 +1019,5 @@ Nationals of India are exempt from visa for 30 days. Visa on arrival: 15 days.";
         assert!(back_on_uncarted_page(&t, p, "e9"));
         t.extend(step("c1", "browser_click", json!({"ref": "e9"}), "clicked"));
         assert!(!back_on_uncarted_page(&t, p, "e9"));
-    }
-}
-
-#[cfg(test)]
-mod entry_tests {
-    use super::*;
-
-    #[test]
-    fn an_entry_request_is_known_by_its_words_and_the_days_are_checked_in_code() {
-        // travel_info_real 2026-11-01: the run never loaded the skill; the answer gave no days and no nationality
-        let req = "I'm flying to Bangkok on 8 November, then Singapore on 12 November. What do I need to enter each country, and are there forms to file before I arrive?";
-        assert!(entry_request(req, &[]));
-        assert_eq!(
-            destinations(req).iter().map(|p| p.code).collect::<Vec<_>>(),
-            vec!["TH", "SG"]
-        );
-        assert!(entry_request("Do I need a visa for Thailand?", &[]));
-        assert!(!entry_request(
-            "Find me a hotel in Bangkok on 8 November",
-            &[]
-        ));
-        assert!(states_days(
-            "Australians can stay visa-free for up to 60 days.",
-            60
-        ));
-        assert!(states_days("a 60-day visa exemption", 60));
-        assert!(!states_days("Submit it within 3 days before arrival.", 60));
-        let th = VISA_PAGES.iter().find(|p| p.code == "TH").unwrap();
-        assert!(visa_line(th, Some(60), "Australian", false)
-            .contains("with your Australian passport: up to 60 days"));
-        assert_eq!(
-            visa_free_from_table("TH", "Australian").map(|x| x.0),
-            Some(30)
-        );
-        assert_eq!(visa_free_from_table("TH", "Chinese"), None);
-        assert_eq!(visa_free_from_table("JP", "Australian"), None);
     }
 }

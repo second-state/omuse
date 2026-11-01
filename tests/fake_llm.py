@@ -202,7 +202,19 @@ async def _chat(req: Request, b: dict):
     if sys.startswith("## Route"):   # the main bot's router (agent/bots.rs `route`): main, unless bots_e2e asks
         return route_reply(str(msgs[-1]["content"]))
     if sys.startswith("You check an assistant's final reply"):   # agent/runtime.rs `review_answer`: the reply holds together
-        return reply(json.dumps({"ok": True, "problem": ""}))
+        # the facts the reply must carry (agent/facts.rs `must_say`): the fake model finds each one the reply does not
+        # state word for word (a real model reads the meaning)
+        body = str(msgs[-1]["content"])
+        answer = body.split("The reply:\n", 1)[-1].split("\n\nThe facts the reply must carry", 1)[0]
+        m = re.search(r"The facts the reply must carry \(must_say[^\n]*\n(\[.*\])\s*$", body, re.S)
+        must = json.loads(m.group(1)) if m else []
+        return reply(json.dumps({"ok": True, "problem": "", "missing": [f for f in must if f not in answer]}))
+    if sys.startswith(("You rewrite a reply to the user from a tool's JSON result", "你根据工具的 JSON")):   # `reply_with_facts`: the facts added
+        body = str(msgs[-1]["content"])
+        answer = body.split("\n\nThe reply:\n", 1)[-1].split("\n\nMissing facts: ", 1)[0]
+        m = re.search(r"\n\nMissing facts: (\[.*?\])\nProblem: ", body, re.S)
+        missing = json.loads(m.group(1)) if m else []
+        return reply(answer.rstrip() + ("\n\n" + "\n".join(missing) if missing else ""))
     if sys.startswith("Translate the user's text into English"):   # agent/runtime.rs `rewrite_in_english`: the reply alone
         text = str(msgs[-1]["content"])
         for zh, en in TRANSLATIONS:
@@ -560,12 +572,6 @@ async def _chat(req: Request, b: dict):
         if n == 3:
             return reply("", [tc("files_read", {"path": f"data/big{i}.txt"}) for i in range(3)])
         return reply(f"CTX OK after {n} results, body {body_chars} chars")
-    if "NUMCHECK" in goal:   # 2026-10-03 M1-06: an answer with figures no tool produced is sent back once
-        if n == 0:
-            return reply("", [tc("calculate", {"expressions": ["6.5*365 - 6.5*3*52", "invest(1358.5, 4, 10, 0, 1)"]})])
-        if finals:   # asked again (its first answer is back in the transcript): the figures from the tool result
-            return reply("FIXED: saves 1,358.50 a year; after 10 years 16,310.30")
-        return reply("Saves 1,358.50 a year; after 10 years about 17,016.64")
     if "WEBLOOP" in goal:   # 2026-10-02 R4-04b: endless searching for a cleaner product list — the web budget
         # (guards.rs WEB_NUDGE = 18 web calls) ends it: the model wraps up once it has made that many, or as soon as
         # the search tool is no longer offered
@@ -1453,21 +1459,21 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         allt = "\n".join(str(m["content"]) for m in tools_done)
         srcs = re.findall(r"web search \(([^)]+)\)", allt)
         return reply(f"SEARCHED VIA {sorted(set(srcs))}: compact car at Narita (Brave result 1), live prices at {_car_url(allt)}.")
-    if "TWOSEARCH" in goal:   # a model that searches six times: only the first travel search of the request runs
+    if "TWOSEARCH" in goal:   # a model that searches several times: only the first travel search of the request runs, and
+        # the flight and hotel searches are the booking machine's in the Travel bot (`travel_search`), never the model's
         date = re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal).group(1)
         out = (_dtm.date.fromisoformat(date) + _dtm.timedelta(days=2)).isoformat()
         later = (_dtm.date.fromisoformat(date) + _dtm.timedelta(days=1)).isoformat()
         if n == 0:
-            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": date, "currency": "SGD"}),
-                              tc_("flights_search", {"origin": "SIN", "destination": "HND", "date": date, "currency": "SGD"}),
-                              tc_("hotels_search", {"city": "Tokyo", "check_in": date, "check_out": out}),
-                              tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": date, "check_out": out}),
-                              tc_("cars_search", {"pickup": "NRT", "pickup_date": date, "dropoff_date": out}),
-                              tc_("cars_search", {"pickup": "HND", "pickup_date": date, "dropoff_date": out})])
-        if n == 6:   # the turn's six results (three of them skipped); next turn: one more of each
+            return reply("", [tc_("cars_search", {"pickup": "NRT", "pickup_date": date, "dropoff_date": out}),
+                              tc_("cars_search", {"pickup": "HND", "pickup_date": date, "dropoff_date": out}),
+                              tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": date, "currency": "SGD"}),
+                              tc_("hotels_search", {"city": "Tokyo", "check_in": date, "check_out": out})])
+        if n == 4:   # next turn: a flight search of its own (refused: the machine's), then a car search (skipped: the turn's second)
             return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": later, "currency": "SGD"}),
-                              tc_("hotels_search", {"city": "Tokyo", "check_in": later, "check_out": out}),
                               tc_("cars_search", {"pickup": "NRT", "pickup_date": later, "dropoff_date": out})])
+        if n == 6:   # and one more car search alone: the request already ran its one
+            return reply("", [tc_("cars_search", {"pickup": "HND", "pickup_date": later, "dropoff_date": out})])
         return reply("TWOSEARCH done: one travel search answered this request; shall I search the hotel and the car next?")
     if "CARSEARCH" in goal:   # a car question: cars_search alone, and the answer gives the rental page's link
         d1 = re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal).group(1)

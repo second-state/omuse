@@ -24,74 +24,41 @@ or an immediate family member, among others — stopped the trip. The claim is h
   bags → `baggage-delayed-lost`.
 Say which one applies in the first line of the answer and file only that one.
 
-## 2. The clock (state the dates, do not just say "soon")
-- **Notify the administrator within 20 days** of the cancellation or interruption (or as soon as reasonably possible).
-  Loss date = the day the trip was cancelled / the departure that was missed. Compute: loss date + 20 days.
-- **Documents within 90 days** of the loss date. Compute: loss date + 90 days. The administrator may extend when it
-  was not reasonably possible; late is still better than never — if the 20 days are over, file today and say so.
-- Verify the current terms in the Guide to Benefits (chase.com/cardbenefits, the user's card) before quoting: the
-  figures below are as of October 2026 and change.
+## 2. File it: call `claim_file` (code does the steps)
+Call **claim_file** with `insurer: "chase_sapphire"` and every fact you can read in the user's words and their emails:
+`benefit` (step 1), `incident_date` (the loss date: the day the trip was cancelled / the departure that was missed /
+the day it was cut short), `reason` and `who` in general terms (never the diagnosis), `paid`, `refunded`,
+`non_refundable` (what a supplier's letter states as not refunded), `change_fee` (interruption: the fee to fly home
+early), `bookings` (supplier and booking reference), `trip`, `card_product`, `card_last4` (from the charge email — never
+a full number), `doctor_letter`, `supplier_letter`, `travellers`.
+- Facts missing and the mailbox connected: code reads the booking, charge, refund and insurance emails with fixed
+  searches (result `mail_read`, the emails above it) — read them and call claim_file again with every fact.
+- `needs_input`: ask the user once for the missing facts, then call again with every field. `invalid`: fix and call again.
+- Code then computes the amount (paid − refunded, or the supplier's non-refundable figure; plus the change fee for an
+  interruption; within the caps) and the deadlines (loss date + 20 days to notify, + 90 days for the documents), fills
+  eClaimsLine's claim form (the form function: name, contact, card, benefit, date of loss, amount, reason, booking),
+  hands the page over for the user to review and press **Submit claim** (never you), reads the claim number from the
+  confirmation page, and sets the reminders (7 days before the documents deadline, a mail check every 10 days).
+- Its JSON result has the status (`handed_over`: filled, waiting for the user's Submit; `submitted`: the claim number),
+  the amount and its arithmetic, the dates, the documents and `must_say`. Never say the claim was submitted unless the
+  result has a claim number.
+- By phone, when the portal cannot be reached: Sapphire Reserve 1-800-350-1697, Sapphire Preferred 1-800-350-1362
+  (US; collect from abroad at the number in the Guide to Benefits).
 
-## 3. Gather (mail first, in ONE turn)
-- gmail_search `(e-ticket OR itinerary OR booking OR confirmation) (<airline> OR <hotel> OR <route>) newer_than:180d` —
-  booking reference, passenger names, dates, fare, fare rules ("non-refundable", change fee), how it was paid (Sapphire
-  …4321 / Ultimate Rewards points), the booking date (pre-existing-condition look-back counts from it).
-- gmail_search `(Chase OR Sapphire) (transaction OR charged OR statement OR receipt) <amount or merchant>` — the
-  charge: amount, date, last 4 digits; for an award ticket the taxes and fees paid with the card.
-- gmail_search `(<airline>) (refund OR credit OR voucher OR cancellation OR cancelled)` — what the airline already
-  gave back or offered.
-- gmail_search `insurance (policy OR certificate OR travel) newer_than:365d` — any other policy (it must be declared;
-  the card pays what the others do not).
-- calendar_list_events around the departure; profile_get (name, address, phone, email as the administrator wants them).
-- Then the arithmetic with `calculate`: paid − refunded or credited = the amount to claim, per traveller; cap
-  $10,000 per traveller, $20,000 per trip, $40,000 per 12 months. Trip Interruption: the unrefunded prepaid nights and
-  fares **plus** a change fee or fare difference already charged to fly home early — claimed now, in the form's amount,
-  even while a waiver or the original ticket's refund is still being asked for (a later refund is reported to the
-  administrator).
+## 3. The airline (or hotel / tour) first
+The insurance pays only what the supplier does not refund. Alongside the claim, draft (gmail_create_draft) the request
+to the airline's refunds / customer relations address: booking ref, flight, date, passengers, "unable to travel for
+medical reasons", a refund of what is refundable (taxes and fees at least) and a **written statement of the
+non-refundable amount** — no diagnosis, no card number. The user sends it (approval). Hotels and tours: the same.
 
-## 4. The airline (or hotel / tour) first
-The insurance pays only what the supplier does not refund. Before or alongside the claim:
-- Ask the airline to cancel the ticket (if not yet done) and refund what is refundable (government taxes and fees on
-  most tickets, the full fare on refundable fares) or issue a travel credit, and to send a **written statement of the
-  non-refundable amount / its refund policy** (the administrator asks for it). Many airlines waive change fees for a
-  documented illness — ask.
-- Draft it: gmail_create_draft to the airline's refunds / customer relations address (booking ref, flight, date,
-  passengers, "unable to travel for medical reasons", what is requested, no diagnosis, no card number). The user
-  sends it (approval).
-- Hotels and tours: same request to the property or operator; keep the written reply.
+## 4. Medical proof (sickness or injury)
+The administrator's **physician statement**, completed and signed by the treating doctor (dates seen, unable to travel
+on the departure date, whether the condition was treated in the 60 days before the booking). A dated doctor's letter
+saying the same is usually accepted meanwhile. Medical details stay in the claim documents — never in memory_remember,
+the profile, or the answer beyond "medically unable to travel". A companion or family member: their statement and the
+relationship.
 
-## 5. Medical proof (sickness or injury)
-- The administrator's **physician statement**: completed and signed by the treating doctor — patient, dates seen,
-  nature of the illness or injury (general terms), the date the patient became unable to travel and that they were
-  medically unable to travel on the departure date, and whether the condition was treated in the 60 days before the
-  booking (the pre-existing-condition look-back). A dated doctor's letter saying the same is usually accepted while the
-  form is being completed. Plus the consultation receipt or discharge paper.
-- Ask the user once: doctor / clinic, date of the visit, whether they already have a letter (upload it; file_look to
-  read what it says, nothing more). Medical details stay in the claim documents — never in memory_remember, the
-  profile, or the answer beyond "medically unable to travel".
-- For a companion or family member: their physician statement and the relationship.
-
-## 6. Start the claim (the administrator's portal or the phone)
-- Online: browser_navigate to **https://www.eclaimsline.com** (Card Benefit Services' eClaimsLine, where
-  chasecardbenefits.com sends Chase cardholders). The "File a claim" form: cardholder name, email, phone, the card
-  (product) and its last 4 digits (from the charge in mail — not a secret), the benefit (Trip Cancellation or Trip
-  Interruption — the one from step 1), the date of loss, the amount claimed (the `calculate` result, plain digits like
-  1753.60), the reason in general terms ("sickness of the cardholder", never the diagnosis) and the supplier and booking
-  reference. Code fills the form with these facts (the eClaimsLine form function — form_fill is called by code, not
-  by you); a full card number is never typed from chat (a card saved by name only has none — it is the user's). **The
-  sign-in and the final submission are the user's**: once the form is filled, or when the portal asks for a login,
-  password, one-time code or the card's security code, browser_request_takeover with the reason ("review the claim and
-  press Submit"; "sign in"). This hand-over is required, not optional: a filled form the user is only told about in
-  the answer cannot be found by them — call browser_request_takeover on the filled page and write the answer after
-  the hand-back. Never press Submit yourself, and never say the claim was submitted — after the hand-back,
-  say the form is filled and waiting for the user's Submit (or, if the page now shows a claim number, that the user
-  submitted it and what the number is).
-- By phone, or when the portal blocks automation: Sapphire Reserve 1-800-350-1697, Sapphire Preferred 1-800-350-1362
-  (US; collect from abroad at the number in the Guide to Benefits). The administrator asks a few questions and sends
-  the claim form and the physician statement. phone_call only if configured and the user asks.
-- Record the claim number (memory_remember, domain=trip, with the loss date and the two deadlines — no card number).
-
-## 7. The claim packet (make_pdf, then send_file)
+## 5. The claim packet (make_pdf, then send_file)
 One PDF under reports/ ("CSR-claim-<airline>-<date>.pdf") with:
 1. **Summary**: benefit (cancellation / interruption), travellers, trip (route, dates, booking refs), loss date,
    notify-by and documents-by dates, claim number if any, administrator contacts.
@@ -104,21 +71,17 @@ One PDF under reports/ ("CSR-claim-<airline>-<date>.pdf") with:
 5. **Timeline**: what happened when, and what is still to do, with owners (user / OMuse).
 Send it to the chat; the user attaches it when uploading.
 
-## 8. Keep it moving
-- schedule_create: a reminder 7 days before the documents deadline, and a check every 10 days ("any email from Card
-  Benefit Services / eclaimsline / Chase about claim <number>?" via gmail_search, notify_user on news) until the claim
-  is paid or closed. Typical processing is several weeks after the documents are complete.
-- When the administrator asks for more, help produce exactly that; when it denies, read the reason (wrong benefit,
-  pre-existing condition, trip over 60 days, missing airline letter) and draft the appeal with the missing proof.
+## 6. Keep it moving
+The reminders are set by code (in the result). When the administrator asks for more, help produce exactly that; when
+it denies, read the reason (wrong benefit, pre-existing condition, trip over 60 days, missing airline letter) and draft
+the appeal with the missing proof.
 
-## 9. Answer
-Only after the portal step ended in browser_request_takeover and the user handed the browser back (or the portal
-could not be reached — then say so and give the phone number).
-First line: the benefit that applies and the two dates (notify by …, documents by …). Then the amount to claim and how
-it was computed, what the airline is being asked for, the documents the user must get (doctor, airline) with the
-status of each, how the claim is being started (portal step reached / phone), the claim number if any, the packet,
-and the reminders set. Plain about limits: the administrator decides; pre-existing conditions (treated in the 60 days
-before booking), voluntary changes of plan, travel against medical advice and trips longer than 60 days are excluded.
+## 7. Answer
+Write it from claim_file's JSON result, with every fact in its `must_say`: the benefit that applies and the two dates
+first, then the amount and how it was computed, the status (filled and waiting for the user's Submit, or the claim
+number), the documents the user must get (doctor, airline) with the status of each, the airline letter drafted, the
+packet and the reminders. Plain about limits: the administrator decides; pre-existing conditions, voluntary changes of
+plan, travel against medical advice and trips longer than 60 days are excluded.
 
 ## Facts to rely on (October 2026 — verify in the user's current Guide to Benefits)
 - Limits: $10,000 per covered traveller, $20,000 per trip, $40,000 per 12 months per account; interruption adds up to

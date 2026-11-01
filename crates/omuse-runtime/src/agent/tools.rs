@@ -44,9 +44,13 @@ pub const SUBAGENT_TOOLS: [&str; 28] = [
 /// A concurrent batch is sent to Sentinel with `no_ask`: a read that would need an approval (`browser_read` of a URL
 /// carrying data in a tainted task) comes back as an error telling the model to call it alone next turn, so no
 /// approval dialog is ever left behind for a call the task is not waiting on.
-pub const PARALLEL_TOOLS: [&str; 37] = [
+pub const PARALLEL_TOOLS: [&str; 41] = [
     "delegate",
     "calculate",
+    "emergency_contacts",
+    "visa_rules",
+    "fx_convert",
+    "loan_payment",
     "data_query",
     "files_read",
     "files_list",
@@ -164,6 +168,42 @@ pub const FINISH_TOOLS: [&str; 33] = [
     "calendar_create_event",
 ];
 
+/// The small code tools the model calls with JSON (agent/facts.rs, agent/fx.rs): their results carry `must_say`, the
+/// facts the reply must carry, from structured data only.
+pub fn fact_tool_schemas() -> Vec<Value> {
+    let s = json!({"type": "string"});
+    vec![
+        fn_("emergency_contacts", "The official emergency lines for a traveller, from OMuse's checked tables: an illness or \
+injury → the place's official medical information line (English-speaking clinics and hospitals); lost or stolen \
+documents (a passport) → the nationality's 24-hour consular emergency line and its embassy there, in international form. \
+Call it in any emergency abroad; the JSON result has the lines and must_say — write the reply from it.",
+            json!({"country": {"type": "string", "description": "the country the user is in"},
+                   "city": {"type": "string", "description": "the city the user is in"},
+                   "emergency": {"type": "string", "enum": ["illness_or_injury", "lost_or_stolen_documents", "other"]},
+                   "nationality": {"type": "string", "description": "the traveller's nationality when the user said; empty = the profile's"}}),
+            &["country", "emergency"]),
+        fn_("visa_rules", "Entry rules for destinations from the official sources OMuse keeps: each destination's official \
+visa page and, where the official table has the nationality, the visa-free stay in days with its date and source. Call \
+it for any visa / entry question; the JSON result has must_say — write the reply from it (read the official page for \
+what it does not give).",
+            json!({"destinations": {"type": "array", "items": s.clone(), "description": "countries or cities, in the order the user named them"},
+                   "nationality": {"type": "string", "description": "the passport's nationality when the user said; empty = the profile's"}}),
+            &["destinations"]),
+        fn_("fx_convert", "Convert an amount between currencies at today's market rate (computed in code, with the rate's \
+date). Call it whenever the user asks what an amount is in another currency or for an exchange rate (amount 1). The JSON \
+result has must_say — write the reply from it.",
+            json!({"amount": {"type": "number", "description": "the amount (1 for a rate)"},
+                   "from": {"type": "string", "description": "ISO code, e.g. USD"},
+                   "to": {"type": "string", "description": "ISO code, e.g. VND"}}),
+            &["from", "to"]),
+        fn_("loan_payment", "The monthly payment of a loan or mortgage with equal instalments (computed in code). Call it \
+whenever the user asks for a monthly payment; the JSON result has must_say — write the reply from it.",
+            json!({"principal": {"type": "number"}, "annual_rate_pct": {"type": "number", "description": "4% is 4"},
+                   "years": {"type": "number"}}),
+            &["principal", "annual_rate_pct", "years"]),
+    ]
+}
+
 /// `{"type": "function", "function": {name, description, parameters}}`.
 pub fn fn_(name: &str, desc: &str, props: Value, required: &[&str]) -> Value {
     json!({"type": "function", "function": {"name": name, "description": desc,
@@ -197,6 +237,12 @@ fn local_tools() -> Vec<Value> {
     let mut tools = local_tools_base();
     // the workflow tools (agent/booking.rs): JSON arguments in, a code machine, a JSON result out
     tools.extend(super::booking::tool_schemas());
+    // the small code tools whose JSON results carry the facts the reply must carry (agent/facts.rs)
+    tools.extend(fact_tool_schemas());
+    tools.extend(super::news::tool_schemas());
+    tools.extend(super::claims::tool_schemas());
+    tools.extend(super::driver::tool_schemas());
+    tools.extend(super::apdt::tool_schemas());
     tools
 }
 
@@ -228,7 +274,7 @@ LISTEN to an audio file, and answer your question about it — e.g. files the us
             json!({"path": s, "question": {"type": "string", "description": "what you want to know about the file"}}), &["path", "question"]),
         fn_("files_write", "写入工作区文件（报告、笔记、数据）；append=true 在末尾追加。返回字数。Write a text file in the workspace (creates \
 folders); append=true adds to the end. Returns the word / character count.",
-            json!({"path": s, "content": s, "append": {"type": "boolean"}}), &["path", "content"]),
+            json!({"path": s, "content": s, "append": {"type": "boolean"}, "deliver_as": {"type": "array", "items": {"type": "string", "enum": ["pdf", "xlsx", "docx", "md"]}, "description": "the file formats the user asked to receive (e.g. [\"pdf\", \"xlsx\"] for \"as a PDF and a spreadsheet\"); omit when the user asked for no file: code sends this file to the chat and makes the other formats from it"}}), &["path", "content"]),
         fn_("files_search", "在工作区文件中搜索文字 Search text inside workspace files.", json!({"query": s}), &["query"]),
         fn_("send_file", "把工作区里的文件发到对话里（报告、PDF、表格、照片、视频等）：图片直接显示，视频/音频可以直接播放，其他文件可下载；\
 多张照片用 paths 一次发出。如果对话来自 Telegram，也会发到 Telegram。用户在对话里要照片或文件时就用它发，不要改用邮件，\
@@ -246,7 +292,7 @@ upload the user's documents to online converters. Then use send_file if the user
              "markdown": {"type": "string", "description": "或者直接给 Markdown 内容 or Markdown text instead of a file"},
              "output": {"type": "string", "description": "输出路径，默认与源文件同名 .pdf output path (default: next to source)"},
              "pages": {"type": "integer", "description": "用户要求的最多页数 the most pages the user asked for (\"a one-page list\" = 1): the PDF is fitted to it"},
-             "title": s}), &[]),
+             "title": s, "deliver_as": {"type": "array", "items": {"type": "string", "enum": ["pdf", "xlsx", "docx", "md"]}, "description": "the file formats the user asked to receive (e.g. [\"pdf\", \"xlsx\"] for \"as a PDF and a spreadsheet\"); omit when the user asked for no file: code sends this file to the chat and makes the other formats from it"}}), &[]),
         fn_("make_docx", "在本机生成 Word 文档（.docx），不要用任何在线转换网站。内容用 Markdown 写：# 标题、## 小标题、段落、**粗体**、\
 列表、表格、> 引用，以及 ![说明](charts/xxx.png) 插入工作区里的图片（例如 make_chart send=false 生成的图）。\
  Create a Word document (.docx) locally — never use online converters. Write the content as Markdown (headings, \
@@ -255,7 +301,7 @@ paragraphs, bold, lists, tables, quotes, ![caption](charts/x.png) images from th
             json!({"markdown": {"type": "string", "description": "文档内容（Markdown）document content in Markdown"},
              "source": {"type": "string", "description": "或者：工作区里的 .md 文件 or a workspace .md file"},
              "output": {"type": "string", "description": "输出路径，以 .docx 结尾 output path ending in .docx, e.g. reports/summary.docx"},
-             "title": {"type": "string", "description": "可选：文档标题 optional title"}}),
+             "title": {"type": "string", "description": "可选：文档标题 optional title"}, "deliver_as": {"type": "array", "items": {"type": "string", "enum": ["pdf", "xlsx", "docx", "md"]}, "description": "the file formats the user asked to receive (e.g. [\"pdf\", \"xlsx\"] for \"as a PDF and a spreadsheet\"); omit when the user asked for no file: code sends this file to the chat and makes the other formats from it"}}),
             &["output"]),
         fn_("make_xlsx", "在本机生成 Excel 表格（.xlsx）：表头加粗、首行冻结、可筛选、数字按数字存。可以有多个工作表。\
 数据用 sheets 给出，或者用 source 指定工作区里的 CSV / 含 Markdown 表格的文件。生成后用 send_file 发给用户。\
@@ -266,7 +312,7 @@ or a .md file containing a Markdown table). Then use send_file if the user wants
                  "name": s, "columns": {"type": "array", "items": s},
                  "rows": {"type": "array", "items": {"type": "array", "items": {}}}}}},
              "source": {"type": "string", "description": "或者：工作区里的 .csv / .md 文件 or a workspace .csv/.md file"},
-             "formulas": {"type": "boolean", "description": "保留以 = 开头的公式（如 =SUM(B2:B9)）keep simple formulas; default false"}}),
+             "formulas": {"type": "boolean", "description": "保留以 = 开头的公式（如 =SUM(B2:B9)）keep simple formulas; default false"}, "deliver_as": {"type": "array", "items": {"type": "string", "enum": ["pdf", "xlsx", "docx", "md"]}, "description": "the file formats the user asked to receive (e.g. [\"pdf\", \"xlsx\"] for \"as a PDF and a spreadsheet\"); omit when the user asked for no file: code sends this file to the chat and makes the other formats from it"}}),
             &["output"]),
         fn_("calculate", "精确计算（不要心算）：贷款月供和还款明细、利息、复利、增长率、汇率换算、AA 分摊、百分比、合计和平均。\
 表达式支持 + - * / ** % 和 round、min、max、sum、mean、median、sqrt、log；金融函数：pmt(月利率, 期数, 本金)、\
@@ -512,14 +558,16 @@ checkboxes true/false, radio/dropdown one of the listed options. Only use facts 
 missing ones, never invent); never fill signatures. Then send_file it for the user to check before any email.",
             json!({"path": s, "values": {"type": "object"}, "output": {"type": "string", "description": "default: <name>-filled.pdf next to it"}}),
             &["path", "values"]),
-        fn_("memory_search", "搜索记忆 Search memory about the user (long-term facts, recent details and past tasks).", json!({"query": s}), &["query"]),
+        fn_("memory_search", "搜索记忆 Search memory about the user (long-term facts, recent details and past tasks).", json!({"query": s,
+             "id_documents": {"type": "boolean", "description": "the task fills in a form or checks an identity document (passport, ID card, visa): facts about the user's ID documents are included; otherwise they stay hidden"}}), &["query"]),
         fn_("memory_remember", "记住用户明确要求记住的事实 Save a durable fact the user explicitly asked to remember, or a site's form habit you just learned at checkout \
 (e.g. \"decathlon.sg accepts the phone number as 8 digits without +65\"). Not for profile \
 fields (name, phone, email, address… → profile_suggest) and never for ID / membership / card numbers or passwords \
 (those live in the Sentinel vault, which the user manages). domain: person | preference | place | account | site \
 (how a website works for the user) | rule (a standing instruction) | work. Something you learned yourself (not \
 said by the user) is kept as 'to confirm' until the user OKs it on the Memory page — it is still used meanwhile.",
-            json!({"fact": s, "category": s, "entity": s, "domain": s}), &["fact"]),
+            json!({"fact": s, "category": s, "entity": s, "domain": s,
+             "user_asked": {"type": "boolean", "description": "the user asked you to remember it (\"remember…\", \"from now on…\", \"next time…\"); false for something you learned yourself"}}), &["fact"]),
         fn_("profile_get", "读取用户档案 Read the user's profile (name as on passport, phone, emails, addresses, company, title, \
 birthday, gender, nationality, further addresses as address:<label>…). Call it ONLY when filling in a form or writing an email/message that needs these details; \
 use just the fields you need.", json!({"fields": {"type": "array", "items": s, "description": "optional: only these fields; \"address:*\" = every further address"}}), &[]),
@@ -544,13 +592,13 @@ For cancel / return / track requests look the order up here first and act on exa
             json!({"query": {"type": "string", "description": "optional: merchant or order number"}}), &[]),
         fn_("schedule_create", "创建定时/周期任务 Create a recurring background task. kind=cron (spec like '0 8 * * *') or \
 interval (spec = minutes). goal = full standalone instruction for each run.",
-            json!({"name": s, "goal": s, "kind": {"type": "string", "enum": ["cron", "interval"]}, "spec": s}), &["name", "goal", "kind", "spec"]),
+            json!({"name": s, "goal": s, "kind": {"type": "string", "enum": ["cron", "interval"]}, "spec": s, "until": {"type": "string", "description": "when the user wants the checking to stop once something happens (\"until my landlord replies\", \"tell me when X, then stop\"): that condition in a few words — it then becomes a goal that ends when met; omit for a plain recurring job"}}), &["name", "goal", "kind", "spec"]),
         fn_("trigger_create", "创建事件触发器：当某事发生时自动运行一个任务 Create an event trigger (\"when X happens, do Y\"). \
 source: gmail.new_email (params: query e.g. 'from:boss@acme.com', account) | slack.new_message (params: channel, \
 keyword, mentions_only) | notion.db_changed (params: database_id). goal = full standalone instruction for each run; \
 the new items are handed to that run as data. every = poll minutes (default 3).",
             json!({"name": s, "goal": s, "source": {"type": "string", "enum": ["gmail.new_email", "slack.new_message", "notion.db_changed"]},
-             "params": {"type": "object"}, "every": {"type": "number"}}), &["name", "goal", "source"]),
+             "params": {"type": "object"}, "every": {"type": "number"}, "until": {"type": "string", "description": "when the user wants the checking to stop once something happens (\"until my landlord replies\", \"tell me when X, then stop\"): that condition in a few words — it then becomes a goal that ends when met; omit for a plain recurring job"}}), &["name", "goal", "source"]),
         fn_("watch_create", "监控一个网页：内容变化、出现某段文字（如“有货 In stock”），或价格低于阈值时提醒用户。只在状态“新变成满足”时提醒一次，\
 不会重复打扰；检查失败会自动拉长间隔，连续失败会自动停用并告知。默认只发通知（不运行 Agent、不耗模型）；给了 then 才会在触发时运行那个任务。\
  Watch a public web page and alert the user when it changes, when some text appears, or when a price drops below a \
@@ -614,7 +662,8 @@ omitted for a new one. Alone in its turn; the bot's answer is shown to the user 
             json!({"bot": s, "question": s, "conversation_id": s}), &["bot", "question"]),
         fn_("load_skill", "加载技能说明；file 可读取技能目录里的参考文件（如 cards/sg.md）Load a skill's detailed instructions by name; \
 with file, read a reference file that skill ships (e.g. file=\"cards/sg.md\", as its instructions name it).",
-            json!({"name": s, "file": {"type": "string", "description": "optional: a reference file inside the skill's folder"}}), &["name"]),
+            json!({"name": s, "file": {"type": "string", "description": "optional: a reference file inside the skill's folder"},
+             "user_named_site": {"type": "boolean", "description": "the user's request names a website or a web page to open (a URL, a domain, \"the … site\", Google Maps): the browser stays on"}}), &["name"]),
         fn_("library_list", "列出研究库里的课题 List the research subjects in the user's library (title, status, report file).", json!({}), &[]),
         fn_("library_search", "在研究库的报告里搜索 Search the reports in the research library (passages with their subject).", json!({"query": s}), &["query"]),
         fn_("library_get", "读取研究库里一份完整报告 Read a research subject's whole report by title or slug.", json!({"subject": s}), &["subject"]),

@@ -37,6 +37,7 @@ pub mod decide;
 pub mod driver;
 pub mod exec;
 pub mod ext;
+pub mod facts;
 pub mod fx;
 pub mod guards;
 pub mod images;

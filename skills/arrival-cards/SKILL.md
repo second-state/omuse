@@ -34,7 +34,8 @@ and ETIAS; any other site that charges is a scam.**
    uploaded itinerary, read with file_look) — the per-country skills ask for the hotel themselves. Each entry (including a return to the
    home country, e.g. Singapore) gets its row: needed? window opens on <date>, closes at arrival.
 2. Too early for everything → set one reminder per card (schedule_create on the day the window opens, goal "fill <card>
-   for <flight> with the <skill> skill") and say so. Inside a window → call that country's skill now.
+   for <flight> with the <skill> skill") and say so. Inside a window and the user asks for it to be filled in → load that country's skill and fill it with ONE
+   `arrival_card_fill` call (its JSON result says what was filed or what is left).
 3. Authorisations with lead time (UK ETA, K-ETA for passports not on the waiver, Vietnam e-visa, China visa, Indonesia
    e-VOA) go first; say the processing time from the official page.
 4. One line on what stays with the user: health answers, submitting (every skill stops before Submit for the user's

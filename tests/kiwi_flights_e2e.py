@@ -265,20 +265,22 @@ K.check("a date range from the chat is ONE flights_search with date and date_to,
         and not any(e["type"] == "plan" for e in tf["events"]) and (K.result(tf).get("days_searched") or {}).get("count") == 5
         and "5 days searched in one call" in (tf.get("result") or ""), (nf, fsa, (tf.get("result") or "")[:200]))
 
-# a model that searches six times in one turn and three more next turn: ONE travel search per request — the first runs, the
-# rest of the turn is skipped, the next turn's are refused, and nothing more reaches Kiwi.com
+# a model that searches four times in one turn and more in the next turns: ONE travel search per request — the first runs,
+# the rest of the turn is skipped, a later one is refused; and in the Travel bot the flight and hotel searches are the
+# booking machine's (`travel_search`): the model's own flights_search is refused as data, so nothing reaches Kiwi.com
 n0 = len(c.get(FAKE + "/kiwi-mcp/_log").json())
 tw = K.run(f"TWOSEARCH flights and a hotel in Tokyo DATE={DATE}")
 kw = c.get(FAKE + "/kiwi-mcp/_log").json()[n0:]
 fr = [e["data"] for e in tw.get("events", []) if e["type"] == "tool_result" and e["data"].get("name") in ("flights_search", "hotels_search", "cars_search")]
 ran = [(x["name"], x.get("ok")) for x in fr]
 txt = " ".join(str(x.get("preview") or x.get("error") or "") for x in fr)
-K.check("two flight, two hotel and two car searches in one turn, and one of each next turn: ONE travel search ran (the first flight), Kiwi.com asked once",
-        tw["status"] == "COMPLETED" and len(kw) == 1 and kw[0]["flyTo"] == "NRT" and ran.count(("flights_search", True)) == 1
-        and ("hotels_search", True) not in ran and ("cars_search", True) not in ran, (ran, kw))
-K.check("the rest of the turn is skipped and the next turn's searches refused, naming the search that ran",
-        txt.count("this turn already ran its one travel search") == 7 and txt.count("this request already ran its one travel search") == 1,
-        (txt.count("this turn already ran its one travel search"), txt.count("this request already ran its one travel search")))
+K.check("two car searches, a flight and a hotel search in one turn, then more: ONE travel search ran (the first car search), Kiwi.com never asked",
+        tw["status"] == "COMPLETED" and len(kw) == 0 and ran.count(("cars_search", True)) == 1
+        and ("flights_search", True) not in ran and ("hotels_search", True) not in ran, (ran, kw))
+K.check("the rest of a turn is skipped, a later search refused naming the search that ran, the model's flight search refused as the machine's",
+        txt.count("this turn already ran its one travel search") == 4 and txt.count("this request already ran its one travel search") == 1
+        and txt.count("machine_only") == 1,
+        (txt.count("this turn already ran its one travel search"), txt.count("this request already ran its one travel search"), txt.count("machine_only")))
 
 # booking through the user's travel agency (tests/fake_travel.py's connector and booking page): ONE search on the
 # connector, the pick by rule, then the booking stage in code — the vault, the purchase approved, the booking page

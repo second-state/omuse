@@ -1,18 +1,37 @@
-//! The code driver of a known-form skill (the arrival cards with a form function in `crate::forms`): once the skill
-//! is loaded, code decides every step instead of the model — the fixed mail searches, the facts read from the
-//! bookings (regexes; an extraction call only when they find nothing), the user's own address, the filing window,
-//! the official page, `form_fill`, the hand-over for the user's own steps and for the review, the reference on the
-//! confirmation and the answer. The next step is a function of the transcript alone (`next`), so a run suspended for
-//! a takeover carries on where it was.
+//! The arrival-card machine behind the workflow tool `arrival_card_fill` (docs/json-tools.md; the protocol is
+//! [`super::workflow`]): the arrival cards and travel authorisations with a form function in `crate::forms` (11
+//! countries, [`CARDS`]).
+//!
+//! The model reads the user's words — and the booking mails the machine fetched — and calls the tool with JSON
+//! arguments: the country, the flight arriving there, the arrival day, where the flight comes from, the stay, the
+//! purpose, the label of the user's own address they chose. [`check`] validates them in code (the country is in the
+//! table, a flight number has an airline code and digits, the dates parse and the arrival is not past, the own address
+//! is one of the profile's) and decides what happens before any page opens: the fixed mail searches when the trip is
+//! not known yet and a mailbox is connected (the machine fetches the bookings and its result `mail_read` has the model
+//! call again with the facts it read in them), the choice card when the profile has several addresses in the country,
+//! `needs_input` for what only the user can give. Nothing here reads the user's wording or a mail's text.
+//!
+//! Then every step is code ([`next`]): the reminder when the filing window has not opened, the official page, the
+//! form function (`form_fill`, fixed ids), the hand-over for the user's own steps and for the review, the reference read
+//! from the confirmation page's fixed pattern. The machine ends with [`Step::Done`]: a JSON result (status, the
+//! reference, the trip, what was assumed, `must_say`). The model writes the reply from it.
+//!
+//! The next step is a function of the validated arguments and the transcript after the tool call alone, so a run
+//! suspended for a takeover carries on where it was.
+//!
+//! The shared transcript helpers at the end of the file (`results_of`, `snapshot_text`, …) and [`Step`] serve every
+//! code machine.
 
 use std::sync::LazyLock;
 
 use chrono::{Datelike, NaiveDate};
-use omuse_common::util::{get_str, take_chars, truthy};
+use omuse_common::util::{get_str, truthy};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
+use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
+use super::workflow::{self, Checked};
 use crate::llm::ToolCall;
 
 /// One card: what the skill text used to tell the model, as data.
@@ -79,7 +98,7 @@ pub const CARDS: &[CardSpec] = &[
         host: "allindonesia.imigrasi.go.id",
         window_days: 3,
         user_steps: "tick the certification and press Submit",
-        ref_re: r"\b[A-Z]{2,4}-?\d{8,}\b",
+        ref_re: r"\bALLIND-\d{6,}\b|\b[A-Z]{2,4}-?\d{8,}\b",
     },
     CardSpec {
         skill: "tw-arrival-card",
@@ -166,6 +185,722 @@ pub const CARDS: &[CardSpec] = &[
     },
 ];
 
+impl CardSpec {
+    /// The card asks for the trip (the flight, the stay): every card but the UK ETA, an authorisation with no trip
+    /// section (`forms::uk_eta` fills the passport, the home address and the occupation).
+    pub fn needs_trip(&self) -> bool {
+        self.skill != "uk-eta"
+    }
+}
+
+// ---------------------------------------------------------------- the workflow tool
+
+/// The id prefix of the machine's code calls.
+pub const PREFIX: &str = "drv_";
+pub const ARRIVAL_CARD_FILL: &str = "arrival_card_fill";
+/// The workflow tools this machine runs.
+pub const TOOLS: [&str; 1] = [ARRIVAL_CARD_FILL];
+/// The result that has the model call the tool again: the bookings were fetched and are in the transcript for it to
+/// read (`workflow::CALL_AGAIN`).
+pub const MAIL_READ: &str = "mail_read";
+
+/// The card of a country (the table's name, any case).
+pub fn card_of(country: &str) -> Option<&'static CardSpec> {
+    let c = country.trim();
+    CARDS.iter().find(|s| s.country.eq_ignore_ascii_case(c))
+}
+
+/// The catalog entry of the workflow tool.
+pub fn tool_schemas() -> Vec<Value> {
+    let s = json!({"type": "string"});
+    let date = |what: &str| json!({"type": "string", "description": format!("YYYY-MM-DD: {what} (resolve relative dates from today in the live state)")});
+    let countries: Vec<&str> = CARDS.iter().map(|c| c.country).collect();
+    vec![fn_(
+        ARRIVAL_CARD_FILL,
+        "Fill in an electronic arrival card or travel authorisation — Singapore SG Arrival Card, Malaysia MDAC, Korea \
+e-Arrival Card, Indonesia All Indonesia, Taiwan TWAC, Thailand TDAC, China online arrival card, Japan Visit Japan Web, \
+Cambodia e-Arrival Card, Philippines eTravel, UK ETA — only when the user asks for it to be filled in or applied for. \
+Pass the country and every trip detail the user gave or a booking mail shows. When the trip is not given and a mailbox \
+is connected, code fetches the bookings (status mail_read: read the flight and the stay in the mails just fetched and \
+call again with every field). Code checks the filing window (a reminder when it is too early), fills the official form \
+from these facts, the profile and the Vault, and hands the page to the user to review and submit. The JSON result has \
+the reference (status submitted) or says what is left. status needs_input: ask the user for the missing fields, then \
+call again with every field; needs_choice: the user picks on the card shown, then call again with own_address; \
+invalid: fix the arguments and call again. Write the reply from the result, with every fact in its must_say.",
+        json!({
+            "country": {"type": "string", "enum": countries, "description": "the country whose card or authorisation to fill"},
+            "flight_no": {"type": "string", "description": "the flight that ARRIVES in the country: airline code and number (\"SQ 231\")"},
+            "arrival_date": date("the day that flight arrives"),
+            "origin_city": {"type": "string", "description": "the city the flight comes from (\"Sydney\")"},
+            "origin_country": {"type": "string", "description": "the country the flight comes from"},
+            "arrival_airport": {"type": "string", "description": "the arrival airport's IATA code (\"SIN\")"},
+            "airline": {"type": "string", "description": "the airline's name"},
+            "stay_name": {"type": "string", "description": "the hotel or host the user stays with"},
+            "stay_address": {"type": "string", "description": "the stay's address"},
+            "stay_kind": {"type": "string", "enum": ["hotel", "own", "friends", "other"]},
+            "own_address": {"type": "string", "description": "the label of the user's own address they chose on the choice card (\"I choose: …\")"},
+            "purpose": {"type": "string", "enum": ["holiday", "business", "family", "study", "transit"]},
+            "departure_date": date("the day the user leaves the country, when a return or onward flight or the user gives it"),
+            "next_city": {"type": "string", "description": "the next city after the country, when an onward flight or the user gives it"},
+            "occupation": s
+        }),
+        &["country"],
+    )]
+}
+
+/// `ask_user` in an arrival card's run before `arrival_card_fill` was called: refused, as data — what only the user
+/// can give is the tool's `needs_input`, and the defaults are code's. `events` are the task's.
+pub fn ask_before_tool(events: &[Value]) -> Option<Value> {
+    let skill = events
+        .iter()
+        .filter(|e| get_str(e, "type") == "tool_call")
+        .filter(|e| get_str(&e["data"], "name") == "load_skill")
+        .map(|e| get_str(&e["data"]["args"], "name"))
+        .filter_map(|n| CARDS.iter().find(|c| c.skill == n))
+        .next_back()?;
+    let called = events.iter().any(|e| {
+        get_str(e, "type") == "workflow_call" && get_str(&e["data"], "tool") == ARRIVAL_CARD_FILL
+    });
+    (!called).then(|| {
+        json!({"refused": "call_the_tool_first", "tool": ARRIVAL_CARD_FILL,
+               "why": format!("the {} skill asks through {ARRIVAL_CARD_FILL}: call it with the country and what the user gave; its needs_input lists what only the user can give, and code fills the defaults", skill.skill)})
+    })
+}
+
+// ---------------------------------------------------------------- validation (code, on the JSON)
+
+/// What validation reads besides the arguments.
+pub struct Ctx<'a> {
+    pub profile: &'a Value,
+    pub today: NaiveDate,
+    /// a mailbox is connected
+    pub mail_ready: bool,
+    /// the chat's transcript: the earlier calls' arguments and whether the bookings were already fetched (structured
+    /// results only)
+    pub transcript: &'a [Value],
+}
+
+/// The trip facts of the tool's arguments (the keys `forms::Facts` reads, and the user's choice).
+const FACT_KEYS: &[&str] = &[
+    "flight_no",
+    "arrival_date",
+    "origin_city",
+    "origin_country",
+    "arrival_airport",
+    "airline",
+    "stay_name",
+    "stay_address",
+    "stay_kind",
+    "own_address",
+    "purpose",
+    "departure_date",
+    "next_city",
+    "occupation",
+];
+
+static FLIGHT_NO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([A-Z0-9]{2})\s*-?\s*(\d{1,4})[A-Z]?$").unwrap());
+static IATA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z]{3}$").unwrap());
+
+fn s_arg(a: &Value, k: &str) -> String {
+    match a.get(k) {
+        Some(Value::String(s)) => s.trim().to_string(),
+        Some(Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// "sq231" / "SQ-231" → "SQ 231"; `None` for anything that is not an airline code and a number (an all-digit code
+/// is no airline).
+pub fn norm_flight(v: &str) -> Option<String> {
+    let up = v.trim().to_uppercase();
+    let c = FLIGHT_NO.captures(&up)?;
+    let code = &c[1];
+    (code.chars().any(|ch| ch.is_ascii_alphabetic())).then(|| format!("{code} {}", &c[2]))
+}
+
+fn date_of(v: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(v.trim(), "%Y-%m-%d").ok()
+}
+
+fn iso(d: NaiveDate) -> String {
+    d.format("%Y-%m-%d").to_string()
+}
+
+fn long(d: NaiveDate) -> String {
+    d.format("%-d %B %Y").to_string()
+}
+
+/// The arguments of the earlier calls for the same country in this chat, merged (a later value wins), under `args`: a
+/// call again after `mail_read`, `needs_input` or the choice card need not repeat every field.
+fn with_earlier(args: &Value, country: &str, transcript: &[Value]) -> Value {
+    let mut merged = Map::new();
+    for tc in transcript.iter().flat_map(tool_calls) {
+        let (name, a) = stored_call(tc);
+        if name != ARRIVAL_CARD_FILL || !s_arg(&a, "country").eq_ignore_ascii_case(country) {
+            continue;
+        }
+        for k in FACT_KEYS {
+            let v = s_arg(&a, k);
+            if !v.is_empty() {
+                merged.insert((*k).into(), json!(v));
+            }
+        }
+    }
+    for k in FACT_KEYS {
+        let v = s_arg(args, k);
+        if !v.is_empty() {
+            merged.insert((*k).into(), json!(v));
+        }
+    }
+    Value::Object(merged)
+}
+
+/// Whether this chat's bookings were already fetched by the machine (a `mail_read` result).
+fn mail_fetched(transcript: &[Value]) -> bool {
+    let want = format!("{ARRIVAL_CARD_FILL}{}", workflow::RESULT_SUFFIX);
+    transcript
+        .iter()
+        .flat_map(tool_calls)
+        .filter(|tc| {
+            get_str(tc, "id").starts_with(workflow::RESULT_PREFIX) && stored_call(tc).0 == want
+        })
+        .filter_map(|tc| {
+            let id = get_str(tc, "id");
+            transcript
+                .iter()
+                .find(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == id)
+        })
+        .any(|m| get_str(&json_of(m), "status") == MAIL_READ)
+}
+
+/// Validates the tool's arguments: the arguments to run with (normalised, the defaults filled), the problems the model
+/// can fix, or the fields only the user can give — before any page opens.
+pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
+    debug_assert_eq!(tool, ARRIVAL_CARD_FILL);
+    let Some(card) = card_of(&s_arg(args, "country")) else {
+        let countries: Vec<&str> = CARDS.iter().map(|c| c.country).collect();
+        return Checked::Invalid(vec![format!("country: one of {}", countries.join(", "))]);
+    };
+    let a = with_earlier(args, card.country, cx.transcript);
+    let mut problems: Vec<String> = Vec::new();
+    let mut out = Map::new();
+    out.insert("country".into(), json!(card.country));
+    let mut put = |k: &str, v: String| {
+        if !v.is_empty() {
+            out.insert(k.into(), json!(v));
+        }
+    };
+    let flight = s_arg(&a, "flight_no");
+    let flight = if flight.is_empty() {
+        String::new()
+    } else {
+        match norm_flight(&flight) {
+            Some(f) => f,
+            None => {
+                problems.push(format!(
+                    "flight_no: {flight:?} is not an airline code and a number (\"SQ 231\")"
+                ));
+                String::new()
+            }
+        }
+    };
+    put("flight_no", flight.clone());
+    let arrival = match s_arg(&a, "arrival_date") {
+        v if v.is_empty() => None,
+        v => match date_of(&v) {
+            Some(d) if d < cx.today => {
+                problems.push(format!("arrival_date: {v} is in the past"));
+                None
+            }
+            Some(d) => Some(d),
+            None => {
+                problems.push(format!("arrival_date: {v:?} is not a YYYY-MM-DD date"));
+                None
+            }
+        },
+    };
+    put("arrival_date", arrival.map(iso).unwrap_or_default());
+    // the departure: a date after the arrival, else the default (arrival + 7 days, `forms::Inputs::departure`)
+    let departure = date_of(&s_arg(&a, "departure_date"))
+        .filter(|d| arrival.is_none_or(|ar| *d >= ar))
+        .map(iso)
+        .unwrap_or_default();
+    put("departure_date", departure);
+    let origin_city = s_arg(&a, "origin_city");
+    let origin_country = match s_arg(&a, "origin_country") {
+        c if c.is_empty() => country_of_city(&origin_city).to_string(),
+        c => c,
+    };
+    put("origin_city", origin_city);
+    put("origin_country", origin_country);
+    let airport = s_arg(&a, "arrival_airport").to_uppercase();
+    put(
+        "arrival_airport",
+        if IATA.is_match(&airport) {
+            airport
+        } else {
+            String::new()
+        },
+    );
+    for k in ["airline", "next_city", "occupation"] {
+        put(k, s_arg(&a, k));
+    }
+    // the stay: what the arguments say, else the user's own address they chose, else the profile's one address there
+    let own = own_addresses(cx.profile, card.country);
+    let mut stay_name = s_arg(&a, "stay_name");
+    let mut stay_address = s_arg(&a, "stay_address");
+    let mut stay_kind = s_arg(&a, "stay_kind").to_lowercase();
+    let label = s_arg(args, "own_address");
+    let label = if label.is_empty() && stay_name.is_empty() && stay_address.is_empty() {
+        s_arg(&a, "own_address")
+    } else {
+        label
+    };
+    if !label.is_empty() {
+        let l = label.to_lowercase();
+        match own
+            .iter()
+            .find(|(k, v)| k.to_lowercase() == l || v.to_lowercase() == l)
+        {
+            Some((_, addr)) => {
+                stay_name = String::new();
+                stay_address = addr.clone();
+                stay_kind = "own".into();
+            }
+            None if own.is_empty() => problems.push(format!(
+                "own_address: the profile has no address in {}",
+                card.country
+            )),
+            None => problems.push(format!(
+                "own_address: one of {}",
+                own.iter()
+                    .map(|(l, _)| format!("{l:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+    if !problems.is_empty() {
+        return Checked::Invalid(problems);
+    }
+    let stay_known = !stay_name.is_empty() || !stay_address.is_empty();
+    if stay_known && !["hotel", "own", "friends", "other"].contains(&stay_kind.as_str()) {
+        stay_kind = if stay_name.is_empty() {
+            "other"
+        } else {
+            "hotel"
+        }
+        .into();
+    }
+    let purpose = s_arg(&a, "purpose").to_lowercase();
+    if !card.needs_trip() {
+        put("purpose", purpose);
+        return Checked::Valid(Value::Object(out));
+    }
+    let flight_known = !flight.is_empty() && arrival.is_some();
+    // the trip not known yet and a mailbox connected: the bookings first (the model reads them and calls again)
+    if (!flight_known || !stay_known) && cx.mail_ready && !mail_fetched(cx.transcript) {
+        out.insert("read_mail".into(), json!(true));
+        return Checked::Valid(Value::Object(out));
+    }
+    let mut choose = false;
+    if !stay_known {
+        match own.len() {
+            0 => {}
+            1 => {
+                stay_address = own[0].1.clone();
+                stay_kind = "own".into();
+            }
+            _ => choose = true,
+        }
+    }
+    let mut missing: Vec<String> = Vec::new();
+    if flight.is_empty() {
+        missing.push(format!(
+            "flight_no (the flight arriving in {})",
+            card.country
+        ));
+    }
+    if arrival.is_none() {
+        missing.push("arrival_date".into());
+    }
+    if stay_address.is_empty() && stay_name.is_empty() && !choose {
+        missing.push(format!(
+            "stay (the hotel's name, or the address in {})",
+            card.country
+        ));
+    }
+    if !missing.is_empty() {
+        if purpose.is_empty() {
+            missing.push("purpose (holiday, business, family, study or transit)".into());
+        }
+        return Checked::NeedsInput(missing);
+    }
+    out.insert("stay_name".into(), json!(stay_name));
+    out.insert("stay_address".into(), json!(stay_address));
+    out.insert("stay_kind".into(), json!(stay_kind));
+    if purpose.is_empty() {
+        out.insert("purpose".into(), json!("holiday"));
+        out.insert("purpose_assumed".into(), json!(true));
+    } else {
+        out.insert("purpose".into(), json!(purpose));
+    }
+    if choose {
+        out.insert("choose_address".into(), json!(true));
+    }
+    Checked::Valid(Value::Object(out))
+}
+
+// ---------------------------------------------------------------- the machine
+
+/// The trip facts the form function gets (`crate::forms::Facts` keys).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Trip {
+    pub flight_no: String,
+    pub arrival_date: String,
+    pub origin_city: String,
+    pub origin_country: String,
+    pub arrival_airport: String,
+    pub airline: String,
+    pub stay_name: String,
+    pub stay_address: String,
+    pub stay_kind: String,
+    pub purpose: String,
+    pub departure_date: String,
+    pub next_city: String,
+    pub occupation: String,
+}
+
+impl Trip {
+    /// The trip of the validated arguments.
+    pub fn from_args(a: &Value) -> Trip {
+        let g = |k: &str| s_arg(a, k);
+        Trip {
+            flight_no: g("flight_no"),
+            arrival_date: g("arrival_date"),
+            origin_city: g("origin_city"),
+            origin_country: g("origin_country"),
+            arrival_airport: g("arrival_airport"),
+            airline: g("airline"),
+            stay_name: g("stay_name"),
+            stay_address: g("stay_address"),
+            stay_kind: g("stay_kind"),
+            purpose: g("purpose"),
+            departure_date: g("departure_date"),
+            next_city: g("next_city"),
+            occupation: g("occupation"),
+        }
+    }
+
+    /// The `form_fill` arguments.
+    pub fn args(&self) -> Value {
+        json!({
+            "flight_no": self.flight_no, "arrival_date": self.arrival_date, "origin_city": self.origin_city,
+            "origin_country": self.origin_country, "arrival_airport": self.arrival_airport, "airline": self.airline,
+            "stay_name": self.stay_name, "stay_address": self.stay_address, "stay_kind": self.stay_kind,
+            "purpose": self.purpose, "departure_date": self.departure_date, "next_city": self.next_city,
+            "occupation": self.occupation,
+        })
+    }
+
+    fn arrival(&self) -> Option<NaiveDate> {
+        date_of(&self.arrival_date)
+    }
+
+    /// The stay as the result names it.
+    fn stay(&self) -> String {
+        if !self.stay_name.is_empty() {
+            self.stay_name.clone()
+        } else {
+            self.stay_address.clone()
+        }
+    }
+
+    /// The trip as the result carries it.
+    fn json(&self) -> Value {
+        json!({"flight_no": self.flight_no, "arrival_date": self.arrival_date, "origin_city": self.origin_city,
+               "stay": self.stay(), "stay_kind": self.stay_kind, "purpose": self.purpose})
+    }
+}
+
+/// What the machine reads besides its arguments and the transcript.
+pub struct Machine<'a> {
+    pub profile: &'a Value,
+    pub mail_ready: bool,
+    pub today: NaiveDate,
+    /// the machine's code calls in the transcript before this run's tool call: the ids go on from there
+    pub first: usize,
+}
+
+/// The defaults the form function applied that the user should check (the takeover reason and the result).
+fn assumptions(trip: &Trip, purpose_assumed: bool) -> Vec<String> {
+    let mut parts = vec!["every health and declaration question No".to_string()];
+    if trip.departure_date.is_empty() {
+        if let Some(a) = trip.arrival() {
+            parts.push(format!(
+                "departure {} (arrival + 7 days)",
+                long(a + chrono::Duration::days(7))
+            ));
+        }
+    }
+    if trip.next_city.is_empty() && !trip.origin_city.is_empty() {
+        parts.push(format!("next city {}", trip.origin_city));
+    }
+    if purpose_assumed {
+        parts.push("purpose holiday".into());
+    }
+    parts
+}
+
+const WHICH_MARK: &str = "Which of these addresses";
+
+/// The next step of a run: the validated arguments, the transcript after the tool call.
+pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
+    debug_assert_eq!(tool, ARRIVAL_CARD_FILL);
+    let Some(card) = card_of(&s_arg(args, "country")) else {
+        return Step::Done(
+            json!({"status": "error", "why": "unknown country", "must_say": ["no arrival card for that country"]}),
+        );
+    };
+    let n = m.first
+        + t.iter()
+            .flat_map(tool_calls)
+            .filter(|tc| get_str(tc, "id").starts_with(PREFIX))
+            .count()
+        + 1;
+    let call = |k: usize, name: &str, a: Value| workflow::code_call(PREFIX, n + k, name, a);
+    let trip = Trip::from_args(args);
+    // 1. the bookings: the two fixed searches, the first hits of each; then the model reads them and calls again
+    if truthy(args.get("read_mail").unwrap_or(&Value::Null)) && m.mail_ready {
+        let searches = results_of(t, "gmail_search");
+        if searches.is_empty() {
+            let q = |what: &str| json!({"query": format!("{what} {} newer_than:60d", card.mail_words), "max_results": 10});
+            return Step::Calls(vec![
+                call(0, "gmail_search", q("(flight OR e-ticket OR itinerary)")),
+                call(1, "gmail_search", q("(hotel OR booking OR reservation)")),
+            ]);
+        }
+        let fetched = results_of(t, "gmail_get_message");
+        let fetched_ids: Vec<String> = fetched.iter().map(|(a, _)| sget(a, "message_id")).collect();
+        let mut want: Vec<String> = Vec::new();
+        for (_, msg) in &searches {
+            let mut hits = Vec::new();
+            walk_messages(&json_of(msg), &mut hits);
+            for h in hits.iter().take(2) {
+                let id = get_str(h, "id");
+                if !id.is_empty() && !fetched_ids.contains(&id) && !want.contains(&id) {
+                    want.push(id);
+                }
+            }
+        }
+        if !want.is_empty() {
+            return Step::Calls(
+                want.iter()
+                    .enumerate()
+                    .map(|(i, id)| call(i, "gmail_get_message", json!({"message_id": id})))
+                    .collect(),
+            );
+        }
+        // what the mails may give: the stay only when the profile has no address in the country (code uses the
+        // user's own address then — arrival_address_real 2026-11-01: "stay" listed here, the model asked the user for
+        // a hotel instead of calling again)
+        let own = own_addresses(m.profile, card.country);
+        let missing: Vec<&str> = [
+            (trip.flight_no.is_empty(), "flight_no"),
+            (trip.arrival_date.is_empty(), "arrival_date"),
+            (
+                trip.stay_name.is_empty() && trip.stay_address.is_empty() && own.is_empty(),
+                "stay",
+            ),
+        ]
+        .into_iter()
+        .filter(|(m, _)| *m)
+        .map(|(_, k)| k)
+        .collect();
+        return Step::Done(
+            json!({"status": MAIL_READ, "call_again": ARRIVAL_CARD_FILL, "card": card.name,
+            "country": card.country, "mails": fetched_ids, "facts_from_mail": missing,
+            "own_address_on_profile": !own.is_empty(), "must_say": []}),
+        );
+    }
+    // 2. several of the user's own addresses in the country: the choice card, the user picks
+    if truthy(args.get("choose_address").unwrap_or(&Value::Null)) {
+        let own = own_addresses(m.profile, card.country);
+        let question = format!(
+            "{WHICH_MARK} in {} are you staying at this time?",
+            card.country
+        );
+        if results_of(t, "present_choices").is_empty() {
+            let options: Vec<Value> = own
+                .iter()
+                .map(|(l, a)| json!({"label": l, "details": [a]}))
+                .collect();
+            return Step::Calls(vec![call(
+                0,
+                "present_choices",
+                json!({"question": question, "kind": "clarify", "options": options}),
+            )]);
+        }
+        return Step::Done(
+            json!({"status": "needs_choice", "card": card.name, "question": question,
+            "options": own.iter().map(|(l, _)| l.clone()).collect::<Vec<_>>(), "must_say": []}),
+        );
+    }
+    // 3. the filing window: too early → a reminder for the morning it opens
+    if let (Some(arr), true) = (trip.arrival(), card.window_days > 0) {
+        let opens = arr - chrono::Duration::days(card.window_days);
+        if m.today < opens {
+            if results_of(t, "schedule_create").is_empty() {
+                return Step::Calls(vec![call(
+                    0,
+                    "schedule_create",
+                    json!({"name": format!("{}: {}", card.name, trip.flight_no),
+                           "goal": format!("Fill in my {} for {} arriving on {}", card.name, trip.flight_no, trip.arrival_date),
+                           "kind": "cron", "spec": format!("0 8 {} {} *", opens.day(), opens.month())}),
+                )]);
+            }
+            return Step::Done(
+                json!({"status": "scheduled", "card": card.name, "country": card.country,
+                "window_days": card.window_days, "opens": iso(opens), "trip": trip.json(),
+                "must_say": [format!("{} can only be filed within the {} days before arrival: from {}", card.name, card.window_days, long(opens)),
+                             format!("a reminder is set for the morning of {}", long(opens)),
+                             "nothing is filed yet"]}),
+            );
+        }
+    }
+    // 4. the official page
+    let form_open = results_of(t, "browser_navigate")
+        .iter()
+        .any(|(a, _)| sget(a, "url").contains(card.host));
+    if !form_open {
+        return Step::Calls(vec![call(
+            0,
+            "browser_navigate",
+            json!({"url": card.start_url}),
+        )]);
+    }
+    // 5. the fill, the user's own steps, the review hand-over, the confirmation
+    let fills = results_of(t, "form_fill");
+    let takeovers = results_of(t, "browser_request_takeover");
+    let last_fill = fills.last().map(|(_, msg)| pos(t, msg));
+    let last_back = takeovers
+        .iter()
+        .filter(|(_, msg)| handed_back(msg))
+        .map(|(_, msg)| pos(t, msg))
+        .max();
+    let last_take = takeovers.last().map(|(_, msg)| pos(t, msg));
+    let fill_after_back = matches!((last_fill, last_back), (Some(f), Some(b)) if f > b)
+        || (last_fill.is_some() && last_back.is_none());
+    if last_fill.is_none()
+        || (!fill_after_back && fills.last().is_some_and(|(_, msg)| stopped(msg).is_some()))
+    {
+        // the first fill, or the fill again after the user's own step
+        return Step::Calls(vec![call(0, "form_fill", trip.args())]);
+    }
+    let fill = fills.last().map(|(_, msg)| *msg).unwrap_or(&Value::Null);
+    let fill_pos = last_fill.unwrap_or(0);
+    let take_after_fill = last_take.is_some_and(|tk| tk > fill_pos);
+    let assumed = assumptions(
+        &trip,
+        truthy(args.get("purpose_assumed").unwrap_or(&Value::Null)),
+    );
+    let user_step = |why: &str| {
+        let step = why.split(" is the user's").next().unwrap_or(why).trim();
+        step.strip_prefix("the ").unwrap_or(step).to_string()
+    };
+    // the same user's step handed over twice and still not done: the run ends with where it stands (never a loop)
+    let user_steps_back = takeovers
+        .iter()
+        .filter(|(a, msg)| sget(a, "reason").starts_with("This step is yours") && handed_back(msg))
+        .count();
+    if !take_after_fill && user_steps_back >= 2 {
+        if let Some(why) = stopped(fill) {
+            let step = user_step(&why);
+            return Step::Done(
+                json!({"status": "waiting_on_user", "card": card.name, "step": step,
+                "trip": trip.json(),
+                "must_say": [format!("{} is waiting on a step only you can do: {step}", card.name),
+                             "finish it in the browser tab, then ask to continue", "nothing has been submitted"]}),
+            );
+        }
+    }
+    if !take_after_fill {
+        let reason = match stopped(fill) {
+            Some(why) => format!(
+                "This step is yours: {}. Do it on the page, then hand the browser back and I will fill in the rest of the form.",
+                user_step(&why)
+            ),
+            None => {
+                let left: Vec<String> = json_of(fill)
+                    .get("skipped")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|s| get_str(s, "field").replace('_', " "))
+                    .filter(|f| !f.is_empty())
+                    .collect();
+                format!(
+                    "The {} is filled in from your trip details, profile and passport (Vault). I assumed {} — change any that are not right. Review it{}, then {}; hand the browser back when the confirmation shows.",
+                    card.name,
+                    assumed.join(", "),
+                    if left.is_empty() { String::new() } else { format!(" and fill in {}", left.join(", ")) },
+                    card.user_steps
+                )
+            }
+        };
+        return Step::Calls(vec![call(
+            0,
+            "browser_request_takeover",
+            json!({"reason": reason}),
+        )]);
+    }
+    let back_after_fill = last_back.is_some_and(|b| b > fill_pos);
+    if !back_after_fill {
+        // the page is still the user's (the takeover ended without the hand-back)
+        return Step::Done(
+            json!({"status": "handed_over", "card": card.name, "trip": trip.json(),
+            "user_steps": card.user_steps,
+            "must_say": [format!("the {} is filled in and waiting in the browser tab: {}", card.name, card.user_steps),
+                         "nothing has been submitted yet"]}),
+        );
+    }
+    let snaps = results_of(t, "browser_snapshot");
+    let snap_after_back = snaps
+        .last()
+        .is_some_and(|(_, msg)| last_back.is_some_and(|b| pos(t, msg) > b));
+    if !snap_after_back {
+        return Step::Calls(vec![call(
+            0,
+            "browser_snapshot",
+            json!({"max_chars": 6000}),
+        )]);
+    }
+    let page = snaps
+        .last()
+        .map(|(_, msg)| snapshot_text(msg))
+        .unwrap_or_default();
+    let reference = Regex::new(card.ref_re)
+        .ok()
+        .and_then(|r| r.find(&page).map(|x| x.as_str().to_string()))
+        .or_else(|| crate::outcome::refs_in(&page).into_iter().next());
+    Step::Done(match reference {
+        Some(r) => {
+            json!({"status": "submitted", "card": card.name, "country": card.country, "reference": r,
+            "trip": trip.json(), "assumed": assumed,
+            "identity": "name, birthday, nationality and passport from the profile and the Vault (the passport number is not shown)",
+            "must_say": [format!("{} submitted: reference {r}", card.name)]})
+        }
+        None => {
+            json!({"status": "not_confirmed", "card": card.name, "country": card.country, "trip": trip.json(),
+            "must_say": [format!("the {} is filled in but not confirmed: no reference showed after the hand-back", card.name),
+                         "check the browser tab whether it was submitted"]})
+        }
+    })
+}
+
+// ---------------------------------------------------------------- shared helpers (the transcript, read back)
+
 /// The user's own messages of the transcript, without the system notes appended to them.
 pub(crate) fn user_words(transcript: &[Value]) -> Vec<String> {
     transcript
@@ -182,73 +917,7 @@ pub(crate) fn user_words(transcript: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// A request to do the form or the claim for the user: fill in / out, submit, apply for, file, complete, do, prepare,
-/// start or make a claim, claim it — with what it acts on, so "anything I have to file before I arrive" is not one.
-static ACT_WORDS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)\bfill(ing)?\s+(it\s+|them\s+)?(in|out)\b|\b(fill|submit|complete|file|lodge)\s+(my|the|our|it|this|that|them|an?)\b|\bapply\s+for\b|\bdo\s+(my|our)\b|\bprepare\s+(my|the|our|an?)\b|\bstart\s+(my|the|our|an?)\b[^.?!\n]{0,40}\bclaim|\bmake\s+(a|the|my)\s+claim|\bclaim\s+(it|this|that|them|my|the|for)\b|帮我填|填写|填一下|填好|提交|申请|办理|帮我(理赔|索赔)|去(理赔|索赔)",
-    )
-    .unwrap()
-});
-/// A sentence that asks for information ("Do I need to fill in an arrival card …?", "What do I need to …?"), not a
-/// request to act ("Can you claim it for me?" is one).
-static INFO_QUESTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^\W*(do|does|did|should|must|is|are|was|were|what|which|how|when|where|who|why|need|have)\b|需要.*吗|要不要|是否")
-        .unwrap()
-});
-
-/// Whether the user's own words ask code to act (the regex `act` on the sentences that are not an information
-/// question) — read from the user's messages, never from the model's.
-pub(crate) fn user_asks(texts: &[String], act: &Regex) -> bool {
-    texts.iter().any(|t| {
-        let mut start = 0;
-        let mut found = false;
-        for (i, ch) in t.char_indices() {
-            if matches!(ch, '.' | '!' | '?' | '\n' | '。' | '！' | '？')
-                || i + ch.len_utf8() == t.len()
-            {
-                let end = i + ch.len_utf8();
-                let sentence = t[start..end].trim();
-                start = end;
-                let question = sentence.ends_with('?') || sentence.ends_with('？');
-                if question && INFO_QUESTION.is_match(sentence) {
-                    continue;
-                }
-                if act.is_match(sentence) {
-                    found = true;
-                    break;
-                }
-            }
-        }
-        found
-    })
-}
-
-/// Whether the user's own request asks for a form or a claim to be done (`ACT_WORDS`), not information about it.
-pub(crate) fn asks_to_act(transcript: &[Value]) -> bool {
-    user_asks(&user_words(transcript), &ACT_WORDS)
-}
-
-/// The card whose skill this run loaded last, when it is one the driver knows — only when the user's own request asks
-/// for it to be filled in (`asks_to_act`): a card's skill loaded for information leaves the run to the model
-/// (travel_info_real 2026-11-01: "what do I need to enter each country?" became an SG Arrival Card fill).
-pub fn active(transcript: &[Value]) -> Option<&'static CardSpec> {
-    if !asks_to_act(transcript) {
-        return None;
-    }
-    transcript
-        .iter()
-        .flat_map(tool_calls)
-        .filter_map(|tc| {
-            let (name, args) = stored_call(tc);
-            (name == "load_skill" && sget(&args, "file").trim().is_empty())
-                .then(|| sget(&args, "name"))
-        })
-        .filter_map(|n| CARDS.iter().find(|c| c.skill == n))
-        .next_back()
-}
-
-/// What the driver decides for the next turn.
+/// What a code machine decides for the next turn.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     /// run these calls (one turn)
@@ -256,148 +925,9 @@ pub enum Step {
     /// the machine is done: its JSON result goes back as the workflow tool's `T_result` code exchange and the model
     /// writes the reply from it (`agent/workflow.rs`, docs/json-tools.md)
     Done(Value),
-    /// TRANSITIONAL — for the machines not yet converted to the workflow-tool protocol (driver, claims, apdt, news):
-    /// the run ends with this code-written answer. A converted machine returns `Done` instead.
-    Final(String),
-    /// TRANSITIONAL — as `Final`: one extraction call over the user's words, its JSON then recorded as an
-    /// `extract_facts` result. A converted machine gets its values from the workflow tool's arguments instead.
-    Extract(String),
 }
 
-/// The world the driver reads besides the transcript.
-pub struct World<'a> {
-    /// the user's messages of this chat, oldest first (the request last)
-    pub user_texts: &'a [String],
-    pub profile: &'a Value,
-    pub today: NaiveDate,
-    pub mail_ready: bool,
-    pub zh: bool,
-}
-
-/// The trip facts the form function gets (`crate::forms::Facts` keys) plus where each came from.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Trip {
-    pub flight_no: String,
-    pub arrival_date: String,
-    pub origin_city: String,
-    pub origin_country: String,
-    pub arrival_airport: String,
-    pub airline: String,
-    pub stay_name: String,
-    pub stay_address: String,
-    pub stay_kind: String,
-    pub purpose: String,
-    pub departure_date: String,
-    pub next_city: String,
-}
-
-impl Trip {
-    pub fn args(&self) -> Value {
-        json!({
-            "flight_no": self.flight_no, "arrival_date": self.arrival_date, "origin_city": self.origin_city,
-            "origin_country": self.origin_country, "arrival_airport": self.arrival_airport, "airline": self.airline,
-            "stay_name": self.stay_name, "stay_address": self.stay_address, "stay_kind": self.stay_kind,
-            "purpose": self.purpose, "departure_date": self.departure_date, "next_city": self.next_city,
-        })
-    }
-
-    fn arrival(&self) -> Option<NaiveDate> {
-        NaiveDate::parse_from_str(&self.arrival_date, "%Y-%m-%d").ok()
-    }
-}
-
-static FLIGHT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b([A-Z][A-Z0-9])\s?(\d{2,4})\b").unwrap());
-static ISO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(\d{4}-\d{2}-\d{2})\b").unwrap());
-static LONG_DATE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?,?\s+(\d{4})\b|\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b").unwrap()
-});
-static ARRIVES: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)\barriv(?:es|ing|al)\b[^.\n]{0,40}?\b([A-Z][A-Za-z .'-]{2,30}?)\s*\(([A-Z]{3})\)",
-    )
-    .unwrap()
-});
-static DEPARTS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:departs?|departing|from)\b\s*([A-Z][A-Za-z .'-]{2,30}?)\s*\(([A-Z]{3})\)")
-        .unwrap()
-});
-static HOTEL_SUBJECT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:booking|reservation)\s+(?:confirm(?:ed|ation))?:?\s*(?:for\s+|at\s+)?([A-Z][^\n:,]{3,60}?)(?:\s+\d{1,2}\s|\s*[-–]\s*|\s*$|\n)").unwrap()
-});
-static STAYING: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bstay(?:ing)?\s+(?:at|in)\s+(?:the\s+)?([A-Z][^.,;\n]{3,60}?)(?:\s*[,.;\n]|\s+(?:on|from|for|at)\b|$)").unwrap()
-});
-static ADDRESS_WORDS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(road|rd\.?|street|st\.?|avenue|ave\.?|jalan|lane|drive|boulevard|blvd|soi|lorong|district|floor|#\d|\d{4,6})\b").unwrap()
-});
-
-fn month_no(m: &str) -> u32 {
-    match m.to_lowercase().as_str() {
-        "january" | "jan" => 1,
-        "february" | "feb" => 2,
-        "march" | "mar" => 3,
-        "april" | "apr" => 4,
-        "may" => 5,
-        "june" | "jun" => 6,
-        "july" | "jul" => 7,
-        "august" | "aug" => 8,
-        "september" | "sep" | "sept" => 9,
-        "october" | "oct" => 10,
-        "november" | "nov" => 11,
-        _ => 12,
-    }
-}
-
-/// Every date written in `text`, in order (ISO and "3 November 2026" / "November 3, 2026").
-pub fn dates_in(text: &str) -> Vec<(usize, NaiveDate)> {
-    let mut out: Vec<(usize, NaiveDate)> = ISO
-        .captures_iter(text)
-        .filter_map(|c| {
-            let m = c.get(1)?;
-            NaiveDate::parse_from_str(m.as_str(), "%Y-%m-%d")
-                .ok()
-                .map(|d| (m.start(), d))
-        })
-        .collect();
-    for c in LONG_DATE.captures_iter(text) {
-        let (d, m, y) = match (c.get(1), c.get(2), c.get(3), c.get(4), c.get(5), c.get(6)) {
-            (Some(d), Some(m), Some(y), _, _, _) => (d, m, y),
-            (_, _, _, Some(m), Some(d), Some(y)) => (d, m, y),
-            _ => continue,
-        };
-        if let (Ok(day), Ok(year)) = (d.as_str().parse::<u32>(), y.as_str().parse::<i32>()) {
-            if let Some(date) = NaiveDate::from_ymd_opt(year, month_no(m.as_str()), day) {
-                out.push((c.get(0).unwrap().start(), date));
-            }
-        }
-    }
-    out.sort_by_key(|(i, _)| *i);
-    out
-}
-
-/// The first flight number written in `text` ("SQ 231"): an airline code and 2-4 digits, never a reference like
-/// "DE 123456789" (the SG card's number) or an all-digit code.
-pub(crate) fn flight_no_in(text: &str) -> Option<String> {
-    FLIGHT
-        .captures_iter(text)
-        .find(|c| {
-            let code = &c[1];
-            code.chars()
-                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
-                && code != "DE"
-                && !code.chars().all(|ch| ch.is_ascii_digit())
-        })
-        .map(|c| format!("{} {}", &c[1], &c[2]))
-}
-
-fn is_flight_text(t: &str) -> bool {
-    static F: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(flight|e-?ticket|itinerary|departs?|arrives?|boarding)\b").unwrap()
-    });
-    F.is_match(t)
-}
-
+/// The country of a city in the table ("Sydney" → "Australia"); "" when it is not there.
 pub(crate) fn country_of_city(city: &str) -> &'static str {
     match city.to_lowercase().as_str() {
         "sydney" | "melbourne" | "brisbane" | "perth" | "adelaide" => "Australia",
@@ -416,148 +946,6 @@ pub(crate) fn country_of_city(city: &str) -> &'static str {
         "shanghai" | "beijing" | "shenzhen" | "guangzhou" => "China",
         _ => "",
     }
-}
-
-/// The trip read from the bookings and the user's words: `texts` are (sender, subject, body) of the fetched mail,
-/// `user_texts` the user's messages. Regexes only.
-pub fn extract(
-    texts: &[(String, String, String)],
-    user_texts: &[String],
-    today: NaiveDate,
-) -> Trip {
-    let mut t = Trip::default();
-    // the flight: the e-ticket first, then the user's words
-    let flight_texts: Vec<String> = texts
-        .iter()
-        .filter(|(_, s, b)| is_flight_text(&format!("{s}\n{b}")))
-        .map(|(f, s, b)| format!("{f}\n{s}\n{b}"))
-        .chain(user_texts.iter().cloned())
-        .collect();
-    for text in &flight_texts {
-        if t.flight_no.is_empty() {
-            if let Some(f) = flight_no_in(text) {
-                t.flight_no = f;
-            }
-        }
-        if t.arrival_airport.is_empty() {
-            if let Some(c) = ARRIVES.captures(text) {
-                t.arrival_airport = c[2].to_string();
-                // the arrival date: the first date after "arrives", else the latest date in the text
-                let after = &text[c.get(0).unwrap().end()..];
-                if let Some((_, d)) = dates_in(after).first() {
-                    t.arrival_date = d.format("%Y-%m-%d").to_string();
-                }
-            }
-        }
-        if t.origin_city.is_empty() {
-            if let Some(c) = DEPARTS.captures(text) {
-                t.origin_city = c[1].trim().to_string();
-            }
-        }
-        if t.arrival_date.is_empty() {
-            let mut ds: Vec<NaiveDate> = dates_in(text)
-                .into_iter()
-                .map(|(_, d)| d)
-                .filter(|d| *d >= today - chrono::Duration::days(1))
-                .collect();
-            ds.sort();
-            if let Some(d) = ds.last() {
-                t.arrival_date = d.format("%Y-%m-%d").to_string();
-            }
-        }
-        if t.airline.is_empty() && !t.flight_no.is_empty() {
-            if let Some(first) = text.lines().next() {
-                let name = first
-                    .split('<')
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .trim_matches('"');
-                if !name.is_empty()
-                    && !name.contains('@')
-                    && name.len() <= 40
-                    && !first.contains("Dear")
-                {
-                    t.airline = name.to_string();
-                }
-            }
-        }
-    }
-    t.origin_country = country_of_city(&t.origin_city).to_string();
-    // the stay: a booking's subject and its address line, else the user's words
-    for (_, subject, body) in texts {
-        if is_flight_text(subject) && !subject.to_lowercase().contains("hotel") {
-            continue;
-        }
-        let Some(c) = HOTEL_SUBJECT.captures(subject) else {
-            continue;
-        };
-        let name = c[1].trim().to_string();
-        if name.is_empty() {
-            continue;
-        }
-        t.stay_name = name.clone();
-        t.stay_kind = "hotel".into();
-        // "<name>, <address>." in the body
-        if let Some(i) = body.find(&name) {
-            let rest = &body[i + name.len()..];
-            let rest = rest.trim_start_matches([',', ' ']);
-            let end = rest.find(['.', '\n']).unwrap_or(rest.len());
-            let addr = rest[..end].trim();
-            if ADDRESS_WORDS.is_match(addr) {
-                t.stay_address = addr.to_string();
-            }
-        }
-        break;
-    }
-    if t.stay_name.is_empty() {
-        for u in user_texts {
-            if let Some(c) = STAYING.captures(u) {
-                let s = c[1].trim().to_string();
-                if ADDRESS_WORDS.is_match(&s) {
-                    t.stay_address = s;
-                    t.stay_kind = "other".into();
-                } else {
-                    t.stay_name = s;
-                    t.stay_kind = "hotel".into();
-                }
-                break;
-            }
-        }
-    }
-    // the purpose, from the user's words only
-    static PURPOSE: LazyLock<[(Regex, &str); 5]> = LazyLock::new(|| {
-        [
-            (
-                Regex::new(
-                    r"(?i)\b(holiday|vacation|leisure|touris[mt]|sightseeing)\b|度假|旅游|旅遊",
-                )
-                .unwrap(),
-                "holiday",
-            ),
-            (
-                Regex::new(r"(?i)\b(business|work trip|conference|meeting|client)\b|出差|商务")
-                    .unwrap(),
-                "business",
-            ),
-            (
-                Regex::new(r"(?i)\b(family|relatives|parents|friends?)\b|探亲|家人").unwrap(),
-                "family",
-            ),
-            (
-                Regex::new(r"(?i)\b(study|studies|university|school)\b|留学|上学").unwrap(),
-                "study",
-            ),
-            (Regex::new(r"(?i)\btransit\b|转机|過境").unwrap(), "transit"),
-        ]
-    });
-    for u in user_texts.iter().rev() {
-        if let Some((_, p)) = PURPOSE.iter().find(|(r, _)| r.is_match(u)) {
-            t.purpose = p.to_string();
-            break;
-        }
-    }
-    t
 }
 
 /// The profile's addresses in `country`: (label, address).
@@ -668,479 +1056,6 @@ pub(crate) fn stopped(fill: &Value) -> Option<String> {
         .map(|f| get_str(f, "why"))
 }
 
-fn call(n: usize, name: &str, args: Value) -> ToolCall {
-    ToolCall {
-        id: format!("drv_{n}"),
-        name: name.into(),
-        args,
-    }
-}
-
-/// Whether the driver already asked the user (the question is an earlier assistant message of this chat).
-pub(crate) fn asked_before(transcript: &[Value], marker: &str) -> bool {
-    transcript
-        .iter()
-        .any(|m| get_str(m, "role") == "assistant" && content_of(m).contains(marker))
-}
-
-const ASK_MARK: &str = "arrive on (number and date)";
-const WHICH_MARK: &str = "Which of these addresses";
-
-/// The next step of the run.
-pub fn next(card: &CardSpec, transcript: &[Value], w: &World) -> Step {
-    let n = transcript
-        .iter()
-        .flat_map(tool_calls)
-        .filter(|tc| get_str(tc, "id").starts_with("drv_"))
-        .count()
-        + 1;
-    // 1. the bookings: the two fixed searches, then the first hits of each
-    let searches = results_of(transcript, "gmail_search");
-    if w.mail_ready && searches.is_empty() {
-        let q = |what: &str| json!({"query": format!("{what} {} newer_than:60d", card.mail_words), "max_results": 10});
-        return Step::Calls(vec![
-            call(n, "gmail_search", q("(flight OR e-ticket OR itinerary)")),
-            call(
-                n + 1,
-                "gmail_search",
-                q("(hotel OR booking OR reservation)"),
-            ),
-        ]);
-    }
-    let fetched = results_of(transcript, "gmail_get_message");
-    let fetched_ids: Vec<String> = fetched.iter().map(|(a, _)| sget(a, "message_id")).collect();
-    let mut want: Vec<String> = Vec::new();
-    for (_, m) in &searches {
-        let mut hits = Vec::new();
-        walk_messages(&json_of(m), &mut hits);
-        for h in hits.iter().take(2) {
-            let id = get_str(h, "id");
-            if !id.is_empty() && !fetched_ids.contains(&id) && !want.contains(&id) {
-                want.push(id);
-            }
-        }
-    }
-    if !want.is_empty() {
-        return Step::Calls(
-            want.iter()
-                .enumerate()
-                .map(|(i, id)| call(n + i, "gmail_get_message", json!({"message_id": id})))
-                .collect(),
-        );
-    }
-    // 2. the facts
-    let texts: Vec<(String, String, String)> = fetched
-        .iter()
-        .map(|(_, m)| {
-            let v = json_of(m);
-            (
-                get_str(&v, "from"),
-                get_str(&v, "subject"),
-                get_str(&v, "body"),
-            )
-        })
-        .collect();
-    let mut trip = extract(&texts, w.user_texts, w.today);
-    // the facts an earlier form_fill of this run was given (its arguments survive the transcript's compression, the
-    // mail bodies do not — arrival_cards2_real 2026-11-01: Taiwan asked for the flight again after the email step)
-    if let Some((args, _)) = results_of(transcript, "form_fill").last() {
-        let keep = |cur: &mut String, k: &str| {
-            if cur.is_empty() {
-                *cur = sget(args, k).trim().to_string();
-            }
-        };
-        keep(&mut trip.flight_no, "flight_no");
-        keep(&mut trip.arrival_date, "arrival_date");
-        keep(&mut trip.origin_city, "origin_city");
-        keep(&mut trip.origin_country, "origin_country");
-        keep(&mut trip.arrival_airport, "arrival_airport");
-        keep(&mut trip.airline, "airline");
-        keep(&mut trip.stay_name, "stay_name");
-        keep(&mut trip.stay_address, "stay_address");
-        keep(&mut trip.stay_kind, "stay_kind");
-        keep(&mut trip.purpose, "purpose");
-    }
-    if let Some((_, m)) = results_of(transcript, "extract_facts").last() {
-        let v = json_of(m);
-        let fill = |cur: &mut String, k: &str| {
-            if cur.is_empty() {
-                *cur = get_str(&v, k).trim().to_string();
-            }
-        };
-        fill(&mut trip.flight_no, "flight_no");
-        fill(&mut trip.arrival_date, "arrival_date");
-        fill(&mut trip.origin_city, "origin_city");
-        fill(&mut trip.stay_name, "stay_name");
-        fill(&mut trip.stay_address, "stay_address");
-        fill(&mut trip.purpose, "purpose");
-        if trip.stay_kind.is_empty() && !(trip.stay_name.is_empty() && trip.stay_address.is_empty())
-        {
-            trip.stay_kind = "hotel".into();
-        }
-    }
-    let flight_known = !trip.flight_no.is_empty() && trip.arrival().is_some();
-    // the regexes found no flight in mail that is there: the extraction call, once
-    // (or in the user's own answer to the question: anything beyond the bare request)
-    if !flight_known
-        && (!texts.is_empty() || w.user_texts.len() > 1)
-        && results_of(transcript, "extract_facts").is_empty()
-    {
-        let joined: String = texts
-            .iter()
-            .map(|(f, s, b)| format!("From: {f}\nSubject: {s}\n{b}"))
-            .chain(w.user_texts.iter().map(|u| format!("User: {u}")))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        return Step::Extract(take_chars(&joined, 12000).to_string());
-    }
-    // every value the form needs is settled before the form opens (the facts, the defaults, the choice of address, the
-    // one question): once the official page is open no question is asked again — a fact lost from the transcript
-    // since (compression) is a blank field the user fills in at the hand-over, never a pause mid-form
-    let form_open = results_of(transcript, "browser_navigate")
-        .iter()
-        .any(|(a, _)| sget(a, "url").contains(card.host));
-    // 3. the stay: a booking wins; else the user's own address in the country
-    let own = own_addresses(w.profile, card.country);
-    if trip.stay_name.is_empty() && trip.stay_address.is_empty() {
-        match own.len() {
-            1 => {
-                trip.stay_address = own[0].1.clone();
-                trip.stay_kind = "own".into();
-            }
-            k if k > 1 => {
-                // the user named one of them?
-                let picked = w.user_texts.iter().rev().find_map(|u| {
-                    let ul = u.to_lowercase();
-                    own.iter()
-                        .find(|(l, _)| !l.is_empty() && ul.contains(&l.to_lowercase()))
-                });
-                match picked {
-                    Some((_, addr)) => {
-                        trip.stay_address = addr.clone();
-                        trip.stay_kind = "own".into();
-                    }
-                    None if form_open => {}
-                    None => {
-                        // the question is a choice card (`present_choices`, the addresses by their labels, no pick):
-                        // asked once — keyed on that call, never on the text of a message
-                        let asked = results_of(transcript, "present_choices")
-                            .into_iter()
-                            .filter(|(a, _)| sget(a, "question").starts_with(WHICH_MARK))
-                            .map(|(_, m)| pos(transcript, m))
-                            .next_back();
-                        match asked {
-                            None => {
-                                let options: Vec<Value> = own
-                                    .iter()
-                                    .map(|(l, a)| json!({"label": l, "details": [a]}))
-                                    .collect();
-                                return Step::Calls(vec![call(
-                                    n,
-                                    "present_choices",
-                                    json!({"question": format!("{WHICH_MARK} in {} are you staying at this time?", card.country),
-                                           "kind": "clarify", "options": options}),
-                                )]);
-                            }
-                            // shown, and the user has not answered yet: the turn ends (the card is the question)
-                            Some(p)
-                                if !transcript[p..]
-                                    .iter()
-                                    .any(|m| get_str(m, "role") == "user") =>
-                            {
-                                return Step::Final(if w.zh {
-                                    format!("你的档案里有几个{}地址，请在上面的选项里选这次住的那一个。", card.country)
-                                } else {
-                                    format!(
-                                        "You have {} addresses in {} on your profile: pick the one you are staying at this time above.",
-                                        own.len(),
-                                        card.country
-                                    )
-                                });
-                            }
-                            Some(_) => {}
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    // 4. missing facts: ask once (the flight, the stay, the purpose), then fill what there is
-    let missing: Vec<&str> = [
-        (!flight_known, "flight"),
-        (
-            trip.stay_name.is_empty() && trip.stay_address.is_empty(),
-            "stay",
-        ),
-        (trip.purpose.is_empty(), "purpose"),
-    ]
-    .iter()
-    .filter(|(m, _)| *m)
-    .map(|(_, k)| *k)
-    .collect();
-    if !missing.is_empty()
-        && !form_open
-        && !asked_before(transcript, ASK_MARK)
-        && !asked_before(transcript, "哪个航班")
-    {
-        let mut lines = Vec::new();
-        if missing.contains(&"flight") {
-            lines.push(format!("- Which flight do you {ASK_MARK}?"));
-        }
-        if missing.contains(&"stay") {
-            lines.push(format!(
-                "- Where are you staying in {} (hotel name, or the address)?",
-                card.country
-            ));
-        }
-        if missing.contains(&"purpose") {
-            lines.push(
-                "- Is the trip a holiday, business, visiting family, study or transit?".to_string(),
-            );
-        }
-        let mut q = format!(
-            "To fill in your {}, I still need:\n{}\nYou can also upload the e-ticket or booking confirmation.",
-            card.name,
-            lines.join("\n")
-        );
-        if !w.mail_ready {
-            q.push_str("\n\n(Connect your mailbox in Connections and I can read the flight and the stay from your booking emails myself.)");
-        }
-        return Step::Final(q);
-    }
-    if trip.purpose.is_empty() {
-        trip.purpose = "holiday".into();
-    }
-    // 5. the filing window: too early → a reminder, and the answer
-    if let (Some(arr), true) = (trip.arrival(), card.window_days > 0 && !form_open) {
-        let opens = arr - chrono::Duration::days(card.window_days);
-        if w.today < opens {
-            let made = results_of(transcript, "schedule_create");
-            if made.is_empty() {
-                return Step::Calls(vec![call(
-                    n,
-                    "schedule_create",
-                    json!({"name": format!("{}: {}", card.name, trip.flight_no),
-                           "goal": format!("Fill in my {} for {} arriving on {}", card.name, trip.flight_no, trip.arrival_date),
-                           "kind": "cron", "spec": format!("0 8 {} {} *", opens.day(), opens.month())}),
-                )]);
-            }
-            return Step::Final(format!(
-                "Your {} can only be filed within the {} days before arrival: for {} arriving on {} that is from **{}**. \
-I've set a reminder for that morning and will fill it in then. Nothing is filed yet.",
-                card.name,
-                card.window_days,
-                trip.flight_no,
-                trip.arrival_date,
-                opens.format("%-d %B %Y")
-            ));
-        }
-    }
-    // 6. the official page
-    if !form_open {
-        return Step::Calls(vec![call(
-            n,
-            "browser_navigate",
-            json!({"url": card.start_url}),
-        )]);
-    }
-    // 7. the fill, the user's own steps, the review hand-over, the confirmation
-    let fills = results_of(transcript, "form_fill");
-    let takeovers = results_of(transcript, "browser_request_takeover");
-    let last_fill = fills.last().map(|(_, m)| pos(transcript, m));
-    let last_back = takeovers
-        .iter()
-        .filter(|(_, m)| handed_back(m))
-        .map(|(_, m)| pos(transcript, m))
-        .max();
-    let last_take = takeovers.last().map(|(_, m)| pos(transcript, m));
-    let fill_after_back = matches!((last_fill, last_back), (Some(f), Some(b)) if f > b)
-        || (last_fill.is_some() && last_back.is_none());
-    if last_fill.is_none()
-        || (!fill_after_back && fills.last().is_some_and(|(_, m)| stopped(m).is_some()))
-    {
-        // the first fill, or the fill again after the user's own step
-        return Step::Calls(vec![call(n, "form_fill", trip.args())]);
-    }
-    let fill = fills.last().unwrap().1;
-    let fill_json = json_of(fill);
-    let fill_pos = last_fill.unwrap();
-    let take_after_fill = last_take.is_some_and(|t| t > fill_pos);
-    // the same user's step handed over twice and still not done: the run ends with where it stands (never a loop)
-    let user_steps_back = takeovers
-        .iter()
-        .filter(|(a, m)| sget(a, "reason").starts_with("This step is yours") && handed_back(m))
-        .count();
-    if !take_after_fill && stopped(fill).is_some() && user_steps_back >= 2 {
-        let step = stopped(fill).unwrap_or_default();
-        let step = step
-            .split(" is the user's")
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_start_matches("the ")
-            .to_string();
-        return Step::Final(if w.zh {
-            format!("你的{}还停在需要你本人完成的一步：{step}。请到浏览器标签页完成它，再让我继续；目前什么都没有提交。", card.name)
-        } else {
-            format!(
-                "Your {} is waiting on a step only you can do: {step}. Finish it in the browser tab, then ask me to continue; nothing has been submitted.",
-                card.name
-            )
-        });
-    }
-    if !take_after_fill {
-        let reason = match stopped(fill) {
-            Some(why) => {
-                // "the email verification (…) is the user's: hand the page over for it, then call form_fill again"
-                let step = why.split(" is the user's").next().unwrap_or(&why).trim();
-                let step = step.strip_prefix("the ").unwrap_or(step);
-                format!(
-                    "This step is yours: {step}. Do it on the page, then hand the browser back and I will fill in the rest of the form."
-                )
-            }
-            None => {
-                let left: Vec<String> = fill_json
-                    .get("skipped")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .map(|s| get_str(s, "field").replace('_', " "))
-                    .filter(|f| !f.is_empty())
-                    .collect();
-                let assumed = assumptions(&trip);
-                format!(
-                    "The {} is filled in from your {}profile and passport (Vault). {}Review it{}, then {}; hand the browser back when the confirmation shows.",
-                    card.name,
-                    if texts.is_empty() { "" } else { "e-ticket, booking, " },
-                    assumed,
-                    if left.is_empty() { String::new() } else { format!(" and fill in {}", left.join(", ")) },
-                    card.user_steps
-                )
-            }
-        };
-        return Step::Calls(vec![call(
-            n,
-            "browser_request_takeover",
-            json!({"reason": reason}),
-        )]);
-    }
-    let back_after_fill = last_back.is_some_and(|b| b > fill_pos);
-    if !back_after_fill {
-        // the takeover is still open (the loop only gets here once it came back)
-        return Step::Final(String::new());
-    }
-    let snaps = results_of(transcript, "browser_snapshot");
-    let snap_after_back = snaps
-        .last()
-        .is_some_and(|(_, m)| pos(transcript, m) > last_back.unwrap());
-    if !snap_after_back {
-        return Step::Calls(vec![call(
-            n,
-            "browser_snapshot",
-            json!({"max_chars": 6000}),
-        )]);
-    }
-    let page = snapshot_text(snaps.last().unwrap().1);
-    let reference = Regex::new(card.ref_re)
-        .ok()
-        .and_then(|r| r.find(&page).map(|m| m.as_str().to_string()))
-        .or_else(|| crate::outcome::refs_in(&page).into_iter().next());
-    Step::Final(answer(card, &trip, reference.as_deref(), w.zh))
-}
-
-fn assumptions(trip: &Trip) -> String {
-    let mut parts = vec!["every health and declaration question No".to_string()];
-    if trip.departure_date.is_empty() {
-        if let Some(a) = trip.arrival() {
-            parts.push(format!(
-                "departure {} (arrival + 7 days)",
-                (a + chrono::Duration::days(7)).format("%-d %B %Y")
-            ));
-        }
-    }
-    if trip.next_city.is_empty() && !trip.origin_city.is_empty() {
-        parts.push(format!("next city {}", trip.origin_city));
-    }
-    format!(
-        "I assumed {} — change any that are not right. ",
-        parts.join(", ")
-    )
-}
-
-/// The answer after the user's Submit.
-pub fn answer(card: &CardSpec, trip: &Trip, reference: Option<&str>, zh: bool) -> String {
-    let stay = if !trip.stay_name.is_empty() {
-        trip.stay_name.clone()
-    } else if trip.stay_kind == "own" {
-        format!("your own address ({})", trip.stay_address)
-    } else {
-        trip.stay_address.clone()
-    };
-    let trip_line = format!(
-        "{} arriving {}{}, purpose {}{}",
-        trip.flight_no,
-        trip.arrival_date,
-        if trip.origin_city.is_empty() {
-            String::new()
-        } else {
-            format!(" from {}", trip.origin_city)
-        },
-        trip.purpose,
-        if stay.is_empty() {
-            String::new()
-        } else {
-            format!(", staying at {stay}")
-        }
-    );
-    match (reference, zh) {
-        (Some(r), false) => format!(
-            "Your {} was **submitted**: reference **{}**.\n\n- Trip: {}\n- Name, birthday, nationality and passport from your profile and Vault (the passport number is not shown here).\n\nAt the checkpoint show your passport; the card is on record.",
-            card.name, r, trip_line
-        ),
-        (Some(r), true) => format!(
-            "你的{}已提交：编号 **{}**。\n\n- 行程：{}\n- 姓名、生日、国籍和护照来自档案和保险箱（护照号不在这里显示）。\n\n过关时出示护照即可。",
-            card.name, r, trip_line
-        ),
-        (None, false) => format!(
-            "Your {} is filled in but **not confirmed yet**: no reference showed after the hand-back. Open the browser tab to check whether it was submitted, or ask me to try again.\n\n- Trip: {}",
-            card.name, trip_line
-        ),
-        (None, true) => format!(
-            "你的{}已填好，但**还没有确认**：交还后页面上没有编号。请到浏览器标签页确认是否已提交，或让我再试一次。\n\n- 行程：{}",
-            card.name, trip_line
-        ),
-    }
-}
-
-/// The extraction call's instruction (the last resort when the regexes find no flight): JSON only.
-pub const EXTRACT_SYSTEM: &str = "Read the booking emails and the user's words below and return JSON only, exactly these keys: \
-{\"flight_no\": \"\", \"arrival_date\": \"YYYY-MM-DD\", \"origin_city\": \"\", \"stay_name\": \"\", \"stay_address\": \"\", \"purpose\": \"\"}. \
-flight_no is the flight that ARRIVES in the destination country (airline code and number, e.g. \"SQ 231\"); arrival_date its arrival day; \
-origin_city where it departs; stay_name the hotel or host, stay_address its address; purpose one of holiday, business, family, study, transit. \
-Leave a value empty when the texts do not give it. Never invent.";
-
-/// The facts the extraction call returned, as the transcript records them (an `extract_facts` tool exchange).
-pub fn extract_exchange(n: usize, text: &str, facts: &Value) -> Vec<Value> {
-    let id = format!("drv_{n}");
-    let mut m = Map::new();
-    for k in [
-        "flight_no",
-        "arrival_date",
-        "origin_city",
-        "stay_name",
-        "stay_address",
-        "purpose",
-    ] {
-        m.insert(k.into(), json!(get_str(facts, k)));
-    }
-    vec![
-        json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
-               "function": {"name": "extract_facts", "arguments": json!({"chars": text.chars().count()}).to_string()}}]}),
-        json!({"role": "tool", "tool_call_id": id, "content": Value::Object(m).to_string()}),
-    ]
-}
-
 /// The questions a driven run put to the user after its form opened (`ask_user`, a `present_choices` with no pick —
 /// a comparison that holds its pick is shown, not asked): the drivers' tests assert there are none.
 #[cfg(test)]
@@ -1162,48 +1077,17 @@ pub(crate) fn questions_after_navigate(transcript: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// Drives `next` from `t` until the run ends, answering each call with `answer(name)`; panics on a question to the user
-/// after the form opened (a call above, or a final text before the hand-over that is not the end). The transcript and
-/// the final text.
-#[cfg(test)]
-pub(crate) fn drive_to_end(
-    mut t: Vec<Value>,
-    next: impl Fn(&[Value]) -> Step,
-    answer: impl Fn(&str) -> String,
-    prefix: &str,
-) -> (Vec<Value>, String) {
-    for i in 0..40 {
-        match next(&t) {
-            Step::Calls(c) => {
-                for (j, call) in c.iter().enumerate() {
-                    t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": format!("{prefix}{i}_{j}"), "type": "function",
-                        "function": {"name": call.name, "arguments": call.args.to_string()}}]}));
-                    t.push(json!({"role": "tool", "tool_call_id": format!("{prefix}{i}_{j}"), "content": answer(&call.name)}));
-                }
-                let q = questions_after_navigate(&t);
-                assert!(q.is_empty(), "a question after the form opened: {q:?}");
-            }
-            Step::Final(a) => {
-                let handed = t.iter().flat_map(tool_calls).any(|tc| {
-                    stored_call(tc).0 == "browser_request_takeover"
-                        || stored_call(tc).0 == "gmail_create_draft"
-                });
-                assert!(
-                    handed,
-                    "the run ended before the hand-over (a question mid-form?): {a}"
-                );
-                return (t, a);
-            }
-            Step::Extract(_) => panic!("an extraction after the form opened"),
-            Step::Done(v) => panic!("this machine is not converted yet: {v}"),
-        }
-    }
-    panic!("the run did not end")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()
+    }
+
+    fn card(skill: &str) -> &'static CardSpec {
+        CARDS.iter().find(|c| c.skill == skill).unwrap()
+    }
 
     fn step(id: &str, name: &str, args: Value, result: &str) -> Vec<Value> {
         vec![
@@ -1213,561 +1097,633 @@ mod tests {
         ]
     }
 
-    fn eticket() -> (String, String, String) {
-        ("Singapore Airlines <noreply@singaporeairlines.example>".into(),
-         "Your e-ticket: SQ 231 SYD-SIN 2026-11-03".into(),
-         "E-ticket receipt. Booking ref 9QW3PL. Passenger: LU/JORDAN. SQ 231 departs Sydney (SYD) 2026-11-03 09:10, arrives Singapore (SIN) 2026-11-03 18:40. One way, economy, 30 kg baggage.".into())
+    fn checked(args: Value, profile: &Value, mail_ready: bool, t: &[Value]) -> Checked {
+        check(
+            ARRIVAL_CARD_FILL,
+            &args,
+            &Ctx {
+                profile,
+                today: today(),
+                mail_ready,
+                transcript: t,
+            },
+        )
     }
 
-    fn hotel() -> (String, String, String) {
-        ("Marina Bayfront Hotel <reservations@stay.example>".into(),
-         "Booking confirmed: Marina Bayfront Hotel".into(),
-         "Dear Jordan Lu, your reservation is confirmed. Confirmation HB-55120. Arrival 2026-11-03, check-in from 15:00. Marina Bayfront Hotel, 10 Bayfront Avenue, Singapore 018956. We look forward to welcoming you.".into())
-    }
-
-    #[test]
-    fn the_trip_is_read_from_the_bookings_and_the_request() {
-        let today = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
-        let t = extract(
-            &[eticket(), hotel()],
-            &[
-                "Please fill in my SG Arrival Card for my trip to Singapore — it's a holiday."
-                    .into(),
-            ],
-            today,
-        );
-        assert_eq!(t.flight_no, "SQ 231");
-        assert_eq!(t.arrival_date, "2026-11-03");
-        assert_eq!(t.origin_city, "Sydney");
-        assert_eq!(t.origin_country, "Australia");
-        assert_eq!(t.arrival_airport, "SIN");
-        assert_eq!(t.airline, "Singapore Airlines");
-        assert_eq!(t.stay_name, "Marina Bayfront Hotel");
-        assert_eq!(t.stay_address, "10 Bayfront Avenue, Singapore 018956");
-        assert_eq!(
-            (t.stay_kind.as_str(), t.purpose.as_str()),
-            ("hotel", "holiday")
-        );
-        // the user's own words, no mail: a long date and "staying at"
-        let u = extract(&[], &["I arrive on TG 476 on 3 November 2026, staying at the Siam Riverside Hotel. Business trip.".into()], today);
-        assert_eq!(
-            (u.flight_no.as_str(), u.arrival_date.as_str()),
-            ("TG 476", "2026-11-03")
-        );
-        assert_eq!(
-            (u.stay_name.as_str(), u.purpose.as_str()),
-            ("Siam Riverside Hotel", "business")
-        );
-        assert!(extract(&[], &["Fill in my card please".into()], today)
-            .flight_no
-            .is_empty());
-    }
-
-    #[test]
-    fn a_card_is_driven_only_when_the_user_asks_for_it_to_be_filled() {
-        let with = |ask: &str| {
-            let mut t = vec![json!({"role": "user", "content": ask})];
-            t.extend(step(
-                "k1",
-                "load_skill",
-                json!({"name": "sg-arrival-card"}),
-                "---",
-            ));
-            t
-        };
-        // travel_info_real on b24962d: an information question became an SG Arrival Card fill
-        assert!(active(&with("I'm flying to Bangkok on Monday, 9 November 2026 and then on to Singapore on Friday, 13 November 2026. What do I need to enter each country? Please set reminders for anything I have to file before I arrive.")).is_none());
-        assert!(active(&with("I'm flying to Paris next month. Do I need to fill in an arrival card or ETIAS or anything before the trip?")).is_none());
-        for ask in [
-            "Please fill in my SG Arrival Card for my trip to Singapore — it's a holiday.",
-            "Please do my Visit Japan Web registration for my trip to Tokyo — it's a holiday.",
-            "Please apply for my UK ETA for my trip to London — it's a holiday.",
-            "Can you fill out the arrival card for me?",
-            "帮我填新加坡入境卡",
-        ] {
-            assert_eq!(
-                active(&with(ask)).map(|c| c.skill),
-                Some("sg-arrival-card"),
-                "{ask}"
-            );
+    fn valid(args: Value, profile: &Value, mail_ready: bool, t: &[Value]) -> Value {
+        match checked(args, profile, mail_ready, t) {
+            Checked::Valid(a) => a,
+            other => panic!("not valid: {other:?}"),
         }
-        // the request in a later message of the chat counts too
-        let mut t = with("What is the SG Arrival Card?");
-        assert!(active(&t).is_none());
-        t.push(json!({"role": "user", "content": "OK, go ahead and fill in the form."}));
-        assert!(active(&t).is_some());
+    }
+
+    /// The transcript as the run loop leaves it after a valid call: the user's message, the call, `running`.
+    fn started(user: &str, args: &Value) -> Vec<Value> {
+        let mut t = vec![json!({"role": "user", "content": user})];
+        t.extend(step(
+            "call_w",
+            ARRIVAL_CARD_FILL,
+            args.clone(),
+            &json!({"status": "running", "args": args}).to_string(),
+        ));
+        t
+    }
+
+    fn sg_facts() -> Value {
+        json!({"country": "Singapore", "flight_no": "SQ 231", "arrival_date": "2026-11-03", "origin_city": "Sydney",
+               "arrival_airport": "SIN", "airline": "Singapore Airlines", "stay_name": "Marina Bayfront Hotel",
+               "stay_address": "10 Bayfront Avenue, Singapore 018956", "stay_kind": "hotel", "purpose": "holiday"})
+    }
+
+    const BACK: &str = "\"Takeover finished: the user handed browser control back.\"";
+
+    /// Runs the machine from a started transcript, answering each code call with `answer(name, args)`, until it is
+    /// done; panics on a question to the user after the form opened and on a code-written answer.
+    fn run(
+        args: &Value,
+        mut t: Vec<Value>,
+        m: &Machine,
+        answer: impl Fn(&str, &Value) -> String,
+    ) -> (Vec<Value>, Value) {
+        let from = t
+            .iter()
+            .rposition(|x| tool_calls(x).iter().any(|tc| get_str(tc, "id") == "call_w"))
+            .unwrap_or(0);
+        for _ in 0..40 {
+            match next(ARRIVAL_CARD_FILL, args, &t[from..], m) {
+                Step::Calls(c) => {
+                    for call in &c {
+                        assert!(call.id.starts_with(PREFIX), "{}", call.id);
+                        assert!(
+                            !t.iter()
+                                .flat_map(tool_calls)
+                                .any(|tc| get_str(tc, "id") == call.id),
+                            "the id {} was used before",
+                            call.id
+                        );
+                        let content = answer(&call.name, &call.args);
+                        t.extend(step(&call.id, &call.name, call.args.clone(), &content));
+                    }
+                    let q = questions_after_navigate(&t);
+                    assert!(q.is_empty(), "a question after the form opened: {q:?}");
+                }
+                Step::Done(v) => return (t, v),
+            }
+        }
+        panic!("the run did not end")
+    }
+
+    fn calls_of(t: &[Value], name: &str) -> Vec<Value> {
+        t.iter()
+            .flat_map(tool_calls)
+            .map(stored_call)
+            .filter(|(n, _)| n == name)
+            .map(|(_, a)| a)
+            .collect()
+    }
+
+    fn must(v: &Value) -> String {
+        workflow::must_say(v).join(" | ")
+    }
+
+    fn eticket() -> Value {
+        json!({"from": "Singapore Airlines <noreply@singaporeairlines.example>", "subject": "Your e-ticket: SQ 231 SYD-SIN 2026-11-03",
+               "body": "SQ 231 departs Sydney (SYD) 2026-11-03 09:10, arrives Singapore (SIN) 2026-11-03 18:40."})
     }
 
     #[test]
-    fn the_own_address_rule() {
-        let p = json!({"address_home": "12 Harbour St, Sydney NSW 2000, Australia", "address:Singapore flat": "10 Bayfront Ave, Singapore 018956",
-                       "address:Parents in Singapore": "5 Jalan Kayu, Singapore 799999"});
-        let own = own_addresses(&p, "Singapore");
-        assert_eq!(own.len(), 2);
-        assert_eq!(own[0].0, "Singapore flat");
-        assert!(own_addresses(&p, "Malaysia").is_empty());
+    fn the_schema_is_in_the_catalog_and_names_every_country() {
+        let s = tool_schemas();
+        assert_eq!(super::super::tools::tool_name(&s[0]), ARRIVAL_CARD_FILL);
+        let countries = &s[0]["function"]["parameters"]["properties"]["country"]["enum"];
+        assert_eq!(countries.as_array().unwrap().len(), CARDS.len());
+        assert!(super::super::tools::is_local(ARRIVAL_CARD_FILL));
+        assert_eq!(
+            card_of("singapore").map(|c| c.skill),
+            Some("sg-arrival-card")
+        );
+        assert_eq!(card_of("United Kingdom").map(|c| c.skill), Some("uk-eta"));
+        assert!(card_of("France").is_none());
     }
 
     #[test]
-    fn two_own_addresses_are_a_choice_card_then_the_users_label() {
-        // arrival_address2_real "two" on b24962d: the question was the final text, not a choice card
-        let card = CARDS.iter().find(|c| c.skill == "sg-arrival-card").unwrap();
-        let today = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
-        let profile = json!({"name_en": "JORDAN LU", "nationality": "Australia",
-                             "address:Singapore flat": "10 Bayfront Avenue, Singapore 018956",
+    fn the_arguments_are_validated_and_normalised() {
+        let p = json!({});
+        // a flight number in another spelling, the origin's country from the city table, the purpose defaulted
+        let mut a = sg_facts();
+        a["flight_no"] = json!("sq231");
+        a["purpose"] = json!("");
+        a["arrival_airport"] = json!("Changi");
+        let v = valid(a, &p, false, &[]);
+        assert_eq!(v["flight_no"], "SQ 231");
+        assert_eq!(v["origin_country"], "Australia");
+        assert_eq!(
+            (v["purpose"].as_str(), v["purpose_assumed"].as_bool()),
+            (Some("holiday"), Some(true))
+        );
+        assert!(
+            v.get("arrival_airport").is_none(),
+            "not an IATA code: dropped"
+        );
+        assert!(v.get("read_mail").is_none());
+        // what the model can fix
+        for (k, bad, why) in [
+            ("country", json!("France"), "country: one of"),
+            ("flight_no", json!("12345"), "flight_no"),
+            ("arrival_date", json!("2026-10-20"), "in the past"),
+            ("arrival_date", json!("next week"), "not a YYYY-MM-DD"),
+        ] {
+            let mut a = sg_facts();
+            a[k] = bad;
+            match checked(a, &p, false, &[]) {
+                Checked::Invalid(pr) => assert!(pr.iter().any(|x| x.contains(why)), "{k}: {pr:?}"),
+                other => panic!("{k}: {other:?}"),
+            }
+        }
+        // a departure before the arrival is dropped (the default applies)
+        let mut a = sg_facts();
+        a["departure_date"] = json!("2026-11-01");
+        assert!(valid(a, &p, false, &[]).get("departure_date").is_none());
+        // the UK ETA has no trip section: the country alone runs
+        let v = valid(
+            json!({"country": "United Kingdom", "occupation": "Software engineer"}),
+            &p,
+            true,
+            &[],
+        );
+        assert_eq!(v["occupation"], "Software engineer");
+        assert!(v.get("read_mail").is_none());
+    }
+
+    #[test]
+    fn the_bookings_are_fetched_before_anything_is_asked_and_only_the_user_is_asked_the_rest() {
+        let p = json!({});
+        let bare = json!({"country": "Thailand", "purpose": "holiday"});
+        // a mailbox: the bookings first
+        assert_eq!(valid(bare.clone(), &p, true, &[])["read_mail"], true);
+        // no mailbox: what only the user can give, before any page opens
+        match checked(json!({"country": "Thailand"}), &p, false, &[]) {
+            Checked::NeedsInput(m) => {
+                let m = m.join(" | ");
+                assert!(
+                    m.contains("flight_no")
+                        && m.contains("arrival_date")
+                        && m.contains("stay")
+                        && m.contains("purpose"),
+                    "{m}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // the bookings were fetched (a mail_read result in the chat): asked, not fetched again
+        let mut t = started("Fill in my TDAC", &bare);
+        t.extend(workflow::result_exchange(
+            &t,
+            ARRIVAL_CARD_FILL,
+            &json!({"status": MAIL_READ, "mails": [], "must_say": []}),
+        ));
+        match checked(bare.clone(), &p, true, &t) {
+            Checked::NeedsInput(m) => assert!(!m.join(" ").contains("purpose"), "{m:?}"),
+            other => panic!("{other:?}"),
+        }
+        // the call again carries the fields of the earlier call (the facts read in the mail, then the stay alone)
+        let mut first = sg_facts();
+        first
+            .as_object_mut()
+            .unwrap()
+            .retain(|k, _| !k.starts_with("stay"));
+        let t = started("Fill in my SG Arrival Card", &first);
+        let profile = json!({"address:Singapore flat": "10 Bayfront Avenue, Singapore 018956",
                              "address:Parents in Singapore": "5 Jalan Kayu, Singapore 799487"});
-        let mut user = vec![
-            "Please fill in my SG Arrival Card for my trip to Singapore — it's a holiday."
-                .to_string(),
-        ];
-        let mut t = vec![json!({"role": "user", "content": user[0]})];
-        t.extend(step(
-            "k1",
-            "load_skill",
-            json!({"name": "sg-arrival-card"}),
-            "---",
-        ));
-        t.extend(step("drv_1", "gmail_search", json!({}), "{\"count\": 1, \"messages\": [{\"id\": \"m1\", \"subject\": \"Your e-ticket: SQ 231\"}]}"));
-        t.extend(step(
-            "drv_2",
-            "gmail_search",
-            json!({}),
-            "{\"count\": 0, \"messages\": []}",
-        ));
-        let (f, s, b) = eticket();
-        t.extend(step(
-            "drv_3",
-            "gmail_get_message",
-            json!({"message_id": "m1"}),
-            &json!({"from": f, "subject": s, "body": b}).to_string(),
-        ));
-        let w = World {
-            user_texts: &user,
-            profile: &profile,
-            today,
-            mail_ready: true,
-            zh: false,
+        let v = valid(
+            json!({"country": "Singapore", "own_address": "parents in singapore"}),
+            &profile,
+            false,
+            &t,
+        );
+        assert_eq!(
+            (
+                v["flight_no"].as_str(),
+                v["stay_address"].as_str(),
+                v["stay_kind"].as_str()
+            ),
+            (
+                Some("SQ 231"),
+                Some("5 Jalan Kayu, Singapore 799487"),
+                Some("own")
+            )
+        );
+        match checked(
+            json!({"country": "Singapore", "own_address": "Office"}),
+            &profile,
+            false,
+            &t,
+        ) {
+            Checked::Invalid(pr) => assert!(pr[0].contains("\"Singapore flat\""), "{pr:?}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_users_own_address_is_the_stay_and_several_are_a_choice() {
+        let one = json!({"address_home": "12 Harbour St, Sydney NSW 2000, Australia",
+                         "address:Singapore flat": "10 Bayfront Avenue, Singapore 018956"});
+        let mut a = sg_facts();
+        for k in ["stay_name", "stay_address", "stay_kind"] {
+            a.as_object_mut().unwrap().remove(k);
+        }
+        let v = valid(a.clone(), &one, false, &[]);
+        assert_eq!(
+            (v["stay_address"].as_str(), v["stay_kind"].as_str()),
+            (Some("10 Bayfront Avenue, Singapore 018956"), Some("own"))
+        );
+        let two = json!({"address:Singapore flat": "10 Bayfront Avenue, Singapore 018956",
+                         "address:Parents in Singapore": "5 Jalan Kayu, Singapore 799487"});
+        let v = valid(a.clone(), &two, false, &[]);
+        assert_eq!(v["choose_address"], true);
+        // the choice card, then the turn ends with the question as data
+        let t = started("Please fill in my SG Arrival Card", &v);
+        let m = Machine {
+            profile: &two,
+            mail_ready: false,
+            today: today(),
+            first: 0,
         };
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!("expected the choice card")
-        };
-        assert_eq!(c[0].name, "present_choices");
-        assert_eq!(sget(&c[0].args, "kind"), "clarify");
-        assert!(c[0].args.get("picked").is_none());
-        let labels: Vec<String> = c[0].args["options"]
+        let (t, res) = run(&v, t, &m, |_, _| "{\"shown\": 2, \"picked\": \"\"}".into());
+        let cards = calls_of(&t, "present_choices");
+        assert_eq!(cards.len(), 1);
+        let labels: Vec<String> = cards[0]["options"]
             .as_array()
             .unwrap()
             .iter()
             .map(|o| sget(o, "label"))
             .collect();
         assert_eq!(labels, ["Singapore flat", "Parents in Singapore"]);
-        assert_eq!(
-            c[0].args["options"][0]["details"][0],
-            "10 Bayfront Avenue, Singapore 018956"
-        );
-        t.extend(step(
-            "drv_4",
-            "present_choices",
-            c[0].args.clone(),
-            "{\"shown\": 2, \"verified\": false, \"picked\": \"\"}",
-        ));
-        // shown: the turn ends without asking again
-        let Step::Final(a) = next(card, &t, &w) else {
-            panic!("expected the end of the turn")
-        };
-        assert!(a.contains("pick the one"), "{a}");
-        // the user's label: the parents' address goes into the card
-        user.push("The Parents in Singapore one, please.".into());
-        t.push(json!({"role": "user", "content": user[1]}));
-        let w = World {
-            user_texts: &user,
-            profile: &profile,
-            today,
-            mail_ready: true,
-            zh: false,
-        };
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!("expected the form")
-        };
-        assert_ne!(c[0].name, "present_choices");
+        assert!(cards[0].get("picked").is_none());
+        assert_eq!(res["status"], "needs_choice");
+        assert!(calls_of(&t, "browser_navigate").is_empty());
+        assert_eq!(own_addresses(&two, "Malaysia").len(), 0);
     }
 
     #[test]
-    fn the_steps_follow_the_transcript() {
-        let card = CARDS.iter().find(|c| c.skill == "sg-arrival-card").unwrap();
-        let today = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
-        let user = vec![
-            "Please fill in my SG Arrival Card for my trip to Singapore — it's a holiday."
-                .to_string(),
-        ];
-        let profile = json!({"name_en": "JORDAN LU", "nationality": "Australia"});
-        let w = World {
-            user_texts: &user,
-            profile: &profile,
-            today,
+    fn the_bookings_are_fetched_by_code_then_the_card_is_filled_and_handed_over() {
+        let p = json!({"name_en": "JORDAN LU", "nationality": "Australia"});
+        let m = Machine {
+            profile: &p,
             mail_ready: true,
-            zh: false,
+            today: today(),
+            first: 0,
         };
-        let mut t = vec![json!({"role": "user", "content": user[0]})];
-        t.extend(step(
-            "k1",
-            "load_skill",
-            json!({"name": "sg-arrival-card"}),
-            "---\nname: sg-arrival-card\n---",
-        ));
-        assert_eq!(active(&t).map(|c| c.skill), Some("sg-arrival-card"));
-        // 1. the two searches
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!()
-        };
-        assert_eq!(c.len(), 2);
-        assert!(sget(&c[0].args, "query")
+        // 1. the bare call: the two fixed searches, the hits, then mail_read for the model to read them
+        let bare = valid(
+            json!({"country": "Singapore", "purpose": "holiday"}),
+            &p,
+            true,
+            &[],
+        );
+        let t = started(
+            "Please fill in my SG Arrival Card for my trip to Singapore — it's a holiday.",
+            &bare,
+        );
+        let (t, res) = run(&bare, t, &m, |name, _| {
+            match name {
+            "gmail_search" => "{\"count\": 1, \"messages\": [{\"id\": \"m1\", \"subject\": \"Your e-ticket: SQ 231\"}]}".into(),
+            "gmail_get_message" => eticket().to_string(),
+            other => panic!("{other}"),
+        }
+        });
+        let q = calls_of(&t, "gmail_search");
+        assert_eq!(q.len(), 2);
+        assert!(sget(&q[0], "query")
             .contains("(flight OR e-ticket OR itinerary) (Singapore OR SIN OR Changi)"));
-        t.extend(step("drv_1", "gmail_search", c[0].args.clone(), "{\"count\": 1, \"messages\": [{\"id\": \"m1\", \"subject\": \"Your e-ticket: SQ 231\"}]}"));
-        t.extend(step("drv_2", "gmail_search", c[1].args.clone(), "{\"count\": 1, \"messages\": [{\"id\": \"m2\", \"subject\": \"Booking confirmed: Marina Bayfront Hotel\"}]}"));
-        // 2. the messages
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!()
-        };
-        assert_eq!(
-            c.iter()
-                .map(|x| sget(&x.args, "message_id"))
-                .collect::<Vec<_>>(),
-            ["m1", "m2"]
-        );
-        let (f, s, b) = eticket();
+        assert_eq!(calls_of(&t, "gmail_get_message").len(), 1, "m1 once");
+        assert_eq!(res["status"], MAIL_READ);
+        assert_eq!(res["mails"], json!(["m1"]));
+        assert!(calls_of(&t, "browser_navigate").is_empty());
+        // 2. the model calls again with what the mail says: the page, the fill, the hand-over, the reference
+        let mut t = t;
+        t.extend(workflow::result_exchange(&t, ARRIVAL_CARD_FILL, &res));
+        let args = valid(sg_facts(), &p, true, &t);
+        assert!(args.get("read_mail").is_none());
         t.extend(step(
-            "drv_3",
-            "gmail_get_message",
-            json!({"message_id": "m1"}),
-            &json!({"from": f, "subject": s, "body": b}).to_string(),
+            "call_w",
+            ARRIVAL_CARD_FILL,
+            sg_facts(),
+            &json!({"status": "running", "args": args}).to_string(),
         ));
-        let (f, s, b) = hotel();
-        t.extend(step(
-            "drv_4",
-            "gmail_get_message",
-            json!({"message_id": "m2"}),
-            &json!({"from": f, "subject": s, "body": b}).to_string(),
-        ));
-        // 3. inside the window: the official page
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!()
-        };
+        let first = t
+            .iter()
+            .flat_map(tool_calls)
+            .filter(|tc| get_str(tc, "id").starts_with(PREFIX))
+            .count();
+        let m = Machine { first, ..m };
+        let (t, res) = run(&args, t, &m, |name, _| {
+            match name {
+            "browser_navigate" => "<untrusted_content source=\"web page https://eservices.ica.gov.sg/arrivalcard/sgac\">{}</untrusted_content>".into(),
+            "form_fill" => "{\"url\": \"x\", \"filled\": [{\"op\": \"text\", \"field\": \"flight\", \"ok\": true}], \"skipped\": [{\"field\": \"phone\", \"why\": \"no value\"}]}".into(),
+            "browser_request_takeover" => BACK.into(),
+            "browser_snapshot" => "<untrusted_content source=\"web page https://eservices.ica.gov.sg/sgac_done\">Submitted. DE Number: DE202611020123 Thank you.</untrusted_content>".into(),
+            other => panic!("{other}"),
+        }
+        });
         assert_eq!(
-            (c[0].name.as_str(), sget(&c[0].args, "url").as_str()),
-            ("browser_navigate", card.start_url)
+            calls_of(&t, "browser_navigate")[0]["url"],
+            card("sg-arrival-card").start_url
         );
-        t.extend(step("drv_5", "browser_navigate", c[0].args.clone(), "<untrusted_content source=\"web page https://eservices.ica.gov.sg/arrivalcard/sgac\">{}</untrusted_content>"));
-        // 4. form_fill with the facts
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!()
-        };
-        assert_eq!(c[0].name, "form_fill");
-        assert_eq!(sget(&c[0].args, "flight_no"), "SQ 231");
-        assert_eq!(sget(&c[0].args, "stay_name"), "Marina Bayfront Hotel");
-        t.extend(step("drv_6", "form_fill", c[0].args.clone(), "{\"url\": \"https://eservices.ica.gov.sg/arrivalcard/sgac\", \"filled\": [{\"op\": \"text\", \"field\": \"flight\", \"ok\": true}], \"skipped\": [{\"field\": \"phone\", \"why\": \"no value\"}]}"));
-        // 5. the hand-over, naming the user's steps and what is left
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!()
-        };
-        assert_eq!(c[0].name, "browser_request_takeover");
-        let reason = sget(&c[0].args, "reason");
+        let fill = &calls_of(&t, "form_fill")[0];
+        assert_eq!(
+            (sget(fill, "flight_no"), sget(fill, "stay_name")),
+            ("SQ 231".into(), "Marina Bayfront Hotel".into())
+        );
+        let reason = sget(&calls_of(&t, "browser_request_takeover")[0], "reason");
         assert!(
             reason.contains("tick the declaration and press Submit")
                 && reason.contains("fill in phone")
-                && reason.contains("arrival + 7 days"),
+                && reason.contains("arrival + 7 days")
+                && reason.contains("next city Sydney"),
             "{reason}"
         );
-        t.extend(step(
-            "drv_7",
-            "browser_request_takeover",
-            c[0].args.clone(),
-            "\"Takeover finished: the user handed browser control back.\"",
-        ));
-        // 6. the confirmation, then the answer with the reference
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!()
-        };
-        assert_eq!(c[0].name, "browser_snapshot");
-        t.extend(step("drv_8", "browser_snapshot", c[0].args.clone(), "<untrusted_content source=\"web page https://eservices.ica.gov.sg/sgac_done\">Submitted. DE Number: DE202611020123 Thank you.</untrusted_content>"));
-        let Step::Final(a) = next(card, &t, &w) else {
-            panic!()
-        };
+        assert_eq!(res["status"], "submitted");
+        assert_eq!(res["reference"], "DE202611020123");
+        assert_eq!(res["trip"]["stay"], "Marina Bayfront Hotel");
         assert!(
-            a.contains("**DE202611020123**")
-                && a.contains("SQ 231")
-                && a.contains("Marina Bayfront Hotel"),
-            "{a}"
+            must(&res).contains("SG Arrival Card submitted: reference DE202611020123"),
+            "{res}"
         );
+        // the ids went on from the first run's
+        let ids: Vec<String> = t
+            .iter()
+            .flat_map(tool_calls)
+            .map(|tc| get_str(tc, "id"))
+            .filter(|i| i.starts_with(PREFIX))
+            .collect();
+        let mut uniq = ids.clone();
+        uniq.dedup();
+        assert_eq!(ids.len(), uniq.len(), "{ids:?}");
     }
 
     #[test]
-    fn a_users_own_step_is_handed_over_then_the_fill_goes_on() {
-        let card = CARDS.iter().find(|c| c.skill == "cn-arrival-card").unwrap();
-        let today = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
-        let user = vec!["Fill in my China arrival card: MU 562 arriving Shanghai (PVG) 2026-11-02 from Sydney (SYD), staying at Bund Riverside Hotel, 99 Zhongshan East 1st Road. Holiday.".to_string()];
-        let profile = json!({});
-        let w = World {
-            user_texts: &user,
-            profile: &profile,
-            today,
-            mail_ready: false,
-            zh: false,
+    fn the_mail_read_result_leaves_the_stay_to_the_users_own_address() {
+        // arrival_address_real 2026-11-01: the result listed the stay as missing, and the model asked the user for a
+        // hotel instead of calling again (the profile's one Singapore address is the stay)
+        let p = json!({"address:Singapore flat": "10 Bayfront Avenue, Singapore 018956"});
+        let m = Machine {
+            profile: &p,
+            mail_ready: true,
+            today: today(),
+            first: 0,
         };
-        let mut t = step(
-            "k1",
-            "load_skill",
-            json!({"name": "cn-arrival-card"}),
-            "---",
+        let bare = valid(json!({"country": "Singapore"}), &p, true, &[]);
+        let (_, res) = run(
+            &bare,
+            started("Fill in my SG Arrival Card", &bare),
+            &m,
+            |name, _| match name {
+                "gmail_search" => "{\"count\": 1, \"messages\": [{\"id\": \"m1\"}]}".into(),
+                _ => eticket().to_string(),
+            },
         );
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!()
+        assert_eq!(res["status"], MAIL_READ);
+        assert_eq!(res["call_again"], ARRIVAL_CARD_FILL);
+        assert_eq!(res["facts_from_mail"], json!(["flight_no", "arrival_date"]));
+        assert_eq!(res["own_address_on_profile"], true);
+        // no address on the profile: the stay is one of the facts the mails may give
+        let none = json!({});
+        let m = Machine {
+            profile: &none,
+            ..m
         };
-        assert_eq!(c[0].name, "browser_navigate"); // no mail connected: straight to the page
-        t.extend(step("drv_1", "browser_navigate", c[0].args.clone(), "<untrusted_content source=\"web page https://s.nia.gov.cn/ArrivalCardFillingPC/entry-registation-form\">{}</untrusted_content>"));
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!()
-        };
-        assert_eq!(c[0].name, "form_fill");
-        t.extend(step("drv_2", "form_fill", c[0].args.clone(), "{\"url\": \"https://s.nia.gov.cn/x\", \"filled\": [{\"op\": \"require\", \"field\": \"photo\", \"ok\": false, \"stop\": true, \"why\": \"the passport photo upload (step 1) is the user's: hand the page over for it, then call form_fill again\"}]}"));
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!()
-        };
-        assert_eq!(c[0].name, "browser_request_takeover");
-        assert!(sget(&c[0].args, "reason").contains("passport photo upload"));
-        t.extend(step(
-            "drv_3",
-            "browser_request_takeover",
-            c[0].args.clone(),
-            "\"Takeover finished: the user handed browser control back.\"",
-        ));
-        let Step::Calls(c) = next(card, &t, &w) else {
-            panic!()
-        };
-        assert_eq!(c[0].name, "form_fill"); // again, after the user's step
-                                            // the hand-over named the step as the user's, in plain words
-        let args: Value = serde_json::from_str(
-            t[t.len() - 2]["tool_calls"][0]["function"]["arguments"]
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(
-            sget(&args, "reason").starts_with("This step is yours: passport photo upload"),
-            "{}",
-            sget(&args, "reason")
+        let (_, res) = run(
+            &bare,
+            started("Fill in my SG Arrival Card", &bare),
+            &m,
+            |name, _| match name {
+                "gmail_search" => "{\"count\": 0, \"messages\": []}".into(),
+                _ => eticket().to_string(),
+            },
         );
-        // the facts come from the earlier form_fill's arguments when the user's words are gone (compression)
-        let none: Vec<String> = vec![];
-        let w2 = World {
-            user_texts: &none,
-            profile: &profile,
-            today,
-            mail_ready: false,
-            zh: false,
-        };
-        let Step::Calls(c) = next(card, &t, &w2) else {
-            panic!()
-        };
         assert_eq!(
-            (c[0].name.as_str(), sget(&c[0].args, "flight_no").as_str()),
-            ("form_fill", "MU 562")
+            res["facts_from_mail"],
+            json!(["flight_no", "arrival_date", "stay"])
         );
     }
 
     #[test]
-    fn missing_facts_are_asked_once_and_an_early_trip_gets_a_reminder() {
-        let card = CARDS.iter().find(|c| c.skill == "sg-arrival-card").unwrap();
-        let today = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
-        let profile = json!({});
-        let user = vec!["Please fill in my SG Arrival Card.".to_string()];
-        let w = World {
-            user_texts: &user,
-            profile: &profile,
-            today,
+    fn every_cards_reference_is_read_from_its_confirmation_page() {
+        // arrival_cards3_real 2026-11-01: All Indonesia's "ALLIND-332190" was not read
+        for (skill, page) in [
+            ("id-arrival-card", "Submitted. Reference ALLIND-332190"),
+            ("sg-arrival-card", "DE Number: DE202611020123"),
+            ("th-arrival-card", "TDAC No. TH7D3K9Q2"),
+            ("kr-arrival-card", "KR-EA-77120934"),
+            ("uk-eta", "Application reference 4402-1187-6631"),
+        ] {
+            let r = Regex::new(card(skill).ref_re).unwrap();
+            assert!(r.is_match(page), "{skill}");
+        }
+    }
+
+    #[test]
+    fn no_reference_after_the_hand_back_is_not_confirmed() {
+        let p = json!({});
+        let args = valid(sg_facts(), &p, false, &[]);
+        let m = Machine {
+            profile: &p,
             mail_ready: false,
-            zh: false,
+            today: today(),
+            first: 0,
         };
-        let t = step(
-            "k1",
-            "load_skill",
-            json!({"name": "sg-arrival-card"}),
-            "---",
+        let (_, res) = run(&args, started("x", &args), &m, |name, _| {
+            match name {
+            "browser_request_takeover" => BACK.into(),
+            "form_fill" => "{\"url\": \"x\", \"filled\": []}".into(),
+            _ => "<untrusted_content source=\"web page https://eservices.ica.gov.sg/sgarrivalcard/\">Review your details</untrusted_content>".into(),
+        }
+        });
+        assert_eq!(res["status"], "not_confirmed");
+        assert!(must(&res).contains("not confirmed"), "{res}");
+        // a takeover that ended without the hand-back: the page is the user's
+        let (_, res) = run(&args, started("x", &args), &m, |name, _| match name {
+            "browser_request_takeover" => "\"The user did not hand the browser back.\"".into(),
+            _ => "{\"url\": \"x\", \"filled\": []}".into(),
+        });
+        assert_eq!(res["status"], "handed_over");
+        assert!(must(&res).contains("tick the declaration"), "{res}");
+    }
+
+    #[test]
+    fn a_users_own_step_is_handed_over_then_the_fill_goes_on_and_twice_undone_ends_the_run() {
+        let p = json!({});
+        let args = valid(
+            json!({"country": "China", "flight_no": "MU 562", "arrival_date": "2026-11-02", "origin_city": "Sydney",
+                   "arrival_airport": "PVG", "stay_name": "Bund Riverside Hotel",
+                   "stay_address": "99 Zhongshan East 1st Road", "purpose": "holiday"}),
+            &p,
+            false,
+            &[],
         );
-        let Step::Final(q) = next(card, &t, &w) else {
-            panic!()
+        let m = Machine {
+            profile: &p,
+            mail_ready: false,
+            today: today(),
+            first: 0,
         };
+        let stop = "{\"url\": \"https://s.nia.gov.cn/x\", \"filled\": [{\"op\": \"require\", \"field\": \"photo\", \"ok\": false, \"stop\": true, \"why\": \"the passport photo upload (step 1) is the user's: hand the page over for it, then call form_fill again\"}]}";
+        let (t, res) = run(
+            &args,
+            started("Fill in my China arrival card", &args),
+            &m,
+            |name, _| {
+                match name {
+            "browser_navigate" => "<untrusted_content source=\"web page https://s.nia.gov.cn/ArrivalCardFillingPC/\">{}</untrusted_content>".into(),
+            "form_fill" => stop.into(),
+            "browser_request_takeover" => BACK.into(),
+            other => panic!("{other}"),
+        }
+            },
+        );
+        let names: Vec<String> = t
+            .iter()
+            .flat_map(tool_calls)
+            .map(|tc| stored_call(tc).0)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ARRIVAL_CARD_FILL,
+                "browser_navigate",
+                "form_fill",
+                "browser_request_takeover",
+                "form_fill",
+                "browser_request_takeover",
+                "form_fill"
+            ]
+        );
+        let reason = sget(&calls_of(&t, "browser_request_takeover")[0], "reason");
         assert!(
-            q.contains(ASK_MARK)
-                && q.contains("Where are you staying")
-                && q.contains("holiday, business")
-                && q.contains("Connect your mailbox"),
-            "{q}"
+            reason.starts_with("This step is yours: passport photo upload"),
+            "{reason}"
         );
-        // the user answers: on to the page (the chat's history carries the question)
-        let answered = vec![
-            "Please fill in my SG Arrival Card.".to_string(),
-            "SQ 231 on 3 November 2026, staying at Marina Bayfront Hotel, holiday".to_string(),
-        ];
-        let w2 = World {
-            user_texts: &answered,
-            profile: &profile,
-            today,
+        assert_eq!(calls_of(&t, "form_fill")[1]["flight_no"], "MU 562");
+        assert_eq!(res["status"], "waiting_on_user");
+        assert!(
+            must(&res).contains("waiting on a step only you can do: passport photo upload"),
+            "{res}"
+        );
+    }
+
+    #[test]
+    fn an_early_trip_gets_a_reminder_for_the_morning_the_window_opens() {
+        let p = json!({});
+        let mut a = sg_facts();
+        a["arrival_date"] = json!("2026-12-20");
+        let args = valid(a, &p, false, &[]);
+        let m = Machine {
+            profile: &p,
             mail_ready: false,
-            zh: false,
+            today: today(),
+            first: 0,
         };
-        let mut t2 = vec![
-            json!({"role": "user", "content": "Please fill in my SG Arrival Card."}),
-            json!({"role": "assistant", "content": q}),
-        ];
-        t2.extend(step(
-            "k2",
-            "load_skill",
-            json!({"name": "sg-arrival-card"}),
-            "---",
-        ));
-        let Step::Calls(c) = next(card, &t2, &w2) else {
+        let (t, res) = run(
+            &args,
+            started("Fill in my SG Arrival Card", &args),
+            &m,
+            |_, _| "created".into(),
+        );
+        let s = calls_of(&t, "schedule_create");
+        assert_eq!(sget(&s[0], "spec"), "0 8 17 12 *");
+        assert!(sget(&s[0], "goal").contains("SQ 231"));
+        assert!(calls_of(&t, "browser_navigate").is_empty());
+        assert_eq!(
+            (res["status"].as_str(), res["opens"].as_str()),
+            (Some("scheduled"), Some("2026-12-17"))
+        );
+        assert!(
+            must(&res).contains("from 17 December 2026")
+                && must(&res).contains("nothing is filed yet"),
+            "{res}"
+        );
+        // Visit Japan Web has no window: the page at once
+        let jp = valid(
+            json!({"country": "Japan", "flight_no": "NH 880", "arrival_date": "2026-12-20", "stay_name": "Shinjuku Granbell Inn"}),
+            &p,
+            false,
+            &[],
+        );
+        let Step::Calls(c) = next(ARRIVAL_CARD_FILL, &jp, &started("x", &jp)[1..], &m) else {
             panic!()
         };
         assert_eq!(c[0].name, "browser_navigate");
-        // too early: the reminder, then the answer
-        let far = vec!["Fill in my SG Arrival Card: SQ 231 on 20 December 2026, staying at Marina Bayfront Hotel, holiday".to_string()];
-        let w3 = World {
-            user_texts: &far,
-            profile: &profile,
-            today,
-            mail_ready: false,
-            zh: false,
-        };
-        let mut t3 = step(
-            "k1",
-            "load_skill",
-            json!({"name": "sg-arrival-card"}),
-            "---",
-        );
-        let Step::Calls(c) = next(card, &t3, &w3) else {
-            panic!()
-        };
-        assert_eq!(c[0].name, "schedule_create");
-        assert_eq!(sget(&c[0].args, "spec"), "0 8 17 12 *");
-        t3.extend(step(
-            "drv_1",
-            "schedule_create",
-            c[0].args.clone(),
-            "created",
-        ));
-        let Step::Final(a) = next(card, &t3, &w3) else {
-            panic!()
-        };
-        assert!(
-            a.contains("17 December 2026") && a.contains("Nothing is filed yet"),
-            "{a}"
-        );
     }
 
     #[test]
-    fn a_users_step_undone_twice_ends_the_run() {
-        let card = CARDS.iter().find(|c| c.skill == "cn-arrival-card").unwrap();
-        let today = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
-        let user = vec!["Fill in my China arrival card: MU 562 arriving Shanghai (PVG) 2026-11-02 from Sydney (SYD), staying at Bund Riverside Hotel, 99 Zhongshan East 1st Road. Holiday.".to_string()];
-        let profile = json!({});
-        let w = World {
-            user_texts: &user,
-            profile: &profile,
-            today,
-            mail_ready: false,
-            zh: false,
-        };
-        let stop = "{\"url\": \"https://s.nia.gov.cn/x\", \"filled\": [{\"op\": \"require\", \"field\": \"photo\", \"ok\": false, \"stop\": true, \"why\": \"the passport photo upload (step 1) is the user's: hand the page over for it, then call form_fill again\"}]}";
-        let back = "\"Takeover finished: the user handed browser control back.\"";
-        let mut t = step(
-            "k1",
-            "load_skill",
-            json!({"name": "cn-arrival-card"}),
-            "---",
-        );
-        t.extend(step("drv_1", "browser_navigate", json!({"url": card.start_url}), "<untrusted_content source=\"web page https://s.nia.gov.cn/ArrivalCardFillingPC/\">{}</untrusted_content>"));
-        let mut n = 2;
-        for round in 0..3 {
-            let Step::Calls(c) = next(card, &t, &w) else {
-                panic!("round {round}")
-            };
-            assert_eq!(c[0].name, "form_fill", "round {round}");
-            t.extend(step(
-                &format!("drv_{n}"),
-                "form_fill",
-                c[0].args.clone(),
-                stop,
-            ));
-            n += 1;
-            match next(card, &t, &w) {
-                Step::Calls(c) if round < 2 => {
-                    assert_eq!(c[0].name, "browser_request_takeover");
-                    t.extend(step(
-                        &format!("drv_{n}"),
-                        "browser_request_takeover",
-                        c[0].args.clone(),
-                        back,
-                    ));
-                    n += 1;
-                }
-                Step::Final(a) if round == 2 => {
-                    assert!(
-                        a.contains("waiting on a step only you can do: passport photo upload"),
-                        "{a}"
-                    );
-                }
-                other => panic!("round {round}: {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn every_card_settles_its_values_before_the_form_and_asks_nothing_after() {
-        // the facts, the defaults, the address and the one question all come before browser_navigate: a run whose
-        // facts are gone once the form is open (compression; no mail, a bare request) fills what it has and hands over
-        // — no ask_user, no choice card, no question as the reply
-        let today = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
-        for card in CARDS {
-            let user = vec![format!("Please fill in my {}.", card.name)];
-            // two own addresses in the country: the choice card would be a question
-            let profile = json!({format!("address:Flat in {}", card.country): format!("1 Main Road, {}", card.country),
-                                 format!("address:Parents in {}", card.country): format!("2 Side Road, {}", card.country)});
-            let w = World {
-                user_texts: &user,
-                profile: &profile,
-                today,
-                mail_ready: false,
-                zh: false,
-            };
-            let mut t = vec![json!({"role": "user", "content": user[0]})];
-            t.extend(step("k1", "load_skill", json!({"name": card.skill}), "---"));
-            t.extend(step(
-                "drv_1",
-                "browser_navigate",
-                json!({"url": card.start_url}),
-                &format!(
-                    "<untrusted_content source=\"web page {}\">{{}}</untrusted_content>",
-                    card.start_url
-                ),
-            ));
-            let Step::Calls(c) = next(card, &t, &w) else {
-                panic!("{}: not the fill", card.skill)
-            };
-            assert_eq!(c[0].name, "form_fill", "{}", card.skill);
-            let (t, _) = drive_to_end(
-                t,
-                |t| next(card, t, &w),
-                |name| match name {
-                    "form_fill" => "{\"url\": \"x\", \"filled\": []}".into(),
-                    "browser_request_takeover" => {
-                        "\"Takeover finished: the user handed browser control back.\"".into()
-                    }
-                    _ => "Submitted.".into(),
-                },
-                "drv_t",
+    fn every_card_fills_from_its_arguments_and_asks_nothing_after_the_page_opens() {
+        let p = json!({});
+        for c in CARDS {
+            let args = valid(
+                json!({"country": c.country, "flight_no": "XX 100", "arrival_date": "2026-11-02",
+                       "stay_name": "Test Hotel", "purpose": "holiday", "occupation": "Engineer"}),
+                &p,
+                false,
+                &[],
             );
-            assert!(questions_after_navigate(&t).is_empty());
+            let m = Machine {
+                profile: &p,
+                mail_ready: false,
+                today: today(),
+                first: 0,
+            };
+            let (t, res) = run(&args, started("x", &args), &m, |name, _| match name {
+                "form_fill" => "{\"url\": \"x\", \"filled\": []}".into(),
+                "browser_request_takeover" => BACK.into(),
+                _ => "Submitted.".into(),
+            });
+            assert_eq!(
+                calls_of(&t, "browser_navigate")[0]["url"],
+                c.start_url,
+                "{}",
+                c.skill
+            );
+            assert!(questions_after_navigate(&t).is_empty(), "{}", c.skill);
+            let fill = &calls_of(&t, "form_fill")[0];
+            if c.needs_trip() {
+                assert_eq!(sget(fill, "flight_no"), "XX 100", "{}", c.skill);
+            }
+            assert_eq!(sget(fill, "occupation"), "Engineer");
+            assert!(
+                ["submitted", "not_confirmed"].contains(&res["status"].as_str().unwrap_or("")),
+                "{}: {res}",
+                c.skill
+            );
         }
+    }
+
+    #[test]
+    fn ask_user_before_the_tool_is_refused() {
+        let ev = |ty: &str, data: Value| json!({"type": ty, "data": data});
+        let loaded = vec![ev(
+            "tool_call",
+            json!({"name": "load_skill", "args": {"name": "th-arrival-card"}}),
+        )];
+        let r = ask_before_tool(&loaded).unwrap();
+        assert_eq!(r["tool"], ARRIVAL_CARD_FILL);
+        let mut called = loaded.clone();
+        called.push(ev(
+            "workflow_call",
+            json!({"tool": ARRIVAL_CARD_FILL, "result": {"status": "needs_input"}}),
+        ));
+        assert!(ask_before_tool(&called).is_none());
+        assert!(ask_before_tool(&[ev(
+            "tool_call",
+            json!({"name": "load_skill", "args": {"name": "tokyo"}})
+        )])
+        .is_none());
+    }
+
+    #[test]
+    fn a_flight_number_is_an_airline_code_and_digits() {
+        assert_eq!(norm_flight("sq-231"), Some("SQ 231".into()));
+        assert_eq!(norm_flight("3K 685"), Some("3K 685".into()));
+        assert_eq!(norm_flight("123 45"), None);
     }
 }

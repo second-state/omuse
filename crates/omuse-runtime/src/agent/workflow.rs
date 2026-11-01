@@ -144,12 +144,18 @@ pub fn latest_result(transcript: &[Value]) -> Option<Value> {
 }
 
 /// Whether the model's next turn is the reply to a machine's result: the last message is a `T_result`. The workflow
-/// tools are not offered on that turn.
+/// tools are not offered on that turn — except after a result that read the mail for missing facts
+/// (`claims::MAIL_READ`): the model then calls the tool again with the facts from those emails.
 pub fn reply_turn(transcript: &[Value]) -> bool {
     transcript
         .last()
         .filter(|m| get_str(m, "role") == "tool")
-        .is_some_and(|m| get_str(m, "tool_call_id").starts_with(RESULT_PREFIX))
+        .filter(|m| get_str(m, "tool_call_id").starts_with(RESULT_PREFIX))
+        .is_some_and(|m| {
+            serde_json::from_str::<Value>(&content_of(m))
+                .map(|v| get_str(&v, "status") != super::claims::MAIL_READ)
+                .unwrap_or(true)
+        })
 }
 
 /// The facts a machine's result says the reply must carry (`must_say`).

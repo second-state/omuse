@@ -122,9 +122,14 @@ impl Inputs<'_> {
     pub fn home_address(&self) -> String {
         self.p("address_home")
     }
-    /// The occupation (the profile's job title).
+    /// The occupation: the one the user gave (the call's `occupation`), else the profile's job title.
     pub fn job_title(&self) -> String {
-        self.p("job_title")
+        let given = self.arg("occupation");
+        if given.is_empty() {
+            self.p("job_title")
+        } else {
+            given
+        }
     }
     /// ISO alpha-3 of the country the home address ends with ("…, Australia" → AUS), else of the nationality.
     pub fn residence_iso3(&self) -> String {

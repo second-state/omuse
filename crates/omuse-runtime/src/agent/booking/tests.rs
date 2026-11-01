@@ -125,8 +125,6 @@ fn run(
                 assert!(q.is_empty(), "a question after a page opened: {q:?}");
             }
             Step::Done(v) => return (t, v),
-            Step::Final(a) => panic!("a code-written answer: {a}"),
-            Step::Extract(x) => panic!("an extraction: {x}"),
         }
     }
     panic!("the run did not end")
@@ -1794,7 +1792,6 @@ fn the_booking_stage_carries_on_when_the_search_result_was_compressed() {
                 res = v;
                 break;
             }
-            other => panic!("{other:?}"),
         }
     }
     assert!(t

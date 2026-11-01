@@ -245,7 +245,11 @@ impl Runtime {
             // words); never taken from the model
             if let Some(o) = args.as_object_mut() {
                 o.remove("_code");
-                if call.id.starts_with(super::booking::PREFIX) && name == "present_choices" {
+                if (call.id.starts_with(super::booking::PREFIX)
+                    || call.id.starts_with(super::claims::PREFIX)
+                    || call.id.starts_with(super::driver::PREFIX))
+                    && name == "present_choices"
+                {
                     o.insert("_code".into(), json!(true));
                 }
             }
@@ -280,46 +284,6 @@ impl Runtime {
                     o.insert("user_submits".into(), json!(kind));
                 }
             }
-            // "tomorrow" in the user's words is the user's tomorrow: a call's purpose naming another date gets it fixed
-            if name == "phone_call" {
-                let tz = get_str(&self.settings(), "timezone");
-                let today = tz
-                    .parse::<chrono_tz::Tz>()
-                    .map(|z| chrono::Utc::now().with_timezone(&z).date_naive())
-                    .unwrap_or_else(|_| chrono::Local::now().date_naive());
-                let purpose = sget(&args, "purpose");
-                if let Some(fixed) =
-                    super::guards::fix_relative_day(&get_str(t, "goal"), &purpose, today)
-                {
-                    args["purpose"] = json!(fixed);
-                }
-            }
-            // an arrival card's defaults are typed by code: departure = arrival + 7 days, next city = the city the flight
-            // came from — the model's other value is replaced, and the result carries the change as `input_fixed`
-            let mut input_fixed: Option<Value> = None;
-            if name == "browser_type" {
-                let goal = get_str(t, "goal");
-                if let Some(v) = super::guards::departure_fix(transcript, &goal, call) {
-                    input_fixed = Some(json!({"text": v, "rule": "departure = arrival + 7 days"}));
-                    args["text"] = json!(v);
-                } else if let Some(v) = super::guards::next_city_fix(transcript, call) {
-                    input_fixed = Some(
-                        json!({"text": v, "rule": "next city = the city the flight came from"}),
-                    );
-                    args["text"] = json!(v);
-                }
-            }
-            // a news report's schedule carries the mail the user's request asked for (`guards::news_schedule_goal`)
-            if name == "schedule_create" {
-                if let Some(g) = super::guards::news_schedule_goal(
-                    transcript,
-                    &get_str(t, "goal"),
-                    get_str(t, "source") == "schedule",
-                    &args,
-                ) {
-                    args["goal"] = json!(g);
-                }
-            }
             // a news research run searches in the browser only (the user's rule for the skill): a web search there skips
             // the search APIs, and a news search is the browser's news search (news_demo 2026-11-01: a site: query
             // went to web_search)
@@ -335,13 +299,8 @@ impl Runtime {
             // an arrival card's hand-over: the unanswered Yes / No questions get the user's default, No, in code first
             // (Sentinel `default_no`; arrival_cards4_real 2026-10-31: the UK ETA's declarations left blank)
             if name == "browser_request_takeover" && arrival_run(transcript) {
-                let departure = departure_default(transcript, &get_str(t, "goal"));
                 if let Some(o) = args.as_object_mut() {
                     o.insert("default_no".into(), json!(true));
-                    // and the departure date the user's default gives (arrival + 7 days), when nothing gives another
-                    if let Some(d) = departure {
-                        o.insert("set_departure".into(), json!(d));
-                    }
                 }
             }
             // one tool for every known form: `form_fill(facts)` runs the function for the page the task has open
@@ -389,22 +348,20 @@ impl Runtime {
             let seen = self.inner.lock().seen_ids.get(&task_id).cloned();
             let st = self.store.clone();
             let tid2 = task_id.clone();
-            // travel searches happen in Main and the Travel bot; the other bots (insurance: the trip's facts) may read mail
-            let goal = get_str(t, "goal");
-            let travel_bot = self.bot_of(t).is_main() || self.bot_of(t).id == "travel";
-            let repeated = invented_id_guard(transcript, call, seen.as_ref())
+            // a phone call to an emergency or short number: refused in code, its JSON result carries the fact the reply
+            // must carry (agent/facts.rs); a flight or hotel search is the booking machine's (`travel_search`), never the
+            // model's own call
+            let zh = super::lang::agent_lang(&self.settings()) != "en";
+            let repeated = super::facts::emergency_call_refusal(name, &args, zh)
                 .or_else(|| {
-                    // the booking machine's own mail (the results the user asked to be mailed) is code's
-                    (travel_bot && !call.id.starts_with(super::booking::PREFIX))
-                        .then(|| mail_before_travel_guard(&goal, call))
-                        .flatten()
+                    machine_only_guard(call, crate::bots::has_tool(self.bot_of(t), "travel_search"))
                 })
+                .or_else(|| invented_id_guard(transcript, call, seen.as_ref()))
                 .or_else(|| repeat_guard(transcript, call))
                 .or_else(|| retype_guard(transcript, call))
                 .or_else(|| empty_mail_guard(call))
                 .or_else(|| arrival_submit_guard(transcript, call))
                 .or_else(|| super::guards::input_scope_guard(transcript, call))
-                .or_else(|| arrival_mail_guard(transcript, &goal, call))
                 .or_else(|| clear_guard(transcript, call))
                 .or_else(|| apdt_face_guard(transcript, call))
                 .or_else(|| super::guards::takeover_before_fill_guard(transcript, call))
@@ -413,21 +370,6 @@ impl Runtime {
                 .or_else(|| {
                     let (st, tid) = (st.clone(), tid2.clone());
                     one_search_guard(move || st.events(&tid, 0).unwrap_or_default(), call)
-                })
-                .or_else(|| {
-                    // the first of several searches is the one the request names first (the booking machine's search
-                    // is the one the model's workflow call asked for)
-                    if call.id.starts_with(super::booking::PREFIX) {
-                        return None;
-                    }
-                    let searched = transcript
-                        .iter()
-                        .flat_map(crate::agent::util::tool_calls)
-                        .any(|tc| {
-                            travel_search(&crate::agent::util::stored_call(tc).0).is_some()
-                                && get_str(tc, "id") != call.id
-                        });
-                    search_order_guard(&goal, searched, call)
                 })
                 .or_else(|| host_guard(move || st.events(&tid2, 0).unwrap_or_default(), call));
             let reread = if repeated.is_some() {
@@ -481,7 +423,11 @@ impl Runtime {
                     "result": "repeat_blocked", "detail": {"args": preview_args(&args)}}),
                 )
                 .await;
-            } else if super::booking::TOOLS.contains(&name)
+            } else if (super::booking::TOOLS.contains(&name)
+                || super::news::TOOLS.contains(&name)
+                || super::claims::TOOLS.contains(&name)
+                || super::driver::TOOLS.contains(&name)
+                || super::apdt::TOOLS.contains(&name))
                 && crate::bots::has_tool(self.bot_of(t), name)
             {
                 // a workflow tool: its arguments checked by the JSON layer (repair, schema, the tool's field checks, the
@@ -713,11 +659,6 @@ blocked automated browsing in this task; it is not opened again.");
                     }
                 }
                 let st = sget(&res, "status");
-                if let (Some(f), Some(r)) = (input_fixed.take(), res.get_mut("result")) {
-                    if let Some(o) = r.as_object_mut() {
-                        o.insert("input_fixed".into(), f);
-                    }
-                }
                 let result_obj = res.get("result").filter(|r| r.is_object()).cloned();
                 content = match (name, st == "ok", &result_obj) {
                     ("browser_look", true, Some(r)) => {

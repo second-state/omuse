@@ -101,15 +101,10 @@ check("streak alert cleared with a recovery message", wait_for(lambda: any("任�
 tid = chat("FAKECLAIM 给 Jennifer 发一封邮件，说明天的会改到下午 3 点")
 t = wait_task(tid)
 evs = c.get(f"{B}/api/tasks/{tid}").json()["events"]
-chk = [e for e in evs if e["type"] == "outcome_check"]
-# the code-side outcome: the request asked for a send and none ran — the outcome_check event names it, whatever the answer says
-check("a requested send that never ran is caught (outcome_check: send:not_done)", chk and "send:not_done" in chk[0]["data"]["missing"],
-      [e["type"] for e in evs])
 check("nothing was sent and the task completed", t["status"] == "COMPLETED"
       and not any(e["type"] == "tool_call" and e["data"].get("name") in ("gmail_send", "gmail_reply") for e in evs), (t["status"], [e["type"] for e in evs]))
-check("the answer carries the code's notice that nothing was sent (outcome::notice)", "⚠️ 没有发送" in (t["result"] or ""), t["result"])
-check("outcome stored on the task (unverified, send:not_done)", (t.get("outcome") or {}).get("status") == "unverified"
-      and "send:not_done" in (t.get("outcome") or {}).get("missing", []), t.get("outcome"))
+# the outcome is read from the task's events and pages only (no regex over the request's words): nothing ran, nothing to prove
+check("outcome stored on the task (none: no action ran)", (t.get("outcome") or {}).get("status") == "none", t.get("outcome"))
 r = c.post(f"{B}/api/outcome/{tid}", json={}, headers=H)
 check("outcome can be re-assessed for an older task", r.status_code == 200 and r.json()["outcome"]["status"] in ("none", "unverified"), r.text[:200])
 

@@ -130,12 +130,11 @@ weaker fallback.
 **The preferred airline is always covered.** When a run searched flights and the user has a preferred airline in the
 profile, an answer that names neither it (an alliance: nor a member; any name it goes by in `loyalty::AIRLINE_CODES`)
 nor one of its flight numbers gets a line from the results — the cheapest preferred offer with its price, or that
-none was found and an offer to look (`guards::with_preferred_airline`; a connector's search may have no airline filter).
+none was found and an offer to look (now the booking machine's `must_say`, "… is on your preferred airline"; the
+Travel bot's flight searches are the machine's, `guards::MACHINE_ONLY`).
 
-No mail before a travel search (`guards::mail_before_travel_guard`, Main and the Travel bot only): a request to search
-for a new flight, hotel, car or restaurant — its words name one and ask to find / search / compare, and it is not a form,
-visa, insurance, claim or report — that says nothing about mail or something already booked has its `gmail_*` calls
-refused. "Find my booking in Gmail and then…" and "which hotel did I book" may read mail.
+No mail before a travel search: the booking machine never reads mail for a search (its own mail is the results the
+user asked to be mailed). The old request-words guard (`mail_before_travel_guard`) is gone with phase 2d.
 
 Links (`crate::links`, 2026-10-31): the model sees every link as it is — with the opaque base64 stand-ins used before
 it could not tell where a link went (it guessed a shop's address and dropped its port) and a stand-in mistyped by one
@@ -144,8 +143,7 @@ and the final answer — each link is repaired against the links the run's tool 
 `links::repair`): a link cut short (the same host and path, query parameters missing — a hotel page's `&ts=…`) or with
 its path one or two characters off (a letter dropped) becomes the shown link; another page or other query values
 (dates the model chose) stay as written. The rest of OMuse only ever sees whole, real links. Stand-ins left in older
-conversations are still decoded (`links::decode`). The answer is also mended before it is shown: every hotel it
-names gets its booking link (`with_hotel_links`), and `with_compare_links` adds the Kayak compare link of each flight or hotel search the answer left out. A travel MCP
+conversations are still decoded (`links::decode`). The booking and Kayak compare links are the booking machine's `must_say` (the reply carries them through the review). A travel MCP
 connector's flight or hotel results get `compare_url` too, inside their JSON. When a bot answers for Main, the files it
 handed over (PDF, picture, video) are shown in Main's chat above its answer (`bots::finish_handoff`), and the router
 gives the bot the user's local date and time (Settings → Timezone), never UTC's.
@@ -480,34 +478,46 @@ matches first, and a guard against setting a value on a non-text element. A fiel
 starts-with, contains), radio, click / button / check by selector or by text inside a headed section, `date`
 (datepicker), and in the broker `keys` (real key presses), `pick` (type, then click the listed option) and `wait`.
 
-## Known-form skills driven by code (2026-11-01)
+## Arrival cards and the HK tax refund: workflow tools (0.6.0, docs/json-tools.md)
 
-For an arrival card whose page has a form function (`crate::forms::FORMS`: SG, MY, KR, ID, TW, CN, TH), the model's
-only job is to understand the request and load the skill. From there `agent/driver.rs` decides every step — the loop
-asks `driver::next(card, transcript, world)` instead of the model (`Runtime::drive`), and the step is a function of the
-transcript alone, so a run suspended for a takeover carries on where it was:
+Filling in an arrival card or travel authorisation with a form function (`agent/driver.rs` `CARDS`: SG, MY, KR, ID,
+TW, TH, CN, JP, KH, PH, UK ETA) is ONE `arrival_card_fill` call; the Hong Kong departure tax refund is ONE
+`apdt_refund` call (`agent/apdt.rs`). Both are Travel-bot tools (`bots/travel.md`). The model reads the user's words —
+and the bookings the machine fetched — and passes the facts as JSON arguments; code validates them and runs every
+step; the reply is written from the machine's JSON result (`must_say`). No regex or keyword reads the user's words or a
+mail's or a document's text in these machines (the old `driver::extract`, `user_asks` / `asks_to_act`, `dates_in`,
+`method_in`, the document classifier and `EXTRACT_SYSTEM` are gone).
 
-1. **The bookings**: the two fixed mail searches (the card's `mail_words`), then the first hits of each.
-2. **The facts** (`driver::extract`): the arriving flight, its date, the origin, the arrival airport and the airline
-   from the e-ticket; the stay from the booking's subject and address line, or "staying at …" in the user's words;
-   the purpose from the user's words. Regexes only. When they find no flight in mail that is there (or in the user's
-   answer), ONE extraction call (`EXTRACT_SYSTEM`, JSON) — the last resort — recorded as an `extract_facts` result.
-3. **The own address** (`own_addresses`): one profile address in the country → the stay (kind `own`), several → the
-   question which (answered by label), none → the booking.
-4. **Ask once** for whatever of the flight, the stay and the purpose is still missing (with the mailbox line when no
-   mailbox is connected); the next message of the chat is read the same way.
-5. **The filing window** (`window_days`): too early → `schedule_create` for the morning the window opens, and the
-   answer says so. Nothing is filed.
-6. The official page (`start_url`), `form_fill` with the facts, a hand-over for a step that is the user's (a form
-   function's `require` stop: the photo, the emailed code), `form_fill` again, the review hand-over (the reason names
-   the assumptions — No answers, arrival + 7, the next city — what was left blank, and the card's `user_steps`),
-   `browser_snapshot` after the hand-back, the reference (`ref_re`) and the answer (`driver::answer`).
+- **`arrival_card_fill{country, flight_no, arrival_date, origin_city, stay_name, stay_address, own_address, purpose,
+  departure_date, next_city, occupation, …}`**, `driver::check`: the country in the table, the flight number an
+  airline code and digits (`norm_flight`), the dates ISO and the arrival not past, the own address one of the
+  profile's labels; the fields of the chat's earlier calls for the same country carry over (`with_earlier`). The trip
+  not known and a mailbox connected → `read_mail`: the machine runs the two fixed searches (the card's `mail_words`),
+  fetches the first hits and returns `mail_read` — the workflow tools stay offered (`workflow::reply_turn`) and the
+  model calls again with what the mails say. Then: one profile address in the country → the stay (`own`), several →
+  `choose_address` (the machine shows the choice card, result `needs_choice`; the user's pick comes back as
+  `own_address`), still missing → `needs_input` (flight, date, stay, and the purpose with them; else purpose holiday,
+  `purpose_assumed`). The UK ETA needs no trip (`CardSpec::needs_trip`); its occupation goes to the form
+  (`forms::Inputs::job_title`: the call's, else the profile's).
+- **The machine** (`driver::next`): the filing window (too early → `schedule_create`, result `scheduled`), the official
+  page, `form_fill` with the facts, a hand-over for a step that is the user's (a form function's `require` stop),
+  `form_fill` again, the review hand-over (the reason names the assumptions and the card's `user_steps`), the snapshot
+  after the hand-back and the reference by `ref_re` → `submitted` / `not_confirmed` / `waiting_on_user` (the same
+  user's step undone twice) / `handed_over`.
+- **`apdt_refund{in_flight, in_date, out_flight, out_date, in_pass_file, out_pass_file, receipt_file, tax_hkd,
+  passport_file, refund_method, wallet_account, card}`**, `apdt::check`: flight numbers, dates, the files are this
+  chat's (the user's `uploads/…` or the saved `attachments/…`, a bare file name matched), the method the platform's;
+  documents not known → `read_mail` (the fixed search, every PDF / picture attachment saved, every PDF read, the
+  user's PDFs too) → `mail_read` with the files; the passport defaults to the user's only picture; what is still
+  missing → `needs_input`. The machine: the rule (`apdt::ineligible`: same or next day, after the departure, within 28
+  days, `tax_hkd` 0 → `not_eligible`), the Vault card (the one the user named, else the first complete one), the
+  platform's pages by their form functions, the uploads by the page's box labels, `browser_fill_secret` (or the user's
+  takeover for a card saved by name), stop before the face step → `confirmed` with the reference, the link and the
+  face-recognition deadline in `must_say` (`stopped` with the site's own error lines, `not_eligible`, …).
 
-No classifier call, no hints and no automatic hand-over apply to a driven run (`driven_run` in the loop); its tool
-calls are `drv_<n>`. Tests: `driver::tests` (the step machine on transcripts), `tests/arrival_*_real.py`. Cards
-without a form function (KH, PH, JP, UK ETA, ETIAS) stay on the model path with the arrival guards (the defaults typed
-by code, the user's Submit, the automatic hand-over); the way to move one is a form function per URL, then a
-`CardSpec`.
+Calls are `drv_<n>` / `apd_<n>`; the machines' tool calls and fetched mail are kept by the compression
+(`compress_transcript`). Tests: `driver::tests`, `apdt::tests` (arguments in, steps, Done JSON),
+`tests/arrival_*_real.py`, `tests/apdt_real.py`.
 
 ## Guarantees in code (2026-11-02)
 
@@ -516,8 +526,7 @@ flow**. Nothing is pushed to the model as a "(System)" message during a task, no
 a step, a refusal, a rewrite or a hint, and no tool result tells the model what to call next. What the model writes is
 the reply the user reads; everything else is data or a code action:
 
-- **Model calls that return JSON only**: the planner and the bots router (`agent/bots.rs`), the driver's extraction
-  (`driver::EXTRACT_SYSTEM`), `Runtime::until_condition`, the decisions (`Runtime::decide`, below), and
+- **Model calls that return JSON only**: the planner and the bots router (`agent/bots.rs`), `Runtime::until_condition`, the decisions (`Runtime::decide`, below), and
   `Runtime::review_answer` — the one reading of the final
   answer as the user would (ok / problem); when it does not hold together the answer is written again from the run's
   facts by `rescue_final` (code, once), never by a hint. `rescue_final` also writes the reply when the model returned
@@ -555,25 +564,24 @@ the reply the user reads; everything else is data or a code action:
   (`guards::needs_handover`: a typed-into arrival or claim form with no completed takeover after the last fill, or an
   approved purchase in a browser run; `auto_handover` event), the hand-over after a refused final click
   (`hand_over_button`), the snapshot after any hand-back (`needs_handback_snapshot`), the news report's delivery
-  (`news_report_action`, `report_followup_call`), files the request asked for sent at once (`auto_send`,
+  (`news_publish`'s schedule and mail, `news_mail`), files the request asked for sent at once (`auto_send`,
   `unsent_files`), the official site opened when the agent landed on a parked domain (`guards::parked_domain`,
   `exec::official_site`: one web search, the first result on another domain), the arrival defaults typed by code
   (`departure_fix`, `next_city_fix`, `departure_default` → `set_departure`, `default_no`), the APDT ticks
   (`apdt_fixed_ticks`).
-- **The answer is completed from structured data** (the `with_*` appenders in `Runtime::run`): each reads the request
-  (the user's words) and tool results, appends a fact code owns, and dedupes only by a structured value already in the
-  text (a URL, a code, a figure, a label) — never by regex over the wording. Replaced in code, not asked for: figures
-  and flight numbers no source showed (`with_grounded_figures`, `with_grounded_codes`: "(figure / flight not in the
-  sources)", a `number_check` event names them), phone numbers no source showed (`with_grounded_numbers`), full card
-  numbers (`with_masked_cards`). Appended: booking and compare links (`with_hotel_links`, `with_flight_links`,
-  `with_compare_links`, `with_fallback_pages`), leg times, the flight's day, the scheduled time of a delayed flight,
-  the comparison's options (`with_choices_listing`), the catalog date, unverified rows, FX fees, uncatalogued cards and
-  the user's cards from the catalog (`with_card_comparison`, instead of the old "compare the cards" hint), the approved
-  amount, the confirmation reference after a hand-back, the HK refund's face step, the arrival card's filing window
-  (`with_arrival_windows`: the loaded card skill, or under an overview skill the cards the REQUEST names), the ETIAS
-  status, claim deadlines, the loan payment the request specifies, the user's approval edits, notifications, the
-  preferred airline, the injection notice, the report links. `merge_stranded_answer` merges by length only.
-- **Outcome from events only** (`outcome::assess`): a purchase, send, calendar change or call is verified by its own
+- **The reply carries its facts through the review, never through appended text** (phase 2d, docs/json-tools.md
+  "Facts the reply must carry"): `facts::run_facts` collects the trusted tools' `must_say` (a machine's result,
+  `emergency_contacts`, `visa_rules`, `fx_convert`, `loan_payment`, an emergency `phone_call` refused in code) and the
+  run's structured facts (`guards::*_fact(s)`: the hand-back reference, approval edits, a delay's times, ETIAS, the card
+  catalog's date / unverified rows / FX fees / uncatalogued cards / the user's cards, the approved amount, an injection
+  notice, notifications, a model-made comparison's options); `review_answer` gets them as `must_say` and
+  `reply_with_facts` (the model) adds what the reply left out. Still code on the reply: `with_masked_cards` (secrets), the
+  link repair (`links::repair_answer`), `merge_stranded_answer` / `with_handover_answer` (the model's own earlier text).
+  Removed: the travel appenders (the Travel bot's flight and hotel searches are the booking machine's,
+  `guards::MACHINE_ONLY`), the grounding of figures / codes / phone numbers in the reply (`number_check`), the loan,
+  emergency-call, visa, FX, medical and consular appenders (now the tools above).
+- **Outcome from events only** (`outcome::assess`; the request's "send" words are no longer read — `asks_send` /
+  `with_request` removed): a purchase, send, calendar change or call is verified by its own
   evidence (the order number on a page read after the click or the hand-back, a message or event id); the answer's
   words are not read for claims. `outcome::notice` adds the "not confirmed" line when an action ran without its proof;
   the ledger gets the page's order number.
@@ -596,25 +604,12 @@ choices as a JSON array; the model answers `{"choice": "<one of them>"}` (`decid
 (`decide_many`), temperature 0, 60 tokens, no tools. The answer must be a listed choice (exact, case-insensitive,
 returned in the list's spelling); anything else gets ONE retry (the bad answer and the list again), then the caller's
 default; an unreachable model gives the default at once. Every call emits a `decision` event `{question, choices,
-picked, retried, defaulted}`. Code acts on the choice; defaults are the no-op choice. The four judgements
-(`agent/judgements.rs`, pure helpers + the calls; none in a driven run):
+picked, retried, defaulted}`. Code acts on the choice; defaults are the no-op choice. Decisions are only on PAGES now (phase 2d):
+the held pick, the file formats and the visa-free days went to JSON — `travel_book` takes the pick, the file calls carry
+`deliver_as` (each format the run did not make is converted by `judgements::conversion_calls` and sent, `fmt_<n>`
+calls, `format_conversion` event), `visa_rules` gives the official table's days (agent/facts.rs). What remains
+(`agent/judgements.rs`, none in a driven run):
 
-- **Held pick** (end of run): a shown `present_choices` with `picked` whose option has a `source_url`, no OK
-  `purchase_confirm` / `browser_request_takeover` → decide on the REQUEST `buy_or_book | compare_only`, then on the
-  final reply `asks_to_proceed | done | other`; on `asks_to_proceed` code opens the picked page (`browser_navigate`,
-  `held_pick` event) and the loop goes on. The FWD purchase is the claims driver's (it continues by itself).
-- **File formats** (end of run, when the run made a file): `decide_many` on the request over `pdf | xlsx | docx | md |
-  none`; for each format the run did not make, `judgements::conversion_calls` converts from the first made file with
-  Markdown (its source file, its text, an Excel call's `sheets`, a CSV source read from the workspace): `make_pdf` /
-  `make_docx` from the `.md` source or the text, `files_write` for `md`, `make_xlsx` from a Markdown table; each new
-  file is `send_file`d (`fmt_<n>` calls, `format_conversion` event).
-- **Visa-free days** (end of an `entry-requirements` run): per destination the REQUEST names that is in
-  `VISA_PAGES` (SG, TH, MY, ID, VN, KR, JP, TW, CN, PH, KH: the official immigration / foreign-ministry page), decide on
-  the reply `states_visa_free_days | mentions_visa_free_without_days | no_visa_free`; on the middle one the days come
-  from that page — read in the run already, else `browser_read` by code — only when it gives one number (for the
-  profile's nationality when it names it; `judgements::visa_days`), and the answer gets the line with the page's link
-  (without a number when the page gives none; never invented; `visa_days` event). Check the table's URLs when a site
-  moves.
 - **A page just opened** (`exec_call`, main run): a deep link (a path or query) redirected elsewhere → decide on the
   title + first lines `error_page | normal_page | login_page`; `error_page` → code opens `scheme://host/`
   (`deep_link_error`, once per site). In an `online-shopping` run, back on a page it opened and left without clicking
@@ -623,14 +618,13 @@ picked, retried, defaulted}`. Code acts on the choice; defaults are the no-op ch
 
 ### Driven forms settle every value before the form opens
 
-In `agent/driver.rs` and `agent/claims.rs` the facts, the defaults, the choice of address and the one question come
-before the `browser_navigate` to the form. Once the form is open (`form_open`) no question is asked again — not the
-address card, not the missing-facts question, not the trip question of the FWD purchase: a fact lost since
+In the arrival-card, refund and claims machines the facts, the defaults, the choice of address and what the user must
+give are settled by the tool's `check` and the steps before the `browser_navigate` to the form (`needs_input`,
+`needs_choice` before any page opens). Once the form is open no question is asked again: a fact lost since
 (compression) is a blank field the user fills in at the hand-over. The only pauses after the navigate are the
-hand-overs for the user's own steps. The FWD purchase's plan comparison after the quote holds its pick (shown, not
-asked). Tests: `driver::tests::every_card_settles_its_values_before_the_form_and_asks_nothing_after` and the four
-`claims::tests::*_asks_nothing_after_*` (`driver::drive_to_end` panics on an `ask_user` / pick-less
-`present_choices` after the navigate, or an end before the hand-over).
+hand-overs for the user's own steps. Tests: `driver::tests::every_card_fills_from_its_arguments_and_asks_nothing_after_the_page_opens`,
+`apdt::tests` and the claims tests (`driver::questions_after_navigate` lists an `ask_user` / pick-less
+`present_choices` after the navigate).
 
 ## News research reports (`skills/news-research/`, 2026-11-01)
 
@@ -641,20 +635,31 @@ Main's `news-research` skill turns "research the news on X" into a newspaper-sty
   interval (`Broker::news_engines`); the test engines get `&df=…`. It never falls back to a search API. In a run that
   loaded the skill, a `web_search` call is marked `browser_only` (Sentinel skips the APIs) and a `news_search` call is
   run as `browser_news_search` (`exec_call`, `guards::news_research_run`).
-- **Layout in code.** The model hands `news_report` its stories (headline, its own summary, source, the article's url,
-  date) and insights; `crate::newsreport` drops stories without an http(s) link, keeps each article once, escapes every
-  value and fills the skill's `template.html` (masthead, lead = the first story, insights, stories in columns,
-  sources). The HTML goes to `<workspace>/artifacts/news/<subject slug>/<YYYY-MM-DD-HHMM>.html` (a second edition in the
-  same minute gets `-2`), the PDF beside it through Chromium's print (`/internal/render_pdf`); both are file cards in
-  the chat. A scheduled run also notifies the user ("📰 <title>").
+- **Two workflow tools (docs/json-tools.md, `agent/news.rs`).** `news_gather{subject, window}`: code runs ONE
+  `browser_news_search` of the subject (a second, wider one only when the first finds no article), reads the first six
+  distinct links in one turn and returns the articles as JSON (number, title, publication, date, url, text). The model
+  writes the edition as JSON and calls `news_publish{title, stories:[{article, headline, summary}], insights, schedule,
+  weekday, hour, email}`: `news::check` keeps only stories whose article number exists, takes every link, publication
+  and date from the gathered articles, and adds an article the model left out with its own headline and opening. The
+  machine never calls the model and reads no user wording (the subject regexes and the in-code writing call are gone).
+- **Layout in code.** The machine calls `news_report` (code's own call, never offered to the model): `crate::newsreport`
+  drops stories without an http(s) link, keeps each article once, escapes every value and fills the skill's
+  `template.html` (masthead, lead = the first story, insights, stories in columns, sources). The HTML goes to
+  `<workspace>/artifacts/news/<subject slug>/<YYYY-MM-DD-HHMM>.html` (a second edition in the same minute gets `-2`),
+  the PDF beside it through Chromium's print (`/internal/render_pdf`); both are file cards in the chat. A scheduled run
+  also notifies the user ("📰 <title>").
 - **`/artifacts/`** (Sentinel `routes/artifacts.rs`, behind the login gate): `/artifacts/` lists the files newest first,
   `/artifacts/<path>` shows one; paths stay inside the folder; HTML is served with a policy that runs no script and
   loads nothing from elsewhere (`HTML_CSP`, sandboxed). A link `/artifacts/…` given as a mail attachment is the
   workspace file `artifacts/…` (`actions::artifact_path`).
-- **Guarantees.** The answer carries both links and, with a mailbox connected and nothing sent, offers "Reply **email
-  it**" (`guards::with_report_links`). One-time hint (`guards::news_report_hint`): a request for the report "weekly",
-  "every morning" … with no schedule made → `schedule_create` now; a scheduled edition whose schedule asks to email it
-  → `gmail_send` to the user's own address with the PDF and HTML attached.
+- **Delivery from the JSON.** `schedule` (daily / weekly / monthly) → `schedule_create` by code (cron from
+  `newsreport::Ask`; the goal, `news::schedule_goal`, makes the scheduled run's model call `news_gather` →
+  `news_publish`, with `email: true` when the editions are mailed); no new schedule in a schedule's own run. `email:
+  true` → `gmail_send` to the user's own connected address with the PDF and HTML. "Email it" later in the chat →
+  `news_mail{files}` (the edition's links the model copies from the earlier reply; code accepts only
+  `artifacts/news/….pdf|.html`). The result's `must_say` carries the lead, the two links, the schedule and the mail;
+  `next_question` offers the mail. The old regex guards (`news_report_action`, `news_schedule_goal`,
+  `report_followup_call`, `with_report_links`) are removed.
 - Tests: `tests/news_report_real.py` (a made-up subject, Lumora, in `tests/fake_apps.py NEWS`, so every fact comes from
   the articles read: the report, its links, "email it" landing in the SMTP sink with the PDF, a scheduled edition);
   `tests/news_demo_real.py` is a one-off demo on the real web (not in the gate).
@@ -670,7 +675,7 @@ purchase was approved for "omuse.local" and the card fill on the booking site wa
 
 **The approved amount is always in the answer.** When a run had a purchase approved (`purchase_confirm` →
 `"status": "approved"`) and the final answer does not give its total (in any format: `JPY 28,000`, `¥28000`,
-`28,000.00`), `guards::with_purchase_total` adds "Amount you approved: JPY 28,000 (<the items>)" — also when the answer gives the
+`28,000.00`), `guards::purchase_total_facts` gives "Amount you approved: JPY 28,000 (<the items>)" — also when the answer gives the
 amount but not what it was for (the first word of the item's name).
 
 - **Data classes and taint**: reading mail, the vault or private connectors taints the task; a tainted task that
@@ -813,7 +818,7 @@ It reads the user's cards from the Vault (`vault_list`, the `card` items by name
 names that is not there is added with `vault_add_card`), loads the market's table, matches by issuer + product (aliases, tiers kept apart),
 computes the value per card with `calculate`, and answers with the maths, the caveats and the verification date. The
 date is guaranteed in code: when a run read a catalog table and the answer gives neither its month nor a date in it,
-`guards::with_catalog_date` adds "(Card terms from the catalog as of August 2026; terms change.)". A card missing from the catalog is looked up on the
+`guards::catalog_date_fact` gives "Card terms from the catalog as of August 2026; terms change." (a fact for the review). A card missing from the catalog is looked up on the
 issuer's page and reported as "can be added to the catalog".
 
 ## Web UI navigation

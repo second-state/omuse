@@ -80,18 +80,6 @@ searches = [e for e in t.get("events", []) if e["type"] == "tool_call" and e["da
 # the code-side outcome: the loop ended at the web budget (guards.rs WEB_NUDGE = 18 web calls) with an answer
 check("the web budget ends a search loop (at most 18 web searches, then the task completes)",
       t["status"] == "COMPLETED" and 1 <= len(searches) <= 18 and bool((t.get("result") or "").strip()), (t["status"], len(searches), t.get("result")))
-# 0.2.37: figures that no tool produced are sent back for recomputation once
-r = c.post(B + "/api/chat", json={"message": "NUMCHECK coffee savings"}, headers=H).json()
-t0 = time.time()
-while time.time() - t0 < 60:
-    t = c.get(f"{B}/api/tasks/{r['task_id']}").json()
-    if t["status"] in ("COMPLETED", "FAILED", "CANCELLED"):
-        break
-    time.sleep(0.5)
-ev = [e for e in t.get("events", []) if e["type"] == "number_check"]
-# the code-side outcome: the number check caught the made-up figure once, and it is not in the answer the user gets
-check("made-up figures caught once (number_check event) and gone from the answer", t["status"] == "COMPLETED"
-      and ev and ev[0]["data"]["unsupported"] == ["17,016.64"] and "17,016.64" not in (t.get("result") or ""), (t["status"], t.get("result"), ev))
 r = c.post(B + "/api/chat", json={"message": "CTXTEST read three big files"}, headers=H).json()
 t0 = time.time()
 while time.time() - t0 < 60:
