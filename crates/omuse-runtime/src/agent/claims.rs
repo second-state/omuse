@@ -33,6 +33,9 @@ pub enum Flow {
     FwdSgBuy,
     /// FWD Hong Kong: bolttech's PDF claim form and the email draft
     FwdHkClaim,
+    /// the delayed bag's status on WorldTracer, by the PIR's file reference (`super::bagtrace`): driven only while the
+    /// lookup has a step left, then the model carries on with the skill
+    BagTrace,
 }
 
 /// One claim or purchase: what the skill text used to tell the model, as data.
@@ -158,6 +161,24 @@ pub const SPECS: &[ClaimSpec] = &[
         caps: &[],
         claims_email: "claims.hk@bolttechinsurance.com",
     },
+    ClaimSpec {
+        skill: super::bagtrace::SKILL,
+        flow: Flow::BagTrace,
+        name: "WorldTracer baggage tracing",
+        decides: "the airline's baggage services",
+        start_url: super::bagtrace::TRACE_URL,
+        host: super::bagtrace::TRACE_HOST,
+        searches: &[],
+        hits: 0,
+        notify_days: 0,
+        documents_days: 0,
+        user_steps: "",
+        ref_re: "",
+        currency: "",
+        delay: (0.0, 0, 0.0),
+        caps: &[],
+        claims_email: "",
+    },
 ];
 
 /// The card fields of FWD Singapore's application, filled from the Vault after `purchase_confirm`: (Vault field, the
@@ -208,6 +229,10 @@ pub fn active(transcript: &[Value]) -> Option<&'static ClaimSpec> {
         .filter(|n| SPECS.iter().any(|s| s.skill == n))
         .collect();
     let skill = loaded.last()?;
+    // a delayed bag: the WorldTracer lookup (read-only) runs whenever the file reference is known
+    if skill == super::bagtrace::SKILL {
+        return super::bagtrace::pending(transcript).then(|| spec(Flow::BagTrace));
+    }
     // the user's own request asks for the claim to be made (or the policy bought): a skill loaded for information
     // ("what can I claim?") leaves the run to the model
     let act = asks_to_act(transcript);
@@ -1597,6 +1622,10 @@ pub fn next(s: &ClaimSpec, transcript: &[Value], w: &World) -> Step {
         Flow::FwdSgClaim => next_sg_claim(s, transcript, w, n),
         Flow::FwdSgBuy => next_sg_buy(s, transcript, w, n),
         Flow::FwdHkClaim => next_hk_claim(s, transcript, w, n),
+        // `active` drives the lookup only while it has a step left; without one, a snapshot (never an answer)
+        Flow::BagTrace => super::bagtrace::next_call(transcript, n)
+            .map(|c| Step::Calls(vec![c]))
+            .unwrap_or_else(|| Step::Final(String::new())),
     }
 }
 

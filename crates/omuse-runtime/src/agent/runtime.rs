@@ -365,12 +365,14 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
             Machine::Booking(b) => super::booking::next_in(b, t, &w, &available),
             Machine::Claim(c) => super::claims::next(c, t, &w),
             Machine::Apdt(s) => super::apdt::next(s, t, &w),
+            Machine::News => super::news::next(t, &w),
         };
         let (prefix, extract_system) = match machine {
             Machine::Card(_) => ("drv_", super::driver::EXTRACT_SYSTEM),
             Machine::Claim(_) => ("clm_", super::claims::EXTRACT_SYSTEM),
             // regexes only: the refund's machine never asks for an extraction
             Machine::Apdt(_) => ("apd_", ""),
+            Machine::News => (super::news::PREFIX, ""),
             Machine::Booking(_) => ("bkg_", super::booking::EXTRACT_SYSTEM),
         };
         let mut step = next(transcript);
@@ -382,13 +384,17 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
                 .count()
                 + 1;
             let o = ChatOpts {
-                max_tokens: Some(300),
+                // the news edition's text is the model's (content for the user): its own system and budget
+                max_tokens: Some(match machine {
+                    Machine::News => super::news::extract_setup(text).1,
+                    _ => 300,
+                }),
                 temperature: Some(0.0),
                 no_think: true,
                 ..opts("classify", task_id)
             };
             let msgs = [
-                json!({"role": "system", "content": extract_system}),
+                json!({"role": "system", "content": match machine { Machine::News => super::news::extract_setup(text).0, _ => extract_system }}),
                 user_msg(text.clone()),
             ];
             let facts = match self.llm.chat(&msgs, None, &o).await {
@@ -401,6 +407,7 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
                 Machine::Card(_) => super::driver::extract_exchange(n, text, &facts),
                 Machine::Claim(_) => super::claims::extract_exchange(n, text, &facts),
                 Machine::Apdt(_) => Vec::new(),
+                Machine::News => super::news::extract_exchange(n, text, &facts),
                 Machine::Booking(_) => super::booking::extract_exchange(n, text, &facts),
             });
             step = next(transcript);
@@ -421,7 +428,7 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
         self.event(
             task_id,
             "driver",
-            json!({"card": match machine { Machine::Card(c) => c.skill, Machine::Claim(c) => c.skill, Machine::Apdt(s) => s.skill, Machine::Booking(b) => b.skill }, "calls": tool_calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), "final": !content.is_empty()}),
+            json!({"card": match machine { Machine::Card(c) => c.skill, Machine::Claim(c) => c.skill, Machine::Apdt(s) => s.skill, Machine::Booking(b) => b.skill, Machine::News => super::news::SKILL }, "calls": tool_calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), "final": !content.is_empty()}),
         )
         .await;
         ChatReply {
@@ -2458,6 +2465,7 @@ yourself; ask_bot is not available for it."
                 .or_else(|| super::claims::active(&transcript).map(Machine::Claim))
                 .or_else(|| super::apdt::active(&transcript).map(Machine::Apdt))
                 .or_else(|| super::booking::active(&transcript).map(Machine::Booking))
+                .or_else(|| super::news::active(&transcript).then_some(Machine::News))
                 .or_else(|| {
                     (!bot.is_main())
                         .then(|| super::booking::search_request(&transcript))
@@ -2825,6 +2833,7 @@ yourself; ask_bot is not available for it."
                 || super::claims::active(&transcript).is_some()
                 || super::apdt::active(&transcript).is_some()
                 || super::booking::active(&transcript).is_some()
+                || super::news::active(&transcript)
                 || (!bot.is_main() && super::booking::search_request(&transcript).is_some());
             // a news report's delivery is code's: the scheduled edition's mail, or the schedule asked for (once each)
             if !final_.is_empty() && asked.is_none() && !force_final && !timed_out {
@@ -2994,12 +3003,14 @@ yourself; ask_bot is not available for it."
             }
             // an entry-requirements answer that mentions a visa exemption without its days (one decision per
             // destination): the days from the official page — one the run read, else read now — with the page's link
-            if judged {
+            // (decided in code: an entry request naming a destination of the table gets the days for the user's
+            // passport, unless the answer already gives them — travel_info_real 2026-11-01, the skill never loaded)
+            if judged && super::judgements::entry_request(&goal_text, &transcript) {
                 let nationality = get_str(&self.store.profile().unwrap_or_default(), "nationality");
                 let mut lines = Vec::new();
-                for page in self
-                    .visa_days_missing(task_id, &goal_text, &transcript, &final_)
-                    .await
+                for page in super::judgements::destinations(&goal_text)
+                    .into_iter()
+                    .take(4)
                 {
                     let mut days =
                         super::judgements::days_from_results(&transcript, page, &nationality);
@@ -3027,13 +3038,45 @@ yourself; ask_bot is not available for it."
                         days =
                             super::judgements::days_from_results(&transcript, page, &nationality);
                     }
+                    // no page gave the days: the official table's (with its date and source)
+                    let table = days
+                        .is_none()
+                        .then(|| super::judgements::visa_free_from_table(page.code, &nationality))
+                        .flatten();
+                    if let Some((d, _, _)) = table {
+                        days = Some(d);
+                    }
                     self.event(
                         task_id,
                         "visa_days",
-                        json!({"country": page.country, "days": days, "url": page.url}),
+                        json!({"country": page.country, "days": days, "url": page.url, "table": table.is_some()}),
                     )
                     .await;
-                    lines.push(super::judgements::visa_line(page, days, lg != "en"));
+                    let named = nationality.trim().is_empty()
+                        || final_
+                            .to_lowercase()
+                            .contains(&nationality.trim().to_lowercase());
+                    let given = named
+                        && match days {
+                            Some(d) => super::judgements::states_days(&final_, d),
+                            None => final_.contains(page.url),
+                        };
+                    if !given {
+                        let mut line =
+                            super::judgements::visa_line(page, days, &nationality, lg != "en");
+                        if let Some((_, asof, src)) = table {
+                            line = format!(
+                                "{} {}",
+                                line.trim_end(),
+                                if lg != "en" {
+                                    format!("（{asof} 起的官方名单：{src}）")
+                                } else {
+                                    format!("(the official list in force from {asof}: {src})")
+                                }
+                            );
+                        }
+                        lines.push(line);
+                    }
                 }
                 if !lines.is_empty() {
                     final_ = format!("{}\n\n{}", final_.trim_end(), lines.join("\n"));
@@ -3124,6 +3167,7 @@ yourself; ask_bot is not available for it."
             final_ = super::guards::with_flight_times(&transcript, &final_, lg != "en");
             final_ = super::guards::with_flight_date(&transcript, &final_, lg != "en");
             final_ = super::guards::with_etias_status(&transcript, &final_, lg != "en");
+            final_ = super::bagtrace::with_bag_status(&transcript, &final_, lg != "en");
             final_ = super::guards::with_grounded_numbers(&transcript, &final_, lg != "en");
             // figures and flight codes no source showed are replaced in code (the `number_check` event names them)
             let bad = ungrounded_numbers(&transcript, &final_, &goal_text);
@@ -4068,4 +4112,5 @@ enum Machine {
     Claim(&'static super::claims::ClaimSpec),
     Apdt(&'static super::apdt::ApdtSpec),
     Booking(&'static super::booking::BookingSpec),
+    News,
 }

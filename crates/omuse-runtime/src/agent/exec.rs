@@ -694,7 +694,7 @@ blocked automated browsing in this task; it is not opened again.");
                         self.locate(&task_id, &call.id, &sget(&args, "target"), r)
                             .await
                     }
-                    _ if call.id.starts_with("bkg_") => {
+                    _ if call.id.starts_with("bkg_") || call.id.starts_with("nws_") => {
                         self.format_external_within(name, &res, CODE_RESULT_LIMIT)
                     }
                     _ => self.format_external(name, &res),

@@ -645,12 +645,6 @@ pub fn conversion_calls(
 
 // ---------------------------------------------------------------- visa-free days
 
-pub const VISA_CHOICES: [&str; 3] = [
-    "states_visa_free_days",
-    "mentions_visa_free_without_days",
-    "no_visa_free",
-];
-
 /// A destination's official visa page.
 pub struct VisaPage {
     pub code: &'static str,
@@ -782,6 +776,51 @@ pub const VISA_PAGES: &[VisaPage] = &[
 ];
 
 /// Whether the run loaded the entry-requirements skill.
+/// Visa-free stays from the destinations' official tables, for when no page the run read states the days: (destination
+/// code, the nationalities by the words a profile uses, days, as of, the official source). Only entries checked against
+/// the source go here.
+pub const VISA_FREE: &[(&str, &[&str], u32, &str, &str)] = &[(
+    "TH",
+    // Thailand's 2026 revision: the 30-day visa exemption group (MFA summary, 22 May 2026; in force 15 September 2026)
+    &[
+        "australian", "australia", "american", "united states", "usa", "british", "united kingdom", "uk", "canadian",
+        "canada", "japanese", "japan", "singaporean", "singapore", "malaysian", "malaysia", "filipino", "philippines",
+        "german", "germany", "french", "france",
+    ],
+    30,
+    "15 September 2026",
+    "https://image.mfa.go.th/mfa/0/wdW3FTtVMc/2026-05-22/%E0%B8%95%E0%B8%B2%E0%B8%A3%E0%B8%B2%E0%B8%87%E0%B8%97%E0%B8%9A%E0%B8%97%E0%B8%A7%E0%B8%99%E0%B8%A1%E0%B8%B2%E0%B8%95%E0%B8%A3%E0%B8%81%E0%B8%B2%E0%B8%A3_ver._eng.pdf",
+)];
+
+/// The table's visa-free stay for `nationality` in the destination `code`: (days, as of, source).
+pub fn visa_free_from_table(
+    code: &str,
+    nationality: &str,
+) -> Option<(u32, &'static str, &'static str)> {
+    let nat = nationality.trim().to_lowercase();
+    if nat.is_empty() {
+        return None;
+    }
+    VISA_FREE
+        .iter()
+        .find(|(c, nats, ..)| *c == code && nats.contains(&nat.as_str()))
+        .map(|(_, _, d, asof, src)| (*d, *asof, *src))
+}
+
+/// An entry-requirements request, by its words or by the skill the run loaded: a visa, entry or arrival-card question.
+pub fn entry_request(request: &str, transcript: &[Value]) -> bool {
+    static ENTRY: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(visas?|entry requirements?|entry rules|arrival cards?|do i need (a|an|to)|can i enter|requirements to enter|enter(ing)? (the country|thailand|japan|singapore|china|korea|vietnam|malaysia|indonesia))\b|签证|入境").unwrap()
+    });
+    entry_run(transcript) || ENTRY.is_match(request)
+}
+
+/// Whether `answer` already gives `days` as a stay's length ("60 days", "60-day").
+pub fn states_days(answer: &str, days: u32) -> bool {
+    Regex::new(&format!(r"(?i)\b{days}[ -]?days?\b|\b{days}\s*天"))
+        .is_ok_and(|r| r.is_match(answer))
+}
+
 pub fn entry_run(transcript: &[Value]) -> bool {
     calls(transcript)
         .iter()
@@ -885,8 +924,13 @@ pub fn days_from_results(transcript: &[Value], page: &VisaPage, nationality: &st
 }
 
 /// The line the answer gets for a destination: its days with the official page, or the page alone.
-pub fn visa_line(page: &VisaPage, days: Option<u32>, zh: bool) -> String {
+pub fn visa_line(page: &VisaPage, days: Option<u32>, nationality: &str, zh: bool) -> String {
+    let who = nationality.trim();
     match (days, zh) {
+        (Some(d), false) if !who.is_empty() => format!(
+            "Visa-free stay in {} with your {who} passport: up to {d} days (official source: {}).",
+            page.country, page.url
+        ),
         (Some(d), false) => format!(
             "Visa-free stay in {}: up to {d} days (official source: {}).",
             page.country, page.url
@@ -1249,34 +1293,6 @@ impl super::Runtime {
         }
         out
     }
-
-    /// The destinations of an entry-requirements run whose answer mentions a visa exemption without its days (one
-    /// decision per destination the request names, on the answer).
-    pub(crate) async fn visa_days_missing(
-        &self,
-        task_id: &str,
-        request: &str,
-        transcript: &[Value],
-        answer: &str,
-    ) -> Vec<&'static VisaPage> {
-        if !entry_run(transcript) {
-            return Vec::new();
-        }
-        let mut out = Vec::new();
-        for page in destinations(request).into_iter().take(4) {
-            let q = format!(
-                "About {}: does this reply give how many days a visa-free stay allows there?",
-                page.country
-            );
-            let kind = self
-                .decide(task_id, &q, answer, &VISA_CHOICES, "states_visa_free_days")
-                .await;
-            if kind == "mentions_visa_free_without_days" {
-                out.push(page);
-            }
-        }
-        out
-    }
 }
 
 #[cfg(test)]
@@ -1575,9 +1591,9 @@ Nationals of India are exempt from visa for 30 days. Visa on arrival: 15 days.";
             "visa-free for 60 days",
         );
         assert_eq!(days_from_results(&t, th, ""), None); // not the official page
-        assert!(visa_line(th, Some(60), false)
+        assert!(visa_line(th, Some(60), "", false)
             .contains("up to 60 days (official source: https://www.thaievisa.go.th/)"));
-        assert!(visa_line(th, None, false)
+        assert!(visa_line(th, None, "", false)
             .contains("on the official page: https://www.thaievisa.go.th/"));
     }
 
@@ -1616,5 +1632,41 @@ Nationals of India are exempt from visa for 30 days. Visa on arrival: 15 days.";
         assert!(back_on_uncarted_page(&t, p, "e9"));
         t.extend(step("c1", "browser_click", json!({"ref": "e9"}), "clicked"));
         assert!(!back_on_uncarted_page(&t, p, "e9"));
+    }
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::*;
+
+    #[test]
+    fn an_entry_request_is_known_by_its_words_and_the_days_are_checked_in_code() {
+        // travel_info_real 2026-11-01: the run never loaded the skill; the answer gave no days and no nationality
+        let req = "I'm flying to Bangkok on 8 November, then Singapore on 12 November. What do I need to enter each country, and are there forms to file before I arrive?";
+        assert!(entry_request(req, &[]));
+        assert_eq!(
+            destinations(req).iter().map(|p| p.code).collect::<Vec<_>>(),
+            vec!["TH", "SG"]
+        );
+        assert!(entry_request("Do I need a visa for Thailand?", &[]));
+        assert!(!entry_request(
+            "Find me a hotel in Bangkok on 8 November",
+            &[]
+        ));
+        assert!(states_days(
+            "Australians can stay visa-free for up to 60 days.",
+            60
+        ));
+        assert!(states_days("a 60-day visa exemption", 60));
+        assert!(!states_days("Submit it within 3 days before arrival.", 60));
+        let th = VISA_PAGES.iter().find(|p| p.code == "TH").unwrap();
+        assert!(visa_line(th, Some(60), "Australian", false)
+            .contains("with your Australian passport: up to 60 days"));
+        assert_eq!(
+            visa_free_from_table("TH", "Australian").map(|x| x.0),
+            Some(30)
+        );
+        assert_eq!(visa_free_from_table("TH", "Chinese"), None);
+        assert_eq!(visa_free_from_table("JP", "Australian"), None);
     }
 }

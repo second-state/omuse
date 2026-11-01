@@ -17,9 +17,10 @@ what the policy pays for a delayed or lost bag and what it needs (section 4), or
 - Damage: photograph the bag and the tag at the desk; airlines want damage reported within 7 days of receipt.
 
 ## 2. Track and chase
-- Most airlines show the file on their own baggage-tracing page (WorldTracer behind it): browser_read the airline's
-  "delayed baggage" page with the file reference and name; quote the status and date. Set a watch_create or a
-  schedule_create check twice a day and notify_user on change.
+- The status is looked up by code: once this skill is loaded and the file reference is known (the user's words or the
+  PIR email), code opens WorldTracer's tracing page, fills the reference and the family name and presses Track; the
+  result page is in your transcript — quote its status and last update (don't fill the page yourself). Set a
+  watch_create or a schedule_create check twice a day and notify_user on change.
 - Delayed bags are usually found within a few days. If nothing after 5 days the airline asks for a detailed
   inventory (contents, values, purchase dates) — help the user write it (make_xlsx if long).
 - **21 days** (every answer about a delayed bag states it, with the date it falls on): a bag not found within 21 days of

@@ -460,6 +460,7 @@ pub fn code_call(call: &ToolCall) -> bool {
         "clm_",
         "apd_",
         "bkg_",
+        "nws_",
         "auto_handover_",
         "news_",
         "pages_read",

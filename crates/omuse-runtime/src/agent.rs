@@ -25,6 +25,7 @@
 //! end-to-end suites (`tests/fake_llm.py`) matches on them.
 
 pub mod apdt;
+pub mod bagtrace;
 pub mod booking;
 pub mod bots;
 pub mod claims;
@@ -39,6 +40,7 @@ pub mod judgements;
 pub mod lang;
 pub mod local;
 pub mod market_text;
+pub mod news;
 pub mod runtime;
 pub mod tools;
 pub(crate) mod util;

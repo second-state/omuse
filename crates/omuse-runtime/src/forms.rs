@@ -329,6 +329,8 @@ const FORMS: &[(&str, &str, &str, FormFn)] = &[
     ("fwd-sg-claim", "www.fwd.com.sg", "/claim-online/travel", fwd_sg_claim),
     ("fwd-sg-quote", "www.fwd.com.sg", "/travel-insurance/online-quote", fwd_sg_quote),
     ("fwd-sg-apply", "www.fwd.com.sg", "/fwd_sg_apply", fwd_sg_apply),
+    // the delayed-bag lookup driven by `agent::bagtrace` (read-only: code presses Track)
+    ("worldtracer-trace", "wtrweb.worldtracer.aero", "/", worldtracer_trace),
     // the Hong Kong departure tax refund driven by `agent::apdt`: one function per page (the start page last: its
     // path is the prefix of the others)
     ("hk-apdt-upload", "app.apdtrefund.hk", "/hktaxmobile/apdt_upload", apdt_upload),
@@ -1779,6 +1781,29 @@ pub fn date(d: Option<NaiveDate>, fmt: &str) -> String {
     d.map(|d| d.format(fmt).to_string()).unwrap_or_default()
 }
 
+// ---------------------------------------------------------------- the delayed-bag lookup (`agent::bagtrace`)
+
+/// WorldTracer's delayed-baggage tracing (https://wtrweb.worldtracer.aero/WorldTracerWeb/bagtrace.html — the page the
+/// airlines' "track your bag" links open): one form, the PIR's file reference (`#ref`) and the family name (`#name`),
+/// then Track. A lookup changes nothing, so the plan presses Track itself; the status is read from the result page by
+/// `agent::bagtrace`. The family name is the one the PIR or the user gave (`family_name`), else the profile's.
+fn worldtracer_trace(i: &Inputs) -> Vec<Op> {
+    let file_ref = i.arg("file_ref");
+    let family = match i.arg("family_name") {
+        f if f.is_empty() => i.name_parts().1,
+        f => f.to_uppercase(),
+    };
+    let mut ops = vec![
+        require("trace_form", "#ref", "the tracing form is not on this page"),
+        text("file_ref", "#ref", &file_ref),
+        text("family_name", "#name", &family),
+    ];
+    if !file_ref.is_empty() {
+        ops.push(button("track", "Track"));
+    }
+    ops
+}
+
 // ---------------------------------------------------------------- the claim forms (`agent::claims` drives them)
 
 /// eClaimsLine's "File a claim" form (Card Benefit Services, https://www.eclaimsline.com — where
@@ -2934,6 +2959,50 @@ mod tests {
             .iter()
             .all(|o| o["field"] != "occupation"));
         assert!(form_for("https://www.gov.uk/eta").is_some_and(|(n, _)| n == "uk-eta"));
+    }
+
+    #[test]
+    fn the_worldtracer_lookup_fills_its_fixed_ids_and_presses_track() {
+        let p = json!({"name_en": "TAN WEI MING"});
+        let facts = Facts::from_args(&json!({"file_ref": "NRTSQ12345", "family_name": "Tan"}));
+        let plan: Vec<Value> = worldtracer_trace(&Inputs {
+            facts: &facts,
+            profile: &p,
+        })
+        .iter()
+        .filter_map(Op::to_json)
+        .collect();
+        let ops: Vec<(String, String, String)> = plan
+            .iter()
+            .map(|o| (get_str(o, "op"), get_str(o, "sel"), get_str(o, "value")))
+            .collect();
+        assert_eq!(
+            ops,
+            vec![
+                ("require".into(), "#ref".into(), String::new()),
+                ("text".into(), "#ref".into(), "NRTSQ12345".into()),
+                ("text".into(), "#name".into(), "TAN".into()),
+                ("button".into(), "button".into(), String::new()),
+            ]
+        );
+        assert_eq!(plan[3]["text"], "Track");
+        assert_eq!(
+            form_for("https://wtrweb.worldtracer.aero/WorldTracerWeb/bagtrace.html").map(|f| f.0),
+            Some("worldtracer-trace")
+        );
+        // no family name given: the profile's; no file reference: nothing is tracked
+        let facts = Facts::from_args(&json!({}));
+        let plan: Vec<Value> = worldtracer_trace(&Inputs {
+            facts: &facts,
+            profile: &p,
+        })
+        .iter()
+        .filter_map(Op::to_json)
+        .collect();
+        assert!(plan
+            .iter()
+            .any(|o| o["sel"] == "#name" && o["value"] == "MING"));
+        assert!(!plan.iter().any(|o| o["op"] == "button"));
     }
 
     #[test]
