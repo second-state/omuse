@@ -63,7 +63,7 @@ pub mod workflow;
 mod tests;
 
 pub use guards::*;
-pub use lang::{agent_lang, request_lang};
+pub use lang::agent_lang;
 pub use runtime::{Publish, Runtime, Suspend};
 pub use tools::*;
 

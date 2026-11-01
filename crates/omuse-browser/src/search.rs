@@ -19,7 +19,10 @@ const SEARCH_JS: &str = r#"() => {
   for (const r of document.querySelectorAll('.result, .web-result')) {
     const a = r.querySelector('a.result__a'); if (!a) continue;
     const sn = r.querySelector('.result__snippet');
-    out.push({title: a.innerText.trim(), url: dec(a.getAttribute('href')), snippet: sn ? sn.innerText.trim() : ''});
+    // a dated result's timestamp: the last span of its URL line ("2026-10-31T09:00:00.0000000")
+    const ts = r.querySelector('.result__timestamp') || r.querySelector('.result__extras__url > span:last-child');
+    out.push({title: a.innerText.trim(), url: dec(a.getAttribute('href')), snippet: sn ? sn.innerText.trim() : '',
+              date: ts && !ts.classList.contains('result__icon') ? ts.innerText.trim() : ''});
   }
   if (!out.length) for (const r of document.querySelectorAll('div.news-card')) {   // Bing News
     const a = r.querySelector('a.title'); if (!a) continue;
@@ -38,13 +41,25 @@ const SEARCH_JS: &str = r#"() => {
   return out;
 }"#;
 
+/// A page's text, and its structured parts by their elements: `lead` (the first paragraph of 60 characters or more under
+/// its `<article>` / main), `site_name` (`og:site_name`) and `published` (`article:published_time`, else the first
+/// `<time datetime>`).
 const READ_JS: &str = r#"(limit) => {
   const pick = document.querySelector('article') || document.querySelector('main, [role=main]') || document.body;
   let t = (pick ? pick.innerText : '') || '';
   if (t.length < 400 && document.body) t = document.body.innerText || t;
   t = t.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  const meta = n => { const m = document.querySelector('meta[property="' + n + '"], meta[name="' + n + '"]');
+                      return m ? (m.getAttribute('content') || '').trim() : ''; };
+  const tm = document.querySelector('time[datetime]');
+  let lead = '';
+  for (const p of (pick ? pick.querySelectorAll('p') : [])) {
+    const x = (p.innerText || '').replace(/\s+/g, ' ').trim();
+    if (x.length >= 60) { lead = x.slice(0, 1200); break; }
+  }
   return {title: document.title, url: location.href, text: t.slice(0, limit), length: t.length,
-          scripts: document.scripts.length};
+          scripts: document.scripts.length, lead, site_name: meta('og:site_name').slice(0, 80),
+          published: (meta('article:published_time') || (tm ? tm.getAttribute('datetime') : '') || '').slice(0, 40)};
 }"#;
 
 /// `urllib.parse.quote_plus`.

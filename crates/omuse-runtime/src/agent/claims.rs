@@ -23,8 +23,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use super::driver::{
-    country_of_city, handed_back, json_of, pos, results_of, snapshot_text, stopped, walk_messages,
-    Step,
+    country_of_city, handed_back, json_of, pos, results_of, stopped, walk_messages, Step,
 };
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
@@ -211,17 +210,22 @@ pub const SPECS: &[ClaimSpec] = &[
     },
 ];
 
+/// The link to bolttech's Travel Insurance Claim Form (the fillable PDF) on FWD Hong Kong's site.
+const HK_CLAIM_FORM_SEL: &str = "a[href$='travel-insurance-clm-form-fillable.pdf']";
+
 /// FWD Hong Kong's MyTravel plan page (no form function: its quote goes to the `browser-use` skill).
 const HK_QUOTE_URL: &str = "https://www.fwd.com.hk/online-insurance/mytravel-insurance/en/";
 
 /// The card fields of FWD Singapore's application, filled from the Vault after `purchase_confirm`: (Vault field, the
-/// input's label in the snapshot).
+/// input's fixed selector).
 const CARD_FIELDS: &[(&str, &str)] = &[
-    ("number", "Card number"),
-    ("expiry", "Expiry"),
-    ("cvc", "CVC"),
-    ("holder", "Name on card"),
+    ("number", "#card"),
+    ("expiry", "#exp"),
+    ("cvc", "#cvc"),
+    ("holder", "#holder"),
 ];
+/// The claim form's file input for the supporting documents (FWD Singapore's online claim page).
+const CLAIM_DOCS_SEL: &str = "#docs";
 
 fn spec(flow: Flow) -> &'static ClaimSpec {
     SPECS.iter().find(|s| s.flow == flow).unwrap()
@@ -1507,12 +1511,6 @@ pub fn pick_card<'a>(cards: &'a [VaultCard], names: &[String]) -> Option<&'a Vau
         .or_else(|| cards.first())
 }
 
-/// The ref of the input labelled `label` (a textbox or a file chooser) in a known page's snapshot.
-fn ref_of(snapshot: &str, role: &str, label: &str) -> Option<String> {
-    let r = Regex::new(&format!(r#"\[(e\d+)\] {role} "{}"#, regex::escape(label))).ok()?;
-    r.captures(snapshot).map(|c| c[1].to_string())
-}
-
 // ---------------------------------------------------------------- the transcript's gates (fill, review, snapshot)
 
 const OWN_STEP: &str = "This step is yours";
@@ -1986,29 +1984,30 @@ fn next_sg_claim(
         Ok(p) => p,
         Err(st) => return finish(st, &base),
     };
-    // the certificate uploaded into the form's file input (its ref from a snapshot after the fill)
+    // the certificate uploaded into the form's file input (#docs): a snapshot after the fill gives the page's elements
+    // their refs, the input's ref is read by its id
     let uploaded = results_of(run, "browser_upload")
         .last()
         .is_some_and(|(_, m)| pos(run, m) > fill_pos);
     if let (Some(path), false) = (saved_path(run), uploaded) {
         let snap = results_of(run, "browser_snapshot")
             .last()
-            .filter(|(_, m)| pos(run, m) > fill_pos)
-            .map(|(_, m)| snapshot_text(m));
-        match snap {
-            None => return ids.one("browser_snapshot", json!({"max_chars": 6000})),
-            Some(text) => {
-                if let Some(r) =
-                    ref_of(&text, "filechooser", "Supporting documents").or_else(|| {
-                        Regex::new(r"\[(e\d+)\] filechooser")
-                            .unwrap()
-                            .captures(&text)
-                            .map(|c| c[1].to_string())
-                    })
-                {
-                    return ids.one("browser_upload", json!({"ref": r, "path": path}));
-                }
-            }
+            .map(|(_, m)| pos(run, m))
+            .filter(|p| *p > fill_pos);
+        let Some(snap) = snap else {
+            return ids.one("browser_snapshot", json!({"max_chars": 6000}));
+        };
+        let read = results_of(run, "browser_read_elements")
+            .into_iter()
+            .find(|(a, m)| get_str(&a["read"][0], "name") == "docs" && pos(run, m) > snap);
+        let Some((_, read)) = read else {
+            return ids.one(
+                "browser_read_elements",
+                super::confirm::refs_args(&[("docs", CLAIM_DOCS_SEL)]),
+            );
+        };
+        if let Some(r) = super::confirm::first_value(read, "docs") {
+            return ids.one("browser_upload", json!({"ref": r, "path": path}));
         }
     }
     let after = results_of(run, "browser_upload")
@@ -2136,11 +2135,20 @@ fn next_hk_claim(
                     json!({"url": "https://www.fwd.com.hk/"}),
                 );
             }
-            let site = navs.last().map(|(_, m)| content_of(m)).unwrap_or_default();
-            let link = Regex::new(r#"\[(e\d+)\] link "[^"]*[Cc]laim [Ff]orm[^"]*""#)
-                .unwrap()
-                .captures(&site)
-                .map(|c| c[1].to_string());
+            // the claim form's link on the site's page by its fixed address (its ref, given by the page's snapshot)
+            let nav_pos = navs.last().map(|(_, m)| pos(run, m)).unwrap_or(0);
+            let read = results_of(run, "browser_read_elements")
+                .into_iter()
+                .find(|(a, m)| {
+                    get_str(&a["read"][0], "name") == "claim_form" && pos(run, m) > nav_pos
+                });
+            let Some((_, read)) = read else {
+                return ids.one(
+                    "browser_read_elements",
+                    super::confirm::refs_args(&[("claim_form", HK_CLAIM_FORM_SEL)]),
+                );
+            };
+            let link = super::confirm::first_value(read, "claim_form");
             match (
                 link,
                 results_of(run, "browser_click").is_empty(),
@@ -2361,24 +2369,38 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
             return Step::Done(result);
         }
         let ppos = pos(run, pm);
-        // the card fields' refs from a snapshot after the approval (a known page), then one secret fill per field
+        // the card fields' refs after the approval: a snapshot gives the page's elements their refs, the fields' refs
+        // are read by their fixed ids, then one secret fill per field
         let snap = results_of(run, "browser_snapshot")
             .iter()
-            .find(|(_, x)| pos(run, x) > ppos)
-            .map(|(_, x)| snapshot_text(x));
+            .map(|(_, x)| pos(run, x))
+            .find(|p| *p > ppos);
         let Some(snap) = snap else {
             return ids.one("browser_snapshot", json!({"max_chars": 6000}));
+        };
+        let refs = results_of(run, "browser_read_elements")
+            .into_iter()
+            .find(|(a, m)| {
+                get_str(&a["read"][0], "name").starts_with("card_") && pos(run, m) > snap
+            });
+        let Some((_, refs)) = refs else {
+            let names: Vec<(String, &str)> = CARD_FIELDS
+                .iter()
+                .map(|(f, sel)| (format!("card_{f}"), *sel))
+                .collect();
+            let items: Vec<(&str, &str)> = names.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+            return ids.one("browser_read_elements", super::confirm::refs_args(&items));
         };
         let done: Vec<String> = results_of(run, "browser_fill_secret")
             .iter()
             .filter(|(_, x)| pos(run, x) > ppos)
             .map(|(a, _)| sget(a, "field"))
             .collect();
-        for (field, label) in CARD_FIELDS {
+        for (field, _) in CARD_FIELDS {
             if done.iter().any(|d| d == field) {
                 continue;
             }
-            if let Some(r) = ref_of(&snap, "textbox", label) {
+            if let Some(r) = super::confirm::first_value(refs, &format!("card_{field}")) {
                 return ids.one(
                     "browser_fill_secret",
                     json!({"ref": r, "item_id": c.id, "field": field}),
@@ -2470,10 +2492,10 @@ fn next_bag(args: &Value, run: &[Value], ids: &Ids) -> Step {
     if let Some(why) = stopped(fill) {
         return fail(&why);
     }
-    let Some((_, snap)) = results_of(run, "browser_snapshot").into_iter().next() else {
-        return ids.one("browser_snapshot", json!({"max_chars": 6000}));
+    let Some((_, read)) = results_of(run, "browser_read_elements").into_iter().next() else {
+        return ids.one("browser_read_elements", bagtrace::read_args());
     };
-    let trace = bagtrace::trace_of(&snapshot_text(snap), &file_ref);
+    let trace = bagtrace::trace_of(read, &file_ref);
     let flight_date = parse_iso(&s_arg(args, "flight_date"))
         .or_else(|| trace.as_ref().and_then(|t| t.flight_date));
     let watch = b_arg(args, "watch");

@@ -439,15 +439,21 @@ pub struct Article {
     pub date: String,
     pub snippet: String,
     pub text: String,
+    /// the article's first paragraph, read by its element (`browser_read`'s `lead`)
+    pub lead: String,
 }
 
-/// "Reuters · 31 October 2026 — …" (the engines' news snippet, a page's byline line): the publication and the date.
-fn byline(s: &str) -> Option<(String, String)> {
-    static BY: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^\s*([^·|—–\n]{2,40}?)\s*[·|]\s*([^·|—–\n]{4,30}?)\s*(?:[—–\n]|$)").unwrap()
-    });
-    let c = BY.captures(s)?;
-    Some((c[1].trim().to_string(), c[2].trim().to_string()))
+/// A date as an edition shows it: an ISO date or timestamp ("2026-10-31T09:00:00.0000000") as "31 October 2026"; any
+/// other text (an engine's "2 days ago") as it is.
+fn shown_date(s: &str) -> String {
+    let s = s.trim();
+    match s
+        .get(..10)
+        .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+    {
+        Some(d) => d.format("%-d %B %Y").to_string(),
+        None => s.to_string(),
+    }
 }
 
 fn host_of(u: &str) -> String {
@@ -466,30 +472,41 @@ pub fn articles(t: &[Value]) -> Vec<Article> {
     pick_articles(&rows, ARTICLES)
         .into_iter()
         .map(|r| {
-            let snippet = get_str(&r, "snippet");
-            let (source, date) = byline(&snippet).unwrap_or_default();
+            // the engine's structured fields: the publication (Bing News' card author), the date (DuckDuckGo's
+            // timestamp, Bing News' age)
+            let date = get_str(&r, "date");
             Article {
                 title: get_str(&r, "title").trim().to_string(),
-                source: if source.is_empty() {
-                    get_str(&r, "source")
-                } else {
-                    source
-                },
-                date: if date.is_empty() {
-                    get_str(&r, "date")
-                } else {
-                    date
-                },
-                snippet,
+                source: get_str(&r, "source").trim().to_string(),
+                date: shown_date(
+                    if date.trim().is_empty() {
+                        get_str(&r, "age")
+                    } else {
+                        date
+                    }
+                    .as_str(),
+                ),
+                snippet: get_str(&r, "snippet"),
                 url: get_str(&r, "url"),
                 text: String::new(),
+                lead: String::new(),
             }
         })
         .collect()
 }
 
-/// The pages the machine's reads returned: `(url, title, text)`.
-fn pages_read(t: &[Value]) -> Vec<(String, String, String)> {
+/// One page the machine's reads returned, with its parts read by their elements.
+struct PageRead {
+    url: String,
+    title: String,
+    text: String,
+    lead: String,
+    site_name: String,
+    published: String,
+}
+
+/// The pages the machine's reads returned.
+fn pages_read(t: &[Value]) -> Vec<PageRead> {
     own(t, "browser_read")
         .into_iter()
         .flat_map(|(_, m)| {
@@ -500,41 +517,41 @@ fn pages_read(t: &[Value]) -> Vec<(String, String, String)> {
                 .unwrap_or_default()
         })
         .filter(|p| p.get("error").is_none() && p.get("blocked").is_none())
-        .map(|p| {
-            (
-                get_str(&p, "url"),
-                get_str(&p, "title"),
-                get_str(&p, "text"),
-            )
+        .map(|p| PageRead {
+            url: get_str(&p, "url"),
+            title: get_str(&p, "title"),
+            text: get_str(&p, "text"),
+            lead: get_str(&p, "lead"),
+            site_name: get_str(&p, "site_name"),
+            published: get_str(&p, "published"),
         })
         .collect()
 }
 
 /// The articles with the text of their pages (the snippet when a page could not be read), the publication and the
-/// date filled from the page when the snippet had none.
+/// date filled from the page's elements when the search result had none (`og:site_name`, else the page title's
+/// "Headline | Publication", else the host; the published time).
 pub fn articles_read(t: &[Value]) -> Vec<Article> {
     let pages = pages_read(t);
     articles(t)
         .into_iter()
         .map(|mut a| {
             let same = |u: &str| u.trim_end_matches('/') == a.url.trim_end_matches('/');
-            if let Some((_, title, text)) = pages.iter().find(|(u, _, _)| same(u)) {
-                a.text = text.trim().to_string();
-                if a.source.is_empty() || a.date.is_empty() {
-                    if let Some((s, d)) = a.text.lines().find_map(byline) {
-                        if a.source.is_empty() {
-                            a.source = s;
-                        }
-                        if a.date.is_empty() {
-                            a.date = d;
-                        }
-                    }
+            if let Some(p) = pages.iter().find(|p| same(&p.url)) {
+                a.text = p.text.trim().to_string();
+                a.lead = p.lead.trim().to_string();
+                if a.source.is_empty() {
+                    a.source = p.site_name.trim().to_string();
+                }
+                if a.date.is_empty() {
+                    a.date = shown_date(&p.published);
                 }
                 if a.source.is_empty() {
                     // the page title's "Headline | Publication"
-                    if let Some((_, s)) = title
+                    if let Some((_, s)) = p
+                        .title
                         .rsplit_once(" | ")
-                        .or_else(|| title.rsplit_once(" - "))
+                        .or_else(|| p.title.rsplit_once(" - "))
                     {
                         a.source = s.trim().to_string();
                     }
@@ -551,24 +568,21 @@ pub fn articles_read(t: &[Value]) -> Vec<Article> {
         .collect()
 }
 
-/// A gathered article's own opening, for an article the model wrote no story for: its text without the headline and
-/// the byline, cut at a sentence end (at most ~600 characters).
+/// A gathered article's own opening, for an article the model wrote no story for: its first paragraph as its element
+/// gives it (`lead`), else its text without the headline line, cut at a sentence end (at most ~600 characters).
 pub fn opening(art: &Value) -> String {
     let title = get_str(art, "title");
-    let text = get_str(art, "text");
-    let body: Vec<&str> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && *l != title && byline(l).is_none())
-        .collect();
-    let mut text = body.join(" ");
-    // a snippet's own "Source · date — " prefix
-    if let Some(i) = text
-        .find(" — ")
-        .filter(|i| *i < 80 && byline(&text).is_some())
-    {
-        text = text[i + " — ".len()..].to_string();
-    }
+    let lead = get_str(art, "lead");
+    let text = if lead.trim().is_empty() {
+        get_str(art, "text")
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && *l != title)
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        lead
+    };
     let text = text.trim_end_matches('…').trim().to_string();
     if text.chars().count() <= 600 {
         return text;
@@ -684,7 +698,7 @@ fn next_gather(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
         .enumerate()
         .map(|(i, a)| {
             json!({"article": i + 1, "title": a.title, "publication": a.source, "date": a.date, "url": a.url,
-                   "text": take_chars(&a.text, ARTICLE_CHARS)})
+                   "lead": a.lead, "text": take_chars(&a.text, ARTICLE_CHARS)})
         })
         .collect();
     Step::Done(json!({

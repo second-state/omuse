@@ -380,7 +380,8 @@ def _rooms(h: dict, ci: dt.date, co: dt.date, guests: int) -> list[dict]:
         out.append({"room_offer_id": rid, "room_type": rtype, "beds": bed, "meals": meal, "max_guests": 3,
                     "price_per_night": f"SGD {nightly:,.2f}", "nights": n, "total_amount": nightly * n,
                     "total": f"SGD {nightly * n:,.2f} for {n} nights, taxes included", "cancellation": cancel,
-                    "payment": pay, "booking_url": f"{BASE}/book/hotel/{rid}"})
+                    "free_cancellation": refundable, "payment": pay, "prepaid": not refundable,
+                    "booking_url": f"{BASE}/book/hotel/{rid}"})
     return out
 
 
@@ -400,7 +401,7 @@ def hotels_search(a: dict) -> dict:
         h = _hotel(code, i)
         rooms = _rooms(h, ci, co, guests)
         cheapest = min(rooms, key=lambda r: r["total_amount"])
-        free = next(r for r in rooms if r["cancellation"].startswith("Free"))
+        free = next(r for r in rooms if r["free_cancellation"])
         row = {k: v for k, v in h.items() if not k.startswith("_")}
         row.update({"from_price_per_night": cheapest["price_per_night"], "from_total": cheapest["total"],
                     "free_cancellation_from": free["price_per_night"] + " per night",
@@ -459,7 +460,9 @@ def _rest(code: str, idx: int) -> dict:
     return {"restaurant_id": f"R-{code}-{idx}", "name": name, "city": c["name"], "area": area,
             "distinction": dist if dist != "Bib Gourmand" else "Bib Gourmand (good value, not a star)",
             "cuisine": cuisine, "price_range": f"{c['sym']}{lo:,} - {c['sym']}{hi:,} per person ({c['cur']})",
+            "stars": {"3 Stars": 3, "2 Stars": 2, "1 Star": 1}.get(dist, 0), "bib_gourmand": dist == "Bib Gourmand",
             "closed": ", ".join(WEEKDAYS[d] for d in closed) or "open daily",
+            "closed_days": [WEEKDAYS[d] for d in closed],
             "deposit_policy": deposit, "dress_code": "Smart casual" if dist != "Bib Gourmand" else "Casual",
             "booking_url": f"{BASE}/book/restaurant/R-{code}-{idx}",
             "_dep": dep_pp, "_closed": closed, "_seatings": seatings, "_cur": c["cur"], "_sym": c["sym"]}

@@ -254,6 +254,12 @@ fn repeat_guard_blocks_streaks_and_plan_loops() {
         turn(&[("s2", "browser_scroll", s.clone())]),
     ];
     assert!(repeat_guard(&tr, &call("s3", "browser_scroll", s)).is_none());
+    // a machine reads the same elements on each page it reaches (apdt_real 2026-11-01): never blocked
+    let r = json!({"read": [{"name": "errors", "sel": ".err"}]});
+    let tr: Vec<Value> = (0..6)
+        .map(|i| turn(&[(&format!("apd_{i}"), "browser_read_elements", r.clone())]))
+        .collect();
+    assert!(repeat_guard(&tr, &call("apd_9", "browser_read_elements", r)).is_none());
 }
 
 #[test]
@@ -2385,18 +2391,20 @@ Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible\n4.7 out of 5 star
         .lock()
         .evidence
         .insert("t1".into(), vec![json!({"url": url, "text": page})]);
-    let opt = |label: &str, d: &[&str]| json!({"label": label, "details": d, "source_url": url});
-    let chosen = json!([
-        opt(
-            "Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible",
-            &["4.7 out of 5 stars · 1,203 ratings", "S$21.90"]
-        ),
-        opt(
-            "Carbon Fibre Case for iPhone 17 Pro Max, Ultra Thin 0.6 mm",
-            &["S$18.90"]
-        ),
-        opt("MagSafe Silicone Case for iPhone 17 Pro Max", &["S$19.90"])
-    ]);
+    // every listing on the page as the model extracted it into JSON (the label and texts exact, the numbers as data)
+    let chosen: Vec<Value> = page
+        .lines()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .chunks(3)
+        .map(|c| {
+            let n = crate::listings::numbers(c[1]);
+            json!({"label": c[0], "details": [c[1]], "source_url": url, "price_text": c[2],
+                   "price": crate::listings::amount(c[2]), "stars": n[0], "ratings": n[2]})
+        })
+        .collect();
+    assert_eq!(chosen.len(), 8);
+    let chosen = json!(chosen);
     // the model's own pick from the listings is sent back once for the criteria
     let r = rt
         .local(
@@ -2407,7 +2415,7 @@ Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible\n4.7 out of 5 star
         .await
         .unwrap();
     assert!(r.starts_with("ERROR") && r.contains("ranking"), "{r}");
-    // with the criteria, code picks and orders the listings from the page
+    // with the criteria, code picks and orders the listings the model read off the page
     let r = rt
         .local(
             &t,
@@ -3114,7 +3122,12 @@ async fn a_deep_link_error_goes_home_and_a_product_page_gets_its_cart_click() {
             reply(if ctx.contains("Title: Error") {
                 "{\"choice\": \"error_page\"}"
             } else if ctx.contains("Title: Case") {
-                "{\"choice\": \"product_page\"}"
+                // the cart decision lists the page's buttons by ref: the model picks the one that adds the product
+                assert!(
+                    ctx.contains("e9: Add to Cart") && body.to_string().contains("NONE"),
+                    "{ctx}"
+                );
+                "{\"choice\": \"e9\"}"
             } else {
                 "{\"choice\": \"normal_page\"}"
             })
@@ -3417,7 +3430,12 @@ async fn a_workflow_call_runs_its_machine_then_the_model_words_the_result_and_th
         .collect();
     assert_eq!(
         names,
-        ["shop_order", "browser_navigate", "shop_order_result"]
+        [
+            "shop_order",
+            "browser_navigate",
+            "browser_read_elements",
+            "shop_order_result"
+        ]
     );
     let res = events_of(&evs, "workflow_result");
     assert_eq!(res[0]["status"], "shown");
@@ -4114,4 +4132,62 @@ async fn the_review_judges_the_language_rule_and_a_reply_in_the_wrong_language_i
         "{}",
         get_str(&t, "result")
     );
+}
+
+#[tokio::test]
+async fn a_code_machines_page_read_runs_while_the_skill_has_the_browser_off() {
+    // travel_info_real 2026-11-01: the tokyo guide turns the browser off; train_times' own timetable read is code's
+    let (rt, _d) = rt();
+    let acts = Arc::new(Mutex::new(Vec::new()));
+    let a2 = acts.clone();
+    rt.set_sentinel_hook(Some(Arc::new(move |_, path, payload| {
+        let p = payload.unwrap_or(Value::Null);
+        if path == "/internal/act" {
+            a2.lock().push(get_str(&p, "tool"));
+        }
+        Box::pin(async move { Ok(json!({"status": "ok", "result": {"url": "https://timetables.jreast.co.jp/", "title": "T", "snapshot": ""}})) })
+    })));
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("g", &conv, "chat", "", "", None)
+        .unwrap();
+    let tid = get_str(&t, "id");
+    rt.inner
+        .lock()
+        .no_browser
+        .insert(tid.clone(), "tokyo".into());
+    let catalog = json!({"tools": tools(&["browser_navigate"])});
+    let run = |id: &str| {
+        let c = call(
+            id,
+            "browser_navigate",
+            json!({"url": "https://timetables.jreast.co.jp/en/2611/timetable/tt1130/1130021.html"}),
+        );
+        let mut tr = vec![super::runtime::assistant_with_calls(
+            "",
+            std::slice::from_ref(&c),
+        )];
+        let (rt, t, catalog) = (rt.clone(), t.clone(), catalog.clone());
+        async move {
+            let _ = rt
+                .exec_call(
+                    &t,
+                    &c,
+                    &mut tr,
+                    &catalog,
+                    &[],
+                    None,
+                    super::exec::CallMode::MAIN,
+                )
+                .await;
+            tr
+        }
+    };
+    let tr = run("c1").await;
+    assert!(crate::agent::util::content_of(tr.last().unwrap()).contains("browser_off"));
+    assert!(acts.lock().is_empty());
+    let tr = run("trn_1").await;
+    assert!(!crate::agent::util::content_of(tr.last().unwrap()).contains("browser_off"));
+    assert_eq!(acts.lock().as_slice(), ["browser_navigate"]);
 }

@@ -1146,30 +1146,54 @@ const FILL_ONE_JS: &str = r#"(f) => {
   return {ok: (el.value || '') === (f.value || '')};
 }"#;
 
-/// The empty fields of the page's forms: `[{label, kind}]` for each visible, enabled text / date / number / email / tel
-/// input, textarea and select with no value, and each radio group with none chosen (passwords, files and hidden
-/// inputs left out). The label: its `<label>`, aria-label, placeholder, or the text of the field's row.
-/// `read_elements`: `items = [{name, sel, attr?, cells?}]` → `{name: [text | attribute | {cells, links}]}` — up to 40
-/// visible matches per selector, 400 characters each (an invalid selector gives an empty list).
+/// `read_elements`: `items = [{name, sel, attr?, cells?, fields?, hidden?, max?}]` → `{name: [value]}`, for each of
+/// the selector's visible matches (with `hidden`, every match: an input's ref or attribute) up to `max` (40, at most
+/// 200), 400 characters each (an invalid selector gives an empty list). The value is the element's text, or its
+/// attribute (`attr`), or with `cells` its cells and links (a table row), or with `fields` an object
+/// `{field: value}` read inside it — each field a selector (`"h2 a"`, its first match's text) or
+/// `{sel?, attr?, closest?}`: `closest` goes up to that ancestor first, `sel` down to its first match, `attr` takes an
+/// attribute instead of the text (`href` is the absolute link). A field with no element is `""`.
 const READ_ELEMENTS_JS: &str = r#"(items) => {
   const clean = s => (s || '').replace(/\s+/g, ' ').trim().slice(0, 400);
   const vis = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const attrOf = (e, a) => clean(a === 'href' && e.href ? e.href : e.getAttribute(String(a)));
+  const textOf = e => clean(e.innerText || e.textContent);
+  const field = (e, f) => {
+    const spec = typeof f === 'string' ? {sel: f} : (f || {});
+    let t = e;
+    try {
+      if (spec.closest) t = t.closest(String(spec.closest));
+      if (t && spec.sel) t = t.querySelector(String(spec.sel));
+    } catch (x) { t = null; }
+    if (!t) return '';
+    return spec.attr ? attrOf(t, spec.attr) : textOf(t);
+  };
   const out = {};
   for (const it of (Array.isArray(items) ? items : []).slice(0, 20)) {
     const name = String(it && it.name || ''); if (!name) continue;
+    const max = Math.min(Math.max(parseInt(it.max, 10) || 40, 1), 200);
     let els = [];
-    try { els = Array.from(document.querySelectorAll(String(it.sel || ''))).filter(vis).slice(0, 40); } catch (e) {}
-    out[name] = els.map(e => {
+    try { els = Array.from(document.querySelectorAll(String(it.sel || ''))); } catch (e) {}
+    if (!it.hidden) els = els.filter(vis);
+    out[name] = els.slice(0, max).map(e => {
       if (it.cells) return {cells: Array.from(e.querySelectorAll('th,td')).map(c => clean(c.innerText)),
                             links: Array.from(e.querySelectorAll('a[href]')).map(a => a.href)};
-      if (it.attr) return clean(it.attr === 'href' && e.href ? e.href : e.getAttribute(String(it.attr)));
-      return clean(e.innerText || e.textContent);
+      if (it.fields && typeof it.fields === 'object') {
+        const o = {};
+        for (const [k, f] of Object.entries(it.fields)) o[k] = field(e, f);
+        return o;
+      }
+      if (it.attr) return attrOf(e, it.attr);
+      return textOf(e);
     });
   }
   return out;
 }"#;
 
+/// The empty fields of the page's forms: `[{label, kind}]` for each visible, enabled text / date / number / email / tel
+/// input, textarea and select with no value, and each radio group with none chosen (passwords, files and hidden
+/// inputs left out). The label: its `<label>`, aria-label, placeholder, or the text of the field's row.
 const EMPTY_FIELDS_JS: &str = r#"() => {
   const seen = new Set(), out = [];
   const vis = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);

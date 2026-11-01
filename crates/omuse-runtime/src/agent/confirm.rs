@@ -50,15 +50,39 @@ pub fn read_args(sel: &str) -> Value {
     json!({"read": [{"name": REFERENCE, "sel": sel}]})
 }
 
-/// The values a `browser_read_elements` result holds under `name` (strings only; a row read with `cells` is skipped).
-pub fn element_values(m: &Value, name: &str) -> Vec<String> {
+/// The attribute a snapshot gives each element it lists: its ref (`e12`), as `browser_click` / `browser_fill_secret` /
+/// `browser_upload` take it.
+pub const REF_ATTR: &str = "data-persona-ref";
+
+/// The arguments of `browser_read_elements` for the refs of a known page's inputs by their fixed selectors (`(name,
+/// selector)`; hidden inputs too), read after a snapshot gave the page's elements their refs.
+pub fn refs_args(items: &[(&str, &str)]) -> Value {
+    let read: Vec<Value> = items
+        .iter()
+        .map(|(name, sel)| json!({"name": name, "sel": sel, "attr": REF_ATTR, "hidden": true}))
+        .collect();
+    json!({"read": read})
+}
+
+/// The first non-empty value a `browser_read_elements` result holds under `name`.
+pub fn first_value(m: &Value, name: &str) -> Option<String> {
+    element_values(m, name)
+        .into_iter()
+        .find(|v| !v.trim().is_empty())
+}
+
+/// The `elements` object of a `browser_read_elements` result (the JSON inside its untrusted-content wrapper).
+fn elements_of(m: &Value) -> Value {
     let c = content_of(m);
     let v: Value = match (c.find('{'), c.rfind('}')) {
         (Some(i), Some(j)) => serde_json::from_str(&c[i..=j]).unwrap_or(Value::Null),
         _ => Value::Null,
     };
-    v["elements"][name]
-        .as_array()
+    v["elements"].clone()
+}
+
+fn strings(x: &Value) -> Vec<String> {
+    x.as_array()
         .map(|a| {
             a.iter()
                 .filter_map(Value::as_str)
@@ -68,28 +92,36 @@ pub fn element_values(m: &Value, name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The values a `browser_read_elements` result holds under `name` (strings only; a row read with `cells` is skipped).
+pub fn element_values(m: &Value, name: &str) -> Vec<String> {
+    strings(&elements_of(m)[name])
+}
+
 /// The rows a `browser_read_elements` result holds under `name` (read with `cells`): each row's cells and links.
 pub fn element_rows(m: &Value, name: &str) -> Vec<(Vec<String>, Vec<String>)> {
-    let c = content_of(m);
-    let v: Value = match (c.find('{'), c.rfind('}')) {
-        (Some(i), Some(j)) => serde_json::from_str(&c[i..=j]).unwrap_or(Value::Null),
-        _ => Value::Null,
-    };
-    let strs = |x: &Value| -> Vec<String> {
-        x.as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    v["elements"][name]
+    elements_of(m)[name]
         .as_array()
         .map(|a| {
             a.iter()
-                .map(|r| (strs(&r["cells"]), strs(&r["links"])))
+                .map(|r| (strings(&r["cells"]), strings(&r["links"])))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The matches a `browser_read_elements` result holds under `name` (read with `fields`): each match's fields, as
+/// strings (a field the page did not have is `""`).
+pub fn element_fields(m: &Value, name: &str) -> Vec<std::collections::BTreeMap<String, String>> {
+    elements_of(m)[name]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_object)
+                .map(|o| {
+                    o.iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                        .collect()
+                })
                 .collect()
         })
         .unwrap_or_default()

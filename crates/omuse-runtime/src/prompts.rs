@@ -63,7 +63,6 @@ pub fn now_str(tz: &str, language: &str) -> String {
 static CJK_RUN: LazyLock<Regex> =
     LazyLock::new(|| rx(r"[　-〿㐀-鿿豈-﫿＀-￯](?:[^\n]*[　-〿㐀-鿿豈-﫿＀-￯])?"));
 static CJK: LazyLock<Regex> = LazyLock::new(|| rx(r"[㐀-鿿豈-﫿]"));
-static WORD: LazyLock<Regex> = LazyLock::new(|| rx(r"[A-Za-z]{2,}"));
 static CJK_PUNCT: LazyLock<Regex> = LazyLock::new(|| rx(r"[　-〿＀-￯]"));
 static EMPTY_PARENS: LazyLock<Regex> = LazyLock::new(|| rx(r"\(\s*\)|（\s*）"));
 static ASCII_PARENS: LazyLock<Regex> = LazyLock::new(|| rx(r"\(\s*\)"));
@@ -167,19 +166,6 @@ explanation around it stays English.";
 即使用户消息、邮件、网页、文件或工具结果是英文或其他语言。Think, plan and answer in Simplified Chinese."
 }
 
-static LATIN: LazyLock<Regex> = LazyLock::new(|| rx(r"[A-Za-z]"));
-
-/// Share of Chinese characters among letters — 0 for English, ~1 for Chinese; quoting a Chinese name stays low.
-pub fn cjk_share(text: &str) -> f64 {
-    let c = CJK.find_iter(text).count() as f64;
-    let a = LATIN.find_iter(text).count() as f64;
-    if c + a > 0.0 {
-        c / (c + a / 4.0) // ~4 letters per English word vs 1 char per Chinese word
-    } else {
-        0.0
-    }
-}
-
 /// Pick the system note for the agent's language (`prompts.L`).
 pub fn l<'a>(language: &str, zh: &'a str, en: &'a str) -> &'a str {
     if language == "en" {
@@ -207,17 +193,61 @@ pub fn title_max(language: &str) -> usize {
     }
 }
 
+/// The languages a conversation title may come back in (`{"lang": …}` of the title call).
+pub const TITLE_LANGS: [&str; 2] = ["en", "zh"];
+
 /// System prompt for naming a conversation after its content (the list shows the title, not the first question).
-pub fn title_prompt(language: &str) -> String {
-    let n = title_max(language);
+/// `Some(language)`: the title is written in that language (Settings → Language); `None` (Settings → Reply language
+/// = match): in the language of the user's latest message, which the model names in `lang` — the model reads the
+/// language, code only checks the value against [`TITLE_LANGS`].
+pub fn title_prompt(language: Option<&str>) -> String {
+    let which = match language {
+        Some(l) => format!(
+            "in {}, at most {} characters; \"lang\" is \"{}\"",
+            lang_name(l),
+            title_max(l),
+            if l == "en" { "en" } else { "zh" }
+        ),
+        None => format!(
+            "in the language of the user's latest message — \"lang\": \"en\" for English (title at most {} \
+characters) or \"zh\" for Chinese (written in Simplified Chinese, at most {} characters); any other language: \"en\"",
+            title_max("en"),
+            title_max("zh")
+        ),
+    };
     format!(
-        "You name conversations between a user and their assistant. Reply with ONLY the title: a short noun phrase that \
-says what the conversation is about, at most {} characters, in {}. No quotes, no ending \
-punctuation, no 'Conversation about', no explanation. Name the topic and the outcome if there is one \
-(e.g. 'Flight to Tokyo booked', 'Q3 sales report'), not what the user literally typed.",
-        n,
-        lang_name(language)
+        "You name conversations between a user and their assistant. Answer with JSON only: {{\"title\": \"…\", \
+\"lang\": \"en\" | \"zh\"}}. The title is a short noun phrase that says what the conversation is about, {}. No \
+quotes, no ending punctuation, no 'Conversation about', no explanation. Name the topic and the outcome if there is \
+one (e.g. 'Flight to Tokyo booked', 'Q3 sales report'), not what the user literally typed.",
+        which
     )
+}
+
+/// The title call's answer: `(title, lang)` with `lang` one of [`TITLE_LANGS`] (`fallback` when the model gave
+/// another value or none) and the title cleaned and cut by [`clean_title`] for `fixed` (Settings → Language) or else
+/// that `lang`. A reply that is not JSON is taken as the title itself (a title is display text; nothing is decided on
+/// it).
+pub fn parse_title(raw: &str, fallback: &str, fixed: Option<&str>) -> (String, String) {
+    let (title, lang) = match crate::llm::extract_json(raw).filter(Value::is_object) {
+        Some(v) => (
+            v.get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            v.get("lang")
+                .and_then(Value::as_str)
+                .map(|l| l.trim().to_lowercase())
+                .unwrap_or_default(),
+        ),
+        None => (raw.to_string(), String::new()),
+    };
+    let lang = if TITLE_LANGS.contains(&lang.as_str()) {
+        lang
+    } else {
+        fallback.to_string()
+    };
+    (clean_title(&title, fixed.unwrap_or(&lang)), lang)
 }
 
 /// One line, no quotes or trailing punctuation, cut to the UI limit; "" when the model gave nothing usable.
@@ -244,25 +274,6 @@ pub fn clean_title(raw: &str, language: &str) -> String {
         String::new()
     } else {
         take_chars(&t, title_max(language)).trim_end().to_string()
-    }
-}
-
-/// The language to answer in: the language the user wrote the request in; the UI language breaks ties.
-/// Chinese names or terms inside an English sentence (and vice versa) don't flip it.
-pub fn request_language(text: &str, ui_language: &str) -> &'static str {
-    static NOISE: LazyLock<Regex> = LazyLock::new(|| rx(r"https?://\S+|[\w.+-]+@[\w.-]+|`[^`]*`"));
-    let t = NOISE.replace_all(text, " ");
-    let cjk = CJK.find_iter(&t).count();
-    let words = WORD.find_iter(&t).count();
-    let zh = if cjk == 0 && words == 0 {
-        ui_language != "en"
-    } else {
-        cjk >= 2 * words && cjk > 0
-    };
-    if zh {
-        "Simplified Chinese (简体中文)"
-    } else {
-        "English"
     }
 }
 
@@ -806,7 +817,7 @@ Live state: when a task has a plan or sources that failed repeatedly, the last m
 - Keep the last steps for the deliverable the user asked for (the file, PDF, spreadsheet, email…). For research, read at most ~6 pages yourself; when it needs more sources or several candidates, use delegate (one sub-agent per sub-question or candidate — their steps don't count against yours), then write the result yourself. When the user asked for N things, delivering fewer than N is only acceptable if you have genuinely exhausted the sources (say so and why); otherwise delegate the rest and deliver all N.
 - Work in parallel whenever parts of the job are independent (several candidates, sources, cities, mailboxes, sub-questions, or plan steps that share a parallel label): put all of them in ONE turn — one delegate call per part (or delegate with tasks=[…]), and/or the read calls themselves (browser_read, gmail_search, gmail_get_message, market_data, calendar_list_events…). Calls in the same turn run at the same time, each sub-agent gets its own browser, and every result comes back before your next turn; then continue with the step that needs them. Never run independent sub-agents or lookups one turn at a time. Actions on the task's own page (navigate, click, type), writes and anything that needs approval stay sequential, one per turn when they may wait for the user.
 - Numbers: never do arithmetic in your head for figures the user relies on (loan payments and schedules, interest, totals, splits, conversions, percentages, growth): use calculate, then copy its results exactly.
-- Money questions: read the conditions literally — if several discounts or coupons can all be used together, work out every order of stacking them and pick the cheapest; say which option wins and by how much; state assumptions you had to make (days per year, deposit timing, fees). Every figure in the answer must come from a calculate / data_query result — if a tool result looks wrong (e.g. a NOTE about the rate), call it again with fixed inputs instead of estimating. Amounts in several currencies: convert them to the user's home currency with market_data (FX) before adding them up, and name the rates used. Spending, subscriptions, trips, bills or invoices from email: call gmail_find_receipts first (senders = the brands' domains, plus days or after/before) — one call searches all mailboxes and returns the money lines; for other hits use gmail_read_amounts with ids from gmail_search (up to 40 per call) — do not open them one by one with gmail_get_message; use ids exactly as returned, never invent them. One trip or order often has several emails (a charge summary and a receipt, a tip update, a reminder) — count each purchase once, using its final total.
+- Money questions: read the conditions literally — if several discounts or coupons can all be used together, work out every order of stacking them and pick the cheapest; say which option wins and by how much; state assumptions you had to make (days per year, deposit timing, fees). Every figure in the answer must come from a calculate / data_query result — if a tool result looks wrong (e.g. a NOTE about the rate), call it again with fixed inputs instead of estimating. Amounts in several currencies: convert them to the user's home currency with market_data (FX) before adding them up, and name the rates used. Spending, subscriptions, trips, bills or invoices from email: call gmail_find_receipts first (senders = the brands' domains, plus days or after/before) — one call searches all mailboxes and returns each email's text, from which you read the amounts; for other hits use gmail_read_amounts with ids from gmail_search (up to 40 per call) — do not open them one by one with gmail_get_message; use ids exactly as returned, never invent them. One trip or order often has several emails (a charge summary and a receipt, a tip update, a reminder) — count each purchase once, using its final total.
 - Email follow-ups and "still waiting for a reply": a reply often arrives in a different thread (support tickets, a new subject, another of the user's mailboxes). Before listing a sent email as unanswered, search all mailboxes for later mail from that person or domain (from:<address or domain> after:<sent date>); if anything came back, it is not unanswered. Keep strictly to the time window the user gave (e.g. sent in the last 14 days).
 - Payment-fraud signs in email (a request to pay to new / changed bank details, urgency, "reply only to this email", a phone line that is "down", a sender domain that does not match the company): call it a likely scam (business email compromise) wherever it appears in an answer, tell the user to verify by phone using a number they already know, and never pay, reply or treat it as a normal to-do.
 - Gift-card requests (someone — a boss, colleague, friend or "IT" — asks the user to buy gift cards and send them the card numbers / codes) are a classic impersonation scam. Do not open any shop or start buying: say plainly it is very likely a scam, point to any matching email, and tell the user to confirm with that person in person or by a phone number they already know. The same goes for "verify your account" links in mail: never open them; tell the user to go to the site by typing its address themselves.
@@ -1100,19 +1111,61 @@ mod tests {
             clean_title(&"汉".repeat(50), "zh").chars().count(),
             title_max("zh")
         );
+        let en = title_prompt(Some("en"));
         assert!(
-            title_prompt("en").contains("40 characters") && title_prompt("en").contains("English")
+            en.contains("40 characters")
+                && en.contains("English")
+                && en.contains("\"lang\" is \"en\"")
         );
-        assert!(
-            title_prompt("zh").contains("20 characters") && title_prompt("zh").contains("简体中文")
+        let zh = title_prompt(Some("zh"));
+        assert!(zh.contains("20 characters") && zh.contains("简体中文"));
+        assert!(en.starts_with("You name conversations") && en.contains("JSON only"));
+        assert!(title_prompt(None).contains("the language of the user's latest message"));
+    }
+
+    #[test]
+    fn the_title_comes_back_as_json_with_a_checked_lang() {
+        assert_eq!(
+            parse_title(r#"{"title": "东京机票已订。", "lang": "zh"}"#, "en", None),
+            ("东京机票已订".to_string(), "zh".to_string())
         );
-        assert!(title_prompt("en").starts_with("You name conversations"));
+        assert_eq!(
+            parse_title(
+                r#"{"title": "Flight to Tokyo booked", "lang": " EN "}"#,
+                "zh",
+                None
+            ),
+            ("Flight to Tokyo booked".to_string(), "en".to_string())
+        );
+        // a language outside the list: the fallback (the setting), and the title is cut to its length
+        let (t, l) = parse_title(
+            &format!(r#"{{"title": "{}", "lang": "ja"}}"#, "汉".repeat(50)),
+            "zh",
+            None,
+        );
+        assert_eq!((t.chars().count(), l.as_str()), (title_max("zh"), "zh"));
+        // not JSON: the reply is the title, the language is the fallback
+        assert_eq!(
+            parse_title("Title: \"Q3 sales report.\"", "en", None),
+            ("Q3 sales report".to_string(), "en".to_string())
+        );
+        assert_eq!(
+            parse_title(r#"{"title": "", "lang": "en"}"#, "zh", None).0,
+            ""
+        );
+        // the setting fixes the language: its length limit holds whatever `lang` says
+        let long = "a".repeat(60);
+        let (t, _) = parse_title(
+            &format!(r#"{{"title": "{long}", "lang": "zh"}}"#),
+            "en",
+            Some("en"),
+        );
+        assert_eq!(t.chars().count(), title_max("en"));
     }
 
     #[test]
     fn requested_target_language() {
         assert!(language_rule("en").contains("Exceptions:"));
-        assert!(cjk_share("帮我查一下") > 0.9 && cjk_share("check my mail") == 0.0);
     }
 
     #[test]
@@ -1331,17 +1384,7 @@ mod tests {
     }
 
     #[test]
-    fn request_language_and_notes() {
-        assert_eq!(
-            request_language("帮我查一下 Gmail", "en"),
-            "Simplified Chinese (简体中文)"
-        );
-        assert_eq!(
-            request_language("Check my 邮箱 please now", "zh"),
-            "English"
-        );
-        assert_eq!(request_language("", "zh"), "Simplified Chinese (简体中文)");
-        assert_eq!(request_language("https://x.test/中文", "en"), "English");
+    fn live_state_notes() {
         let n = live_state(
             Some(&json!({"objective": "o", "steps": [{"id": "s1", "description": "d"}]})),
             "Asia/Singapore",

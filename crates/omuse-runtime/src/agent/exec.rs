@@ -385,7 +385,11 @@ impl Runtime {
             // a page just opened that needs one judgement (`judgements`): a deep link that was redirected, a shop's
             // product page the agent came back to without adding to the cart — decided after the result is recorded
             let mut page_check: Option<PageCheck> = None;
-            let skill_off = if !super::runtime::browser_policy_allows(name) {
+            // a skill that turns the browser off turns it off for the model; a code machine's own page read (the
+            // timetable `train_times` opens and reads by its elements) is code's (travel_info_real 2026-11-01)
+            let skill_off = if !super::runtime::browser_policy_allows(name)
+                && !super::guards::code_call(call)
+            {
                 self.inner.lock().no_browser.get(&task_id).cloned()
             } else {
                 None
@@ -1550,48 +1554,21 @@ that clicking there would click it. Answer with JSON only: {{\"on_item\": true}}
             .collect()
     }
 
-    /// Problems with `present_choices` options that cannot be found in what the task read (empty = all verified).
-    /// The listings on the results page a comparison draws from (`url`, or its options' page), as read in this task.
-    pub(crate) fn listings_read(&self, task_id: &str, url: &str) -> Vec<crate::listings::Listing> {
-        let mut out: Vec<crate::listings::Listing> = Vec::new();
-        for text in self.sources_for(task_id, url) {
-            for l in crate::listings::parse(&text) {
-                if !out.iter().any(|o| o.title == l.title) {
-                    out.push(l);
-                }
-            }
-        }
-        out
-    }
-
-    /// A comparison of listings the model chose itself from a results page (no `ranking`): the page's listings when it
-    /// has enough of them and the options are among them — the criteria are then asked for once, and code ranks.
-    pub(crate) fn unranked_listings(&self, task_id: &str, options: &[Value]) -> bool {
-        let Some(url) = options
-            .iter()
-            .map(|o| sget(o, "source_url"))
-            .find(|u| !u.trim().is_empty())
-        else {
-            return false;
-        };
-        let listings = self.listings_read(task_id, &url);
-        if listings.len() < 6 {
-            return false;
-        }
-        let on_page = options
+    /// A comparison of listings the model extracted itself (two or more options with stars or ratings) without
+    /// `ranking`: the criteria are asked for once, and code ranks.
+    pub(crate) fn unranked_listings(&self, task_id: &str, options: &[&Value]) -> bool {
+        let listings = options
             .iter()
             .filter(|o| {
-                let label = Self::norm(&sget(o, "label"));
-                !label.is_empty()
-                    && listings.iter().any(|l| {
-                        Self::norm(&l.title).contains(&label)
-                            || label.contains(&Self::norm(&l.title))
-                    })
+                ["stars", "ratings"]
+                    .iter()
+                    .any(|k| o.get(*k).is_some_and(|v| !v.is_null()))
             })
             .count();
-        on_page >= 2 && self.inner.lock().ranking_asked.insert(task_id.to_string())
+        listings >= 2 && self.inner.lock().ranking_asked.insert(task_id.to_string())
     }
 
+    /// Problems with `present_choices` options that cannot be found in what the task read (empty = all verified).
     pub fn check_choices(&self, task_id: &str, options: &[Value]) -> Vec<String> {
         let mut problems = Vec::new();
         for (i, o) in options.iter().enumerate() {

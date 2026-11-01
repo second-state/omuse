@@ -540,8 +540,9 @@ that page (or a link on it); OMuse checks each one against what you actually rea
 Put translations, opinions and your recommendation in note (not checked). kind=clarify: plain choices, not checked. \
 After calling it, finish with a short answer — the user's pick arrives as their next message. When the user's request \
 already decides (\"the cheapest with at least …\"), pass picked = that option's label: the comparison is shown and you go \
-on with it in the same turn. Listings from a shop's results page: pass ranking = the user's criteria and OMuse \
-picks and orders the listings from the page (options then only need the page as source_url).",
+on with it in the same turn. Listings from a shop's results page: pass ranking = the user's criteria and every listing \
+on the page as an option (up to 40) with its price, stars and ratings read off the page as numbers and price_text as \
+the page writes it; OMuse picks and orders them.",
             json!({"question": s, "kind": {"type": "string", "enum": ["comparison", "clarify"]}, "picked": s,
              "ranking": {"type": "object", "description": "the user's criteria for listings on a results page; OMuse ranks them",
                  "properties": {"by": {"type": "string", "enum": ["rating", "price", "ratings"]},
@@ -550,7 +551,11 @@ picks and orders the listings from the page (options then only need the page as 
                      "description": "words every chosen name has, e.g. [\"case\", \"iPhone 17 Pro Max\"]"},
                  "title_not": {"type": "array", "items": s}, "count": {"type": "integer"}, "url": s}},
              "options": {"type": "array", "items": {"type": "object", "properties": {
-                 "label": s, "details": {"type": "array", "items": s}, "source_url": s, "note": s}}}}),
+                 "label": s, "details": {"type": "array", "items": s}, "source_url": s, "note": s,
+                 "price": {"type": "number", "description": "a listing's price as a number, read off the page"},
+                 "price_text": {"type": "string", "description": "the price exactly as the page writes it, e.g. S$21.90"},
+                 "stars": {"type": "number", "description": "a listing's star rating out of 5"},
+                 "ratings": {"type": "integer", "description": "a listing's number of ratings"}}}}}),
             &["question", "options"]),
         fn_("pdf_form_fields", "列出 PDF 表格里可填写的字段（名称、类型、当前值、选项、所在页）。在本机处理，不上传。\
  List the fillable fields of a PDF form in the workspace (name, type, current value, options, page). Local only.",

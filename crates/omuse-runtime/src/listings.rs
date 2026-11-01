@@ -1,12 +1,13 @@
-//! Product listings read off a shop's results page, and the ranking of them.
+//! Product listings and the ranking of them (docs/json-tools.md, "Reading pages").
 //!
 //! The model turns the user's words ("the three best-rated cases under S$25 with at least 200 ratings") into
-//! [`Ranking`] criteria; picking and ordering the listings is done here, from the page text, so a comparison shows
-//! exactly the listings that meet them.
+//! [`Ranking`] criteria; picking and ordering the listings is done here. The listings themselves are structured data,
+//! never found by a pattern over a page's text: a known shop's results page is read by its HTML elements (each listing
+//! card's name, rating, price and link by fixed selectors, [`Listing::from_fields`]); on any other site the model
+//! extracts them into JSON (`present_choices` options with `price`, `stars` and `ratings`, [`Listing::from_option`]).
 
-use std::sync::LazyLock;
+use std::collections::BTreeMap;
 
-use regex::Regex;
 use serde_json::{json, Value};
 
 /// One listing: the name, the star rating, the number of ratings and the price, each as read on the page.
@@ -20,135 +21,110 @@ pub struct Listing {
     pub price: Option<f64>,
     /// The price text exactly as on the page ("S$21.90").
     pub price_text: String,
+    /// The listing's own link, when the page gives one.
+    pub url: String,
 }
 
-static STARS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b([0-5](?:\.\d)?)\s*(?:out of 5(?:\s*stars?)?|/\s*5\b|★|stars?\b)").unwrap()
-});
-static COUNT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(\d[\d,.]*)\s*(k)?\+?\s*(?:ratings?|reviews?|评价|条评论)|\((\d[\d,.]*)(k)?\)")
-        .unwrap()
-});
-static PRICE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:S\$|US\$|A\$|HK\$|NT\$|RM|SGD|USD|EUR|GBP|MYR|\$|€|£|¥|₹|฿|₩)\s?(\d[\d,]*(?:\.\d{1,2})?)").unwrap()
-});
-// snapshot lines: `[e12] link "Name"` → `Name`
-static SNAP: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"^\s*(?:\[e\d+\]\s*)?(?:[a-z]+\s+")?(.*?)"?\s*$"#).unwrap());
-static NOISE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^(sponsored|ad|free delivery\b.*|delivery\b.*|add to cart|buy now|in stock|only \d+ left.*)$")
-        .unwrap()
-});
-
-fn number(s: &str) -> Option<f64> {
-    s.replace(',', "").parse().ok()
-}
-
-fn count_of(text: &str) -> u64 {
-    COUNT
-        .captures(text)
-        .and_then(|c| {
-            let (n, k) = match c.get(1) {
-                Some(n) => (n.as_str(), c.get(2).is_some()),
-                None => (c.get(3)?.as_str(), c.get(4).is_some()),
-            };
-            let n = number(n)?;
-            Some((if k { n * 1000.0 } else { n }) as u64)
-        })
-        .unwrap_or(0)
-}
-
-fn clean(line: &str) -> String {
-    SNAP.captures(line)
-        .and_then(|c| c.get(1))
-        .map_or(line, |m| m.as_str())
-        .trim()
-        .to_string()
-}
-
-fn is_title(line: &str) -> bool {
-    line.split_whitespace().count() >= 3
-        && !STARS.is_match(line)
-        && !PRICE.is_match(line)
-        && !NOISE.is_match(line)
-}
-
-/// The listings on a results page: every star rating with the name above it and the price next to it.
-pub fn parse(text: &str) -> Vec<Listing> {
-    let lines: Vec<String> = text.lines().map(clean).collect();
-    let mut out: Vec<Listing> = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        let Some(m) = STARS.captures(line) else {
-            continue;
-        };
-        let whole = m.get(0).unwrap();
-        let Some(stars) = number(&m[1]) else { continue };
-        // the name: before the rating on the same line, or the nearest name line above it
-        let before = line[..whole.start()].trim();
-        let title = if is_title(before) {
-            before.to_string()
-        } else {
-            match (1..=3)
-                .filter_map(|k| i.checked_sub(k))
-                .map(|j| &lines[j])
-                .find(|l| is_title(l))
-            {
-                Some(t) => t.clone(),
-                None => continue,
-            }
-        };
-        // the price: after the rating on the same line, or within the next lines (before the next listing's name)
-        let after = &line[whole.end()..];
-        let price = PRICE.captures(after).or_else(|| {
-            lines
-                .iter()
-                .skip(i + 1)
-                .take(3)
-                .take_while(|l| !is_title(l))
-                .find_map(|l| PRICE.captures(l))
-        });
-        let rating_text = match PRICE.find(after) {
-            Some(p) => line[..whole.end() + p.start()].trim(),
-            None => line.as_str(),
-        };
-        let rating_text = rating_text
-            .strip_prefix(before)
-            .unwrap_or(rating_text)
-            .trim();
-        if out.iter().any(|l| l.title == title) {
-            continue;
+/// The numbers in a structured value, in order ("4.7 out of 5 stars · 1,203 ratings" → 4.7, 5, 1203; "S$21.90" →
+/// 21.9): runs of digits with their thousands commas and decimal point.
+pub fn numbers(s: &str) -> Vec<f64> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let flush = |cur: &mut String, out: &mut Vec<f64>| {
+        let t = cur.trim_end_matches([',', '.']).replace(',', "");
+        if let Ok(n) = t.parse::<f64>() {
+            out.push(n);
         }
-        out.push(Listing {
-            title,
-            stars,
-            ratings: count_of(rating_text),
-            rating_text: rating_text.to_string(),
-            price: price.as_ref().and_then(|p| number(&p[1])),
-            price_text: price
-                .as_ref()
-                .map(|p| p[0].trim().to_string())
-                .unwrap_or_default(),
-        });
+        cur.clear();
+    };
+    for c in s.chars() {
+        if c.is_ascii_digit() || (!cur.is_empty() && (c == ',' || c == '.')) {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            flush(&mut cur, &mut out);
+        }
+    }
+    if !cur.is_empty() {
+        flush(&mut cur, &mut out);
     }
     out
 }
 
-/// Whether `text` shows a price.
-pub fn has_price(text: &str) -> bool {
-    PRICE.is_match(text)
+/// The amount of a price element's value ("S$21.90" → 21.9): its first number.
+pub fn amount(s: &str) -> Option<f64> {
+    numbers(s).first().copied()
 }
 
-/// The first price a page shows after `name` (within the next 300 characters), as written there ("US$365.57"): a card
-/// without a price gets the one the page gives it.
-pub fn price_after(text: &str, name: &str) -> Option<String> {
-    let name = name.trim();
-    if name.chars().count() < 4 {
-        return None;
+impl Listing {
+    /// A listing card read by a known shop's selectors: `title`, `rating` (its rating element: the stars first, the
+    /// number of ratings last), `price` (its price element) and `url` (the card's link).
+    pub fn from_fields(f: &BTreeMap<String, String>) -> Option<Listing> {
+        let get = |k: &str| f.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
+        let title = get("title");
+        if title.is_empty() {
+            return None;
+        }
+        let rating_text = get("rating");
+        let n = numbers(&rating_text);
+        let price_text = get("price");
+        Some(Listing {
+            title,
+            stars: n.first().copied().filter(|s| *s <= 5.0).unwrap_or(0.0),
+            ratings: if n.len() >= 2 {
+                n.last().map_or(0, |r| *r as u64)
+            } else {
+                0
+            },
+            rating_text,
+            price: amount(&price_text),
+            price_text,
+            url: get("url"),
+        })
     }
-    let low = text.to_lowercase();
-    let at = low.find(&name.to_lowercase())? + name.len();
-    let tail: String = text.get(at..)?.chars().take(300).collect();
-    PRICE.find(&tail).map(|m| m.as_str().trim().to_string())
+
+    /// A listing the model extracted from a page into a `present_choices` option: `label`, `price` (a number),
+    /// `price_text`, `stars`, `ratings`, `source_url`, and its `details` as the rating text.
+    pub fn from_option(o: &Value) -> Option<Listing> {
+        let title = o.get("label").and_then(Value::as_str)?.trim().to_string();
+        if title.is_empty() {
+            return None;
+        }
+        let num = |k: &str| {
+            o.get(k).and_then(|x| {
+                x.as_f64()
+                    .or_else(|| x.as_str().and_then(amount))
+                    .filter(|n| *n >= 0.0)
+            })
+        };
+        let price_text = o
+            .get("price_text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let details: Vec<String> = o
+            .get("details")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .filter(|d| d != &price_text)
+            .collect();
+        Some(Listing {
+            title,
+            stars: num("stars").filter(|s| *s <= 5.0).unwrap_or(0.0),
+            ratings: num("ratings").map_or(0, |r| r as u64),
+            rating_text: details.join(" · "),
+            price: num("price").or_else(|| amount(&price_text)),
+            price_text,
+            url: o
+                .get("source_url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        })
+    }
 }
 
 /// What the user asked for, as the model read it from their words.
@@ -196,12 +172,7 @@ impl Ranking {
         let o = v.as_object()?;
         let num = |k: &str| {
             o.get(k)
-                .and_then(|x| {
-                    x.as_f64().or_else(|| {
-                        x.as_str()
-                            .and_then(|s| PRICE.captures(s).map_or(number(s), |c| number(&c[1])))
-                    })
-                })
+                .and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(amount)))
                 // a model fills every key: 0 is "not given" (no cap, no minimum, the options' own count)
                 .filter(|n| *n > 0.0)
         };
@@ -274,20 +245,74 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const PAGE: &str = "Results for \"iphone 17 pro max case\"\n\
-Sponsored\nTitan Pro Shockproof Case for iPhone 17 Pro (6.3-inch), Military Grade\n4.9 out of 5 stars · 860 ratings\nS$22.90\nFREE delivery by Kaya Mobile\n\
-Camera Lens Protector for iPhone 17 Pro Max, 2-Pack\n4.8 out of 5 stars · 2,770 ratings\nS$9.90\nFREE delivery by Kaya Mobile\n\
-Crystal Clear Case for iPhone 16 Pro Max\n4.8 out of 5 stars · 5,120 ratings\nS$11.90\n\
-Kickstand Case for iPhone 17 Pro Max, MagSafe Ring Stand\n4.8 out of 5 stars · 379 ratings\nS$33.90\n\
-MagSafe Silicone Case for iPhone 17 Pro Max\n4.4 out of 5 stars · 2,048 ratings\nS$19.90\n\
-Crossbody Lanyard Case for iPhone 17 Pro Max\n4.5 out of 5 stars · 154 ratings\nS$23.90\n\
-Carbon Fibre Case for iPhone 17 Pro Max, Ultra Thin 0.6 mm\n4.5 out of 5 stars · 268 ratings\nS$18.90\n\
-Slim Leather Case for iPhone 17 Pro Max, MagSafe Compatible\n4.6 out of 5 stars · 512 ratings\nS$24.90\n\
-Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible\n4.7 out of 5 stars · 1,203 ratings\nS$21.90\n";
+    /// Kaya Mobile's results page as its listing cards' elements read it (`.card`: `h2 a`, `.rating`, `.price`).
+    fn page() -> Vec<Listing> {
+        [
+            (
+                "Titan Pro Shockproof Case for iPhone 17 Pro (6.3-inch), Military Grade",
+                "4.9 out of 5 stars · 860 ratings",
+                "S$22.90",
+            ),
+            (
+                "Camera Lens Protector for iPhone 17 Pro Max, 2-Pack",
+                "4.8 out of 5 stars · 2,770 ratings",
+                "S$9.90",
+            ),
+            (
+                "Crystal Clear Case for iPhone 16 Pro Max",
+                "4.8 out of 5 stars · 5,120 ratings",
+                "S$11.90",
+            ),
+            (
+                "Kickstand Case for iPhone 17 Pro Max, MagSafe Ring Stand",
+                "4.8 out of 5 stars · 379 ratings",
+                "S$33.90",
+            ),
+            (
+                "MagSafe Silicone Case for iPhone 17 Pro Max",
+                "4.4 out of 5 stars · 2,048 ratings",
+                "S$19.90",
+            ),
+            (
+                "Crossbody Lanyard Case for iPhone 17 Pro Max",
+                "4.5 out of 5 stars · 154 ratings",
+                "S$23.90",
+            ),
+            (
+                "Carbon Fibre Case for iPhone 17 Pro Max, Ultra Thin 0.6 mm",
+                "4.5 out of 5 stars · 268 ratings",
+                "S$18.90",
+            ),
+            (
+                "Slim Leather Case for iPhone 17 Pro Max, MagSafe Compatible",
+                "4.6 out of 5 stars · 512 ratings",
+                "S$24.90",
+            ),
+            (
+                "Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible",
+                "4.7 out of 5 stars · 1,203 ratings",
+                "S$21.90",
+            ),
+        ]
+        .iter()
+        .filter_map(|(t, r, p)| {
+            let f: BTreeMap<String, String> = [
+                ("title", *t),
+                ("rating", *r),
+                ("price", *p),
+                ("url", "https://shop.test/kaya_item.html"),
+            ]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+            Listing::from_fields(&f)
+        })
+        .collect()
+    }
 
     #[test]
-    fn a_results_page_gives_each_listing_with_its_rating_count_and_price() {
-        let l = parse(PAGE);
+    fn a_listing_cards_elements_give_its_rating_count_and_price() {
+        let l = page();
         assert_eq!(l.len(), 9);
         let aurora = l.iter().find(|x| x.title.starts_with("Aurora")).unwrap();
         assert_eq!(aurora.stars, 4.7);
@@ -295,6 +320,8 @@ Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible\n4.7 out of 5 star
         assert_eq!(aurora.price, Some(21.9));
         assert_eq!(aurora.price_text, "S$21.90");
         assert_eq!(aurora.rating_text, "4.7 out of 5 stars · 1,203 ratings");
+        assert!(Listing::from_fields(&BTreeMap::new()).is_none());
+        assert_eq!(numbers("RM 1,299.50 (12)"), [1299.5, 12.0]);
     }
 
     #[test]
@@ -304,7 +331,7 @@ Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible\n4.7 out of 5 star
             "title_has": ["case", "iPhone 17 Pro Max"], "count": 3}),
         )
         .unwrap();
-        let titles: Vec<String> = r.apply(&parse(PAGE)).into_iter().map(|l| l.title).collect();
+        let titles: Vec<String> = r.apply(&page()).into_iter().map(|l| l.title).collect();
         assert_eq!(
             titles,
             [
@@ -321,26 +348,12 @@ Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible\n4.7 out of 5 star
             &json!({"by": "price", "title_has": "case", "title_not": ["16 Pro"], "count": 2}),
         )
         .unwrap();
-        let titles: Vec<String> = r.apply(&parse(PAGE)).into_iter().map(|l| l.title).collect();
+        let titles: Vec<String> = r.apply(&page()).into_iter().map(|l| l.title).collect();
         assert_eq!(
             titles[0],
             "Carbon Fibre Case for iPhone 17 Pro Max, Ultra Thin 0.6 mm"
         );
         assert_eq!(titles.len(), 2);
-    }
-
-    #[test]
-    fn a_price_is_read_after_a_name() {
-        let page = "THE BLOSSOM HIBIYA\n9.0 Superb\nfrom US$368.22 per night\nkaraksa hotel premier Tokyo Ginza\n9.0\nUS$365.57";
-        assert_eq!(
-            price_after(page, "The Blossom Hibiya").as_deref(),
-            Some("US$368.22")
-        );
-        assert_eq!(
-            price_after(page, "karaksa hotel premier Tokyo Ginza").as_deref(),
-            Some("US$365.57")
-        );
-        assert_eq!(price_after(page, "Nowhere Inn"), None);
     }
 
     #[test]
@@ -351,22 +364,29 @@ Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible\n4.7 out of 5 star
         )
         .unwrap();
         assert_eq!((r.max_price, r.min_ratings, r.count), (None, None, None));
-        assert_eq!(r.apply(&parse(PAGE)).len(), 3);
+        assert_eq!(r.apply(&page()).len(), 3);
     }
 
     #[test]
-    fn one_line_listings_and_snapshot_lines_are_read_too() {
-        let l = parse(
-            "[e4] link \"Trail Runner Shoe Lightweight Mesh\"\n4.3/5 (1.2k)\nRM 129.00\n\
-Waterproof Hiking Boot Men 4.6 stars 312 reviews $89.50\n",
-        );
+    fn listings_the_model_extracted_into_json_are_ranked_too() {
+        let opts = [
+            json!({"label": "Trail Runner Shoe Lightweight Mesh", "details": ["4.3/5 (1.2k)"], "price": 129,
+                   "price_text": "RM 129.00", "stars": 4.3, "ratings": 1200, "source_url": "https://shop.example/s"}),
+            json!({"label": "Waterproof Hiking Boot Men", "details": ["4.6 stars 312 reviews", "$89.50"],
+                   "price_text": "$89.50", "stars": "4.6", "ratings": 312}),
+            json!({"details": ["no label"]}),
+        ];
+        let l: Vec<Listing> = opts.iter().filter_map(Listing::from_option).collect();
         assert_eq!(l.len(), 2);
-        assert_eq!(l[0].title, "Trail Runner Shoe Lightweight Mesh");
         assert_eq!(
             (l[0].stars, l[0].ratings, l[0].price),
             (4.3, 1200, Some(129.0))
         );
-        assert_eq!(l[1].title, "Waterproof Hiking Boot Men");
-        assert_eq!((l[1].ratings, l[1].price_text.as_str()), (312, "$89.50"));
+        assert_eq!(
+            (l[1].price, l[1].rating_text.as_str()),
+            (Some(89.5), "4.6 stars 312 reviews")
+        );
+        let r = Ranking::from_json(&json!({"by": "price"})).unwrap();
+        assert_eq!(r.apply(&l)[0].title, "Waterproof Hiking Boot Men");
     }
 }

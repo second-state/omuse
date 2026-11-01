@@ -2,8 +2,9 @@
 //! tracking form was available, but I couldn't submit the reference and surname from this bot"). The `bag_trace`
 //! workflow tool (`super::claims`) takes the PIR's file reference as its JSON argument (the model reads it in the
 //! user's words or the PIR email), opens the tracing page, fills it by its form function (`crate::forms`, fixed ids:
-//! the reference and the family name), presses Track (a lookup changes nothing) and reads the result page's fixed rows
-//! (Status, Last update, Flight) here; the status goes into the result's `must_say`.
+//! the reference and the family name), presses Track (a lookup changes nothing) and reads the result page's table by its
+//! HTML elements (`browser_read_elements`: the rows of `#out` with their cells — Status, Last update, Flight —, and its
+//! notes, docs/json-tools.md "Reading pages"); the status goes into the result's `must_say`.
 
 use std::sync::LazyLock;
 
@@ -50,33 +51,47 @@ pub struct Trace {
     pub found: bool,
 }
 
-static STATUS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^\s*Status\s*[:|]?\s+(\S.*?)\s*$").unwrap());
-static LAST_UPDATE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^\s*Last update\s*[:|]?\s+(\S.*?)\s*$").unwrap());
-static FLIGHT_ROW: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^\s*Flight\s*[:|]?\s+.*?\b(20\d\d-\d\d-\d\d)\b").unwrap());
-static NO_FILE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)no file found[^\n.]*").unwrap());
+/// The element reads of the result page: its table's rows (label cell, value cell) and its notes.
+const ROWS: &str = "rows";
+const NOTES: &str = "notes";
 
-/// The status on the tracing result page (its fixed rows: Status, Last update, Flight; or "No file found"); `None` when
-/// the page shows neither.
-pub fn trace_of(snapshot: &str, file_ref: &str) -> Option<Trace> {
-    let (status, found) = match STATUS.captures(snapshot) {
-        Some(c) => (c[1].to_string(), true),
-        None => (NO_FILE.find(snapshot)?.as_str().trim().to_string(), false),
+/// The arguments of `browser_read_elements` for the result page.
+pub fn read_args() -> serde_json::Value {
+    serde_json::json!({"read": [{"name": ROWS, "sel": "#out tr", "cells": true},
+                                {"name": NOTES, "sel": "#out p"}]})
+}
+
+/// The status on the tracing result page, from its elements read (`read`, a `browser_read_elements` result): the value
+/// cells of the rows labelled Status, Last update and Flight (its date, the cell's last part); with no Status row, the
+/// page's first note ("No file found for this reference.") as a file WorldTracer does not know. `None` when the page
+/// shows neither.
+pub fn trace_of(read: &Value, file_ref: &str) -> Option<Trace> {
+    let rows = super::confirm::element_rows(read, ROWS);
+    let cell = |label: &str| {
+        rows.iter()
+            .find(|(c, _)| c.first().is_some_and(|l| l.trim() == label))
+            .and_then(|(c, _)| c.get(1))
+            .map(|v| v.trim().to_string())
     };
-    let last_update = LAST_UPDATE
-        .captures(snapshot)
-        .map(|c| c[1].to_string())
-        .unwrap_or_default();
-    let flight_date = FLIGHT_ROW
-        .captures(snapshot)
-        .and_then(|c| NaiveDate::parse_from_str(&c[1], "%Y-%m-%d").ok());
+    let (status, found) = match cell("Status").filter(|s| !s.is_empty()) {
+        Some(s) => (s, true),
+        None => {
+            let note = super::confirm::element_values(read, NOTES)
+                .into_iter()
+                .find(|n| !n.trim().is_empty())?;
+            // the note's first sentence
+            let first = note.split('.').next().unwrap_or(&note).trim().to_string();
+            (first, false)
+        }
+    };
+    let flight_date = cell("Flight").and_then(|f| {
+        let last = f.rsplit(',').next().unwrap_or("").trim().to_string();
+        NaiveDate::parse_from_str(&last, "%Y-%m-%d").ok()
+    });
     Some(Trace {
         file_ref: file_ref.to_string(),
         status,
-        last_update,
+        last_update: cell("Last update").unwrap_or_default(),
         flight_date,
         found,
     })
@@ -86,12 +101,40 @@ pub fn trace_of(snapshot: &str, file_ref: &str) -> Option<Trace> {
 mod tests {
     use super::*;
 
-    const RESULT: &str = "# Track your delayed baggage\n[e1] textbox \"File reference\" value=\"NRTSQ12345\"\n[e2] textbox \"Family name\" value=\"MING\"\n[e3] button \"Track\"\n## File NRTSQ12345\n  Status Tracing continues — your bag has not been located yet\n  Bag Black hard-shell suitcase, tag SQ 123456\n  Flight SQ 638 Singapore (SIN) – Tokyo Narita (NRT), 2026-10-31\n  Last update 2026-10-31 22:10 local time — trace sent to Singapore (SIN)\n  Delivery address on file Hotel Ginza Grand, 1-1-1 Ginza, Chuo City, Tokyo";
+    use serde_json::json;
+
+    /// A `browser_read_elements` result as the sentinel returns it.
+    fn read(elements: Value) -> Value {
+        let env = json!({"trust": "untrusted", "source": "web page", "elements": elements});
+        json!({"role": "tool", "tool_call_id": "c1",
+               "content": format!("<untrusted_content source=\"web page\">\n{env}\n</untrusted_content>")})
+    }
+
+    fn result_rows() -> Value {
+        let row = |l: &str, v: &str| json!({"cells": [l, v], "links": []});
+        json!([
+            row(
+                "Status",
+                "Tracing continues — your bag has not been located yet"
+            ),
+            row("Bag", "Black hard-shell suitcase, tag SQ 123456"),
+            row(
+                "Flight",
+                "SQ 638 Singapore (SIN) – Tokyo Narita (NRT), 2026-10-31"
+            ),
+            row(
+                "Last update",
+                "2026-10-31 22:10 local time — trace sent to Singapore (SIN)"
+            )
+        ])
+    }
 
     #[test]
-    fn the_result_pages_fixed_rows_are_read() {
+    fn the_result_pages_rows_are_read_by_their_cells() {
+        let page = read(json!({"rows": result_rows(),
+            "notes": ["Bags are usually found within a few days."]}));
         assert_eq!(
-            trace_of(RESULT, "NRTSQ12345"),
+            trace_of(&page, "NRTSQ12345"),
             Some(Trace {
                 file_ref: "NRTSQ12345".into(),
                 status: "Tracing continues — your bag has not been located yet".into(),
@@ -100,12 +143,12 @@ mod tests {
                 found: true,
             })
         );
-        let none = trace_of("## Track your delayed baggage\n  No file found for this reference. Check the reference on your Property Irregularity Report.", "NRTSQ99999").unwrap();
+        let none = trace_of(&read(json!({"rows": [], "notes": ["No file found for this reference. Check the reference on your Property Irregularity Report."]})), "NRTSQ99999").unwrap();
         assert_eq!(
             (none.status.as_str(), none.found),
             ("No file found for this reference", false)
         );
-        assert!(trace_of("Maintenance", "NRTSQ12345").is_none());
+        assert!(trace_of(&read(json!({"rows": [], "notes": []})), "NRTSQ12345").is_none());
     }
 
     #[test]

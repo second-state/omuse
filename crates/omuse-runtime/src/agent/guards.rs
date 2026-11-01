@@ -977,6 +977,11 @@ pub fn with_handover_answer(transcript: &[Value], answer: &str) -> String {
 /// Refusal text if `call` repeats an identical earlier call too often, else None.
 pub fn repeat_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
     let name = call.name.as_str();
+    if name == "browser_read_elements" {
+        // code-only (never offered to the model): a machine reads the same elements of each page it reaches
+        // (apdt_real 2026-11-01: the fifth page's identical read was blocked and the run stopped on the refund page)
+        return None;
+    }
     if name == "update_plan" {
         // 2026-10-04 TC17: 58 update_plan calls in a row (no real work between them) used up all 80 steps
         let names: Vec<String> = transcript

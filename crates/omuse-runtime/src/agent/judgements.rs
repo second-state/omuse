@@ -644,7 +644,8 @@ pub fn visa_line(page: &VisaPage, days: Option<u32>, nationality: &str, zh: bool
 // ---------------------------------------------------------------- a page just opened
 
 pub const PAGE_KIND_CHOICES: [&str; 3] = ["error_page", "normal_page", "login_page"];
-pub const SHOP_PAGE_CHOICES: [&str; 4] = ["product_page", "listing_page", "cart_page", "other"];
+/// The choice of the Add-to-Cart decision that picks no button.
+pub const NO_CART_BUTTON: &str = "NONE";
 
 /// Whether `asked` is a deep link (a path or a query beyond the home page) that landed somewhere else (`landed`).
 pub fn deep_link_redirect(asked: &str, landed: &str) -> bool {
@@ -687,20 +688,27 @@ pub fn shopping_run(transcript: &[Value]) -> bool {
         .any(|(_, n, a)| n == "load_skill" && sget(a, "name") == "online-shopping")
 }
 
-/// The ref of the page's own Add-to-Cart button (`[e12] button "Add to Cart"`), read from the snapshot's elements.
-pub fn add_to_cart_ref(snapshot: &str) -> Option<String> {
-    static BUTTON: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"\[(e\d+)\] button "([^"]*)""#).unwrap());
-    static CART: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r"(?i)^\s*add to (cart|bag|basket|trolley)\b|加入购物车|加入購物車|カートに入れる",
-        )
-        .unwrap()
-    });
-    BUTTON
-        .captures_iter(snapshot)
-        .find(|c| CART.is_match(&c[2]))
-        .map(|c| c[1].to_string())
+/// The page's buttons as the snapshot lists its elements (`[e12] button "Add to Cart"` → `("e12", "Add to Cart")`), at
+/// most 30: the choices of the decision which one puts the product in the cart. Nothing is matched in a label.
+pub fn snapshot_buttons(snapshot: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in snapshot.lines().map(str::trim) {
+        let Some(rest) = line.strip_prefix('[') else {
+            continue;
+        };
+        let Some((r, tail)) = rest.split_once("] button \"") else {
+            continue;
+        };
+        let ok = r.len() > 1 && r.starts_with('e') && r[1..].chars().all(|c| c.is_ascii_digit());
+        let label = tail.split('"').next().unwrap_or("").trim();
+        if ok && !label.is_empty() && !out.iter().any(|(x, _)| x == r) {
+            out.push((r.to_string(), label.to_string()));
+        }
+        if out.len() >= 30 {
+            break;
+        }
+    }
+    out
 }
 
 fn same_page(a: &str, b: &str) -> bool {
@@ -714,9 +722,9 @@ fn same_page(a: &str, b: &str) -> bool {
     !a.is_empty() && norm(a) == norm(b)
 }
 
-/// Whether the agent comes back to `url` — a page it opened before and left — without having clicked `cart_ref` (the
-/// page's Add-to-Cart button) since it first opened it.
-pub fn back_on_uncarted_page(transcript: &[Value], url: &str, cart_ref: &str) -> bool {
+/// Whether the agent comes back to `url` — a page it opened before and left — without having clicked one of `refs`
+/// (the page's buttons) since it first opened it.
+pub fn back_on_uncarted_page(transcript: &[Value], url: &str, refs: &[String]) -> bool {
     let cs = calls(transcript);
     let Some(first) = cs.iter().position(|(id, n, a)| {
         n == "browser_navigate"
@@ -732,7 +740,7 @@ pub fn back_on_uncarted_page(transcript: &[Value], url: &str, cart_ref: &str) ->
     });
     let carted = cs[first + 1..]
         .iter()
-        .any(|(_, n, a)| n == "browser_click" && sget(a, "ref") == cart_ref);
+        .any(|(_, n, a)| n == "browser_click" && refs.contains(&sget(a, "ref")));
     left && !carted
 }
 
@@ -741,11 +749,12 @@ pub fn back_on_uncarted_page(transcript: &[Value], url: &str, cart_ref: &str) ->
 pub enum PageCheck {
     /// a deep link redirected to `landed`: an error page sends code to the site's home page
     DeepLink { landed: String, context: String },
-    /// a shop page the agent came back to without adding to the cart: a product page gets its `cart_ref` clicked
+    /// a shop page the agent came back to without adding to the cart: the model picks the button that puts its
+    /// product in the cart among the page's `buttons` (ref, label), or none; code clicks it
     Cart {
         url: String,
         context: String,
-        cart_ref: String,
+        buttons: Vec<(String, String)>,
     },
 }
 
@@ -768,11 +777,15 @@ pub fn page_check_for(
     if !shopping_run(transcript) {
         return None;
     }
-    let cart_ref = add_to_cart_ref(snapshot)?;
-    back_on_uncarted_page(transcript, asked, &cart_ref).then(|| PageCheck::Cart {
+    let buttons = snapshot_buttons(snapshot);
+    if buttons.is_empty() {
+        return None;
+    }
+    let refs: Vec<String> = buttons.iter().map(|(r, _)| r.clone()).collect();
+    back_on_uncarted_page(transcript, asked, &refs).then(|| PageCheck::Cart {
         url: asked.to_string(),
         context: page_context(title, landed, snapshot),
-        cart_ref,
+        buttons,
     })
 }
 
@@ -842,18 +855,28 @@ impl super::Runtime {
             PageCheck::Cart {
                 url,
                 context,
-                cart_ref,
+                buttons,
             } => {
-                let kind = self
+                // the choices: the page's buttons by ref (their labels in the context), or none
+                let mut choices: Vec<&str> = buttons.iter().map(|(r, _)| r.as_str()).collect();
+                choices.push(NO_CART_BUTTON);
+                let listed = buttons
+                    .iter()
+                    .map(|(r, l)| format!("{r}: {l}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let cart_ref = self
                     .decide(
                         task_id,
-                        "What kind of shop page is this?",
-                        &context,
-                        &SHOP_PAGE_CHOICES,
-                        "other",
+                        "The agent came back to this shop page without putting its product in the cart. Which of the \
+page's buttons adds this page's product to the cart? NONE when the page is not one product's page (a list of results, the \
+cart, anything else) or no button adds it.",
+                        &format!("{context}\n\nThe page's buttons:\n{listed}"),
+                        &choices,
+                        NO_CART_BUTTON,
                     )
                     .await;
-                if kind != "product_page" {
+                if cart_ref == NO_CART_BUTTON {
                     return None;
                 }
                 self.event(task_id, "add_to_cart", json!({"url": url, "ref": cart_ref}))
@@ -999,9 +1022,17 @@ mod tests {
             site_root("https://www.airline.test/manage/booking?pnr=1").as_deref(),
             Some("https://www.airline.test/")
         );
-        let snap = "[e3] link \"Add to cart offers\"\n  [e7] button \"Add to Wishlist\"\n  [e9] button \"Add to Cart\"";
-        assert_eq!(add_to_cart_ref(snap).as_deref(), Some("e9"));
-        assert_eq!(add_to_cart_ref("[e1] button \"Buy now\""), None);
+        let snap = "[e3] link \"Add to cart offers\"\n  [e7] button \"Add to Wishlist\"\n  [e9] button \"Add to Cart\"\n[e9] button \"Add to Cart\"";
+        // the buttons are listed as the snapshot gives them (the model picks one by ref); no label is matched
+        assert_eq!(
+            snapshot_buttons(snap),
+            [
+                ("e7".to_string(), "Add to Wishlist".to_string()),
+                ("e9".to_string(), "Add to Cart".to_string())
+            ]
+        );
+        assert!(snapshot_buttons("[e1] link \"Buy now\"").is_empty());
+        let refs = vec!["e7".to_string(), "e9".to_string()];
         let p = "https://shop.test/p/case-1";
         let mut t = step(
             "n1",
@@ -1009,15 +1040,15 @@ mod tests {
             json!({"url": p}),
             "{\"url\": \"x\"}",
         );
-        assert!(!back_on_uncarted_page(&t, p, "e9")); // never left
+        assert!(!back_on_uncarted_page(&t, p, &refs)); // never left
         t.extend(step(
             "n2",
             "browser_navigate",
             json!({"url": "https://shop.test/search?q=case"}),
             "{}",
         ));
-        assert!(back_on_uncarted_page(&t, p, "e9"));
+        assert!(back_on_uncarted_page(&t, p, &refs));
         t.extend(step("c1", "browser_click", json!({"ref": "e9"}), "clicked"));
-        assert!(!back_on_uncarted_page(&t, p, "e9"));
+        assert!(!back_on_uncarted_page(&t, p, &refs));
     }
 }

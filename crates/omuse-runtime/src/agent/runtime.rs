@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 
 use super::exec::CallMode;
 use super::guards::*;
-use super::lang::{agent_lang, request_lang, with_langs};
+use super::lang::{agent_lang, with_langs};
 use super::tools::{concurrent_runs, tool_name, FINISH_TOOLS, LOCAL_TOOLS};
 use super::util::{arr, content_of, sget, tool_calls};
 use super::{is_terminal, TERMINAL};
@@ -967,23 +967,14 @@ message to use as written) stays in that language. Output only the rewritten rep
             return Ok(());
         }
         let s = self.settings();
-        let mut language = sget(&s, "language");
-        if language.is_empty() {
-            language = "zh".into();
-        }
-        if get_str(&s, "reply_language") == "match" {
-            let last_user = msgs
-                .iter()
-                .rev()
-                .find(|m| get_str(m, "role") == "user")
-                .map(content_of)
-                .unwrap_or_default();
-            language = if prompts::request_language(&last_user, &language) == "English" {
-                "en".into()
-            } else {
-                "zh".into()
-            };
-        }
+        let language = if get_str(&s, "language") == "en" {
+            "en"
+        } else {
+            "zh"
+        };
+        // Reply language = match: the model writes the title in the latest message's language and names it in
+        // `lang` (JSON, checked against the list); otherwise the setting fixes it
+        let fixed = (get_str(&s, "reply_language") != "match").then_some(language);
         let text = msgs
             .iter()
             .map(|m| {
@@ -1000,7 +991,7 @@ message to use as written) stays in that language. Output only the rewritten rep
             .collect::<Vec<_>>()
             .join("\n\n");
         let o = ChatOpts {
-            max_tokens: Some(60),
+            max_tokens: Some(80),
             temperature: Some(0.0),
             no_think: true,
             ..opts("title", task_id)
@@ -1009,7 +1000,7 @@ message to use as written) stays in that language. Output only the rewritten rep
             .llm
             .chat(
                 &[
-                    json!({"role": "system", "content": prompts::title_prompt(&language)}),
+                    json!({"role": "system", "content": prompts::title_prompt(fixed)}),
                     user_msg(text),
                 ],
                 None,
@@ -1017,7 +1008,7 @@ message to use as written) stays in that language. Output only the rewritten rep
             )
             .await
             .map_err(|e| anyhow!("{}: {}", e.name(), e))?;
-        let title = prompts::clean_title(&r.content, &language);
+        let (title, _lang) = prompts::parse_title(&r.content, language, fixed);
         if !title.is_empty() && title != get_str(&conv, "title") {
             self.store.set_conv_title(cid, &title)?;
             self.publish(json!({"kind": "conv_update", "conv_id": cid}))
@@ -1273,7 +1264,8 @@ message to use as written) stays in that language. Output only the rewritten rep
         let goal = sget(&t0, "goal");
         let (mut tl, fl) = (String::new(), String::new());
         if get_str(&s0, "reply_language") == "match" {
-            tl = request_lang(&goal).to_string(); // this task only (and what it spawns)
+            // the model reads the request's language (a JSON choice); this task only (and what it spawns)
+            tl = self.request_lang(&task_id, &goal).await.to_string();
         }
         let res = with_langs(tl, fl, self.run(&task_id)).await;
         if let Err(e) = res {
@@ -3872,6 +3864,9 @@ pub fn compress_with(
                 || (id.starts_with(super::apdt::PREFIX)
                     && matches!(name.as_str(), "gmail_get_message" | "files_read"))
                 || id.starts_with(super::workflow::RESULT_PREFIX)
+                // a known page's elements read by a machine's fixed selectors (code-only): code reads them again at
+                // every step (shopping_real 2026-11-01: the results' cards cut short read as "0 listings")
+                || name == "browser_read_elements"
         })
         .map(|tc| get_str(tc, "id"))
         .collect();

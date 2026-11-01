@@ -612,7 +612,7 @@ fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
     );
     let (mut t, from) = started(before, "Please go ahead.", CLAIM_FILE, &args);
     let snaps = std::cell::Cell::new(0);
-    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, |name, _| {
+    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, |name, args| {
         match name {
         "gmail_save_attachment" => "attachment saved: attachments/delay_certificate_SQ636.pdf (12 KB, application/pdf).".into(),
         "browser_navigate" => page("https://www.fwd.com.sg/claim-online/travel.html", "{}"),
@@ -621,7 +621,11 @@ fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
             snaps.set(snaps.get() + 1);
             "[e3] textbox \"Policy number\"\n[e9] filechooser \"Supporting documents\" (file upload)\n[e10] button \"Submit claim\"".into()
         }
-        // the confirmation's reference element (`main p b`): the reference, and the page's other bold text
+        // the file input's ref by its id (#docs) after the snapshot; after the hand-back the confirmation's reference
+        "browser_read_elements" if args["read"][0]["name"] == "docs" => elements(
+            "https://www.fwd.com.sg/claim-online/travel.html",
+            json!({"docs": ["e9"]}),
+        ),
         "browser_read_elements" => elements(
             "https://www.fwd.com.sg/fwd_sg_claim_done.html",
             json!({"reference": ["CL-TR-2026-118204"]}),
@@ -639,6 +643,7 @@ fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
             "browser_navigate",
             "form_fill",
             "browser_snapshot",
+            "browser_read_elements",
             "browser_upload",
             "browser_request_takeover",
             "browser_read_elements",
@@ -662,8 +667,8 @@ fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
     assert!(sget(fill, "what").contains("delayed 7 h 15 min"));
     assert_eq!(
         (
-            sget(&calls[4].args, "ref").as_str(),
-            sget(&calls[4].args, "path").as_str()
+            sget(&calls[5].args, "ref").as_str(),
+            sget(&calls[5].args, "path").as_str()
         ),
         ("e9", "attachments/delay_certificate_SQ636.pdf")
     );
@@ -887,6 +892,11 @@ fn buy_answers(vault: &'static str) -> impl Fn(&str, &Value) -> String {
                 "https://www.fwd.com.sg/travel-insurance/online-quote/",
                 quote_rows(),
             ),
+            // the card fields' refs by their ids, as the snapshot gave them
+            Some("card_number") => elements(
+                "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business",
+                json!({"card_number": ["e11"], "card_expiry": ["e12"], "card_cvc": ["e13"], "card_holder": ["e14"]}),
+            ),
             _ => elements(
                 "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business",
                 json!({"reference": []}),
@@ -955,6 +965,7 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
             "vault_list",
             "purchase_confirm",
             "browser_snapshot",
+            "browser_read_elements",
             "browser_fill_secret",
             "browser_fill_secret",
             "browser_fill_secret",
@@ -963,6 +974,7 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
             "browser_read_elements"
         ]
     );
+    assert_eq!(calls[9].args["read"][0]["sel"], "#card");
     let quote = &calls[1].args;
     assert_eq!(
         (
@@ -985,7 +997,7 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
         ("v2", Some(47.0))
     );
     assert_eq!(
-        calls[9..13]
+        calls[10..14]
             .iter()
             .map(|c| (sget(&c.args, "field"), sget(&c.args, "ref")))
             .collect::<Vec<_>>(),
@@ -1083,7 +1095,14 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
 // ---------------------------------------------------------------- the WorldTracer lookup
 
 const TRACE_FORM: &str = "# Track your delayed baggage\n[e1] textbox \"File reference\" value=\"\"\n[e2] textbox \"Family name\" value=\"\"\n[e3] button \"Track\"";
-const TRACE_RESULT: &str = "## File NRTSQ12345\n  Status Tracing continues — your bag has not been located yet\n  Flight SQ 638 Singapore (SIN) – Tokyo Narita (NRT), 2026-10-31\n  Last update 2026-10-31 22:10 local time — trace sent to Singapore (SIN)";
+/// The tracing result page's elements (`#out tr` with cells, `#out p`).
+fn trace_result() -> Value {
+    let row = |l: &str, v: &str| json!({"cells": [l, v], "links": []});
+    json!({"rows": [row("Status", "Tracing continues — your bag has not been located yet"),
+                    row("Flight", "SQ 638 Singapore (SIN) – Tokyo Narita (NRT), 2026-10-31"),
+                    row("Last update", "2026-10-31 22:10 local time — trace sent to Singapore (SIN)")],
+           "notes": ["Bags are usually found within a few days."]})
+}
 
 #[test]
 fn the_bag_is_looked_up_by_code_and_its_status_is_in_must_say() {
@@ -1105,7 +1124,7 @@ fn the_bag_is_looked_up_by_code_and_its_status_is_in_must_say() {
         match name {
         "browser_navigate" => page(super::super::bagtrace::TRACE_URL, TRACE_FORM),
         "form_fill" => "{\"url\": \"x\", \"filled\": [{\"op\": \"button\", \"field\": \"track\", \"ok\": true}]}".into(),
-        "browser_snapshot" => page(super::super::bagtrace::TRACE_URL, TRACE_RESULT),
+        "browser_read_elements" => elements(super::super::bagtrace::TRACE_URL, trace_result()),
         "schedule_create" => "created".into(),
         other => panic!("{other}"),
     }
@@ -1115,7 +1134,7 @@ fn the_bag_is_looked_up_by_code_and_its_status_is_in_must_say() {
         [
             "browser_navigate",
             "form_fill",
-            "browser_snapshot",
+            "browser_read_elements",
             "schedule_create"
         ]
     );
@@ -1152,9 +1171,9 @@ fn the_bag_is_looked_up_by_code_and_its_status_is_in_must_say() {
         from,
         &profile,
         |name, _| match name {
-            "browser_snapshot" => page(
+            "browser_read_elements" => elements(
                 super::super::bagtrace::TRACE_URL,
-                "No file found for this reference.",
+                json!({"rows": [], "notes": ["No file found for this reference."]}),
             ),
             "form_fill" => "{\"url\": \"x\", \"filled\": []}".into(),
             _ => page(super::super::bagtrace::TRACE_URL, TRACE_FORM),

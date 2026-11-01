@@ -12,9 +12,11 @@
 //!
 //! Then every step is code ([`next`]): the eligibility rule (left Hong Kong the same or the next calendar day, within
 //! 28 days of the departure flight, after departing, the tax paid), the card from the Vault, the platform's pages
-//! filled by their form functions (`crate::forms`, fixed ids), the uploads into their boxes (refs from the page's fixed
-//! labels), the card by `browser_fill_secret` (a card the Vault cannot fill is typed by the user in a takeover), the
-//! reference read from the page. The face recognition is the user's own step on their phone: never opened, never
+//! filled by their form functions (`crate::forms`, fixed ids), each page read by its HTML elements
+//! (`browser_read_elements`: the error boxes `.err`, the saved reference `#refShown`, and the refs a snapshot gave the
+//! upload boxes `#file_*` and the card fields `#card_*` — docs/json-tools.md "Reading pages"), the uploads into their
+//! boxes, the card by `browser_fill_secret` (a card the Vault cannot fill is typed by the user in a takeover), the
+//! reference from the submit page's address. The face recognition is the user's own step on their phone: never opened, never
 //! handed over (`guards::apdt_face_guard`). The machine ends with [`Step::Done`]: a JSON result (status, the
 //! reference, the link, the deadline, the refund, `must_say`); the model writes the reply from it.
 
@@ -26,9 +28,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use super::claims::vault_cards;
-use super::driver::{
-    handed_back, json_of, norm_flight, pos, results_of, snapshot_text, walk_messages, Step,
-};
+use super::driver::{handed_back, json_of, norm_flight, pos, results_of, walk_messages, Step};
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
 use super::workflow::{self, Checked};
@@ -495,71 +495,81 @@ fn page_of(url: &str) -> &'static str {
     }
 }
 
-/// The upload boxes of the upload page in a snapshot: (box, ref) — each file chooser named by the text since the one
-/// before it (its section's heading and label): the travel document, the arrival and the departure boarding pass, the
-/// proof of tax payment (a supplementary box is left alone).
-pub fn upload_boxes(snapshot: &str) -> Vec<(&'static str, String)> {
-    static REF: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"^\[(e\d+)\] filechooser\b"#).unwrap());
-    let mut out: Vec<(&'static str, String)> = Vec::new();
-    let mut chunk = String::new();
-    for line in snapshot.lines() {
-        let l = line.trim();
-        chunk.push(' ');
-        chunk.push_str(&l.to_lowercase());
-        let Some(c) = REF.captures(l) else {
-            continue;
-        };
-        let what = if chunk.contains("supplementary") {
-            ""
-        } else if chunk.contains("tax payment") {
-            "paydoc"
-        } else if chunk.contains("departure flight") {
-            "outboard"
-        } else if chunk.contains("arrival flight") {
-            "inboard"
-        } else if chunk.contains("travel document") || chunk.contains("passport") {
-            "doc"
-        } else {
-            ""
-        };
-        if !what.is_empty() && !out.iter().any(|(w, _)| *w == what) {
-            out.push((what, c[1].to_string()));
-        }
-        chunk.clear();
+/// The element read of the platform's error boxes (under a field, or for the whole page).
+const ERRORS: &str = "errors";
+/// The element read of the saved application's reference (the "Uploaded successfully" box).
+const SAVED: &str = "saved";
+/// The upload boxes by their fixed ids: the travel document, the arrival and the departure boarding pass, the proof of
+/// tax payment (the supplementary box is left alone).
+const BOXES: [(&str, &str); 4] = [
+    ("doc", "#file_doc"),
+    ("inboard", "#file_inboard"),
+    ("outboard", "#file_outboard"),
+    ("paydoc", "#file_paydoc"),
+];
+/// The refund page's card fields by their fixed ids (the Vault field each takes).
+const CARD_BOXES: [(&str, &str); 3] = [
+    ("number", "#card_number"),
+    ("expiry", "#card_valid"),
+    ("holder", "#card_holder"),
+];
+
+/// The arguments of `browser_read_elements` for a platform page: its error boxes, the saved reference, and the refs of
+/// the upload boxes and the card fields (given by the snapshot before, `data-persona-ref`).
+fn state_args() -> Value {
+    let mut read = vec![
+        json!({"name": ERRORS, "sel": ".err"}),
+        json!({"name": SAVED, "sel": "#refShown"}),
+    ];
+    for (name, sel) in BOXES.iter().chain(CARD_BOXES.iter()) {
+        read.push(json!({"name": format!("ref_{name}"), "sel": sel, "attr": "data-persona-ref", "hidden": true}));
     }
-    out
+    json!({"read": read})
 }
 
-/// The ref of the textbox labelled `label` in a snapshot.
-fn textbox(snapshot: &str, label: &str) -> Option<String> {
-    let r = Regex::new(&format!(r#"\[(e\d+)\] textbox "{}"#, regex::escape(label))).ok()?;
-    r.captures(snapshot).map(|c| c[1].to_string())
+/// A platform page as its elements read it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PageState {
+    pub url: String,
+    /// the platform's error messages, in its own words
+    pub errors: Vec<String>,
+    /// the saved application's reference shown in the "Uploaded successfully" box
+    pub saved: String,
+    /// position of the read in the transcript
+    pub pos: usize,
+    read: Value,
 }
 
-/// The ref of the textbox labelled `label` in the newest browser result after position `after` that still shows it
-/// (a snapshot shortened by the transcript's compression no longer does).
-fn newest_ref(transcript: &[Value], after: usize, label: &str) -> Option<String> {
-    transcript[after.min(transcript.len())..]
-        .iter()
-        .rev()
-        .filter(|m| get_str(m, "role") == "tool")
-        .find_map(|m| textbox(&snapshot_text(m), label))
-}
-
-/// The platform's error messages in a snapshot (under a field, or for the whole page), in its own words.
-pub fn site_errors(snapshot: &str) -> Vec<String> {
-    static ERR: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)please (upload|enter|select|check|read)|invalid|exceeded|no matching|must be|cannot be|could not be|not accepted|too large|is later than|do not upload|record not found|not eligible").unwrap()
-    });
-    let mut out: Vec<String> = Vec::new();
-    for l in snapshot.lines().map(str::trim) {
-        if l.starts_with('[') || !ERR.is_match(l) {
-            continue;
+impl PageState {
+    fn of(t: &[Value], m: &Value) -> PageState {
+        let errs = super::confirm::element_values(m, ERRORS);
+        PageState {
+            url: url_of(m),
+            errors: site_errors(&errs),
+            saved: super::confirm::element_values(m, SAVED)
+                .into_iter()
+                .find(|v| !v.trim().is_empty())
+                .unwrap_or_default(),
+            pos: pos(t, m),
+            read: m.clone(),
         }
-        let l: String = l.chars().take(220).collect();
-        if !out.contains(&l) {
-            out.push(l);
+    }
+
+    /// The ref of the element read as `ref_<name>` (an upload box or a card field).
+    fn ref_of(&self, name: &str) -> Option<String> {
+        super::confirm::element_values(&self.read, &format!("ref_{name}"))
+            .into_iter()
+            .find(|r| !r.trim().is_empty())
+    }
+}
+
+/// The platform's error messages among its error boxes' texts (the empty ones left out), each once, at most five.
+pub fn site_errors(boxes: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for b in boxes.iter().map(|b| b.trim()).filter(|b| !b.is_empty()) {
+        let b: String = b.chars().take(220).collect();
+        if !out.contains(&b) {
+            out.push(b);
         }
         if out.len() >= 5 {
             break;
@@ -610,21 +620,33 @@ fn stage(
     }
 }
 
-/// The page right after position `after` (the first snapshot since): `Err(step)` to take it, `Ok((url, text,
-/// position))`.
-fn snap_after(
-    transcript: &[Value],
-    n: usize,
-    after: usize,
-) -> Result<(String, String, usize), Step> {
-    match first_after(transcript, "browser_snapshot", after) {
-        Some((_, m, p)) => Ok((url_of(m), snapshot_text(m), p)),
+/// The page right after position `after` as its elements read it (the first `browser_read_elements` since):
+/// `Err(step)` to read it.
+fn read_after(transcript: &[Value], n: usize, after: usize) -> Result<PageState, Step> {
+    match first_after(transcript, "browser_read_elements", after) {
+        Some((_, m, _)) => Ok(PageState::of(transcript, m)),
         None => Err(Step::Calls(vec![call(
             n,
-            "browser_snapshot",
-            json!({"max_chars": 12000}),
+            "browser_read_elements",
+            state_args(),
         )])),
     }
+}
+
+/// A snapshot after position `after` (it gives the page's elements their refs), then the page read: `Err(step)` for
+/// the next of the two.
+fn refs_after(transcript: &[Value], n: usize, after: usize) -> Result<PageState, Step> {
+    let snap = match first_after(transcript, "browser_snapshot", after) {
+        Some((_, _, p)) => p,
+        None => {
+            return Err(Step::Calls(vec![call(
+                n,
+                "browser_snapshot",
+                json!({"max_chars": 12000}),
+            )]))
+        }
+    };
+    read_after(transcript, n, snap)
 }
 
 // ---------------------------------------------------------------- the machine
@@ -925,8 +947,9 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     let card = card.as_ref();
     let holder = get_str(m.profile, "name_en").trim().to_uppercase();
     let args_fill = f.args(card, &holder);
-    let stuck = |url: &str, text: &str, wanted: &str| -> Step {
-        let errs = site_errors(text);
+    let stuck = |st: &PageState, wanted: &str| -> Step {
+        let url = st.url.as_str();
+        let errs = st.errors.clone();
         let page = if page_of(url).is_empty() {
             "current"
         } else {
@@ -956,12 +979,13 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
         Ok(p) => p,
         Err(st) => return st,
     };
-    let (url, text, snap_pos) = match snap_after(t, n, start) {
+    let upload_page = match refs_after(t, n, start) {
         Ok(x) => x,
         Err(st) => return st,
     };
-    if !ran("details") && page_of(&url) != "apdt_upload" {
-        return stuck(&url, &text, "upload");
+    let snap_pos = upload_page.pos;
+    if !ran("details") && page_of(&upload_page.url) != "apdt_upload" {
+        return stuck(&upload_page, "upload");
     }
     // 4. the uploads, each in its box (refs from the upload page's snapshot)
     let files = [
@@ -970,20 +994,6 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
         ("outboard", f.out_file.clone()),
         ("paydoc", f.receipt_file.clone()),
     ];
-    // a box's ref from the newest page that still lists it (an upload's result is the page again; the first snapshot
-    // may have been compressed by then)
-    let box_ref = |what: &str| {
-        t[snap_pos.saturating_sub(1).min(t.len())..]
-            .iter()
-            .rev()
-            .filter(|msg| get_str(msg, "role") == "tool")
-            .find_map(|msg| {
-                upload_boxes(&snapshot_text(msg))
-                    .into_iter()
-                    .find(|(w, _)| *w == what)
-                    .map(|(_, r)| r)
-            })
-    };
     let uploads = results_of(t, "browser_upload");
     let mut uploaded = snap_pos;
     for (what, path) in &files {
@@ -1004,8 +1014,8 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             return Step::Done(json!({"status": "error", "file": file, "error": err,
                 "must_say": [format!("{file} could not be uploaded to the platform: {err}"), "nothing was submitted"]}));
         }
-        let Some(r) = box_ref(what) else {
-            return stuck(&url, &text, "upload");
+        let Some(r) = upload_page.ref_of(what) else {
+            return stuck(&upload_page, "upload");
         };
         return Step::Calls(vec![call(
             n,
@@ -1018,26 +1028,25 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
         Ok(p) => p,
         Err(st) => return st,
     };
-    let (url, text, details_snap) = match snap_after(t, n, details) {
+    let saved_page = match read_after(t, n, details) {
         Ok(x) => x,
         Err(st) => return st,
     };
-    let low = text.to_lowercase();
-    if !ran("continue")
-        && !(low.contains("uploaded successfully") || low.contains("saved automatically"))
-    {
-        return stuck(&url, &text, "reference");
+    let details_snap = saved_page.pos;
+    if !ran("continue") && saved_page.saved.is_empty() {
+        return stuck(&saved_page, "reference");
     }
     let cont = match stage(t, n, "continue", details_snap, json!({})) {
         Ok(p) => p,
         Err(st) => return st,
     };
-    let (url, text, refund_snap) = match snap_after(t, n, cont) {
+    let refund_page = match read_after(t, n, cont) {
         Ok(x) => x,
         Err(st) => return st,
     };
-    if !ran("refund") && page_of(&url) != "apdt_refund" {
-        return stuck(&url, &text, "refund method");
+    let refund_snap = refund_page.pos;
+    if !ran("refund") && page_of(&refund_page.url) != "apdt_refund" {
+        return stuck(&refund_page, "refund method");
     }
     // 6. the refund method; the card from the Vault (or typed by the user), then "Next"
     let refund = match stage(t, n, "refund", refund_snap, args_fill.clone()) {
@@ -1046,10 +1055,11 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     };
     let mut before_next = refund;
     if f.method == Some(Method::Card) {
-        let (_, text, card_snap) = match snap_after(t, n, refund) {
+        let card_page = match refs_after(t, n, refund) {
             Ok(x) => x,
             Err(st) => return st,
         };
+        let card_snap = card_page.pos;
         let fills = results_of(t, "browser_fill_secret");
         let done = |field: &str| {
             fills
@@ -1059,20 +1069,16 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
         };
         let vault_ok = card.is_some_and(|c| !c.name_only) && done("number") != Some(false);
         if let (true, Some(c)) = (vault_ok, card) {
-            let wanted: &[(&str, &str)] = if c.holder {
-                &[
-                    ("number", "Card Number"),
-                    ("expiry", "Validity Period"),
-                    ("holder", "Name of Cardholder"),
-                ]
+            let wanted: &[&str] = if c.holder {
+                &["number", "expiry", "holder"]
             } else {
-                &[("number", "Card Number"), ("expiry", "Validity Period")]
+                &["number", "expiry"]
             };
-            for (field, label) in wanted {
+            for field in wanted {
                 if done(field).is_some() {
                     continue;
                 }
-                if let Some(r) = textbox(&text, label).or_else(|| newest_ref(t, card_snap, label)) {
+                if let Some(r) = card_page.ref_of(field) {
                     return Step::Calls(vec![call(
                         n,
                         "browser_fill_secret",
@@ -1114,26 +1120,28 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
         Ok(p) => p,
         Err(st) => return st,
     };
-    let (url, text, confirm_snap) = match snap_after(t, n, next_pos) {
+    let confirm_page = match read_after(t, n, next_pos) {
         Ok(x) => x,
         Err(st) => return st,
     };
-    if !ran("confirm") && page_of(&url) != "apdt_confirm" {
-        return stuck(&url, &text, "confirmation");
+    let confirm_snap = confirm_page.pos;
+    if !ran("confirm") && page_of(&confirm_page.url) != "apdt_confirm" {
+        return stuck(&confirm_page, "confirmation");
     }
     // 7. "Please confirm your application information": the declaration and "Confirm and Next Step"
     let confirm = match stage(t, n, "confirm", confirm_snap, json!({})) {
         Ok(p) => p,
         Err(st) => return st,
     };
-    let (url, text, _) = match snap_after(t, n, confirm) {
+    let submit_page = match read_after(t, n, confirm) {
         Ok(x) => x,
         Err(st) => return st,
     };
-    // 8. "Submit your application — Proceed with Facial Recognition": stop; the reference from the page
-    if page_of(&url) != "apdt_submit" {
-        return stuck(&url, &text, "face recognition");
+    // 8. "Submit your application — Proceed with Facial Recognition": stop; the reference from the page's address
+    if page_of(&submit_page.url) != "apdt_submit" {
+        return stuck(&submit_page, "face recognition");
     }
+    let url = submit_page.url.clone();
     Step::Done(result(&f, reference_on(&url).as_deref(), &url, card))
 }
 
@@ -1225,25 +1233,30 @@ Cathay Pacific to Tokyo the next morning, and I paid the Hong Kong departure tax
 the Hong Kong departure tax refund for me. The boarding passes and the e-ticket receipt are in my email, and I attached \
 the photo page of my passport. Refund it to my Visa card.";
 
-    const UPLOAD_SNAP: &str = "  Document Upload Supports image files or mobile document uploads\n  Entered Hong Kong by *\n\
-[e4] radio \"Air (2 one-way air tickets)\" [unchecked]\n[e5] radio \"Land / Sea\" [unchecked]\n\
-  Please select your mode of entry into Hong Kong first.\n  Travel document for entry into Hong Kong *\n\
-[e7] button \"Why do you need to upload your travel document?\"\n[e8] combobox \"Document type *\" selected=\"Please select document type\" options=[Passport]\n\
-[e9] filechooser \"Click here to upload (the page with your photo)\" (file upload)\n  Please ensure the name, ID number, and date of birth are clear.\n\
-  Boarding pass of the relevant arrival flight in Hong Kong *\n[e10] button \"Why do you need to upload a boarding pass of the arrival flight?\"\n\
-[e11] filechooser \"Click here to upload\" (file upload)\n[e12] textbox \"Arrival flight no. *\" value=\"\"\n[e13] textbox \"Date of arrival *\" value=\"\"\n\
-  Boarding pass of the departure flight from Hong Kong *\n[e14] button \"Why do you need to upload the boarding pass for your departure flight from Hong Kong?\"\n\
-[e15] filechooser \"Click here to upload\" (file upload)\n[e16] textbox \"Departure Flight No. *\" value=\"\"\n[e17] textbox \"Flight Departure Date *\" value=\"\"\n\
-  Proof of tax payment *\n[e18] button \"Why do we require proof of tax payment?\"\n[e19] button \"Important Notes · Upload Example\"\n\
-[e20] filechooser \"Click here to upload\" (file upload)\n  Other supplementary supporting documents (if applicable)\n\
-[e21] filechooser \"Upload Extra Supplementary Documents\" (file upload)\n[e22] checkbox \"I confirm that I have authorized a third party to submit my information for this application\" [unchecked]\n\
-[e23] button \"Previous Step\"\n[e24] button \"Next Step\"";
+    /// A platform page as `browser_read_elements` reads it (the error boxes, the saved reference, the refs).
+    fn elements(url: &str, read: Value) -> String {
+        format!(
+            "<untrusted_content source=\"web page {url}\">\n{}\n</untrusted_content>",
+            json!({"trust": "untrusted", "source": format!("web page {url}"), "url": url, "title": "APDT",
+                   "elements": read})
+        )
+    }
 
-    const SAVED_SNAP: &str = "  Uploaded successfully. Your application has been saved automatically.\n  Reference number\n  K7P2QD\n[e30] button \"Continue\"";
+    /// The upload page: its boxes' refs (the snapshot gave them), no error.
+    fn upload_page() -> Value {
+        json!({"errors": ["", ""], "saved": [], "ref_doc": ["e9"], "ref_inboard": ["e11"], "ref_outboard": ["e15"],
+               "ref_paydoc": ["e20"], "ref_number": [], "ref_expiry": [], "ref_holder": []})
+    }
 
-    const REFUND_SNAP: &str = "  Refund Method\n[e5] radio \"Credit / Debit Card\" [checked]\n[e6] textbox \"Card Number *\" placeholder=\"Please enter card number\" value=[hidden]\n\
-[e7] textbox \"Name of Cardholder *\" value=\"LUCAS LU\"\n[e8] textbox \"Validity Period *\" placeholder=\"MM/YY\" value=\"\"\n\
-[e9] checkbox \"By selecting credit / debit card for my refund, I agree to a processing fee of up to HK$18\" [checked]\n[e10] button \"Next\"";
+    /// The upload page after "Next Step": the "Uploaded successfully" box with the reference.
+    fn saved_page() -> Value {
+        json!({"errors": [""], "saved": ["K7P2QD"]})
+    }
+
+    /// The refund page: the card fields' refs.
+    fn refund_page() -> Value {
+        json!({"errors": [""], "saved": [], "ref_number": ["e6"], "ref_expiry": ["e8"], "ref_holder": ["e7"]})
+    }
 
     const SUBMIT_URL: &str = "https://app.apdtrefund.hk/hkTaxMobile/apdt_submit.html?lang=en&bizId=K7P2QD&type=1&tsType=bank&t=eyJyZWYiOiJLN1AyUUQifQ";
 
@@ -1294,21 +1307,22 @@ the photo page of my passport. Refund it to my Visa card.";
             "files_read" => format!("<untrusted_content source=\"file {}\">\n--- page 1 ---\nBOARDING PASS\n</untrusted_content>", sget(args, "path")),
             "vault_list" => vault.into(),
             "browser_navigate" => page("https://app.apdtrefund.hk/hkTaxMobile/?lang=en", "  Notes for Application"),
-            // an action's result is the page it leaves, as a snapshot
-            "browser_upload" => page("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en", UPLOAD_SNAP),
-            "browser_fill_secret" => page("https://app.apdtrefund.hk/hkTaxMobile/apdt_refund.html?lang=en&bizId=K7P2QD", REFUND_SNAP),
+            // an action's result is the page it leaves, as a snapshot (the machine reads nothing in it)
+            "browser_upload" => page("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en", "  Document Upload"),
+            "browser_fill_secret" => page("https://app.apdtrefund.hk/hkTaxMobile/apdt_refund.html?lang=en&bizId=K7P2QD", "  Refund Method"),
             "browser_request_takeover" => BACK.into(),
             "form_fill" => json!({"url": "x", "filled": []}).to_string(),
-            "browser_snapshot" => {
+            "browser_snapshot" => page("https://app.apdtrefund.hk/hkTaxMobile/", "  (the page's elements get their refs)"),
+            "browser_read_elements" => {
                 // the page the last fill left
                 let last = results_of(t, "form_fill").last().map(|(a, _)| sget(a, "stage")).unwrap_or_default();
                 match last.as_str() {
-                    "start" => page("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en", UPLOAD_SNAP),
-                    "details" => page("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en", SAVED_SNAP),
-                    "continue" | "refund" => page("https://app.apdtrefund.hk/hkTaxMobile/apdt_refund.html?lang=en&bizId=K7P2QD", REFUND_SNAP),
-                    "next" => page("https://app.apdtrefund.hk/hkTaxMobile/apdt_confirm.html?lang=en&bizId=K7P2QD", "  Please confirm your application information"),
-                    "confirm" => page(SUBMIT_URL, "  Submit your application K7P2QD Proceed with Facial Recognition\n[e9] button \"Proceed with Facial Recognition\""),
-                    _ => page("https://app.apdtrefund.hk/hkTaxMobile/?lang=en", "  Notes for Application"),
+                    "start" => elements("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en", upload_page()),
+                    "details" => elements("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en", saved_page()),
+                    "continue" | "refund" => elements("https://app.apdtrefund.hk/hkTaxMobile/apdt_refund.html?lang=en&bizId=K7P2QD", refund_page()),
+                    "next" => elements("https://app.apdtrefund.hk/hkTaxMobile/apdt_confirm.html?lang=en&bizId=K7P2QD", json!({"errors": [""]})),
+                    "confirm" => elements(SUBMIT_URL, json!({"errors": []})),
+                    _ => elements("https://app.apdtrefund.hk/hkTaxMobile/?lang=en", json!({"errors": []})),
                 }
             }
             _ => "ok".into(),
@@ -1679,17 +1693,30 @@ the photo page of my passport. Refund it to my Visa card.";
 
     #[test]
     fn the_upload_boxes_the_errors_and_the_reference_are_read_from_the_page() {
-        let b = upload_boxes(UPLOAD_SNAP);
+        let page = json!({"role": "tool", "tool_call_id": "c1",
+            "content": elements("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en", upload_page())});
+        let st = PageState::of(std::slice::from_ref(&page), &page);
+        let refs: Vec<Option<String>> = ["doc", "inboard", "outboard", "paydoc", "number"]
+            .iter()
+            .map(|w| st.ref_of(w))
+            .collect();
         assert_eq!(
-            b,
-            vec![
-                ("doc", "e9".to_string()),
-                ("inboard", "e11".to_string()),
-                ("outboard", "e15".to_string()),
-                ("paydoc", "e20".to_string())
+            refs,
+            [
+                Some("e9".into()),
+                Some("e11".into()),
+                Some("e15".into()),
+                Some("e20".into()),
+                None
             ]
         );
-        let errs = site_errors("  Flight Departure Date *\n  Departure date has exceeded the application deadline (28 calendar days from the departure date).\n  Please check the items marked above.\n[e3] button \"Next Step\"");
+        assert!(st.url.ends_with("apdt_upload.html?lang=en") && st.errors.is_empty());
+        let errs = site_errors(&[
+            "".into(),
+            "Departure date has exceeded the application deadline (28 calendar days from the departure date).".into(),
+            "Please check the items marked above.".into(),
+            "Please check the items marked above.".into(),
+        ]);
         assert_eq!(errs.len(), 2);
         assert!(errs[0].starts_with("Departure date has exceeded"));
         assert_eq!(reference_on(SUBMIT_URL), Some("K7P2QD".into()));
@@ -1718,9 +1745,10 @@ the photo page of my passport. Refund it to my Visa card.";
         let (mut t, args) = fetched_then_called();
         let from = t.len() - 2;
         let p = profile();
-        let err_page = page(
+        let err_page = elements(
             "https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en",
-            "  Departure date has exceeded the application deadline (28 calendar days from the departure date).\n  Please check the items marked above.",
+            json!({"errors": ["", "Departure date has exceeded the application deadline (28 calendar days from the departure date).",
+                              "Please check the items marked above."], "saved": []}),
         );
         let res = loop {
             let m = machine(&p, &t, from);
@@ -1731,7 +1759,7 @@ the photo page of my passport. Refund it to my Visa card.";
                             .last()
                             .map(|(a, _)| sget(a, "stage"))
                             == Some("details".into());
-                        let r = if call.name == "browser_snapshot" && details_done {
+                        let r = if call.name == "browser_read_elements" && details_done {
                             err_page.clone()
                         } else {
                             respond(&t, &call.name, &call.args, VAULT)

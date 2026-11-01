@@ -88,7 +88,8 @@ Call `shop_order` once with the user's words as arguments — never open, read o
   one"): call present_choices(kind="comparison") with labels/prices copied exactly from the page (e.g. from
   browser_find context or browser_read). The user picks by pressing a card, so a plain list in the answer is not enough.
   OMuse checks them against what you read; put your opinion in note. Listings from a results page with criteria
-  ("best-rated under S$25 with 200+ ratings"): pass ranking with those criteria — OMuse picks and orders the listings. The pick arrives as "I choose: <label>": carry on
+  ("best-rated under S$25 with 200+ ratings"): pass ranking with those criteria and every listing of the page as an option
+  with its price, stars and ratings as numbers (price_text as the page writes it) — OMuse picks and orders them. The pick arrives as "I choose: <label>": carry on
   with what the user asked for it (e.g. add it to the cart).
 - "Tell me when it's cheaper / back in stock": watch_create(url=product page, mode="price_below", threshold=…, keyword=
   a word from the product's own title, current_price=the price you saw) or mode="text", text="In stock". It notifies once

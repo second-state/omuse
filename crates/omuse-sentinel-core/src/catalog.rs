@@ -59,15 +59,15 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
         "读取一封邮件全文。Read one email (body, attachments list) by message id from gmail_search.",
         obj(json!({"message_id": {"type": S}}), &["message_id"])));
     add("gmail_read_amounts", tool("gmail", "read", "read", "low", "CONFIDENTIAL",
-        "批量读取多封邮件里的金额行（收据、账单、发票）。Open up to 40 emails at once (ids from gmail_search) and return, \
-         for each, its date, sender, subject and only the lines that carry money (totals, amounts charged, fares, \
-         due amounts, with their currency). Use it to count or total receipts / bills / orders instead of calling \
-         gmail_get_message on each email — much faster and keeps the context small.",
+        "批量读取多封邮件（收据、账单、发票）。Open up to 40 emails at once (ids from gmail_search) and return, for \
+         each, its date, sender, subject and its text cut to fit (`truncated` when more was not shown). Read the \
+         amounts from the text. Use it to count or total receipts / bills / orders instead of calling \
+         gmail_get_message on each email — much faster.",
         obj(json!({"message_ids": {"type": "array", "items": {"type": S}, "description": "1-40 ids exactly as returned by gmail_search"}}),
             &["message_ids"])));
     add("gmail_find_receipts", tool("gmail", "read", "read", "low", "CONFIDENTIAL",
         "一步找出收据/账单/发票并读出金额。Find receipts, bills, invoices and order confirmations in ALL mailboxes for a \
-         period (searching archived mail too) and return, per email, date, sender, subject and the money lines — in \
+         period (searching archived mail too) and return, per email, date, sender, subject and its text cut to fit — in \
          one call. Give `senders` (domains or names, e.g. ['anthropic.com','openai.com','grab.com']) to search each \
          one separately; without senders it searches receipt/invoice/order keywords. Use this FIRST for spending, \
          subscriptions, trips or bills; then add up with calculate (count each purchase once).",
@@ -193,8 +193,8 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
         obj(json!({"fills": {"type": "array", "items": {"type": "object"}}}), &["fills"])));
     add("browser_read_elements", tool("browser", "browse", "read", "low", "PUBLIC",
         "按固定选择器读取已知页面的元素（仅供代码机器调用）。Read a known page's data by its HTML elements (called by the \
-         code machines with their fixed selectors, never offered to the model): read = [{name, sel, attr?, cells?}] → \
-         {elements: {name: [text | attribute | {cells, links}]}}.",
+         code machines with their fixed selectors, never offered to the model): read = [{name, sel, attr?, cells?, fields?, \
+         hidden?, max?}] → {elements: {name: [text | attribute | {cells, links} | {field: value}]}}.",
         obj(json!({"read": {"type": "array", "items": {"type": "object"}}}), &["read"])));
     add("browser_fill_secret", tool("browser", "interact", "type", "high", "PUBLIC",
         "从保险箱填写证件号/会员号/信用卡（每次都要用户批准，你看不到实际内容）。Fill a value stored in the user's \

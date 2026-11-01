@@ -23,6 +23,11 @@ fn day(ago: u32) -> String {
     format!("{} October 2026", 32 - ago)
 }
 
+/// The same day as an engine's timestamp ("2026-10-31T09:00:00.0000000").
+fn stamp(ago: u32) -> String {
+    format!("2026-10-{:02}T09:00:00.0000000", 32 - ago)
+}
+
 fn today() -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()
 }
@@ -40,7 +45,9 @@ fn search_result(q: &str) -> String {
     let rows: Vec<Value> = NEWS
         .iter()
         .map(|(sl, ago, src, title, body)| {
-            json!({"title": title, "url": url(sl), "snippet": format!("{src} · {} — {}…", day(*ago), take_chars(body, 140))})
+            // DuckDuckGo's row: the timestamp as its own field, no publication (it comes from the article's page)
+            let _ = src;
+            json!({"title": title, "url": url(sl), "snippet": format!("{}…", take_chars(body, 140)), "date": stamp(*ago)})
         })
         .collect();
     enveloped(
@@ -55,7 +62,8 @@ fn read_result(urls: &[String]) -> String {
         .map(|u| {
             let (_, ago, src, title, body) = NEWS.iter().find(|n| url(n.0) == *u).unwrap();
             let text = format!("{title}\n{src} · {}\n{body}", day(*ago));
-            json!({"url": u, "title": format!("{title} | {src}"), "text": text, "chars": text.len()})
+            json!({"url": u, "title": format!("{title} | {src}"), "text": text, "chars": text.len(),
+                   "lead": body, "site_name": src, "published": stamp(*ago)})
         })
         .collect();
     enveloped(
@@ -613,4 +621,17 @@ fn ask_user_before_news_gather_is_refused_in_the_skills_run() {
     assert_eq!(r["tool"], NEWS_GATHER);
     assert!(ask_before_tool(&[load, json!({"type": "workflow_call", "data": {}})]).is_none());
     assert!(ask_before_tool(&[]).is_none());
+}
+
+#[test]
+fn an_articles_date_and_publication_come_from_structured_fields() {
+    // an engine's timestamp or a page's published time is shown as a date; any other text stays as it is
+    assert_eq!(shown_date("2026-10-31T09:00:00.0000000"), "31 October 2026");
+    assert_eq!(shown_date("2026-10-30"), "30 October 2026");
+    assert_eq!(shown_date("2 days ago"), "2 days ago");
+    // no byline is looked for in the text: the opening is the article's lead paragraph, else its text
+    let art = json!({"title": "T", "lead": "", "text": "T\nReuters · 31 October 2026\nThe body."});
+    assert_eq!(opening(&art), "Reuters · 31 October 2026 The body.");
+    let art = json!({"title": "T", "lead": "The lead paragraph.", "text": "T\nwhatever"});
+    assert_eq!(opening(&art), "The lead paragraph.");
 }

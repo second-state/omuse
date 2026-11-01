@@ -1,15 +1,13 @@
-//! The agent's language (`agent_lang`, `request_lang`) and the per-task overrides the Python kept in
+//! The agent's language (`agent_lang`, the model's `request_lang` decision) and the per-task overrides the Python kept in
 //! `contextvars` (`_TASK_LANG`, `_FORCE_LANG`): here they are tokio task-locals, scoped around a task's run
 //! with [`with_langs`] (and re-applied to anything that run spawns).
 
 use std::future::Future;
-use std::sync::LazyLock;
 
 use omuse_common::util::take_chars;
-use regex::Regex;
 use serde_json::Value;
 
-use crate::prompts;
+use super::Runtime;
 
 tokio::task_local! {
     /// `_TASK_LANG`: the language the request was written in (Settings → Reply language = match).
@@ -18,20 +16,41 @@ tokio::task_local! {
     pub static FORCE_LANG: String;
 }
 
-/// 'zh' or 'en' for the language a request is written in ('' when it can't tell, e.g. only numbers or a URL).
-pub fn request_lang(text: &str) -> &'static str {
-    static STRIP: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"https?://\S+|\[[^\]]*\]|\([^)]*attached[^)]*\)").unwrap());
-    static LETTER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z一-鿿]").unwrap());
-    let t = STRIP.replace_all(text, " ");
-    let t = take_chars(&t, 2000);
-    if !LETTER.is_match(t) {
-        return "";
+/// The choices of the request-language decision: the model reads the request, code maps its choice.
+pub const REQUEST_LANG_CHOICES: [&str; 3] = ["en", "zh", "other"];
+
+/// The question of the request-language decision (Settings → Reply language = match).
+pub const REQUEST_LANG_QUESTION: &str = "Which language is the user's request written in? \"en\": English; \"zh\": \
+Chinese; \"other\": another language, or it cannot be told (only numbers, a link, a name). Names, places, links and \
+terms quoted from another language inside a sentence do not change the sentence's language.";
+
+/// The task language for a choice of the request-language decision: "en" / "zh", or "" (the setting decides).
+pub fn task_lang_of(choice: &str) -> &'static str {
+    match choice {
+        "en" => "en",
+        "zh" => "zh",
+        _ => "",
     }
-    if prompts::cjk_share(t) >= 0.3 {
-        "zh"
-    } else {
-        "en"
+}
+
+impl Runtime {
+    /// Settings → Reply language = match: the language the request is written in, as the model reads it — a
+    /// [`Runtime::decide`] over [`REQUEST_LANG_CHOICES`] (no character counting in code). "" when it is another
+    /// language or the model gave no listed choice: then Settings → Language decides.
+    pub async fn request_lang(&self, task_id: &str, request: &str) -> &'static str {
+        if request.trim().is_empty() {
+            return "";
+        }
+        let choice = self
+            .decide(
+                task_id,
+                REQUEST_LANG_QUESTION,
+                take_chars(request, 2000),
+                &REQUEST_LANG_CHOICES,
+                "other",
+            )
+            .await;
+        task_lang_of(&choice)
     }
 }
 
@@ -72,5 +91,22 @@ pub fn agent_lang(settings: &Value) -> &'static str {
         "en"
     } else {
         "zh"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_request_language_is_a_choice_code_maps() {
+        assert_eq!(task_lang_of("en"), "en");
+        assert_eq!(task_lang_of("zh"), "zh");
+        // another language or no answer: the setting decides
+        assert_eq!(task_lang_of("other"), "");
+        assert_eq!(task_lang_of(""), "");
+        assert!(REQUEST_LANG_CHOICES
+            .iter()
+            .all(|c| REQUEST_LANG_QUESTION.contains(&format!("\"{c}\""))));
     }
 }

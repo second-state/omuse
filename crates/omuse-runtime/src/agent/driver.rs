@@ -13,13 +13,13 @@
 //!
 //! Then every step is code ([`next`]): the reminder when the filing window has not opened, the official page, the
 //! form function (`form_fill`, fixed ids), the hand-over for the user's own steps and for the review, the reference read
-//! from the confirmation page's fixed pattern. The machine ends with [`Step::Done`]: a JSON result (status, the
+//! from the confirmation page's fixed element. The machine ends with [`Step::Done`]: a JSON result (status, the
 //! reference, the trip, what was assumed, `must_say`). The model writes the reply from it.
 //!
 //! The next step is a function of the validated arguments and the transcript after the tool call alone, so a run
 //! suspended for a takeover carries on where it was.
 //!
-//! The shared transcript helpers at the end of the file (`results_of`, `snapshot_text`, …) and [`Step`] serve every
+//! The shared transcript helpers at the end of the file (`results_of`, `json_of`, …) and [`Step`] serve every
 //! code machine.
 
 use std::sync::LazyLock;
@@ -1016,28 +1016,6 @@ pub(crate) fn json_of(m: &Value) -> Value {
     serde_json::from_str(&c[i..=j]).unwrap_or(Value::Null)
 }
 
-/// The page text of a `browser_snapshot` result: the sentinel wraps it in its untrusted envelope
-/// (`{"trust", "source", "url", "title", "snapshot": "…"}`), so the lines and quotes of the snapshot are JSON-escaped
-/// in the message. The `snapshot` field when the envelope parses; an envelope cut short (a long page) is unescaped
-/// as text; a plain message (no envelope) as it is.
-pub(crate) fn snapshot_text(m: &Value) -> String {
-    let v = json_of(m);
-    if let Some(s) = v.get("snapshot").and_then(Value::as_str) {
-        return s.to_string();
-    }
-    let c = content_of(m);
-    let start = ["\"snapshot\": \"", "\"snapshot\":\""]
-        .iter()
-        .find_map(|k| c.find(k).map(|i| i + k.len()));
-    match start {
-        Some(i) => c[i..]
-            .replace("\\n", "\n")
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\"),
-        None => c,
-    }
-}
-
 pub(crate) fn walk_messages(v: &Value, out: &mut Vec<Value>) {
     match v {
         Value::Object(m) => {
@@ -1074,7 +1052,8 @@ pub(crate) fn stopped(fill: &Value) -> Option<String> {
 }
 
 /// The questions a driven run put to the user after its form opened (`ask_user`, a `present_choices` with no pick —
-/// a comparison that holds its pick is shown, not asked): the drivers' tests assert there are none.
+/// a comparison that holds its pick is shown, not asked): the drivers' tests assert there are none. A page only read
+/// (opened, then its elements read — a shop's results page before its choice card) is no form opening.
 #[cfg(test)]
 pub(crate) fn questions_after_navigate(transcript: &[Value]) -> Vec<String> {
     let calls: Vec<(String, Value)> = transcript
@@ -1082,7 +1061,12 @@ pub(crate) fn questions_after_navigate(transcript: &[Value]) -> Vec<String> {
         .flat_map(tool_calls)
         .map(stored_call)
         .collect();
-    let Some(nav) = calls.iter().position(|(n, _)| n == "browser_navigate") else {
+    let Some(nav) = calls.iter().enumerate().position(|(i, (n, _))| {
+        n == "browser_navigate"
+            && calls
+                .get(i + 1)
+                .is_none_or(|(next, _)| next != "browser_read_elements")
+    }) else {
         return Vec::new();
     };
     calls[nav + 1..]

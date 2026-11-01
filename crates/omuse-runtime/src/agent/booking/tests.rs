@@ -33,9 +33,12 @@ fn snap(url: &str, body: &str) -> String {
     json!({"trust": "untrusted", "source": format!("web page {url}"), "url": url, "title": "", "snapshot": body}).to_string()
 }
 
-/// A `browser_read_elements` result: the values of the confirmation's reference element.
+/// A `browser_read_elements` result: the values of the confirmation's reference element, and the refs the snapshot
+/// gave the card fields (read by their fixed selectors before the card fills).
 fn refs(values: &[&str]) -> String {
-    json!({"trust": "untrusted", "source": "web page x", "url": "x", "elements": {"reference": values}}).to_string()
+    json!({"trust": "untrusted", "source": "web page x", "url": "x", "elements": {"reference": values,
+           "card_number": ["e13"], "card_expiry": ["e14"], "card_cvc": ["e15"], "card_holder": ["e16"]}})
+    .to_string()
 }
 
 const BACK: &str = "\"Takeover finished: the user handed browser control back.\"";
@@ -449,6 +452,7 @@ fn a_flight_is_booked_on_a_known_site_with_fixed_ids_and_handed_over() {
             "browser_navigate",
             "browser_fill_form",
             "browser_snapshot",
+            "browser_read_elements",
             "browser_fill_secret",
             "browser_fill_secret",
             "browser_fill_secret",
@@ -457,6 +461,12 @@ fn a_flight_is_booked_on_a_known_site_with_fixed_ids_and_handed_over() {
             "browser_read_elements"
         ]
     );
+    // the card fields by their fixed ids (the refs the snapshot gave them), never by a label in the snapshot's text
+    assert_eq!(
+        args_of(&t, "browser_read_elements")[0]["read"][0]["sel"],
+        "#card_number"
+    );
+    assert_eq!(args_of(&t, "browser_fill_secret")[0]["ref"], "e13");
     let pc = &args_of(&t, "purchase_confirm")[0];
     assert_eq!(
         (
@@ -481,7 +491,7 @@ fn a_flight_is_booked_on_a_known_site_with_fixed_ids_and_handed_over() {
         .iter()
         .map(|a| sget(a, "ref"))
         .collect();
-    assert_eq!(secrets, ["e20", "e21", "e22", "e23"]);
+    assert_eq!(secrets, ["e13", "e14", "e15", "e16"]);
     let reason = sget(&args_of(&t, "browser_request_takeover")[0], "reason");
     assert!(
         reason.contains("press Pay now yourself")
@@ -1053,6 +1063,8 @@ fn a_hotel_room_is_picked_by_rule_and_a_pay_at_hotel_rate_needs_no_card() {
     let room = |i: u32, ty: &str, nightly: u32, cancel: &str, pay: &str| {
         json!({"room_offer_id": format!("H-TYO-1-R{i}"), "room_type": ty, "price_per_night": format!("SGD {nightly}.00"),
                "nights": 2, "total_amount": nightly * 2, "total": format!("SGD {}.00 for 2 nights", nightly * 2), "cancellation": cancel, "payment": pay,
+               // the provider's flags (the texts above are shown, never searched)
+               "free_cancellation": i > 1, "prepaid": i == 1,
                "booking_url": format!("{TT}/book/hotel/H-TYO-1-R{i}")})
     };
     let rooms = json!({"hotel": {"name": "Hotel Ginza Grand"}, "rooms": [
@@ -1420,15 +1432,58 @@ fn a_choice_cards_pick_is_booked_by_its_label() {
 
 // ---------------------------------------------------------------- shopping
 
-const RESULTS: &str = "Results for \"iPhone 17 Pro Max case\"\nSponsored\n\
-Titan Pro Shockproof Case for iPhone 17 Pro (6.3-inch), Military Grade\n4.9 out of 5 stars · 860 ratings\nS$22.90\n\
-Lumi Crystal Clear Case for iPhone 17 Pro Max, Anti-Scratch\n4.9 out of 5 stars · 38 ratings\nS$17.90\n\
-Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible\n4.7 out of 5 stars · 1,203 ratings\nS$21.90\n\
-Slim Leather Case for iPhone 17 Pro Max, MagSafe Compatible\n4.6 out of 5 stars · 512 ratings\nS$24.90\n\
-Carbon Fibre Case for iPhone 17 Pro Max, Ultra Thin 0.6 mm\n4.5 out of 5 stars · 268 ratings\nS$18.90\n\
-MagSafe Silicone Case for iPhone 17 Pro Max\n4.4 out of 5 stars · 2,048 ratings\nS$19.90\n\
-Kickstand Case for iPhone 17 Pro Max, MagSafe Ring Stand\n4.8 out of 5 stars · 379 ratings\nS$33.90\n\
-Camera Lens Protector for iPhone 17 Pro Max, 2-Pack\n4.8 out of 5 stars · 2,770 ratings\nS$9.90\n";
+/// Kaya Mobile's results page as its listing cards' elements read it (`.grid .card` with `fields`).
+fn results() -> Value {
+    let card = |t: &str, r: &str, p: &str| json!({"title": t, "rating": r, "price": p, "url": format!("{SHOP}/kaya_item.html?id=x")});
+    json!([
+        card(
+            "Titan Pro Shockproof Case for iPhone 17 Pro (6.3-inch), Military Grade",
+            "4.9 out of 5 stars · 860 ratings",
+            "S$22.90"
+        ),
+        card(
+            "Lumi Crystal Clear Case for iPhone 17 Pro Max, Anti-Scratch",
+            "4.9 out of 5 stars · 38 ratings",
+            "S$17.90"
+        ),
+        card(
+            "Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible",
+            "4.7 out of 5 stars · 1,203 ratings",
+            "S$21.90"
+        ),
+        card(
+            "Slim Leather Case for iPhone 17 Pro Max, MagSafe Compatible",
+            "4.6 out of 5 stars · 512 ratings",
+            "S$24.90"
+        ),
+        card(
+            "Carbon Fibre Case for iPhone 17 Pro Max, Ultra Thin 0.6 mm",
+            "4.5 out of 5 stars · 268 ratings",
+            "S$18.90"
+        ),
+        card(
+            "MagSafe Silicone Case for iPhone 17 Pro Max",
+            "4.4 out of 5 stars · 2,048 ratings",
+            "S$19.90"
+        ),
+        card(
+            "Kickstand Case for iPhone 17 Pro Max, MagSafe Ring Stand",
+            "4.8 out of 5 stars · 379 ratings",
+            "S$33.90"
+        ),
+        card(
+            "Camera Lens Protector for iPhone 17 Pro Max, 2-Pack",
+            "4.8 out of 5 stars · 2,770 ratings",
+            "S$9.90"
+        ),
+    ])
+}
+
+/// A `browser_read_elements` result with these elements.
+fn read_of(elements: Value) -> String {
+    json!({"trust": "untrusted", "source": "web page x", "url": "x", "elements": elements})
+        .to_string()
+}
 
 const SLIM: &str = "Slim Leather Case for iPhone 17 Pro Max, MagSafe Compatible";
 
@@ -1437,25 +1492,20 @@ fn shop_answer(name: &str, args: &Value, t: &[Value]) -> String {
         .iter()
         .any(|a| a["form"] == "kaya-item");
     match name {
-        "browser_read" => format!(
-            "<untrusted_content source=\"web pages {SHOP}/kaya_search.html\">\n{}\n</untrusted_content>",
-            json!({"trust": "untrusted", "source": format!("web pages {SHOP}/kaya_search.html"),
-                   "pages": [{"url": format!("{SHOP}/kaya_search.html"), "title": "Kaya Mobile", "text": RESULTS}]})
-        ),
-        "browser_navigate" if sget(args, "url").ends_with("kaya_cart.html") => {
-            snap(&sget(args, "url"), if added { SLIM } else { "Your Kaya Mobile cart is empty." })
-        }
+        "browser_navigate" if sget(args, "url").ends_with("kaya_cart.html") => snap(&sget(args, "url"), "Cart"),
         "browser_navigate" if sget(args, "url").ends_with("kaya_checkout.html") => snap(&sget(args, "url"), "[e10] textbox \"Full name\""),
         "browser_navigate" => snap(&sget(args, "url"), "[e2] link \"Cart (0)\""),
         "browser_fill_form" => "{\"url\": \"x\", \"filled\": [{\"ok\": true}]}".into(),
-        "browser_read_elements" => refs(&["KM-50731"]),
+        "browser_read_elements" => match args["read"][0]["name"].as_str() {
+            Some("listings") => read_of(json!({"listings": results()})),
+            Some("cart_items") if added => read_of(json!({"cart_items": [format!("{SLIM} — Colour: Saddle Brown")]})),
+            Some("cart_items") => read_of(json!({"cart_items": []})),
+            Some("cart_count") => read_of(json!({"cart_count": ["Cart (1)"], "colour": ["Saddle Brown"]})),
+            _ => refs(&["KM-50731"]),
+        },
         "browser_snapshot" if names(t).iter().any(|n| n == "purchase_confirm") => snap(
             &format!("{SHOP}/kaya_checkout.html"),
             "[e10] textbox \"Full name\"\n[e13] textbox \"Card number\"\n[e14] textbox \"Expiry (MM/YY)\"\n[e15] textbox \"Security code (CVC)\"",
-        ),
-        "browser_snapshot" => snap(
-            &format!("{SHOP}/kaya_item.html?id=slim-leather"),
-            &format!("[e2] link \"Cart (1)\"\n[e9] status \"Added to Cart: {SLIM} (Saddle Brown)\""),
         ),
         "vault_list" => VAULT.into(),
         "purchase_confirm" => "{\"status\": \"approved\"}".into(),
@@ -1650,6 +1700,9 @@ fn a_product_page_with_its_checkout_is_bought_by_fixed_ids() {
             "browser_fill_form" => "{\"filled\": []}".into(),
             "browser_fill_secret" => "{\"filled\": \"ok\"}".into(),
             "browser_request_takeover" => BACK.into(),
+            "browser_read_elements" if args["read"][0]["name"] == "price" => {
+                read_of(json!({"price": ["S$4.90"]}))
+            }
             "browser_read_elements" => refs(&["SR-48213", "S$4.90"]),
             "browser_snapshot" => snap("x", page),
             _ => "{}".into(),
@@ -1709,13 +1762,14 @@ fn the_machines_state_is_never_compressed() {
         ("call_2", "browser_snapshot"),
         ("call_3", "browser_snapshot"),
         ("call_4", "browser_snapshot"),
+        ("bkg_5", "browser_read_elements"),
         ("res_1", "travel_search_result"),
     ] {
         t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function", "function": {"name": name, "arguments": "{}"}}]}));
         t.push(json!({"role": "tool", "tool_call_id": id, "content": big.clone()}));
     }
     let out = crate::agent::runtime::compress_with(t, Some(30_000), 0);
-    for i in [2, 4, 12] {
+    for i in [2, 4, 12, 14] {
         assert_eq!(
             content_of(&out[i]).len(),
             20_000,
@@ -2045,6 +2099,7 @@ fn the_rooms_of_a_booking_are_asked_on_the_connector_the_search_ran_on() {
     let rooms = json!({"hotel": {"name": "Ginza Kaede Hotel"}, "rooms": [
         {"room_offer_id": "R2", "room_type": "Superior Twin", "price_per_night": "SGD 251.00", "total_amount": 753,
          "cancellation": "Free cancellation until 2026-11-27 23:59 hotel local time", "payment": "Pay at the hotel (no prepayment)",
+         "free_cancellation": true, "prepaid": false,
          "booking_url": format!("{TT}/book/hotel/H-TYO-1-20261130-20261203-2-R2")}]});
     let form = "[e10] textbox \"Full name\"\n[e11] textbox \"Email\"\n[e12] textbox \"Phone\"";
     let (t, _) = run(
@@ -2104,4 +2159,61 @@ fn the_model_loading_browser_use_on_a_shop_code_fills_is_refused() {
     moved.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function",
         "function": {"name": "browser_navigate", "arguments": json!({"url": "https://forms.example/apply"}).to_string()}}]}));
     assert!(browser_use_guard(&moved, &call("call_9")).is_none());
+}
+
+#[test]
+fn the_providers_flags_decide_not_its_texts() {
+    // a policy text is shown, never searched: free cancellation and the payment are the provider's flags
+    let o = offer_of(
+        Kind::Hotel,
+        &json!({"name": "R", "price_per_night": 100, "cancellation": "Free cancellation until 1 Dec", "payment": "Prepay now"}),
+        "SGD",
+    );
+    assert!(!o.free_cancel && o.prepaid.is_none());
+    let o = offer_of(
+        Kind::Hotel,
+        &json!({"name": "R", "price_per_night": 100, "free_cancellation": true, "prepaid": false}),
+        "SGD",
+    );
+    assert!(o.free_cancel && o.prepaid == Some(false));
+    // a Michelin level from the flags, else the distinction taken whole; closed days compared whole
+    let m = |v: Value| offer_of(Kind::Michelin, &v, "JPY");
+    assert_eq!(
+        michelin_level(&m(
+            json!({"name": "A", "stars": 2, "distinction": "whatever"})
+        )),
+        (2, false)
+    );
+    assert_eq!(
+        michelin_level(&m(json!({"name": "B", "bib_gourmand": true}))),
+        (0, true)
+    );
+    assert_eq!(
+        michelin_level(&m(
+            json!({"name": "C", "distinction": "Bib Gourmand (good value, not a star)"})
+        )),
+        (0, true)
+    );
+    assert_eq!(
+        michelin_level(&m(json!({"name": "D", "distinction": "3 Stars"}))),
+        (3, false)
+    );
+    assert_eq!(
+        michelin_level(&m(
+            json!({"name": "E", "distinction": "Plate with stars nearby"})
+        )),
+        (0, false)
+    );
+    assert!(closed_on(
+        &m(json!({"name": "F", "closed_days": ["Monday"]})),
+        "Monday"
+    ));
+    assert!(closed_on(
+        &m(json!({"name": "G", "closed": "Sunday, Monday"})),
+        "Monday"
+    ));
+    assert!(!closed_on(
+        &m(json!({"name": "H", "closed": "open daily except Monday holidays"})),
+        "Monday"
+    ));
 }

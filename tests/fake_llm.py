@@ -33,6 +33,17 @@ def tc(name, args):
     return {"id": "call_" + uuid.uuid4().hex[:8], "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
 
 
+def _fake_lang(text):
+    """The fake model's reading of a message's language: "zh", "en" or "" (no letters). A real model reads it; the
+    scripted one weighs Chinese characters against Latin letters (~4 letters per English word)."""
+    text = re.sub(r"https?://\S+|[A-Z]{4,}[A-Z0-9_]*", " ", text)   # links and the suites' all-caps markers (LANGCHECK …)
+    cjk_n = len(re.findall(r"[\u3400-\u9fff]", text))
+    lat_n = len(re.findall(r"[A-Za-z]", text))
+    if cjk_n + lat_n == 0:
+        return ""
+    return "zh" if cjk_n / (cjk_n + lat_n / 4) >= 0.3 else "en"
+
+
 def reply(content="", calls=None):
     msg = {"role": "assistant", "content": content}
     if calls:
@@ -250,15 +261,21 @@ async def _chat(req: Request, b: dict):
                                                 r"over to you|your turn|you (can|need to|should) (press|click|submit|pay|complete)", a)),
             "reconfirms": bool(re.search(r"\b(please )?confirm (that )?(you want|whether)|shall i go ahead|do you want me to (go ahead|proceed)", a)),
         }))
-    if sys.startswith("You name conversations"):   # chat titles (agent._retitle)
+    if sys.startswith("You name conversations"):   # chat titles (runtime.rs `retitle`): JSON {"title", "lang"}
         last = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
+        users = re.findall(r"User: (.*)", str(last))   # the latest request: deterministic, and the title follows the chat
+        lang = _fake_lang(users[-1] if users else "") or "en"   # the fake model "reads" the latest message's language
+        title_json = lambda t: reply(json.dumps({"title": t, "lang": lang}, ensure_ascii=False))   # noqa: E731
         if "很长很长" in str(last):   # resize_ui.py needs its long first-question title kept: "nothing usable" from the model
-            return reply("")
+            return title_json("")
         for ask, title in ((SHOW_TRIP, "Tokyo trip this week"), (SHOW_CITY, "Moving to Shanghai")):
             if ask in str(last):   # marketing_shots.py: real-looking titles in the pictures
-                return reply(title)
-        users = re.findall(r"User: (.*)", str(last))   # the latest request: deterministic, and the title follows the chat
-        return reply("Topic: " + (users[-1].split()[0][:16] if users and users[-1].split() else "chat"))
+                return title_json(title)
+        return title_json("Topic: " + (users[-1].split()[0][:16] if users and users[-1].split() else "chat"))
+    if sys.startswith("You make one decision") and "Which language is the user's request written in?" in str(msgs[-1]["content"]):
+        # Settings → Reply language = match (agent/lang.rs `request_lang`): the model reads the request's language
+        ctx = str(msgs[-1]["content"]).split("Context:\n", 1)[-1].rsplit("\n\nChoices: ", 1)[0]
+        return reply(json.dumps({"choice": _fake_lang(ctx) or "other"}))
     if sys.startswith("You read an identity document"):   # /api/profile/ocr (profile_onboarding_ui.py)
         return reply(json.dumps({"document_type": "passport", "number": "E1234567X", "surname": "LU", "given_names": "LUCAS", "name": "LU LUCAS",
                                  "sex": "M", "date_of_birth": "1985-04-12", "nationality": "Australia", "expiry": "2031-05-01", "country": "AUS"}))

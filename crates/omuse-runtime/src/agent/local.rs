@@ -1195,10 +1195,16 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                 } else {
                     "comparison"
                 };
+                // listings to rank may be many (the model's JSON of a results page); a plain card shows at most 8
+                let cap = if a.get("ranking").is_some_and(Value::is_object) {
+                    40
+                } else {
+                    8
+                };
                 let opts_: Vec<&Value> = arr(a, "options")
                     .iter()
                     .filter(|o| o.is_object())
-                    .take(8)
+                    .take(cap)
                     .collect();
                 if opts_.is_empty() {
                     return Ok("ERROR: options is empty.".into());
@@ -1226,11 +1232,20 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                                     .find(|u| !u.trim().is_empty())
                             })
                             .unwrap_or_default();
-                        let mut r = r.clone();
-                        r.count = r.count.or(Some(clean.len()));
-                        // a results page of listings (6 or more read off it); on anything else the model's options stand
-                        let all = self.listings_read(&tid, &url);
-                        let best = if all.len() >= 6 {
+                        // the options are every listing on the page: the count is the user's (3 when not given)
+                        let r = r.clone();
+                        // the listings the model extracted into JSON (2 or more with a price, stars or ratings): code ranks
+                        // them; on anything else the model's options stand
+                        let all: Vec<crate::listings::Listing> = opts_
+                            .iter()
+                            .filter(|o| {
+                                ["price", "stars", "ratings"]
+                                    .iter()
+                                    .any(|k| o.get(*k).is_some_and(|v| !v.is_null()))
+                            })
+                            .filter_map(|o| crate::listings::Listing::from_option(o))
+                            .collect();
+                        let best = if all.len() >= 2 {
                             r.apply(&all)
                         } else {
                             vec![]
@@ -1254,8 +1269,9 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                                         .into_iter()
                                         .filter(|d| !d.is_empty())
                                         .collect();
+                                    let src = if l.url.trim().is_empty() { &url } else { &l.url };
                                     json!({"label": truncate(&l.title, 160), "details": details,
-                                           "source_url": truncate(&url, 500), "note": note_of(&l.title)})
+                                           "source_url": truncate(src, 500), "note": note_of(&l.title)})
                                 })
                                 .collect();
                             if !sget(a, "picked").trim().is_empty() {
@@ -1263,7 +1279,7 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                             }
                             clean = built;
                         }
-                    } else if !code_card_of(a) && self.unranked_listings(&tid, &clean) {
+                    } else if !code_card_of(a) && self.unranked_listings(&tid, &opts_) {
                         self.event(
                             &tid,
                             "choices_rejected",
@@ -1274,22 +1290,18 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
 these are listings from a results page, and a comparison of them takes `ranking` (the user's criteria).".into());
                     }
                 }
-                // a card without a price gets the one its page shows after its name (read there, so it verifies)
+                // a card's price as the model read it off the page (`price_text`, JSON) joins its details when they do
+                // not show it yet; it is verified with them
                 if kind == "comparison" {
-                    for o in clean.iter_mut() {
-                        let details = arr(o, "details");
-                        if details
-                            .iter()
-                            .any(|d| crate::listings::has_price(&py_str(d)))
+                    for (o, raw) in clean.iter_mut().zip(opts_.iter()) {
+                        let p = sget(raw, "price_text").trim().to_string();
+                        if p.is_empty() || get_str(o, "label") != truncate(&sget(raw, "label"), 160)
                         {
                             continue;
                         }
-                        let text = self.sources_for(&tid, &get_str(o, "source_url")).join("\n");
-                        if let Some(p) = crate::listings::price_after(&text, &get_str(o, "label")) {
-                            if let Some(d) = o.get_mut("details").and_then(Value::as_array_mut) {
-                                if d.len() < 6 {
-                                    d.push(json!(p));
-                                }
+                        if let Some(d) = o.get_mut("details").and_then(Value::as_array_mut) {
+                            if d.len() < 6 && !d.iter().any(|x| py_str(x).contains(&p)) {
+                                d.push(json!(p));
                             }
                         }
                     }

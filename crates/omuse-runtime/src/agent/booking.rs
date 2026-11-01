@@ -31,7 +31,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use super::claims::{money, pick_card, vault_cards, VaultCard};
-use super::driver::{handed_back, json_of, pos, snapshot_text, Step};
+use super::driver::{handed_back, json_of, pos, Step};
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
 use super::workflow::{self, Checked};
@@ -1130,10 +1130,17 @@ pub struct Offer {
     pub airline: String,
     pub area: String,
     pub cancellation: String,
+    /// the provider's `free_cancellation` flag
     pub free_cancel: bool,
     pub payment: String,
+    /// the provider's `prepaid` flag: the rate is charged at booking (`None`: the provider did not say)
+    pub prepaid: Option<bool>,
     pub distinction: String,
+    /// a Michelin Bib Gourmand (the provider's `bib_gourmand` flag)
+    pub bib: bool,
     pub closed: String,
+    /// the days of the week it is closed ("Monday"), the provider's `closed_days`
+    pub closed_days: Vec<String>,
     pub reviews: Option<u64>,
     /// exact strings from the result for the choice card
     pub details: Vec<String>,
@@ -1306,9 +1313,8 @@ pub fn offer_of(kind: Kind, o: &Value, default_currency: &str) -> Offer {
         }
     });
     let cancellation = first_str(o, &["cancellation", "refund_rules"]);
-    let free_cancel = truthy(o.get("free_cancellation").unwrap_or(&Value::Null))
-        || cancellation.to_lowercase().starts_with("free")
-        || cancellation.to_lowercase().contains("free cancellation");
+    // the provider's flag; the policy's text is shown, never searched for "free"
+    let free_cancel = truthy(o.get("free_cancellation").unwrap_or(&Value::Null));
     let detail_keys: &[&str] = match kind {
         Kind::Flight => &["schedule", "duration", "stops_text", "fare", "baggage"],
         Kind::Hotel => &[
@@ -1375,8 +1381,18 @@ pub fn offer_of(kind: Kind, o: &Value, default_currency: &str) -> Offer {
         cancellation,
         free_cancel,
         payment: first_str(o, &["payment"]),
+        prepaid: o.get("prepaid").and_then(Value::as_bool),
         distinction: first_str(o, &["distinction"]),
+        bib: truthy(o.get("bib_gourmand").unwrap_or(&Value::Null)),
         closed: first_str(o, &["closed"]),
+        closed_days: o
+            .get("closed_days")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|d| d.trim().to_string())
+            .collect(),
         reviews: o.get("reviews").and_then(Value::as_u64),
         details,
         book_at: o
@@ -1507,6 +1523,43 @@ fn mentioned(kind: Kind, o: &Offer, names: &[String]) -> bool {
     names.iter().any(|n| own.contains(n))
 }
 
+/// A Michelin restaurant's level, from the provider's structured fields: its stars (`stars`, 0–3) and whether it is a
+/// Bib Gourmand (`bib_gourmand`); without them, its `distinction` taken whole as one of the guide's values ("3 Stars",
+/// "2 Stars", "1 Star", "Bib Gourmand", any case, a note in brackets after it aside) — never a word searched in it.
+fn michelin_level(o: &Offer) -> (u32, bool) {
+    if o.bib {
+        return (0, true);
+    }
+    if let Some(n) = o.stars.filter(|n| *n <= 3) {
+        return (n as u32, false);
+    }
+    let d = o
+        .distinction
+        .split(" (")
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    match d.as_str() {
+        "3 stars" | "three stars" => (3, false),
+        "2 stars" | "two stars" => (2, false),
+        "1 star" | "one star" => (1, false),
+        "bib gourmand" => (0, true),
+        _ => (0, false),
+    }
+}
+
+/// Whether a restaurant is closed on `day` ("Monday"): one of the provider's `closed_days`, or — without them — one of
+/// the items of its `closed` list ("Monday, Tuesday"), each compared whole.
+fn closed_on(o: &Offer, day: &str) -> bool {
+    if !o.closed_days.is_empty() {
+        return o.closed_days.iter().any(|d| d.eq_ignore_ascii_case(day));
+    }
+    o.closed
+        .split(',')
+        .any(|d| d.trim().eq_ignore_ascii_case(day))
+}
+
 /// The options that meet the request's criteria, best first, with the rule that ordered them (the first is the pick).
 pub fn ranked(kind: Kind, req: &Req, offers: &[Offer]) -> (Vec<Offer>, String) {
     let mut keep: Vec<Offer> = offers.to_vec();
@@ -1549,18 +1602,21 @@ pub fn ranked(kind: Kind, req: &Req, offers: &[Offer]) -> (Vec<Offer>, String) {
             if !req.distinction.is_empty() {
                 let d = req.distinction.to_lowercase();
                 keep.retain(|o| {
-                    let od = o.distinction.to_lowercase();
+                    let (stars, bib) = michelin_level(o);
                     match d.as_str() {
-                        "stars" => od.contains("star") && !od.contains("bib"),
-                        "bib gourmand" => od.contains("bib"),
-                        _ => od.starts_with(&d[..1]) && !od.contains("bib"),
+                        "stars" => stars > 0,
+                        "bib gourmand" => bib,
+                        "3 stars" => stars == 3,
+                        "2 stars" => stars == 2,
+                        "1 star" => stars == 1,
+                        _ => true,
                     }
                 });
                 rule.push(req.distinction.clone());
             }
             if let Some(date) = req.date {
-                let day = date.format("%A").to_string().to_lowercase();
-                keep.retain(|o| !o.closed.to_lowercase().contains(&day));
+                let day = date.format("%A").to_string();
+                keep.retain(|o| !closed_on(o, &day));
                 rule.push(format!("open on {}", date.format("%A")));
             }
         }
@@ -1588,14 +1644,7 @@ pub fn ranked(kind: Kind, req: &Req, offers: &[Offer]) -> (Vec<Offer>, String) {
         rule.push(format!("rated {m} or more"));
     }
     let price = |o: &Offer| o.price.unwrap_or(f64::MAX);
-    let dist_rank = |o: &Offer| {
-        let d = o.distinction.to_lowercase();
-        if d.contains("bib") {
-            0
-        } else {
-            d.chars().next().and_then(|c| c.to_digit(10)).unwrap_or(0)
-        }
-    };
+    let dist_rank = |o: &Offer| michelin_level(o).0;
     match kind {
         Kind::Restaurant => {
             keep.sort_by(|a, b| {
@@ -1975,24 +2024,6 @@ fn data_of(m: &Value) -> Value {
     }
 }
 
-/// The text of the pages a `browser_read` result carries (`{"trust", "source", "pages": [{"url", "text"}]}`), or the
-/// message as it is.
-fn pages_text(m: &Value) -> String {
-    let texts: Vec<String> = json_of(m)
-        .get("pages")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|p| get_str(p, "text"))
-        .filter(|t| !t.is_empty())
-        .collect();
-    if texts.is_empty() {
-        content_of(m)
-    } else {
-        texts.join("\n\n")
-    }
-}
-
 /// A search engine's ad or redirect link (DuckDuckGo's `y.js?ad_domain=…`, Bing's `aclick`, Google's `aclk`): no page
 /// about the trip, and it often does not open (travel_brave_real 2026-11-01).
 fn ad_link(url: &str) -> bool {
@@ -2052,6 +2083,7 @@ pub struct Site {
     pub host: &'static str,
     pub path: &'static str,
     pub fill: SiteFn,
+    /// the card fields: the Vault field and the input's fixed selector
     pub card: &'static [(&'static str, &'static str)],
     /// the confirmation's reference element (a CSS selector, read by `browser_read_elements`)
     pub ref_sel: &'static str,
@@ -2060,10 +2092,10 @@ pub struct Site {
 }
 
 const TRAVELTEST_CARD: &[(&str, &str)] = &[
-    ("number", "Card number"),
-    ("expiry", "Expiry (MM/YY)"),
-    ("cvc", "CVC"),
-    ("holder", "Name on card"),
+    ("number", "#card_number"),
+    ("expiry", "#card_expiry"),
+    ("cvc", "#card_cvc"),
+    ("holder", "#card_name"),
 ];
 
 /// TravelTest's flight booking page (`/book/flight/<offer_id>`): the traveller as in the passport, contact, the
@@ -2150,11 +2182,7 @@ pub const SITES: &[Site] = &[
         host: "shop.test",
         path: "/kaya_checkout",
         fill: kaya_checkout,
-        card: &[
-            ("number", "Card number"),
-            ("expiry", "Expiry (MM/YY)"),
-            ("cvc", "Security code (CVC)"),
-        ],
+        card: &[("number", "#card"), ("expiry", "#exp"), ("cvc", "#cvc")],
         ref_sel: "main p b",
         ref_re: r"\bKM-\d{4,}\b",
     },
@@ -2163,11 +2191,7 @@ pub const SITES: &[Site] = &[
         host: "shop.test",
         path: "/stride_",
         fill: stride_checkout,
-        card: &[
-            ("number", "Card number"),
-            ("expiry", "Expiry"),
-            ("cvc", "CVC"),
-        ],
+        card: &[("number", "#card"), ("expiry", "#exp"), ("cvc", "#cvc")],
         ref_sel: "main p b",
         ref_re: r"\bSR-\d{4,}\b",
     },
@@ -2202,12 +2226,6 @@ fn blanks(site: &Site, g: &Guest) -> Vec<String> {
 fn denied(m: &Value) -> bool {
     let c = content_of(m);
     c.starts_with("DENIED") || c.to_lowercase().contains("\"status\": \"denied\"")
-}
-
-/// The ref of the textbox whose accessible name starts with `label` in a snapshot (a known site's fixed label).
-fn ref_of(snapshot: &str, label: &str) -> Option<String> {
-    let r = Regex::new(&format!(r#"\[(e\d+)\] textbox "{}"#, regex::escape(label))).ok()?;
-    r.captures(snapshot).map(|c| c[1].to_string())
 }
 
 /// The page URL a navigate landed on (the envelope's `url`), else the URL asked for.
@@ -2760,11 +2778,9 @@ fn item_for(
             match pick_room(&rooms, req) {
                 Some((i, _)) => {
                     let r = &rooms[i];
-                    let pay = r.payment.to_lowercase();
-                    let prepaid = !pay.contains("no prepayment")
-                        && (pay.starts_with("prepay")
-                            || pay.contains("prepaid")
-                            || pay.contains("pay now"));
+                    // the provider's flag; a room it says nothing about is treated as charged (the payment is
+                    // approved and the card filled rather than "nothing charged" claimed)
+                    let prepaid = r.prepaid.unwrap_or(true);
                     let mut lines = Vec::new();
                     if !r.cancellation.is_empty() {
                         lines.push(format!(
@@ -3047,7 +3063,8 @@ fn book_with(
         return ids.calls("browser_fill_form", fill_args(site, &guest));
     };
     let fill_pos = pos(t, fill_msg);
-    // the card: one secret fill per box, by the site's fixed labels, after the approval
+    // the card: one secret fill per box, by the refs of the site's fixed inputs (a snapshot gives the page's elements
+    // their refs, then the inputs' refs are read by their selectors), after the approval
     let mut done_pos = fill_pos;
     if let (Some(c), true, true) = (card, card_ok, card_needed) {
         let after = fill_pos.max(approved_at);
@@ -3057,17 +3074,29 @@ fn book_with(
         else {
             return ids.calls("browser_snapshot", json!({"max_chars": 6000}));
         };
-        let page = snapshot_text(snap);
+        let snap_pos = pos(t, snap);
+        let names: Vec<(String, &str)> = site
+            .card
+            .iter()
+            .map(|(f, sel)| (format!("card_{f}"), *sel))
+            .collect();
+        let Some((_, refs)) = calls_of(t, "browser_read_elements")
+            .into_iter()
+            .find(|(a, msg)| read_name(a).starts_with("card_") && pos(t, msg) > snap_pos)
+        else {
+            let items: Vec<(&str, &str)> = names.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+            return ids.calls("browser_read_elements", super::confirm::refs_args(&items));
+        };
         let filled: Vec<String> = calls_of(t, "browser_fill_secret")
             .iter()
             .filter(|(_, msg)| pos(t, msg) > after)
             .map(|(a, _)| sget(a, "field"))
             .collect();
-        for (field, label) in site.card {
+        for (field, _) in site.card {
             if filled.iter().any(|f| f == field) {
                 continue;
             }
-            if let Some(r) = ref_of(&page, label) {
+            if let Some(r) = super::confirm::first_value(refs, &format!("card_{field}")) {
                 return ids.calls(
                     "browser_fill_secret",
                     json!({"ref": r, "item_id": c.id, "field": field}),
@@ -3169,6 +3198,21 @@ fn book_with(
 
 // ---------------------------------------------------------------- shopping
 
+/// The element read that holds Kaya Mobile's listing cards.
+const KAYA_LISTINGS: &str = "listings";
+
+/// The arguments of `browser_read_elements` for Kaya Mobile's results page: each listing card (`.grid .card`) with its
+/// name and link (`h2 a`), its rating (`.rating`) and its price (`.price`).
+fn kaya_listings_args() -> Value {
+    json!({"read": [{"name": KAYA_LISTINGS, "sel": ".grid .card", "max": 60,
+        "fields": {"title": "h2 a", "url": {"sel": "h2 a", "attr": "href"}, "rating": ".rating", "price": ".price"}}]})
+}
+
+/// The name of the first element a `browser_read_elements` call reads (which of a machine's reads it is).
+fn read_name(a: &Value) -> String {
+    get_str(&a["read"][0], "name")
+}
+
 /// The shops the machine fills by fixed ids.
 fn known_shop(url: &str) -> bool {
     let path = url::Url::parse(url)
@@ -3211,8 +3255,17 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             return ids.calls("browser_navigate", json!({"url": url}));
         };
         // Stride's product page by its fixed parts: the item in the <title> ("<item> — Stride Sports Singapore"),
-        // the amount on the "total S$…" line of its checkout
-        let page = snapshot_text(msg);
+        // the price by its element (`.price`)
+        let nav_pos = pos(t, msg);
+        let Some((_, read)) = calls_of(t, "browser_read_elements")
+            .into_iter()
+            .find(|(a, m)| read_name(a) == "price" && pos(t, m) > nav_pos)
+        else {
+            return ids.calls(
+                "browser_read_elements",
+                json!({"read": [{"name": "price", "sel": "main .price"}]}),
+            );
+        };
         let title = get_str(&json_of(msg), "title")
             .split(" — ")
             .next()
@@ -3220,11 +3273,9 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             .filter(|t| !t.is_empty())
             .map(String::from)
             .unwrap_or_else(|| "the item".into());
-        static TOTAL: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(?i)\btotal\s+S\$\s*([\d,]+(?:\.\d+)?)").unwrap());
-        let price = TOTAL
-            .captures(&page)
-            .and_then(|c| c[1].replace(',', "").parse::<f64>().ok());
+        let price = super::confirm::element_values(read, "price")
+            .first()
+            .and_then(|p| crate::listings::amount(p));
         if !sr.buy() {
             let price_text = price.map(|p| format!("S${}", money(p))).unwrap_or_default();
             return Step::Done(json!({"status": "shown", "shop": "Stride Sports",
@@ -3243,17 +3294,30 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
         };
         return book_with(spec, t, m, ids, &item, &sr.contact, &sr.card, "");
     }
-    // Kaya Mobile: the results page read whole, the listings ranked by code
+    // Kaya Mobile: the results page's listing cards read by their elements, the listings ranked by code
     let origin = origin_of(&url);
-    let Some((_, read)) = calls_of(t, "browser_read").into_iter().rfind(|(a, _)| {
-        a["urls"]
-            .as_array()
-            .is_some_and(|u| u.iter().any(|x| x.as_str() == Some(url.as_str())))
-    }) else {
-        return ids.calls("browser_read", json!({"urls": [url]}));
+    let Some((_, opened)) = calls_of(t, "browser_navigate")
+        .into_iter()
+        .find(|(a, _)| sget(a, "url") == url)
+    else {
+        return ids.calls("browser_navigate", json!({"url": url}));
     };
-    let page = pages_text(read);
-    let listings = crate::listings::parse(&page);
+    let opened_pos = pos(t, opened);
+    let Some((_, read)) = calls_of(t, "browser_read_elements")
+        .into_iter()
+        .find(|(a, m)| read_name(a) == KAYA_LISTINGS && pos(t, m) > opened_pos)
+    else {
+        return ids.calls("browser_read_elements", kaya_listings_args());
+    };
+    let mut listings: Vec<crate::listings::Listing> = Vec::new();
+    for l in super::confirm::element_fields(read, KAYA_LISTINGS)
+        .iter()
+        .filter_map(crate::listings::Listing::from_fields)
+    {
+        if !listings.iter().any(|x| x.title == l.title) {
+            listings.push(l);
+        }
+    }
     let ranked = sr.ranking.apply(&listings);
     // the listing the user chose: its title exactly as the choice card listed it (any case)
     let chosen = listings
@@ -3265,7 +3329,10 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     let shown = calls_of(t, "present_choices")
         .iter()
         .any(|(_, msg)| pos(t, msg) > read_pos);
-    let listing_json = |l: &crate::listings::Listing| json!({"label": l.title, "price": l.price, "price_text": l.price_text, "rating": l.rating_text, "url": url});
+    let listing_json = |l: &crate::listings::Listing| {
+        json!({"label": l.title, "price": l.price, "price_text": l.price_text, "rating": l.rating_text,
+        "url": if l.url.is_empty() { url.clone() } else { l.url.clone() }})
+    };
     let Some(top) = chosen.clone().or_else(|| ranked.first().cloned()) else {
         return Step::Done(
             json!({"status": "nothing_found", "shop": "Kaya Mobile", "compared": listings.len(),
@@ -3316,8 +3383,21 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     else {
         return ids.calls("browser_navigate", json!({"url": cart_url}));
     };
-    let cart_pos = pos(t, cart_msg);
-    let in_cart = snapshot_text(cart_msg).contains(&top.title);
+    let cart_opened = pos(t, cart_msg);
+    let Some((_, cart_read)) = calls_of(t, "browser_read_elements")
+        .into_iter()
+        .find(|(a, m)| read_name(a) == "cart_items" && pos(t, m) > cart_opened)
+    else {
+        return ids.calls(
+            "browser_read_elements",
+            json!({"read": [{"name": "cart_items", "sel": "#items .row span"}]}),
+        );
+    };
+    let cart_pos = pos(t, cart_read);
+    // each cart line's item element: "<title> — Colour: <colour>"
+    let in_cart = super::confirm::element_values(cart_read, "cart_items")
+        .iter()
+        .any(|line| line.split(" — Colour:").next().map(str::trim) == Some(top.title.as_str()));
     let mut colour = String::new();
     if !in_cart {
         // the product from the results page, by its title (a fixed selector for Kaya's product links)
@@ -3356,25 +3436,25 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
                 json!({"form": "kaya-item", "fills": fills}),
             );
         };
-        // the cart count, verified on the page
+        // the cart count (the header's cart link) and the colour chosen, by their elements, verified on the page
         let added_pos = pos(t, added);
-        let Some((_, snap)) = calls_of(t, "browser_snapshot")
+        let Some((_, after)) = calls_of(t, "browser_read_elements")
             .into_iter()
-            .find(|(_, msg)| pos(t, msg) > added_pos)
+            .find(|(a, msg)| read_name(a) == "cart_count" && pos(t, msg) > added_pos)
         else {
-            return ids.calls("browser_snapshot", json!({"max_chars": 4000}));
+            return ids.calls(
+                "browser_read_elements",
+                json!({"read": [{"name": "cart_count", "sel": "#cart"},
+                                {"name": "colour", "sel": "#colour option:checked", "hidden": true}]}),
+            );
         };
-        let page = snapshot_text(snap);
-        static COUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Cart \((\d+)\)").unwrap());
-        static ADDED: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"Added to Cart: .*\(([^)]+)\)").unwrap());
-        let count: u32 = COUNT
-            .captures(&page)
-            .and_then(|c| c[1].parse().ok())
-            .unwrap_or(0);
-        colour = ADDED
-            .captures(&page)
-            .map(|c| c[1].to_string())
+        let count: u32 = super::confirm::element_values(after, "cart_count")
+            .first()
+            .and_then(|c| crate::listings::amount(c))
+            .map_or(0, |c| c as u32);
+        colour = super::confirm::element_values(after, "colour")
+            .into_iter()
+            .next()
             .unwrap_or_default();
         if count == 0 {
             return Step::Done(

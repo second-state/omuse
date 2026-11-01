@@ -91,7 +91,16 @@ every `EXTRACT_SYSTEM`, `extract_exchange` and code-written answer text.
 | `train_times` (line, date, after) | `agent/trains.rs` | the model's web searches for a timetable (JR East's Narita Express page read by code, weekday / holiday table from a fixed calendar) |
 
 Mail text is natural language too: a reference or a date inside a mail is read by the model (it passes them as tool
-arguments), not by code. Structured mail data (an API's fields) is code's.
+arguments), not by code. Structured mail data (an API's fields) is code's. `gmail_find_receipts` and
+`gmail_read_amounts` hand the model each mail's text cut plainly to its share of one size budget
+(`actions::mail_text`, `receipt_text_share`; `truncated` when more was not shown) — code no longer picks the lines
+with amounts; the model reads the amounts and passes them as JSON (`calculate`, a report's rows).
+
+The reply language follows Settings → Language; with Reply language = "match" the model reads the request's
+language as a JSON choice (`Runtime::request_lang`: a `decide` over `en | zh | other`, "other" leaves the setting), and
+the chat title call answers `{"title", "lang"}` (`prompts::parse_title`, `lang` checked against `en | zh`). Code counts
+no characters to decide a language; the character classes left in code only strip code's own bilingual strings
+(`prompts::en_only`, `drop_cjk`, `system_text_en`) or report a written file's length (`files_write`).
 
 ## Reading pages
 
@@ -112,6 +121,33 @@ reference is read this way — `ref_sel` (the element) and `ref_re` (the format,
 without it is `not_confirmed`, never a generic fallback. The FWD quote's plans are its table's cells (`#plans tr`). The
 outcome check and the ledger take the reference from structured JSON only (`confirm::confirmed`: a machine's result →
 `known_page`, `confirm_reference` → `model_read`; the source is kept in the evidence).
+
+Each read is `{name, sel}` plus one of: `attr` (an attribute; `href` absolute), `cells` (a row's cells and links),
+`fields` (an object per match: `{field: "sub-selector" | {sel?, attr?, closest?}}` — `closest` goes up to an ancestor
+first), and `hidden` (hidden matches too), `max` (40, at most 200). An input's ref for `browser_upload` /
+`browser_fill_secret` is its `data-persona-ref` attribute, read by the input's fixed id after a snapshot gave the page's
+elements their refs (`confirm::refs_args`) — never a label searched in the snapshot's text. The known pages read this
+way:
+
+- Kaya Mobile's results (`.grid .card`: `h2 a` name and link, `.rating`, `.price` → `listings::Listing::from_fields`),
+  its cart lines (`#items .row span`) and, after Add to Cart, the header's count (`#cart`) and the colour chosen
+  (`#colour option:checked`); Stride's price (`main .price`).
+- JR East's station timetable (`table.result_03 tr[id^='time_'] div.timetable_time`: `.train`, `.minute`,
+  `data-misc` ◆, the row's hour cell) for `train_times`.
+- WorldTracer's result (`#out tr` cells: Status, Last update, Flight; `#out p` for "No file found").
+- APDT: the error boxes (`.err`), the saved reference (`#refShown`), the upload boxes (`#file_doc`, `#file_inboard`,
+  `#file_outboard`, `#file_paydoc`) and card fields (`#card_number`, `#card_valid`, `#card_holder`) by their refs.
+- The card fields of the known booking pages (`booking::SITES.card`), FWD Singapore's application (`claims::CARD_FIELDS`)
+  and claim upload (`#docs`), FWD Hong Kong's claim-form link.
+- News: the engines' rows carry `date` (DuckDuckGo's timestamp) and `source` (Bing News' author); `browser_read`'s page
+  has `lead` (the first paragraph under `<article>` / main), `site_name` (`og:site_name`) and `published`
+  (`article:published_time` / `<time datetime>`).
+
+On an unknown shop the listings are the model's JSON: `present_choices` options with `price`, `price_text`, `stars`
+and `ratings` (up to 40 with `ranking`); code ranks them (`listings::Listing::from_option`) and verifies their texts
+against the pages read. Which button adds a product to the cart on an unknown shop is a `decide` over the snapshot's
+buttons by ref (`judgements::snapshot_buttons`). Providers' terms are their flags: `free_cancellation`, `prepaid`, a
+Michelin restaurant's `stars` / `bib_gourmand` / `closed_days` (the texts are shown, not searched).
 3. **Regex** — only to check a value that is already structured (an ISO date, a reference's format), never to find
    data in a page's text.
 
@@ -280,8 +316,18 @@ a card fill before a confirmed purchase is refused, never confirmed in code from
   selector).
 - **The ledger's return vs. cancel** (`routes::act::RETURN_RX`) over the label of the order-change button the user
   approved: a status name in the ledger, no decision.
-- **Mail money lines** (`actions::money_lines`): lines with an amount kept from a mail body to keep 100 receipts in one
-  result; the model reads them and decides, code totals nothing.
+- **Allowed text handling** (kept as decided 2026-11-02; none of it picks a step from what the user or a page says):
+  - the injection scan and the risky-element checks above (`scan_injection`; the click checks on an element's own
+    label);
+  - memory's secrets backstop (`store::looks_sensitive`, used by `memory_tidy`): card / ID-shaped numbers and
+    passwords are kept out of memory (they belong in the Vault) even when the model files them as facts;
+  - the exact domain-named-in-request check for uploads and egress (`guard::named_in_request`, above);
+  - full-text search over the words the model itself passes to `memory_search` (`store::fts_query`, an FTS5 trigram
+    index): retrieval over the model's own query terms, not a reading of the user's words;
+  - URL and id repair over the model's text (`links.rs`, `ids.rs`): a link or an id the model copied wrong is put
+    back to the one it was shown;
+  - provider error strings in `llm.rs` (context too long, unknown model, streaming not supported …): a provider's
+    machine messages, read to choose a retry or a fallback.
 - **Watcher prices** (`watchers::price_hits`): a `price_below` watch runs unattended with no model; it compares the
   currency amounts after the user's keyword to the user's threshold and only notifies.
 - **The Vault ID document by label** (`actions::fill_form`): when several ID documents are allowed on a known form's

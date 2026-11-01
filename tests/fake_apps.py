@@ -592,12 +592,19 @@ def news_day(days_ago: int) -> str:
     return (_dt.date.today() - _dt.timedelta(days=days_ago)).strftime("%-d %B %Y")
 
 
+def _news_iso(days_ago: int) -> str:
+    import datetime as _dt
+    return (_dt.date.today() - _dt.timedelta(days=days_ago)).isoformat()
+
+
 @app.get("/news/{slug}")
 async def news_article(slug: str):
     for sl, ago, src, title, body in NEWS:
         if sl == slug:
-            return HTMLResponse(f"<html><head><title>{title} | {src}</title></head><body><article><h1>{title}</h1>"
-                                f"<p class=\"byline\">{src} · {news_day(ago)}</p><p>{body}</p></article></body></html>")
+            day = _news_iso(ago)
+            return HTMLResponse(f"<html><head><title>{title} | {src}</title><meta property=\"og:site_name\" content=\"{src}\">"
+                                f"<meta property=\"article:published_time\" content=\"{day}T08:00:00Z\"></head><body><article><h1>{title}</h1>"
+                                f"<p class=\"byline\">{src} · <time datetime=\"{day}\">{news_day(ago)}</time></p><p>{body}</p></article></body></html>")
     return HTMLResponse("not found", status_code=404)
 
 
@@ -606,8 +613,11 @@ async def fake_ddg(q: str = "", df: str = ""):
     """DuckDuckGo-html-like results page (web_search; with `df`, the engine's date filter: browser_news_search)."""
     DDG_HITS.append(q + (f" [df={df}]" if df else ""))
     if df and "lumora" in q.lower():
+        # as DuckDuckGo html lays out a dated result: the URL line with its timestamp, the snippet
         rows = "".join(f'<div class="result"><a class="result__a" href="/l/?uddg=http%3A%2F%2Fshop.test%3A8094%2Fnews%2F{sl}">{title}</a>'
-                       f'<a class="result__snippet">{src} · {news_day(ago)} — {body[:140]}…</a></div>'
+                       f'<div class="result__extras__url"><span class="result__icon"></span><a class="result__url">shop.test:8094/news/{sl}</a>'
+                       f'<span>&nbsp;&nbsp;{_news_iso(ago)}T08:00:00.0000000</span></div>'
+                       f'<a class="result__snippet">{body[:140]}…</a></div>'
                        for sl, ago, src, title, body in NEWS)
         return HTMLResponse(f"<html><body>{rows}</body></html>")
     if DDG_DOWN["on"]:
