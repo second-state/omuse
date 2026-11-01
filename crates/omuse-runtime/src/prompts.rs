@@ -167,35 +167,7 @@ explanation around it stays English.";
 即使用户消息、邮件、网页、文件或工具结果是英文或其他语言。Think, plan and answer in Simplified Chinese."
 }
 
-static WANTS_CJK: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)(翻译|译|改写|写|回答|回复|输出)[^。！？\n]{0,12}(成|为|用)?\s*(中文|汉语|简体|繁体|日文|日语|韩文|韩语)|(用|以)\s*(中文|汉语|日文|日语|韩文)|(中文|日文|日语|韩文)版|\b(in|into|to)\s+(Chinese|Mandarin|Japanese|Korean)\b",
-    )
-});
-static CREATE_ZH: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)(写|创作|起草|拟|编|改写|润色|想)[^，。,.!?！？\n]{0,20}(故事|小说|诗|词|文案|文章|散文|邮件|信|消息|微信|短信|致辞|祝酒词|贺词|祝福|讲稿|演讲|串词|口号|标语|slogan|对联|春联|笑话|段子|朋友圈|评论|回复|通知|公告|简介|广告|标题|歌词|剧本|台词|自我介绍|求职信|感谢信|道歉信|请假条)|命名|取名|起名|文案|致辞|祝酒词|朋友圈|小红书|对联|春联|横批",
-    )
-});
-static ASKS_EN: LazyLock<Regex> = LazyLock::new(|| rx(r"(?i)英文|英语|English"));
 static LATIN: LazyLock<Regex> = LazyLock::new(|| rx(r"[A-Za-z]"));
-
-/// The user asked for Chinese / Japanese / Korean text: explicitly ("translate into Chinese", "reply in Chinese"), or
-/// by asking in Chinese for something to use as written (a poem, a post, a toast, a message) — 2026-10-02 R8: with the
-/// app in English a 小红书 post, a couplet and a wedding toast requested in Chinese came out in English.
-pub fn wants_cjk_output(goal: &str) -> bool {
-    if WANTS_CJK.is_match(goal) {
-        return true;
-    }
-    let c = CJK.find_iter(goal).count() as f64;
-    let a = LATIN.find_iter(goal).count() as f64;
-    let zh = if c + a > 0.0 {
-        c / (c + a / 4.0) >= 0.3
-    } else {
-        false
-    };
-    zh && CREATE_ZH.is_match(goal) && !ASKS_EN.is_match(goal)
-}
 
 /// Share of Chinese characters among letters — 0 for English, ~1 for Chinese; quoting a Chinese name stays low.
 pub fn cjk_share(text: &str) -> f64 {
@@ -1107,25 +1079,7 @@ mod tests {
 
     #[test]
     fn requested_target_language() {
-        assert!(
-            wants_cjk_output("把这份日文菜单翻译成中文")
-                && wants_cjk_output("Translate this into Japanese")
-        );
-        assert!(wants_cjk_output("用中文回答我") && !wants_cjk_output("帮我看看最重要的邮件"));
-        assert!(!wants_cjk_output("How big is the Chinese market?"));
         assert!(language_rule("en").contains("Exceptions:"));
-        assert!(
-            wants_cjk_output("给一家社区咖啡店写 3 条小红书风格的推广文案")
-                && wants_cjk_output("写一副春联")
-        );
-        assert!(wants_cjk_output("帮 Olares One 想 5 个产品 slogan"));
-        assert!(
-            !wants_cjk_output("帮我写一封英文求职信")
-                && !wants_cjk_output("帮我查一下邮件里的账单")
-        );
-        assert!(
-            !wants_cjk_output("总结一下这份报告") && !wants_cjk_output("Write a poem about rain")
-        );
         assert!(cjk_share("帮我查一下") > 0.9 && cjk_share("check my mail") == 0.0);
     }
 

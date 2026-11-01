@@ -132,16 +132,6 @@ pub static ID_DOC: LazyLock<Regex> = LazyLock::new(|| {
         r"(?i)护照|身份证|出生日期|生日|签发|有效期至|证件号|\b(passport|date of birth|DOB|born on|national id|NRIC|FIN|id (card|number)|identity card|expir(y|es|ation))\b",
     )
 });
-static NEEDS_ID: LazyLock<Regex> = LazyLock::new(|| {
-    rx(
-        r"(?i)填写|填表|表格|表单|申请|值机|登机|旅客信息|乘客信息|入住登记|护照.{0,6}(到期|过期|有效|续)|证件|\b(form|apply|application|check-?in|passenger (details|info)|traveller details|renew)\b",
-    )
-});
-
-/// Does the request need identity documents filled in (a form, a check-in, a renewal)?
-pub fn needs_id(request: &str) -> bool {
-    NEEDS_ID.is_match(request)
-}
 
 static TRIGGER: LazyLock<Regex> =
     LazyLock::new(|| rx(r#"(?:说|says?|ask(?:s)? for)\s*[「“"']([^」”"']{2,20})[」”"']"#));
@@ -203,7 +193,8 @@ pub fn select(
     }
     let groups = named(&whole, entities);
     let rtoks = tokens(req);
-    let want_id = needs_id(req);
+    // passport / ID facts never enter by the request's wording: the model asks for them (memory_search id_documents)
+    let want_id = false;
     let mut scored: Vec<Value> = Vec::new();
     for f in facts {
         let fact = get_str(f, "fact");
@@ -668,6 +659,5 @@ mod tests {
         let groups = named("在 shop.test 买双袜子，迪卡侬也看看", None);
         assert!(groups.iter().any(|g| g[0] == "decathlon"));
         assert!(groups.iter().any(|g| g[0] == "shop.test"));
-        assert!(needs_id("帮我填表申请签证") && !needs_id("买双鞋"));
     }
 }

@@ -2837,45 +2837,6 @@ async fn a_reply_of_only_tool_markup_is_rescued_and_the_task_completes() {
 }
 
 #[tokio::test]
-async fn a_chinese_answer_in_english_mode_is_translated_with_the_event() {
-    // e2e_028 ZHANSWER: Settings → English, the model answers in Chinese: the reply alone is translated (one call
-    // outside the run's conversation) and `language_fixed` is emitted
-    let (rt, _d, _seen) = scripted_rt(
-        |body| {
-            if let Some(r) = helper_reply(body) {
-                return r;
-            }
-            if system_of(body).starts_with("Translate the user's text") {
-                return json!({"role": "assistant",
-                              "content": "Here is the most important email: the security alert from Google Workspace."});
-            }
-            json!({"role": "assistant", "content": "最重要的邮件是 Google Workspace 发来的可疑登录安全告警，建议尽快检查。"})
-        },
-        json!({"language": "en"}),
-    )
-    .await;
-    let conv = rt.store.create_conv("c", "chat", None).unwrap();
-    let t = rt
-        .store
-        .create_task("ZHANSWER 帮我看看最重要的邮件", &conv, "chat", "", "", None)
-        .unwrap();
-    let tid = get_str(&t, "id");
-    rt.run(&tid).await.unwrap();
-    let t = rt.store.task(&tid).unwrap().unwrap();
-    assert!(
-        get_str(&t, "result").starts_with("Here is the most important email"),
-        "{}",
-        get_str(&t, "result")
-    );
-    assert!(rt
-        .store
-        .events(&tid, 0)
-        .unwrap()
-        .iter()
-        .any(|e| get_str(e, "type") == "language_fixed"));
-}
-
-#[tokio::test]
 async fn main_hands_another_bots_skill_to_that_bot_in_code() {
     // bots_e2e BOTSKILL: in Main, load_skill of the Travel bot's skill is not a refusal the model must act on — code
     // hands the user's request to the bot that owns the skill (ask_bot), and the task waits for that bot
@@ -3312,26 +3273,6 @@ fn every_skill_that_fills_a_known_form_is_driven_by_code() {
         missing.is_empty(),
         "skills that fill a known form without a code machine: {missing:?}"
     );
-}
-
-#[test]
-fn the_pages_a_request_lists_are_read_by_code_at_once() {
-    let ask = "Compare these five hotels — price per night and rating, from their own websites:\n- http://shop.test:8115/harbourview\n- http://shop.test:8115/quayside\n- http://shop.test:8115/marinapearl.\n- http://shop.test:8115/quayside";
-    let c = super::guards::pages_read_call(ask).expect("a read");
-    assert_eq!(c.name, "browser_read");
-    assert_eq!(
-        c.args["urls"],
-        json!([
-            "http://shop.test:8115/harbourview",
-            "http://shop.test:8115/quayside",
-            "http://shop.test:8115/marinapearl"
-        ])
-    );
-    assert!(super::guards::code_call(&c));
-    assert!(super::guards::pages_read_call(
-        "Order the socks from http://shop.test:8099/stride_socks.html"
-    )
-    .is_none());
 }
 
 // ---------------------------------------------------------------- the workflow-tool protocol (agent/workflow.rs)

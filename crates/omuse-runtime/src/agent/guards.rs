@@ -292,7 +292,6 @@ pub fn code_call(call: &ToolCall) -> bool {
         "nws_",
         "auto_handover_",
         "news_",
-        "pages_read",
         "handback_snapshot_",
     ]
     .iter()
@@ -715,28 +714,6 @@ pub fn news_research_run(transcript: &[Value]) -> bool {
     transcript.iter().flat_map(tool_calls).any(|tc| {
         let (name, args) = stored_call(tc);
         name == "load_skill" && sget(&args, "name") == "news-research"
-    })
-}
-
-/// The pages a request lists (two or more web addresses, at most eight): one `browser_read` of them all, a call code
-/// makes before the model's first step, so the sites are read side by side, whatever the model would have chosen.
-pub fn pages_read_call(goal: &str) -> Option<ToolCall> {
-    static URL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>)\]]+"#).unwrap());
-    let mut urls: Vec<String> = Vec::new();
-    for m in URL.find_iter(goal) {
-        let u = m
-            .as_str()
-            .trim_end_matches(['.', ',', ';', ':'])
-            .to_string();
-        if !urls.contains(&u) {
-            urls.push(u);
-        }
-    }
-    (2..=8).contains(&urls.len()).then(|| ToolCall {
-        id: "pages_read".into(),
-        name: "browser_read".into(),
-        args: json!({"urls": urls}),
     })
 }
 

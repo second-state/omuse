@@ -1214,15 +1214,9 @@ impl Runtime {
             .unwrap_or_else(|| json!({}));
         let s0 = self.settings();
         let goal = sget(&t0, "goal");
-        let (mut tl, mut fl) = (String::new(), String::new());
+        let (mut tl, fl) = (String::new(), String::new());
         if get_str(&s0, "reply_language") == "match" {
             tl = request_lang(&goal).to_string(); // this task only (and what it spawns)
-        } else if get_str(&s0, "language") == "en"
-            && request_lang(&goal) == "zh"
-            && prompts::wants_cjk_output(&goal)
-        {
-            // 2026-10-02 R8/R10: a note in the English prompt wasn't enough — "写一篇 5000 字的科幻小说" still came out in English
-            fl = "zh".into();
         }
         let res = with_langs(tl, fl, self.run(&task_id)).await;
         if let Err(e) = res {
@@ -2344,12 +2338,6 @@ call notify_user only if something the user cares about happened.",
             );
         }
         extra += &super::bots::bot_prompt(bot, lg0 == "en");
-        if lg0 == "en" && prompts::wants_cjk_output(&goal_text) {
-            // 2026-10-02 R8: the app is in English but this request asks for text to use in Chinese (a post, a story …)
-            extra += "\n## Output language for this request\nThe user asked, in Chinese, for text they will use as written: write \
-that text (the post, story, poem, message, translation …) in Chinese — or in the language they name. \
-Your own notes and the short explanation around it stay in English.";
-        }
         // the main bot: the planner picks the bot before the first turn (agent/bots.rs, `route`)
         let routing = bot.is_main()
             && transcript.is_empty()
@@ -2357,11 +2345,7 @@ Your own notes and the short explanation around it stay in English.";
             && get_str(&t, "source") == "chat"
             && goal.is_none();
         let route_history = if routing { history.clone() } else { Vec::new() };
-        let mut pages_read: Option<ToolCall> = None;
         if transcript.is_empty() {
-            // the pages the user listed are read by code, all at once (chat_real 2026-11-01: five hotel sites read
-            // one by one, a delegate and a second read the model chose)
-            pages_read = super::guards::pages_read_call(&goal_text);
             let mut first = goal_text.clone();
             if !arr(&t, "attachments").is_empty() {
                 first += &self.attachment_context(&t).await;
@@ -2411,24 +2395,6 @@ yourself; ask_bot is not available for it."
             }
         }
 
-        if let Some(tc) = pages_read.take().filter(|_| !bot.is_main() || routed_main) {
-            transcript.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": tc.id, "type": "function",
-                "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
-            if let Err(sp) = self
-                .exec_call(
-                    &t,
-                    &tc,
-                    &mut transcript,
-                    &catalog,
-                    &[],
-                    None,
-                    CallMode::MAIN,
-                )
-                .await
-            {
-                return self.suspend(task_id, sp, transcript).await;
-            }
-        }
         // ---------------------------------------------------------- resume after approval / takeover
         let pend = t.get("pending").cloned().unwrap_or(Value::Null);
         if pend.get("calls").is_some_and(truthy) {
@@ -3209,12 +3175,6 @@ yourself; ask_bot is not available for it."
             final_ = super::guards::with_masked_cards(&final_);
             // the answer's links, repaired against the links the run's results showed (crate::links)
             final_ = crate::links::repair_answer(&final_, &crate::links::seen(&transcript));
-            if lg == "en"
-                && prompts::cjk_share(&final_) > 0.5
-                && !prompts::wants_cjk_output(&goal_text)
-            {
-                final_ = self.rewrite_in_english(task_id, &transcript, &final_).await;
-            }
             let texts = self.inner.lock().tool_texts.get(task_id).cloned();
             let oc = crate::outcome::assess(
                 &self.store.events(task_id, 0)?,
@@ -3401,33 +3361,6 @@ yourself; ask_bot is not available for it."
             }
             return Ok(());
         }
-    }
-
-    /// English mode but the model answered in Chinese (e.g. memory says the user likes Chinese): ask once for English.
-    async fn rewrite_in_english(
-        &self,
-        task_id: &str,
-        transcript: &[Value],
-        final_: &str,
-    ) -> String {
-        // a translation of the reply, outside the run's conversation: the reply is its only input and its only
-        // output (no message to the agent, nothing decided)
-        let _ = transcript;
-        let msgs = [
-            json!({"role": "system", "content": "Translate the user's text into English. Keep its structure, markdown, \
-links, numbers, names, email subjects and quotes exactly; output only the translation."}),
-            user_msg(final_.to_string()),
-        ];
-        let Ok(r) = self.llm.chat(&msgs, None, &opts("executor", task_id)).await else {
-            return final_.to_string();
-        };
-        let text = r.content.trim().to_string();
-        if !text.is_empty() && prompts::cjk_share(&text) < prompts::cjk_share(final_) {
-            self.event(task_id, "language_fixed", json!({"from": "zh", "to": "en"}))
-                .await;
-            return text;
-        }
-        final_.to_string()
     }
 
     /// A reply cut by the token limit (`finish_reason: length`): the same request once more, without tools and with
