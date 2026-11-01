@@ -56,13 +56,19 @@ K.check("with the key the connection view says flights come from Google Flights 
 t = K.run(f"TRAVELSEARCH cheapest flight Singapore to Tokyo on {DATE} and a 4-star hotel near Ginza for 3 nights DATE={DATE}")
 K.trace(t)
 names = K.names(t)
-K.check("the first answer has the flights and offers the hotel search next", t["status"] == "COMPLETED" and "SQ 638" in (t.get("result") or "")
-        and "Shall I search the hotel" in (t.get("result") or ""), (t["status"], t.get("error"), (t.get("result") or "")[:300]))
-K.check("skill, the flight search, its booking options — one travel search, no browser", names == ["load_skill", "flights_search", "flight_offer"], names)
+K.check("the first answer has the flights, the pick's sellers and offers the hotel search next", t["status"] == "COMPLETED" and "SQ 638" in (t.get("result") or "")
+        and "Sold by: Singapore Airlines" in (t.get("result") or "") and "Book it at https://www.google.com/travel/flights/booking?" in (t.get("result") or "")
+        and "Shall I search the hotel near Ginza now?" in (t.get("result") or ""), (t["status"], t.get("error"), (t.get("result") or "")[:600]))
+fo = [x["args"] for x in K.calls(t) if x.get("name") == "flight_offer"]
+fs = [x["args"] for x in K.calls(t) if x.get("name") == "flights_search"]
+K.check("skill, the flight search, the choice card, the pick's booking options (its offer id, SGD) — one travel search, no browser",
+        [x for x in names if x != "load_skill"] == ["flights_search", "present_choices", "flight_offer"] and fo and fo[0].get("offer_id", "").startswith("fl_")
+        and fo[0].get("currency") == "SGD" and fs[0].get("sort") == "price" and fs[0].get("currency") == "SGD", (names, fs, fo))
 th = K.run(f"TRAVELHOTEL yes, the hotel please DATE={DATE}", conv=t["_conv"])
 K.trace(th)
-K.check("the next message searches the hotel: hotels, its rooms", th["status"] == "COMPLETED" and K.names(th) == ["hotels_search", "hotel_rooms"]
-        and "Hotel Ginza Grand" in (th.get("result") or ""), (K.names(th), (th.get("result") or "")[:200]))
+K.check("the next message searches the hotel: hotels, the choice card, the pick's rooms — and the answer gives the room",
+        th["status"] == "COMPLETED" and K.names(th) == ["hotels_search", "present_choices", "hotel_rooms"]
+        and "Hotel Ginza Grand" in (th.get("result") or "") and "Room at " in (th.get("result") or ""), (K.names(th), (th.get("result") or "")[:400]))
 log = c.get(FAKE + "/serpapi/_log").json()
 fl = [q for q in log if q.get("engine") == "google_flights" and not q.get("booking_token")]
 K.check("flights: one Google Flights search, city names resolved to IATA codes, one way, sorted by price, in SGD",
@@ -71,8 +77,9 @@ K.check("flights: one Google Flights search, city names resolved to IATA codes, 
 bo = [q for q in log if q.get("booking_token")]
 K.check("the booking options were fetched with the offer's token", len(bo) == 1 and bo[0]["booking_token"].startswith("WlRCdz"), bo)
 ht = [q for q in log if q.get("engine") == "google_hotels" and not q.get("property_token")]
-K.check("hotels: one Google Hotels search near Ginza, the dates, 2 guests, 4 and 5 stars",
-        len(ht) == 1 and ht[0]["q"] == "hotels near Ginza Tokyo" and ht[0]["check_in_date"] == DATE and ht[0]["adults"] == "2" and ht[0]["hotel_class"] == "4,5", ht)
+K.check("hotels: one Google Hotels search near Ginza, the dates (3 nights), 1 guest (none named), 4 and 5 stars",
+        len(ht) == 1 and ht[0]["q"] == "hotels near Ginza Tokyo" and ht[0]["check_in_date"] == DATE and ht[0].get("check_out_date") == (dt.date.fromisoformat(DATE) + dt.timedelta(days=3)).isoformat()
+        and ht[0]["adults"] == "1" and ht[0]["hotel_class"] == "4,5", ht)
 pt = [q for q in log if q.get("property_token")]
 K.check("the hotel's rates were fetched with its property token", len(pt) == 1 and pt[0]["property_token"].startswith("ChkI"), pt)
 res = {r["name"]: r for r in K.results(t, "flights_search")}
@@ -202,7 +209,10 @@ c.post(FAKE + "/kiwi-mcp/_down", json={"on": True})
 r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-both", "call_id": "c-both", "tool": "flights_search",
                                                    "args": {"origin": "ERR", "destination": "NRT", "date": DATE, "currency": "SGD"}}).json()
 c.post(FAKE + "/kiwi-mcp/_down", json={"on": False})
-K.check("Google Flights and Kiwi.com both failing: the search fails and names both", r.get("status") != "ok" and "Google Flights failed" in str(r) and "Kiwi.com failed" in str(r), str(r)[:400])
+w = r.get("result") or {}
+K.check("Google Flights and Kiwi.com both failing: the web search (its own chain) answers for the same trip and names both failures",
+        r.get("status") == "ok" and "web search" in str(w.get("source", "")) and "Google Flights failed" in str(w.get("flights_fallback"))
+        and "Kiwi.com failed" in str(w.get("flights_fallback")) and w.get("results"), str(r)[:400])
 w0 = len(c.get(FAKE + "/serpapi/_log").json())
 r = c.post(B + "/internal/act", headers=RT, json={"task_id": "ts-hnone", "call_id": "c-hnone", "tool": "hotels_search",
                                                    "args": {"city": "Atlantis", "check_in": DATE, "check_out": OUT}}).json()

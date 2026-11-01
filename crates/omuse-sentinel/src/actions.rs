@@ -2337,6 +2337,20 @@ pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str)
                     .flights(args)
                     .await
             };
+            // the flight APIs failing, the web search (its own fallback chain) for the same trip, as hotels_search
+            let web = |failed: Vec<String>| async move {
+                let query = format!(
+                    "flights {} to {} {} price",
+                    fstr(args, "origin"),
+                    fstr(args, "destination"),
+                    fstr(args, "date")
+                );
+                let mut web = web_fallback(st, task_id, &query, &failed, "flights").await?;
+                if let Some(u) = omuse_apps::kayak::flights_url(&st.cfg.endpoints.kayak, args, &fstr(args, "date")) {
+                    set(&mut web, "compare_url", json!(u));
+                }
+                Ok::<Value, ExecError>(web)
+            };
             let (src, mut d) = if google_first {
                 match travel_client(st)?.flights(args).await {
                     Ok(g) => ("Google Flights", g),
@@ -2345,13 +2359,18 @@ pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str)
                             k["fallback"] = json!(format!("Google Flights failed ({g}); these are Kiwi.com results"));
                             ("Kiwi.com flights (Google Flights failed)", k)
                         }
-                        Err(e) => return Err(act(format!("Google Flights failed ({g}); Kiwi.com failed ({e})"))),
+                        Err(e) => {
+                            return web(vec![format!("Google Flights failed: {g}"), format!("Kiwi.com failed: {e}")]).await
+                        }
                     },
                 }
             } else {
                 match kiwi().await {
                     Ok(k) => ("Kiwi.com flights", k),
-                    Err(e) => return Err(act(format!("Kiwi.com failed ({e}); try again later"))),
+                    Err(e) => {
+                        let why = if keyed { "a date range or self-transfer (Kiwi.com only)" } else { "no SerpApi key for Google Flights" };
+                        return web(vec![why.to_string(), format!("Kiwi.com failed: {e}")]).await;
+                    }
                 }
             };
             if d["count"].as_u64().unwrap_or(0) == 0 {

@@ -2119,7 +2119,11 @@ Your own notes and the short explanation around it stay in English.";
             && goal.is_none();
         let route_history = if routing { history.clone() } else { Vec::new() };
         let mut followup_mail: Option<ToolCall> = None;
+        let mut pages_read: Option<ToolCall> = None;
         if transcript.is_empty() {
+            // the pages the user listed are read by code, all at once (chat_real 2026-11-01: five hotel sites read
+            // one by one, a delegate and a second read the model chose)
+            pages_read = super::guards::pages_read_call(&goal_text);
             let mut first = goal_text.clone();
             // "email it" right after a news report: code sends the chat's latest edition (the call below, once the
             // transcript is in place); the model only writes the answer
@@ -2179,6 +2183,24 @@ yourself; ask_bot is not available for it."
         if let Some(tc) = followup_mail.take() {
             self.event(task_id, "news_action", json!({"call": tc.name}))
                 .await;
+            transcript.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": tc.id, "type": "function",
+                "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+            if let Err(sp) = self
+                .exec_call(
+                    &t,
+                    &tc,
+                    &mut transcript,
+                    &catalog,
+                    &[],
+                    None,
+                    CallMode::MAIN,
+                )
+                .await
+            {
+                return self.suspend(task_id, sp, transcript).await;
+            }
+        }
+        if let Some(tc) = pages_read.take().filter(|_| !bot.is_main() || routed_main) {
             transcript.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": tc.id, "type": "function",
                 "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
             if let Err(sp) = self
@@ -2435,7 +2457,13 @@ yourself; ask_bot is not available for it."
                 .map(Machine::Card)
                 .or_else(|| super::claims::active(&transcript).map(Machine::Claim))
                 .or_else(|| super::apdt::active(&transcript).map(Machine::Apdt))
-                .or_else(|| super::booking::active(&transcript).map(Machine::Booking));
+                .or_else(|| super::booking::active(&transcript).map(Machine::Booking))
+                .or_else(|| {
+                    (!bot.is_main())
+                        .then(|| super::booking::search_request(&transcript))
+                        .flatten()
+                        .map(Machine::Booking)
+                });
             let driven = match machine {
                 Some(m) if !force_final => {
                     Some(self.drive(task_id, m, &mut transcript, &catalog, lg).await)
@@ -2796,7 +2824,8 @@ yourself; ask_bot is not available for it."
             let driven_run = super::driver::active(&transcript).is_some()
                 || super::claims::active(&transcript).is_some()
                 || super::apdt::active(&transcript).is_some()
-                || super::booking::active(&transcript).is_some();
+                || super::booking::active(&transcript).is_some()
+                || (!bot.is_main() && super::booking::search_request(&transcript).is_some());
             // a news report's delivery is code's: the scheduled edition's mail, or the schedule asked for (once each)
             if !final_.is_empty() && asked.is_none() && !force_final && !timed_out {
                 let own = own_mailbox(&catalog);
@@ -3815,10 +3844,34 @@ pub fn compress_with(
     if total < high {
         return transcript;
     }
+    // the booking machine's own search and data results stay whole: code reads them again at every step
+    // (travel_flight_real 2026-11-01: the search cut short after the card fills read as "found nothing")
+    const MACHINE_DATA: &[&str] = &[
+        "flights_search",
+        "flight_offer",
+        "hotels_search",
+        "hotel_rooms",
+        "places_search",
+        "michelin_search",
+        "restaurant_availability",
+        "browser_read",
+    ];
+    let kept: Vec<String> = transcript
+        .iter()
+        .flat_map(tool_calls)
+        .filter(|tc| get_str(tc, "id").starts_with("bkg_"))
+        .filter(|tc| {
+            let (name, _) = super::util::stored_call(tc);
+            MACHINE_DATA.contains(&name.rsplit("__").next().unwrap_or(&name))
+        })
+        .map(|tc| get_str(tc, "id"))
+        .collect();
     let tool_idx: Vec<usize> = transcript
         .iter()
         .enumerate()
-        .filter(|(_, m)| get_str(m, "role") == "tool")
+        .filter(|(_, m)| {
+            get_str(m, "role") == "tool" && !kept.contains(&get_str(m, "tool_call_id"))
+        })
         .map(|(i, _)| i)
         .collect();
     let shrink = |transcript: &mut Vec<Value>,

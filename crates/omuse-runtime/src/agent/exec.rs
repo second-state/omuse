@@ -78,6 +78,9 @@ pub(crate) fn in_quarantine(p: &Path, trailing_sep: bool) -> bool {
 /// A result too long for the model's limit with its short top-level fields first: links, notes and ids (a fallback's
 /// `compare_url`, `hotels_fallback`) then survive the cut, which takes the bulky results and page text instead
 /// (travel_brave_real 2026-10-31: the Kayak compare link came last and was cut).
+/// The result limit of a booking machine's own calls (it parses the whole search result).
+pub(crate) const CODE_RESULT_LIMIT: usize = 40_000;
+
 pub(crate) fn short_fields_first(body: &Value, limit: usize) -> Value {
     let Some(m) = body.as_object() else {
         return body.clone();
@@ -149,10 +152,16 @@ impl Runtime {
 
     /// The text the model gets for a Sentinel action result.
     pub fn format_external(&self, name: &str, res: &Value) -> String {
+        self.format_external_within(name, res, RESULT_LIMIT)
+    }
+
+    /// [`Self::format_external`] with the result cut at `result_limit` chars: a booking machine's search reads the
+    /// whole result (a JSON cut short reads as no offers), so its calls get [`CODE_RESULT_LIMIT`].
+    pub fn format_external_within(&self, name: &str, res: &Value, result_limit: usize) -> String {
         match res.get("status").and_then(Value::as_str) {
             Some("ok") => {
                 let body = res.get("result").cloned().unwrap_or(Value::Null);
-                let txt = pyjson::dumps(&short_fields_first(&body, RESULT_LIMIT));
+                let txt = pyjson::dumps(&short_fields_first(&body, result_limit));
                 let untrusted = body.is_object()
                     && (get_str(&body, "trust") == "untrusted" || body.get("messages").is_some());
                 if untrusted {
@@ -173,7 +182,7 @@ impl Runtime {
                     let limit = if name == "gmail_search" {
                         SEARCH_RESULT_LIMIT
                     } else {
-                        RESULT_LIMIT
+                        result_limit
                     };
                     return format!(
                         "<untrusted_content source=\"{}\"{}>\n{}\n</untrusted_content>",
@@ -182,7 +191,7 @@ impl Runtime {
                         truncate(&txt, limit)
                     );
                 }
-                truncate(&txt, RESULT_LIMIT)
+                truncate(&txt, result_limit)
             }
             Some("denied") => {
                 let why = res
@@ -684,6 +693,9 @@ blocked automated browsing in this task; it is not opened again.");
                     ("browser_locate", true, Some(r)) => {
                         self.locate(&task_id, &call.id, &sget(&args, "target"), r)
                             .await
+                    }
+                    _ if call.id.starts_with("bkg_") => {
+                        self.format_external_within(name, &res, CODE_RESULT_LIMIT)
                     }
                     _ => self.format_external(name, &res),
                 };

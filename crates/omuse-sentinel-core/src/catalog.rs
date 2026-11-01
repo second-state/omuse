@@ -591,8 +591,9 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
          everything the AI may tell them (name, booking/order number, dates…) in `may_share` — it can't share \
          anything else. Returns a call_id right away; then call phone_call_status to wait for the transcript \
          and outcome. Use full international numbers (+65…, +1…). Which line places it is shown under \
-         Connections: DialMCP calls US/Canadian (+1) numbers from the user's own number, only 8:00–21:00 at the \
-         callee's local time, max 10 minutes, recorded, and returns a listen_url to share with the user.",
+         Connections: DialMCP calls US/Canadian (+1) numbers from the user's own number, max 10 minutes, recorded, and \
+         returns a listen_url to share with the user (the service keeps its own calling hours and says so if a \
+         call is outside them).",
         obj(json!({"to": {"type": S, "description": "number to call, e.g. +6562345678"},
                    "purpose": {"type": S, "description": "complete brief for the voice AI"},
                    "may_share": {"type": S, "description": "facts it may tell them, e.g. 'Name: Liang Lu; order #123'"},

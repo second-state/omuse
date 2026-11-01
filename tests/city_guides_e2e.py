@@ -73,8 +73,9 @@ rows = K.c.get(K.S + "/audit?limit=300", headers=K.H).json()["events"]
 K.check("the refusal is in the audit log as a skill policy decision",
         any(r.get("resource") == "skill_policy" and r.get("decision") == "DENY" for r in rows),
         [(r.get("action"), r.get("resource"), r.get("decision")) for r in rows][:15])
-# loading a skill made for websites after the guide brings the browser back
-t = K.run("CITYLIFT find me a table in Tokyo after reading the guide")
+# loading a skill made for websites after the guide brings the browser back (a question about it, not a request to
+# search or book: a search or a booking would be run by the booking machine, with no model turn to look at the tools)
+t = K.run("CITYLIFT what do Tokyo restaurants expect about tipping, after reading the guide")
 K.check("browser tools: hidden after the guide, back after a booking skill",
         "LIFT after_guide=False after_booking=True" in (t.get("result") or ""), t.get("result"))
 K.finish()

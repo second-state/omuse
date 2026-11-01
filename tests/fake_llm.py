@@ -702,19 +702,21 @@ async def _chat(req: Request, b: dict):
             m = re.search(r"- (uploads/[^\n]+?\.png) \(", sys)
             return reply("", [tc("file_look", {"path": m.group(1) if m else "x.png", "question": "what colour?"})])
         return reply(f"FOLLOWOK {last_tool[:200]}")
-    if "VAULTFILL" in goal:   # fill a membership number from the vault (approved), then try to look at the page
+    if "VAULTFILL" in goal:   # a site with no form function: inside browser-use, a membership number from the vault (approved), then a look at the page
         if n == 0:
-            return reply("", [tc("browser_navigate", {"url": PAGE.replace("page.html", "checkout.html")})])
+            return reply("", [tc("load_skill", {"name": "browser-use"})])
         if n == 1:
-            return reply("", [tc("vault_list", {})])
+            return reply("", [tc("browser_navigate", {"url": PAGE.replace("page.html", "checkout.html")})])
         if n == 2:
+            return reply("", [tc("vault_list", {})])
+        if n == 3:
             m = re.search(r"id=(vlt_\w+) · KrisFlyer", last_tool)
-            snap = tools_done[0]["content"]
+            snap = tools_done[1]["content"]
             r = re.search(r"\[(e\d+)\] textbox \\\"Membership", snap)
             return reply("", [tc("browser_fill_secret", {"ref": r.group(1) if r else "e2", "item_id": m.group(1) if m else "x", "field": "number"})])
-        if n == 3:
-            return reply("", [tc("browser_snapshot", {})])
         if n == 4:
+            return reply("", [tc("browser_snapshot", {})])
+        if n == 5:
             return reply("", [tc("browser_look", {"question": "what is in the membership field?"})])
         return reply(f"VAULTDONE {last_tool[:400]}")
     if "TAKEOVERLOOP" in goal:   # the site is still blocked after a hand-back: asks once more, then gives up
@@ -1012,24 +1014,12 @@ def _vault_id(text, kind):
     return None
 
 
-def _book_at(text):
-    """The first airline website in a flights result's book_at."""
-    m = re.search(r'book_at\\?"?: ?\[\\?"([a-z0-9.-]+)', text)
-    return m.group(1) if m else "?"
-
-
 def _car_url(text):
     """The booking_url of a cars_search result (Kayak's or Rentalcars.com's page for the rental)."""
     for u in re.findall(r'booking_url\\?"?: ?\\?"(https?://[^"\\]+)', text):
         if "kayak" in u or "rentalcars" in u:
             return u
     return "?"
-
-
-def _booking_url(text):
-    """The first booking_url in a flights or hotels result (Kiwi.com's, Google Flights' or the hotel's own page)."""
-    m = re.search(r'booking_url\\?"?: ?\\?"(https?://[^"\\]+)', text)
-    return m.group(1) if m else "?"
 
 
 _TRAVEL_SEEN = {}   # (kind, goal) -> the first search's parsed result, for turns after compression trimmed it
@@ -1245,6 +1235,8 @@ def route_reply(user):
     for marker, kid in (("BOTHAND", f"BOTKID1 cheapest flight Singapore to Tokyo on {date} DATE={date}"),
                         ("BOTAPPR", "BOTKIDAPPR book the SQ638 for SGD 620"), ("BOTWAIT", "BOTKIDWAIT log in to the airline site")):
         if marker in req:
+            if marker == "BOTHAND" and "BOTSTREAM" in req:   # bots_ui.py: a question (the model answers, streamed) — a dated search would be code's
+                kid = "BOTKID1 which airlines fly Singapore to Tokyo direct?"
             return reply(json.dumps({"bot": "travel", "question": kid + slow}))
     if "BOTFOLLOW" in req:
         m = re.search(r"\[answered by the travel bot in conversation (conv_\w+)\]", user)
@@ -1288,11 +1280,13 @@ def bots_flow(goal, sys, msgs, tools_done, n, allu):
         return reply("TRAVELBOT SKILL ANSWER: handed over with the flight skill's request.")
     if travel and "BOTKID1" in goal:
         if n == 0:
+            if "BOTSLOW" in goal:   # bots_ui.py: the bot works a while (its one model call, choosing the skill; code runs the rest)
+                time.sleep(2)
+            if "BOTSTREAM" in goal:   # bots_ui.py: a model-written answer streams into Main (code's answers are not streamed)
+                return reply(f"TRAVELBOT ANSWER {date}: Singapore Airlines SQ638 SGD 620 direct; Cathay Pacific via HKG SGD 510.")
             return reply("", [tc("load_skill", {"name": "flight-booking"})])
         if n == 1:
             return reply("", [tc("flights_search", {"origin": "SIN", "destination": "TYO", "date": date, "cabin": "economy", "currency": "SGD"})])
-        if "BOTSLOW" in goal:   # bots_ui.py: the bot works a while, so its own timer shows it
-            time.sleep(2)
         return reply(f"TRAVELBOT ANSWER {date}: Singapore Airlines SQ638 SGD 620 direct; Cathay Pacific via HKG SGD 510.")
     if travel and "BOTKID2" in goal:
         earlier = "TRAVELBOT ANSWER" in allu or any("TRAVELBOT ANSWER" in str(m["content"]) for m in msgs if m["role"] == "assistant")
@@ -1382,32 +1376,13 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
                      "| Thailand | TDAC digital arrival card | within 3 days before arrival | reminder set | tdac.immigration.go.th | 2026-10-25 |\n"
                      "| Singapore | SG Arrival Card + health declaration | within 3 days before arrival | I can fill it (sg-arrival-card) | eservices.ica.gov.sg | 2026-10-25 |\n"
                      "Passport: at least 6 months validity for Thailand (page read today).")
-    if "BRAVETRAVEL" in goal:   # flight-booking without the travel tools, the Web search API on: snippets, no browser pages
-        api = re.search(r"Web search \(web_search, always available\): search services connected", sys)
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
-        if n == 1:
-            if not api:
-                return reply("NO_SEARCH_API")
-            # ONE travel search per request: the flight first, then the hotel and the car in the next messages
-            # the trip date comes from the request (DATE=…), so it never falls in the past
-            d1 = _dtm.date.fromisoformat(re.search(r"DATE=(\d{4}-\d\d-\d\d)", goal).group(1))
-            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": d1.isoformat(), "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"})])
-        allt = "\n".join(str(m["content"]) for m in tools_done)
-        kiwi = "Kiwi.com" in allt
-        return reply(f"FLIGHTS SIN–NRT — {'Kiwi.com data: SQ638 09:25 → 17:15 SGD 620 direct, CX via HKG SGD 510' if kiwi else 'from search snippets'}. "
-                     f"Book the flight at {_booking_url(allt)} (Kiwi.com) or on {_book_at(allt)} (the airline's own site). Shall I search the hotel near Ginza now?")
-    if "BRAVEHOTEL" in goal or "BRAVECAR" in goal:   # the follow-ups: one travel search each (no key: through the Brave web search)
+    if "BRAVECAR" in goal:   # the car after the flight and the hotel (no machine for cars): cars_search through the Brave web search
         d1 = _dtm.date.fromisoformat(re.search(r"DATE=(\d{4}-\d\d-\d\d)", goal).group(1))
         d3 = d1 + _dtm.timedelta(days=3)
         if n == 0:
-            if "BRAVEHOTEL" in goal:
-                return reply("", [tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": d1.isoformat(), "check_out": d3.isoformat(), "min_stars": 4})])
             return reply("", [tc_("cars_search", {"pickup": "NRT", "pickup_date": d1.isoformat(), "dropoff_date": d3.isoformat(), "car_class": "small"})])
         allt = "\n".join(str(m["content"]) for m in tools_done)
         srcs = re.findall(r"web search \(([^)]+)\)", allt)
-        if "BRAVEHOTEL" in goal:
-            return reply(f"SEARCHED VIA {sorted(set(srcs))}: hotels near Ginza ({'web search' if 'hotels_fallback' in allt else 'Google Hotels'}). Shall I search the car now?")
         return reply(f"SEARCHED VIA {sorted(set(srcs))}: compact car at Narita (Brave result 1), live prices at {_car_url(allt)}.")
     if "TWOSEARCH" in goal:   # a model that searches six times: only the first travel search of the request runs
         date = re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal).group(1)
@@ -1433,118 +1408,12 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         allt = "\n".join(str(m["content"]) for m in tools_done)
         return reply(f"CARS at Narita {d1} to {d3}: compact cars from the companies in the search results (\"from\" prices); "
                      f"the live prices for your dates are at {_car_url(allt)}.")
-    if "KIWIFLIGHTS" in goal:   # flight-booking with no key: flights_search (Kiwi.com data) ONLY; book on the airline's site from book_at
-        date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
+    if any(m in goal for m in ("KIWIFLIGHTS", "BIZFLIGHTS", "ZEROCAP", "PREFNONE", "FLEXFLIGHTS", "BOOKIT", "TRAVELSEARCH", "BRAVETRAVEL")):
+        # flight-booking: the model only loads the skill; the booking machine (agent/booking.rs) searches, picks,
+        # answers (and offers the next search), and books — no model call after this one
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "flight-booking"})])
-        if n == 1:
-            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": date, "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"})])
-        allt = "\n".join(str(m["content"]) for m in tools_done)
-        kiwi = "Kiwi.com" in allt
-        return reply(f"FLIGHTS {date} SIN → NRT (flight data{' from Kiwi.com' if kiwi else ''}): cheapest direct Singapore Airlines SQ638 09:25 → 17:15, SGD 620, 1 checked bag; "
-                     f"cheapest overall Cathay Pacific via HKG SGD 510 (one stop). Book it at {_booking_url(allt)} (Kiwi.com's booking page) or on {_book_at(allt)} (the airline's own site), "
-                     "or tell me the agency you prefer — say the word and I open the booking page.")
-    if "BIZFLIGHTS" in goal:   # flight-booking: the request's cabin (business), stop limit (direct) and city code (TYO) go into ONE flights_search
-        date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
-        if n == 1:
-            # the instructions carry the profile's standing preferences: the preferred airline (or alliance) goes into the search
-            pm = re.search(r"- Preferred airline: ([^\n]+)", sys)
-            args = {"origin": "TYO", "destination": "SIN", "date": date, "adults": 1, "cabin": "business", "stops": "nonstop", "sort": "price", "currency": "SGD"}
-            if pm:
-                args["airlines"] = [x.strip() for x in pm.group(1).split(",")]
-            return reply("", [tc_("flights_search", args)])
-        allt = "\n".join(str(m["content"]) for m in tools_done)
-        m = re.search(r'\\?"cabin\\?": \\?"([a-z ]+)\\?"', allt)
-        pref = ' — your preferred airline (flagged preferred in the data)' if '"preferred": true' in allt or '\\"preferred\\": true' in allt else ''
-        return reply(f"BUSINESS CLASS, nonstop, {date} Tokyo (all airports) → Singapore, searched as {m.group(1) if m else '?'} / nonstop only: "
-                     f"Singapore Airlines SQ638 09:25 → 17:15, SGD 2108 (business, 1 checked bag){pref}. Book on singaporeair.com or with your agency — say the word.")
-    if "ZEROCAP" in goal:   # a model filling defaults: max_price 0 and adults 0 — the tool must search every price for 1 adult
-        date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
-        if n == 0:
-            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "TYO", "date": date, "adults": 0, "max_price": 0,
-                                                     "cabin": "economy", "stops": "any", "sort": "price", "currency": "SGD"})])
-        return reply(f"{date} Singapore → Tokyo, any price: Cathay Pacific via HKG SGD 510; Singapore Airlines SQ638 SGD 620 direct.")
-    if "PREFNONE" in goal:   # the preferred airline goes into the ONE search; it has no offer → answer and ask before searching all airlines
-        date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
-        if n == 1:
-            pm = re.search(r"- Preferred airline: ([^\n]+)", sys)
-            args = {"origin": "SIN", "destination": "TYO", "date": date, "cabin": "economy", "stops": "any", "sort": "price", "currency": "SGD"}
-            if pm:
-                args["airlines"] = [x.strip() for x in pm.group(1).split(",")]
-            return reply("", [tc_("flights_search", args)])
-        allt = "\n".join(str(m["content"]) for m in tools_done)
-        none = re.search(r'\\?"preferred_found\\?": 0', allt) is not None
-        return reply(f"{date} Singapore → Tokyo: {'no Emirates flight came back on this route' if none else 'Emirates found'}; "
-                     "the search also returned Singapore Airlines SQ638 SGD 620 (direct) and Cathay Pacific via HKG SGD 510. Shall I search all airlines?")
-    if "FLEXFLIGHTS" in goal:   # a range of dates: ONE flights_search with date + date_to, no plan
-        d1 = re.search(r"FROM=(20\d\d-\d\d-\d\d)", goal).group(1); d2 = re.search(r"TO=(20\d\d-\d\d-\d\d)", goal).group(1)
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
-        if n == 1:
-            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "TYO", "date": d1, "date_to": d2, "cabin": "economy", "sort": "price", "currency": "SGD"})])
-        allt = "\n".join(str(m["content"]) for m in tools_done)
-        days = len(set(re.findall(r'\\?"date\\?": \\?"(20\d\d-\d\d-\d\d)', allt)))
-        return reply(f"Cheapest across {d1} to {d2}: Cathay Pacific via HKG SGD 510 ({days} days searched in one call).")
-    if "BOOKIT" in goal:   # "book it" after the flight was found earlier in this conversation: straight to the booking page, no plan, no search
-        url = (re.search(r"URL=(\S+)", goal) or re.search(r"(http\S+)", "x http://shop.test:8097/book/flight/none")).group(1)
-        names_so_far = [n for n, _, _ in _travel_calls(msgs)]
-        calls = _travel_calls(msgs)
-        res_of = lambda name: next((r for n, _, r in calls if n == name), "")   # noqa: E731
-        if "vault_list" not in names_so_far:
-            return reply("", [tc_("vault_list", {})])
-        vl = res_of("vault_list")
-        card_id, passport_id = _vault_id(vl, "card"), _vault_id(vl, "id_document")
-        if "browser_navigate" not in names_so_far:
-            return reply("", [tc_("browser_navigate", {"url": url})])
-        page = res_of("browser_navigate")
-        if "browser_type" not in names_so_far:
-            fields = [("Full name", TRAVELLER["name"]), ("Email", TRAVELLER["email"]), ("Phone", TRAVELLER["phone"])]
-            typed = [tc_("browser_type", {"ref": _snap_ref(page, lbl), "text": v}) for lbl, v in fields if _snap_ref(page, lbl)]
-            return reply("", typed or [tc_("browser_request_takeover", {"reason": "no form fields found; please book by hand"})])
-        fills = [a for n, a, _ in calls if n == "browser_fill_secret"]
-        if passport_id and not any(a.get("item_id") == passport_id for a in fills):
-            return reply("", [tc_("browser_fill_secret", {"ref": _snap_ref(page, "Passport number") or "e1", "item_id": passport_id, "field": "number"})])
-        amount = float((re.search(r"AMOUNT=([\d.]+)", goal) or re.search(r"([\d.]+)", "0")).group(1))
-        if card_id and "purchase_confirm" not in names_so_far:
-            # Sentinel fills a card only after the user approved the purchase summary
-            return reply("", [tc_("purchase_confirm", {"site": url.split("/")[2].split(":")[0], "items": [{"name": "SQ638 SIN-NRT, 1 adult", "qty": 1, "price": amount}],
-                                                       "shipping": 0, "total": amount, "currency": "SGD", "delivery": "E-ticket to lucas@example.com", "card_item_id": card_id})])
-        if card_id and not any(a.get("item_id") == card_id for a in fills):
-            boxes = [("Card number", "number"), ("Expiry", "expiry"), ("CVC", "cvc"), ("Name on card", "holder")]
-            return reply("", [tc_("browser_fill_secret", {"ref": _snap_ref(page, lbl), "item_id": card_id, "field": f}) for lbl, f in boxes if _snap_ref(page, lbl)])
-        if "browser_request_takeover" not in names_so_far:
-            return reply("", [tc_("browser_request_takeover", {"reason": "The booking page is filled in (traveller, passport, card). Check it and press Pay now."})])
-        return reply("The booking page for SQ638 is open with your details, passport and card filled in — press Pay now to complete it, or tell me to.")
-    if "TRAVELSEARCH" in goal:   # flight-booking with the built-in Flights & hotels tools (Google data through SerpApi)
-        date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-20")).group(1)
-        import datetime as _dt
-        out = (_dt.date.fromisoformat(date) + _dt.timedelta(days=3)).isoformat()
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "flight-booking"})])
-        if n == 1:
-            return reply("", [tc_("flights_search", {"origin": "Singapore", "destination": "Tokyo", "date": date, "adults": 1, "cabin": "economy", "sort": "price", "currency": "SGD"})])
-        if n == 2:
-            m = re.search(r'offer_id\\?"?: \\?"(fl_[0-9a-f]+)', str(last_tool)) or re.search(r"(fl_[0-9a-f]{10})", str(last_tool))
-            return reply("", [tc_("flight_offer", {"offer_id": m.group(1) if m else "fl_missing", "currency": "SGD"})])
-        allt = "\n".join(str(m["content"]) for m in tools_done)
-        seller = re.search(r'book_with\\?"?: \\?"([^"\\]+)', allt)
-        return reply(f"FLIGHTS {date} Singapore → Tokyo (Google Flights): cheapest direct SQ 638 09:25 → 17:15, SGD 620, sold by {seller.group(1) if seller else '?'} "
-                     f"(Trip.com has it at SGD 612); cheapest overall Cathay via HKG SGD 510 (one stop, 12 h 35). Book it at {_booking_url(allt)}. "
-                     "Shall I search the hotel near Ginza now?")
-    if "TRAVELHOTEL" in goal:   # the follow-up of TRAVELSEARCH: the hotel, the one travel search of this request
-        date = re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal).group(1)
-        out = (_dtm.date.fromisoformat(date) + _dtm.timedelta(days=3)).isoformat()
-        if n == 0:
-            return reply("", [tc_("hotels_search", {"city": "Tokyo", "area": "Ginza", "check_in": date, "check_out": out, "guests": 2, "min_stars": 4, "currency": "SGD"})])
-        if n == 1:
-            m = re.search(r"(ht_[0-9a-f]{10})", str(last_tool))
-            return reply("", [tc_("hotel_rooms", {"hotel_id": m.group(1) if m else "ht_missing", "check_in": date, "check_out": out, "guests": 2, "currency": "SGD"})])
-        return reply("HOTELS Ginza (Google Hotels): Hotel Ginza Grand 4★ rating 4.4, SGD 210/night, SGD 630 for 3 nights, free cancellation on Booking.com; "
-                     "the hotel's own site has a Deluxe Twin at SGD 199/night — say the word to book.")
+        return reply("FLIGHT FAIL: the booking machine did not take over after load_skill")
     if "EXPENSES" in goal:   # travel-expense-report: receipt photo (vision), statement CSV, mail receipts, files
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "travel-expense-report"})])

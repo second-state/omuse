@@ -7,7 +7,7 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// One listing: the name, the star rating, the number of ratings and the price, each as read on the page.
 #[derive(Debug, Clone, PartialEq)]
@@ -168,6 +168,29 @@ pub struct Ranking {
 }
 
 impl Ranking {
+    /// The criteria as a tool call's `ranking` object (the inverse of [`Ranking::from_json`]).
+    pub fn to_json(&self) -> Value {
+        let mut o = serde_json::Map::new();
+        o.insert("by".into(), json!(self.by));
+        let mut put = |k: &str, v: Option<Value>| {
+            if let Some(v) = v {
+                o.insert(k.into(), v);
+            }
+        };
+        put("max_price", self.max_price.map(|x| json!(x)));
+        put("min_price", self.min_price.map(|x| json!(x)));
+        put("min_stars", self.min_stars.map(|x| json!(x)));
+        put("min_ratings", self.min_ratings.map(|x| json!(x)));
+        put("count", self.count.map(|x| json!(x)));
+        if !self.title_has.is_empty() {
+            o.insert("title_has".into(), json!(self.title_has));
+        }
+        if !self.title_not.is_empty() {
+            o.insert("title_not".into(), json!(self.title_not));
+        }
+        Value::Object(o)
+    }
+
     /// The criteria from a tool call's `ranking` object; `None` when it is absent.
     pub fn from_json(v: &Value) -> Option<Ranking> {
         let o = v.as_object()?;

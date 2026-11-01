@@ -785,7 +785,7 @@ impl Phone {
         let mut out = Vec::new();
         if self.dial.ready() && (cfg.provider == "auto" || cfg.provider == "dialmcp") {
             out.push(format!(
-                "DialMCP — US and Canadian (+1) numbers only, from the user's own number {}, only 8:00–21:00 at the callee's local time, max 10 min, recorded; gives a listen_url for the user",
+                "DialMCP — US and Canadian (+1) numbers only, from the user's own number {}, max 10 min, recorded; gives a listen_url for the user",
                 get_str(&self.dial.account(), "phone")
             ));
         }

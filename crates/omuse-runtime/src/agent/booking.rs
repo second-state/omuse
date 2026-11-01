@@ -138,11 +138,14 @@ pub fn active(transcript: &[Value]) -> Option<&'static BookingSpec> {
                 .then(|| sget(&args, "name"))
         })
         .collect();
-    let (i, spec) = loads
+    let Some((i, spec)) = loads
         .iter()
         .enumerate()
         .filter_map(|(i, n)| SPECS.iter().find(|s| s.skill == n).map(|s| (i, s)))
-        .next_back()?;
+        .next_back()
+    else {
+        return follow_up(transcript).or_else(|| known_shop_request(transcript));
+    };
     if loads[i + 1..].iter().any(|n| n == BROWSER_USE) {
         return None;
     }
@@ -156,8 +159,167 @@ pub fn active(transcript: &[Value]) -> Option<&'static BookingSpec> {
     Some(spec)
 }
 
+/// A follow-up message that accepts the next travel search the previous answer offered ("Shall I search the hotel
+/// near Ginza now?" — "yes, the hotel please"): that search's spec. The offer is code's own text (`NEXT_MARK`) in the
+/// last answer before the user's latest message; the reply must say yes or name the item, and not say no.
+fn follow_up(transcript: &[Value]) -> Option<&'static BookingSpec> {
+    static YES: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(yes|yeah|yep|sure|ok(ay)?|please|go ahead|do it|search it)\b|好的?|是的|可以|请").unwrap()
+    });
+    static NO: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(no|nope|not now|don'?t|later|skip)\b|不用|不要|算了").unwrap()
+    });
+    let last_user = transcript
+        .iter()
+        .rposition(|m| get_str(m, "role") == "user")?;
+    let offer = transcript[..last_user]
+        .iter()
+        .rev()
+        .find(|m| get_str(m, "role") == "assistant" && !content_of(m).trim().is_empty())
+        .map(content_of)?;
+    let at = offer.rfind(NEXT_MARK)?;
+    let item = offer[at + NEXT_MARK.len()..].to_lowercase();
+    let latest = user_words(&transcript[last_user..]).join("\n");
+    let lc = latest.to_lowercase();
+    let (kind, word) = if item.starts_with("hotel") {
+        (Kind::Hotel, "hotel")
+    } else if item.starts_with("flight") {
+        (Kind::Flight, "flight")
+    } else {
+        return None; // a rental car: no machine for it
+    };
+    if NO.is_match(&latest) || !(YES.is_match(&latest) || lc.contains(word)) {
+        return None;
+    }
+    SPECS.iter().find(|s| s.kind == kind)
+}
+
+/// How the user books in general ("I book through my travel agency"), not a request to book now.
+static HABIT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(i|we)\s+(usually\s+|always\s+|normally\s+)?(book|order|buy)\s+(through|with|via|on|from|at)\b")
+        .unwrap()
+});
+
+/// A request to mail the results ("email the options to mei@example.com"): the address.
+fn mail_to(texts: &[String]) -> Option<String> {
+    static MAIL_TO: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(e-?mail|mail|send)\b[^.?!\n]*?([\w.+-]+@[\w-]+(?:\.[\w-]+)+)|发[^。？！\n]*?([\w.+-]+@[\w-]+(?:\.[\w-]+)+)")
+            .unwrap()
+    });
+    texts.iter().rev().find_map(|t| {
+        MAIL_TO
+            .captures(t)
+            .and_then(|c| c.get(2).or_else(|| c.get(3)))
+            .map(|m| m.as_str().trim_end_matches('.').to_string())
+    })
+}
+
+/// A shop with its own form functions here (Kaya Mobile, Stride Sports): its link in the user's words and a request
+/// for the work runs the shopping machine from the start, skill or no skill (shopping_real 2026-11-01: the model
+/// opened the results page itself and built the choice cards from the raw snapshot, twice).
+fn known_shop_request(transcript: &[Value]) -> Option<&'static BookingSpec> {
+    let texts = user_words(transcript);
+    let url = shop_url(&texts.join("\n"))?;
+    if !known_shop(&url) || !user_asks(&texts, &WORK) {
+        return None;
+    }
+    // once the shop's page went to browser-use, the model has it
+    let handed = transcript.iter().flat_map(tool_calls).any(|tc| {
+        let (name, args) = stored_call(tc);
+        name == "load_skill" && sget(&args, "name") == BROWSER_USE
+    });
+    (!handed)
+        .then(|| SPECS.iter().find(|s| s.kind == Kind::Shop))
+        .flatten()
+}
+
+/// A flight, hotel or MICHELIN-restaurant search in the user's latest message runs that machine from the start, skill
+/// or no skill: the first of them the message names (one travel search per request; the others are offered next).
+/// A rental car first, a plain restaurant, a question about a place, or a page already handed to browser-use: `None`
+/// (travel_brave_real 2026-11-01: the model searched without the skill and wrote "couldn't verify", twice).
+/// Only for a specialised bot's run (never Main, which hands travel to its bot), and only for a new travel search
+/// ([`super::guards::new_travel_search`]) with its date in the words and no web address (a page the user gave is read
+/// by the model); anything less stays with the model (gate 28: claims, card benefits and emergencies were taken).
+pub fn search_request(transcript: &[Value]) -> Option<&'static BookingSpec> {
+    static FLIGHT_W: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(flights?|fly|flying|airfares?|plane tickets?)\b|机票|航班").unwrap()
+    });
+    static HOTEL_W: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(hotels?|accommodation|place to stay|ryokan)\b|酒店|住宿").unwrap()
+    });
+    static MICHELIN_W: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\bmichelin\b|米其林").unwrap());
+    static CAR_W: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(rental car|car rental|car hire|hire a car|rent a car)\b|租车").unwrap()
+    });
+    let last = transcript
+        .iter()
+        .rposition(|m| get_str(m, "role") == "user")?;
+    let latest = user_words(&transcript[last..]);
+    if !user_asks(&latest, &WORK) {
+        return None;
+    }
+    let joined = latest.join("\n");
+    if !super::guards::new_travel_search(&joined) || URL.is_match(&joined) || !has_date(&joined) {
+        return None;
+    }
+    // a skill the model chose (another one than these machines') keeps the run
+    if transcript
+        .iter()
+        .flat_map(tool_calls)
+        .any(|tc| stored_call(tc).0 == "load_skill")
+    {
+        return None;
+    }
+    let text = latest.join("\n");
+    // "I'm flying to Tokyo … find me a hotel": the trip's flight is context, the thing asked for is searched — the
+    // words right after the request verb decide, else the first item named
+    let mut named: Vec<(usize, Kind)> = [
+        (&*MICHELIN_W, Kind::Michelin),
+        (&*FLIGHT_W, Kind::Flight),
+        (&*HOTEL_W, Kind::Hotel),
+        (&*CAR_W, Kind::Restaurant), // a stand-in for "a car": no machine
+    ]
+    .into_iter()
+    .flat_map(|(re, k)| {
+        re.find_iter(&text)
+            .map(move |m| (m.start(), k))
+            .collect::<Vec<_>>()
+    })
+    .collect();
+    named.sort_by_key(|(p, _)| *p);
+    let first_asked = WORK
+        .find_iter(&text)
+        .find_map(|w| named.iter().find(|(p, _)| *p >= w.start()).copied())
+        .or_else(|| named.first().copied())?;
+    match first_asked.1 {
+        Kind::Restaurant => None,
+        k => SPECS.iter().find(|s| s.kind == k),
+    }
+}
+
+/// A date in the words: ISO, "November 22", "22 Nov", "Dec 1", "next Friday", "tomorrow".
+fn has_date(text: &str) -> bool {
+    static DATE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b\d{4}-\d{2}-\d{2}\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b|\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b|\b(today|tomorrow|tonight|next\s+(mon|tue|wed|thu|fri|sat|sun)[a-z]*|this\s+(weekend|mon|tue|wed|thu|fri|sat|sun)[a-z]*)\b|\d{1,2}月\d{1,2}日").unwrap()
+    });
+    DATE.is_match(text)
+}
+
+/// The shops the machine fills by fixed ids.
+fn known_shop(url: &str) -> bool {
+    let path = url::Url::parse(url)
+        .map(|u| u.path().to_lowercase())
+        .unwrap_or_default();
+    host_of(url) == "shop.test" && (path.starts_with("/kaya_") || path.starts_with("/stride_"))
+}
+
 fn wants_booking(texts: &[String]) -> bool {
-    user_asks(texts, &BOOK)
+    let texts: Vec<String> = texts
+        .iter()
+        .map(|t| HABIT.replace_all(t, "").into_owned())
+        .collect();
+    user_asks(&texts, &BOOK)
 }
 
 /// The label the user picked on a choice card ("I choose: …"), the latest.
@@ -242,6 +404,134 @@ fn cities_in(text: &str) -> Vec<(usize, &'static City)> {
     out.sort_by_key(|(i, _)| *i);
     out.dedup_by(|a, b| a.1.code == b.1.code);
     out
+}
+
+/// The currency of a city of the table, by its code.
+fn city_currency(code: &str) -> &'static str {
+    match code {
+        "TYO" | "OSA" | "FUK" | "CTS" => "JPY",
+        "SEL" => "KRW",
+        "SIN" => "SGD",
+        "HKG" => "HKD",
+        "BKK" => "THB",
+        "TPE" => "TWD",
+        "SHA" | "BJS" | "CTU" | "SZX" | "CAN" => "CNY",
+        "KUL" => "MYR",
+        "DPS" | "JKT" => "IDR",
+        "MNL" => "PHP",
+        "HAN" | "SGN" => "VND",
+        "SYD" | "MEL" => "AUD",
+        "LON" => "GBP",
+        "PAR" => "EUR",
+        "NYC" | "QSF" | "QLA" => "USD",
+        "DXB" => "AED",
+        _ => "",
+    }
+}
+
+/// The user's home currency: the country of the profile's home address (a city of the table or a country's name),
+/// else the currency where the flight starts (`origin`, a city code), else "".
+pub fn home_currency(profile: &Value, origin: &str) -> String {
+    static COUNTRY: &[(&str, &str)] = &[
+        ("singapore", "SGD"),
+        ("japan", "JPY"),
+        ("malaysia", "MYR"),
+        ("australia", "AUD"),
+        ("united kingdom", "GBP"),
+        ("england", "GBP"),
+        ("united states", "USD"),
+        ("usa", "USD"),
+        ("china", "CNY"),
+        ("korea", "KRW"),
+        ("thailand", "THB"),
+        ("taiwan", "TWD"),
+        ("hong kong", "HKD"),
+        ("indonesia", "IDR"),
+        ("philippines", "PHP"),
+        ("vietnam", "VND"),
+        ("france", "EUR"),
+        ("germany", "EUR"),
+    ];
+    let home = get_str(profile, "address_home");
+    if let Some((_, c)) = cities_in(&home).first() {
+        return city_currency(c.code).to_string();
+    }
+    let lc = home.to_lowercase();
+    if let Some((_, cur)) = COUNTRY.iter().find(|(w, _)| has_word(&lc, w)) {
+        return cur.to_string();
+    }
+    city_currency(origin).to_string()
+}
+
+/// The airline alliances named in the user's words, as the flight search takes them.
+fn alliances_in(text: &str) -> Vec<String> {
+    static ALLIANCE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b(star alliance|oneworld|skyteam)\b").unwrap());
+    ALLIANCE
+        .captures_iter(text)
+        .map(|c| match c[1].to_lowercase().as_str() {
+            "star alliance" => "Star Alliance".to_string(),
+            "oneworld" => "oneworld".to_string(),
+            _ => "SkyTeam".to_string(),
+        })
+        .collect()
+}
+
+/// The area of a hotel or a restaurant in the user's words ("near Ginza", "around Shibuya", "in Orchard"): a
+/// capitalised name that is not a city of the table, a month or a weekday.
+fn area_in(text: &str) -> String {
+    static AREA: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"\b(?:[Nn]ear|[Aa]round|[Ii]n|[Cc]lose to)\s+((?:[A-Z][\w'-]+)(?:\s+[A-Z][\w'-]+)?)",
+        )
+        .unwrap()
+    });
+    let city_word = |w: &str| {
+        let lc = w.to_lowercase();
+        CITIES.iter().any(|c| c.words.contains(&lc.as_str())) || CITIES.iter().any(|c| c.code == w)
+    };
+    let calendar_word = |w: &str| {
+        let lc = w.to_lowercase();
+        let lc = lc.trim_end_matches('.');
+        [
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+            "jan",
+            "feb",
+            "mar",
+            "apr",
+            "jun",
+            "jul",
+            "aug",
+            "sep",
+            "sept",
+            "oct",
+            "nov",
+            "dec",
+        ]
+        .contains(&lc)
+            || WEEKDAYS.iter().any(|(d, _)| *d == lc || d[..3] == *lc)
+    };
+    AREA.captures_iter(text)
+        .filter_map(|c| {
+            let words: Vec<&str> = c[1]
+                .split_whitespace()
+                .take_while(|w| !city_word(w))
+                .collect();
+            (!words.is_empty() && !words.iter().any(|w| calendar_word(w))).then(|| words.join(" "))
+        })
+        .next()
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------- dates
@@ -402,6 +692,15 @@ pub struct Req {
     pub occasion: String,
     /// the user wants the best (highest distinction / rating) rather than the cheapest
     pub best: bool,
+    /// the airlines the user prefers ("I prefer United", "Star Alliance", else the profile's standing
+    /// `preferred_airline`): the flight search is limited to them
+    pub airlines: Vec<String>,
+    /// the last departure day of a range ("any day between 8 and 12 December"): ONE search over the days
+    pub date_to: Option<NaiveDate>,
+    /// the area of a hotel or a restaurant ("near Ginza")
+    pub area: String,
+    /// the user's home currency (the home address's country, else the flight's origin)
+    pub currency: String,
 }
 
 fn word_no(w: &str) -> Option<u32> {
@@ -443,6 +742,32 @@ const CUISINES: &[&str] = &[
 
 /// The request's parameters, from the user's messages (oldest first), the profile (a flight's origin: the home city)
 /// and the extraction call's facts when it ran.
+/// The airlines named as a preference: "I prefer United", "fly with Singapore Airlines", "only on ANA or JAL".
+fn preferred_airlines(text: &str) -> Vec<String> {
+    static PREFER: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i:\b(?:i\s+prefer|prefer(?:ably)?|fly(?:ing)?\s+with|only\s+(?:on|with))\s+)((?:[A-Z][\w&'-]*\s?){1,3}(?:(?:or|and|,)\s+(?:[A-Z][\w&'-]*\s?){1,3})*)")
+            .unwrap()
+    });
+    static SPLIT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\s*(?:,|\bor\b|\band\b)\s*").unwrap());
+    PREFER
+        .captures_iter(text)
+        .flat_map(|c| {
+            SPLIT
+                .split(c[1].trim())
+                .map(|a| a.trim().trim_end_matches(['.', ',']).to_string())
+                .filter(|a| !a.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|a| {
+            !matches!(
+                a.to_lowercase().as_str(),
+                "i" | "economy" | "business" | "first"
+            )
+        })
+        .collect()
+}
+
 pub fn parse_request(
     kind: Kind,
     texts: &[String],
@@ -509,6 +834,12 @@ pub fn parse_request(
         Regex::new(r"(?i)\b(return(ing)?|back on|round[- ]trip|coming back)\b|返回|回程|往返")
             .unwrap()
     });
+    static RANGE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)\b(between|any ?day|any ?time|whichever day|flexible|sometime)\b|之间|任何一天",
+        )
+        .unwrap()
+    });
     static NIGHTS: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i)\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)[\s-]+nights?\b|(\d{1,2})\s*(?:晚|夜)").unwrap()
     });
@@ -571,10 +902,19 @@ pub fn parse_request(
             r.destination = dest.map(|c| c.code.to_string()).unwrap_or_default();
         }
         _ => {
-            r.city = cities
-                .first()
+            // the city the stay or the table is in: the one after "in / near / to / at / around" (a flight and a
+            // hotel in one message: the hotel is at the destination), else the first named
+            let placed = cities.iter().find(|(at, _)| {
+                let before = lc[..*at].trim_end();
+                ["in", "near", "to", "at", "around", "在", "到", "去"]
+                    .iter()
+                    .any(|w| before.ends_with(w))
+            });
+            r.city = placed
+                .or(cities.first())
                 .map(|(_, c)| c.name.to_string())
                 .unwrap_or_default();
+            r.area = area_in(&text);
         }
     }
     // the dates
@@ -582,11 +922,14 @@ pub fn parse_request(
     r.date = dates.first().copied();
     match kind {
         Kind::Flight => {
+            let later = dates
+                .iter()
+                .copied()
+                .find(|d| r.date.is_some_and(|f| *d > f));
             if RETURN.is_match(&text) {
-                r.return_date = dates
-                    .iter()
-                    .copied()
-                    .find(|d| r.date.is_some_and(|f| *d > f));
+                r.return_date = later;
+            } else if RANGE.is_match(&text) {
+                r.date_to = later;
             }
         }
         Kind::Hotel => {
@@ -641,6 +984,21 @@ pub fn parse_request(
             "economy"
         };
         r.nonstop = NONSTOP.is_match(&text);
+        // the airlines and alliances in the user's words, else the profile's standing preference
+        let mut airlines = preferred_airlines(&text);
+        for a in alliances_in(&text) {
+            if !airlines.iter().any(|x| x.eq_ignore_ascii_case(&a)) {
+                airlines.push(a);
+            }
+        }
+        if airlines.is_empty() {
+            airlines = get_str(profile, "preferred_airline")
+                .split([',', ';'])
+                .map(|a| a.trim().to_string())
+                .filter(|a| !a.is_empty())
+                .collect();
+        }
+        r.airlines = airlines;
     }
     r.max_price = MAX_PRICE
         .captures(&text)
@@ -758,6 +1116,7 @@ pub fn parse_request(
             r.cuisine = get_str(f, "cuisine").trim().to_lowercase();
         }
     }
+    r.currency = home_currency(profile, &r.origin);
     r
 }
 
@@ -816,15 +1175,33 @@ impl Req {
             Kind::Flight => {
                 let mut a = json!({"origin": self.origin, "destination": self.destination,
                     "date": self.date.map(iso).unwrap_or_default(), "adults": self.party_or(kind),
-                    "cabin": self.cabin, "stops": if self.nonstop { "nonstop" } else { "any" }});
+                    "cabin": self.cabin, "stops": if self.nonstop { "nonstop" } else { "any" }, "sort": "price"});
+                if let Some(d) = self.date_to {
+                    a["date_to"] = json!(iso(d));
+                }
                 if let Some(d) = self.return_date {
                     a["return_date"] = json!(iso(d));
+                }
+                if let Some(p) = self.max_price {
+                    a["max_price"] = json!(p);
+                }
+                if !self.currency.is_empty() {
+                    a["currency"] = json!(self.currency);
+                }
+                if !self.airlines.is_empty() {
+                    a["airlines"] = json!(self.airlines);
                 }
                 a
             }
             Kind::Hotel => {
                 let mut a = json!({"city": self.city, "check_in": self.date.map(iso).unwrap_or_default(),
                     "check_out": self.check_out.map(iso).unwrap_or_default(), "guests": self.party_or(kind)});
+                if !self.area.is_empty() {
+                    a["area"] = json!(self.area);
+                }
+                if !self.currency.is_empty() {
+                    a["currency"] = json!(self.currency);
+                }
                 if let Some(s) = self.min_stars {
                     a["min_stars"] = json!(s);
                 }
@@ -847,8 +1224,12 @@ impl Req {
                 a
             }
             Kind::Restaurant => {
-                json!({"query": if self.cuisine.is_empty() { "restaurant".to_string() } else { format!("{} restaurant", self.cuisine) },
-                                       "city": self.city})
+                let mut a = json!({"query": if self.cuisine.is_empty() { "restaurant".to_string() } else { format!("{} restaurant", self.cuisine) },
+                                   "city": self.city});
+                if !self.area.is_empty() {
+                    a["area"] = json!(self.area);
+                }
+                a
             }
             Kind::Shop => json!({}),
         }
@@ -884,6 +1265,14 @@ pub struct Offer {
     pub reviews: Option<u64>,
     /// exact strings from the result for the choice card
     pub details: Vec<String>,
+    /// a flight's airline sites to book on besides the booking link (Kiwi.com's `book_at`)
+    pub book_at: Vec<String>,
+    /// on the user's preferred airline or brand (the search flagged it)
+    pub preferred: bool,
+    /// whose data it is ("Kiwi.com")
+    pub data: String,
+    /// the day of a range search the offer flies
+    pub date: String,
 }
 
 static NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d[\d,]*(?:\.\d+)?").unwrap());
@@ -969,7 +1358,23 @@ pub fn offer_of(kind: Kind, o: &Value, default_currency: &str) -> Offer {
             let t = first_str(o, &["title"]);
             if t.is_empty() {
                 let a = first_str(o, &["airlines", "airline"]);
-                let f = first_str(o, &["flight_no"]);
+                let mut f = first_str(o, &["flight_no"]);
+                if f.is_empty() {
+                    // Kiwi.com and Google Flights: the flight numbers of the legs
+                    let mut nos: Vec<String> = Vec::new();
+                    for l in o
+                        .get("legs")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        let no = get_str(l, "flight_number").trim().to_string();
+                        if !no.is_empty() && !nos.contains(&no) {
+                            nos.push(no);
+                        }
+                    }
+                    f = nos.join(", ");
+                }
                 format!("{a} {f}").trim().to_string()
             } else {
                 t
@@ -1040,11 +1445,31 @@ pub fn offer_of(kind: Kind, o: &Value, default_currency: &str) -> Offer {
         Kind::Restaurant => &["rating", "price", "address", "open_state"],
         Kind::Shop => &[],
     };
-    let details: Vec<String> = detail_keys
+    // a bare figure gets its meaning and currency ("131" → "USD 131/night"); a text the result wrote stays as it is
+    let labelled = |k: &str, v: String| -> String {
+        let bare = v.trim().replace(',', "").parse::<f64>().is_ok();
+        if !bare {
+            return v;
+        }
+        let amt = |v: &str| format!("{} {}", currency, v.trim()).trim().to_string();
+        match k {
+            "rating" => format!("rating {v}"),
+            "price_per_night" | "price" if kind == Kind::Hotel => format!("{}/night", amt(&v)),
+            "from_price_per_night" => format!("from {}/night", amt(&v)),
+            "total" => format!("{} total", amt(&v)),
+            "from_total" => format!("from {} total", amt(&v)),
+            _ => v,
+        }
+    };
+    let mut details: Vec<String> = detail_keys
         .iter()
-        .map(|k| first_str(o, &[k]))
-        .filter(|s| !s.is_empty())
+        .map(|k| (k, first_str(o, &[k])))
+        .filter(|(_, s)| !s.is_empty())
+        .map(|(k, s)| labelled(k, s))
         .collect();
+    if kind == Kind::Flight && details.is_empty() {
+        details = flight_details(o, &currency);
+    }
     Offer {
         label,
         id: first_str(
@@ -1074,7 +1499,87 @@ pub fn offer_of(kind: Kind, o: &Value, default_currency: &str) -> Offer {
         closed: first_str(o, &["closed"]),
         reviews: o.get("reviews").and_then(Value::as_u64),
         details,
+        book_at: o
+            .get("book_at")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        preferred: truthy(o.get("preferred").unwrap_or(&Value::Null)),
+        data: first_str(o, &["data"]),
+        date: first_str(o, &["date"]),
     }
+}
+
+/// A Kiwi.com or Google Flights offer's lines for the card and the answer (they carry no `schedule` / `fare`): the
+/// times, the stops, the price, a mixed cabin and the baggage, as the result gives them.
+fn flight_details(o: &Value, currency: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let dep = get_str(&o["departure"], "time");
+    let arr = get_str(&o["arrival"], "time");
+    if !dep.is_empty() && !arr.is_empty() {
+        out.push(format!(
+            "{} {dep} → {} {arr}",
+            get_str(&o["departure"], "airport"),
+            get_str(&o["arrival"], "airport")
+        ));
+    } else {
+        let route = get_str(o, "route");
+        if !route.is_empty() {
+            out.push(route);
+        }
+    }
+    match o.get("stops").and_then(Value::as_u64) {
+        Some(0) => out.push("direct".into()),
+        Some(k) => {
+            let via: Vec<String> = o
+                .get("layovers")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|l| l.split_whitespace().next().unwrap_or(l).to_string())
+                .collect();
+            out.push(format!(
+                "{k} stop{}{}",
+                if k == 1 { "" } else { "s" },
+                if via.is_empty() {
+                    String::new()
+                } else {
+                    format!(" via {}", via.join(", "))
+                }
+            ))
+        }
+        None => {}
+    }
+    if let Some(p) = num_of(o.get("price")) {
+        out.push(
+            format!("{currency} {}", money(p).trim_end_matches(".00"))
+                .trim()
+                .to_string(),
+        );
+    }
+    let cabin = get_str(o, "cabin");
+    if cabin.contains("not the cabin searched") {
+        out.push(cabin);
+    }
+    let mix = get_str(o, "cabin_mix");
+    if !mix.is_empty() {
+        out.push(format!("cabins: {mix}"));
+    }
+    if let Some(bags) = o["baggage"].get("checkedBag").and_then(Value::as_u64) {
+        out.push(format!(
+            "{bags} checked bag{}",
+            if bags == 1 { "" } else { "s" }
+        ));
+    }
+    let date = get_str(o, "date");
+    if !date.is_empty() && dep.is_empty() {
+        out.push(date);
+    }
+    out
 }
 
 pub fn offers_in(kind: Kind, result: &Value) -> Vec<Offer> {
@@ -1083,6 +1588,10 @@ pub fn offers_in(kind: Kind, result: &Value) -> Vec<Offer> {
         .iter()
         .map(|o| offer_of(kind, o, &cur))
         .filter(|o| !o.label.is_empty())
+        // a flight or a stay without a price is a web page about it (a search's web fallback), not an offer
+        .filter(|o| {
+            !matches!(kind, Kind::Flight | Kind::Hotel) || o.price.is_some() || o.total.is_some()
+        })
         .collect()
 }
 
@@ -1355,6 +1864,17 @@ fn calls_of<'a>(transcript: &'a [Value], base: &str) -> Vec<(Value, &'a Value)> 
     out
 }
 
+/// The tool name of the call a tool message answers.
+fn search_name(transcript: &[Value], m: &Value) -> String {
+    let id = get_str(m, "tool_call_id");
+    transcript
+        .iter()
+        .flat_map(tool_calls)
+        .find(|tc| get_str(tc, "id") == id)
+        .map(|tc| stored_call(tc).0)
+        .unwrap_or_default()
+}
+
 fn last_after<'a>(transcript: &'a [Value], base: &str, after: usize) -> Option<(Value, &'a Value)> {
     calls_of(transcript, base)
         .into_iter()
@@ -1371,17 +1891,116 @@ fn last_user_pos(transcript: &[Value]) -> usize {
 /// The tool to call for `base`: the native one when the catalog has it, else a travel MCP connector's
 /// (`mcp_<server>__<base>`), else the native name (`michelin_search` and `restaurant_availability` only exist on a
 /// connector: `mcp_travel__…` by default).
-pub fn tool_for(base: &str, available: &[String]) -> String {
+pub fn tool_for(base: &str, available: &[String], connector: bool) -> String {
+    let mcp = available.iter().find(|n| *n != base && is_tool(n, base));
+    if let (true, Some(n)) = (connector, mcp) {
+        return n.clone();
+    }
     if available.iter().any(|n| n == base) {
         return base.into();
     }
-    if let Some(n) = available.iter().find(|n| is_tool(n, base)) {
+    if let Some(n) = mcp {
         return n.clone();
     }
     match base {
         "michelin_search" | "restaurant_availability" => format!("mcp_travel__{base}"),
         _ => base.into(),
     }
+}
+
+/// The user's words name their travel connector (agency) as the place to search and book.
+static CONNECTOR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(connector|travel agency|my agency|travel agent)\b|旅行社|代理商|连接器")
+        .unwrap()
+});
+
+/// A tool result's data: the `content` of the untrusted envelope (`{"trust", "source", …, "content"}`) a search or
+/// data tool's result arrives in, or the JSON as it is.
+fn data_of(m: &Value) -> Value {
+    let v = json_of(m);
+    match v.get("content") {
+        Some(c @ Value::Object(_)) if v.get("trust").is_some() => c.clone(),
+        Some(Value::String(s)) if v.get("trust").is_some() => serde_json::from_str(s).unwrap_or(v),
+        _ => v,
+    }
+}
+
+/// The text of the pages a `browser_read` result carries (`{"trust", "source", "pages": [{"url", "text"}]}`), or the
+/// message as it is.
+fn pages_text(m: &Value) -> String {
+    let texts: Vec<String> = json_of(m)
+        .get("pages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|p| get_str(p, "text"))
+        .filter(|t| !t.is_empty())
+        .collect();
+    if texts.is_empty() {
+        content_of(m)
+    } else {
+        texts.join("\n\n")
+    }
+}
+
+/// A search engine's ad or redirect link (DuckDuckGo's `y.js?ad_domain=…`, Bing's `aclick`, Google's `aclk`): no page
+/// about the trip, and it often does not open (travel_brave_real 2026-11-01).
+fn ad_link(url: &str) -> bool {
+    let host = host_of(url);
+    let lc = url.to_lowercase();
+    (host.ends_with("duckduckgo.com") && (lc.contains("/y.js") || lc.contains("ad_domain")))
+        || (host.ends_with("bing.com") && lc.contains("/aclick"))
+        || (host.ends_with("google.com") && lc.contains("/aclk"))
+        || lc.contains("ad_provider=")
+}
+
+/// A web fallback's results (`{"results": [{"title", "url", "snippet"}]}`) as answer lines, the first four.
+fn web_pages(result: &Value) -> Vec<String> {
+    static PRICE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?:S\$|SGD|US\$|USD|HK\$|A\$|¥|JPY|€|EUR|£|GBP|\$)\s?\d[\d,]*(?:\.\d+)?")
+            .unwrap()
+    });
+    // the text of the pages the fallback read, by url
+    let page_text = |url: &str| {
+        result
+            .get("pages")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|p| get_str(p, "url") == url)
+            .map(|p| get_str(p, "text"))
+            .unwrap_or_default()
+    };
+    result
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|r| get_str(r, "url").starts_with("http") && !ad_link(&get_str(r, "url")))
+        .take(4)
+        .map(|r| {
+            let url = get_str(r, "url");
+            let snippet = take_chars(get_str(r, "snippet").trim(), 160).to_string();
+            // a price as the page or its snippet shows it ("from" prices, not quotes)
+            let price = if PRICE.is_match(&snippet) {
+                String::new()
+            } else {
+                PRICE
+                    .find(&page_text(&url))
+                    .map(|m| format!(" (the page shows prices from {})", m.as_str()))
+                    .unwrap_or_default()
+            };
+            format!(
+                "- [{}]({url}){}{price}",
+                get_str(r, "title"),
+                if snippet.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {snippet}")
+                }
+            )
+        })
+        .collect()
 }
 
 fn denied(m: &Value) -> bool {
@@ -1475,6 +2094,54 @@ impl Guest<'_> {
     pub fn address(&self) -> String {
         self.p("address_home")
     }
+}
+
+/// The profile with the contact details the user gave in the chat ("I'm Lucas Lu, lucas@example.com, +65 8000 0000")
+/// where the profile has none: name, email, phone (the latest message that names one).
+pub fn profile_with_words(profile: &Value, texts: &[String]) -> Value {
+    static EMAIL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+").unwrap());
+    static PHONE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\+\d{1,3}[\s-]?\d[\d\s-]{5,14}\d").unwrap());
+    static NAME: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?:\bI'?m|\bI am|\bmy name is|(?i:\bname)\s*:)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})|(?:^|[.!?]\s+|\n)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}),\s*[\w.+-]+@")
+            .unwrap()
+    });
+    let mut p = profile.clone();
+    if !p.is_object() {
+        p = json!({});
+    }
+    let mut fill = |keys: &[&str], key: &str, found: Option<String>| {
+        if keys.iter().all(|k| get_str(&p, k).trim().is_empty()) {
+            if let Some(v) = found {
+                p[key] = json!(v);
+            }
+        }
+    };
+    let latest = |re: &Regex, group: usize| {
+        texts.iter().rev().find_map(|t| {
+            re.captures(t)
+                .and_then(|c| c.get(group))
+                .map(|m| m.as_str().trim().trim_end_matches('.').to_string())
+        })
+    };
+    // the address the results are mailed to ("email the options to mei@…") is not the user's own
+    let mailed = mail_to(texts);
+    let own_email = texts.iter().rev().find_map(|t| {
+        EMAIL
+            .find_iter(t)
+            .map(|m| m.as_str().trim_end_matches('.').to_string())
+            .find(|e| Some(e) != mailed.as_ref())
+    });
+    let name = texts.iter().rev().find_map(|t| {
+        NAME.captures(t)
+            .and_then(|c| c.get(1).or_else(|| c.get(2)))
+            .map(|m| m.as_str().trim().to_string())
+    });
+    fill(&["name_en", "name"], "name_en", name);
+    fill(&["email_personal", "email"], "email_personal", own_email);
+    fill(&["phone"], "phone", latest(&PHONE, 0));
+    p
 }
 
 type SiteFn = fn(&Guest) -> Vec<Op>;
@@ -1696,8 +2363,9 @@ fn book(spec: &BookingSpec, t: &[Value], w: &World, n: usize, item: &Item, req: 
         return calls(n, "load_skill", json!({"name": BROWSER_USE}));
     };
     let nav_pos = pos(t, nav_msg);
+    let profile = profile_with_words(w.profile, w.user_texts);
     let guest = Guest {
-        profile: w.profile,
+        profile: &profile,
         requests: &req.occasion,
     };
     // the plan with fixed ids
@@ -1887,14 +2555,18 @@ pub fn next_in(spec: &BookingSpec, t: &[Value], w: &World, available: &[String])
         w.today,
         fact.as_ref().map(|(_, v)| v),
     );
-    // 1. one search
+    // 1. one search, on the user's connector when they name it (the data tools follow the search)
     let searches = calls_of(t, spec.search);
+    let connector = user_asks(w.user_texts, &CONNECTOR)
+        || searches
+            .last()
+            .is_some_and(|(_, m)| search_name(t, m).starts_with("mcp_"));
     let Some((_, search_msg)) = searches.last() else {
         let missing = req.missing(spec.kind);
         if missing.is_empty() {
             return calls(
                 n,
-                &tool_for(spec.search, available),
+                &tool_for(spec.search, available, connector),
                 req.search_args(spec.kind),
             );
         }
@@ -1928,13 +2600,61 @@ pub fn next_in(spec: &BookingSpec, t: &[Value], w: &World, available: &[String])
             missing.join(" and ")
         ));
     };
-    let result = json_of(search_msg);
+    // the booking stage under way and the search result compressed away (a long run: snapshots, the vault): the item
+    // from the machine's own calls, whose arguments compression never touches
+    if content_of(search_msg).contains(super::guards::COMPRESSED_MARK) {
+        if let Some(item) = resumed_item(t, pos(t, search_msg)) {
+            return book(spec, t, w, n, &item, &req);
+        }
+    }
+    let result = data_of(search_msg);
     let offers = offers_in(spec.kind, &result);
+    let next_ask = next_search(spec.kind, w.user_texts, &req);
+    let then_next = |s: String| match &next_ask {
+        Some(q) => format!("{s}\n\n{q}"),
+        None => s,
+    };
     if offers.is_empty() {
+        // the native search found nothing priced: the user's travel connector next, once
+        let mcp = tool_for(spec.search, available, true);
+        if mcp.starts_with("mcp_") && !search_name(t, search_msg).starts_with("mcp_") {
+            return calls(n, &mcp, req.search_args(spec.kind));
+        }
+        // the search was limited to the preferred airlines and none flies it: say so, ask before searching all
+        if spec.kind == Kind::Flight && !req.airlines.is_empty() && web_pages(&result).is_empty() {
+            return Step::Final(no_preferred(&req, &[]));
+        }
+        // the flight / hotel APIs failed and the search fell back to the web: the pages it read, with their "from"
+        // prices as the pages show them
+        // (the pages of whichever search fell back to the web: a connector tried after it may have failed)
+        let pages = searches
+            .iter()
+            .rev()
+            .map(|(_, m)| web_pages(&data_of(m)))
+            .find(|p| !p.is_empty())
+            .unwrap_or_default();
+        if !pages.is_empty() {
+            let compare = get_str(&result, "compare_url");
+            return Step::Final(then_next(format!(
+                "No {} search answered for {}, so these are web pages about it (their prices are \"from\" prices, not quotes for your dates):\n{}{}",
+                spec.what,
+                searched_line(spec.kind, &req),
+                pages.join("\n"),
+                if compare.is_empty() { String::new() } else { format!("\n\nCompare prices for your dates on Kayak: {compare}") }
+            )));
+        }
         return Step::Final(format!(
             "The search found nothing for {}. Tell me what to change (dates, area, budget …) and I will search again.",
             searched_line(spec.kind, &req)
         ));
+    }
+    // a search limited to the preferred airlines that found none of them (the API had no filter for them): the
+    // answer says so and asks before searching all airlines — no second search now
+    if spec.kind == Kind::Flight
+        && !req.airlines.is_empty()
+        && result["searched"]["preferred_found"].as_u64() == Some(0)
+    {
+        return Step::Final(no_preferred(&req, &offers));
     }
     let (list, rule) = ranked(spec.kind, &req, &offers, &text);
     let chosen = picked_label(w.user_texts).and_then(|l| by_label(&offers, &l).cloned());
@@ -1948,7 +2668,7 @@ pub fn next_in(spec: &BookingSpec, t: &[Value], w: &World, available: &[String])
                     offers.len(),
                     searched_line(spec.kind, &req),
                     rule.trim_end_matches(", the cheapest"),
-                    offers.iter().take(4).map(|o| format!("- {}", option_line(o))).collect::<Vec<_>>().join("\n")
+                    offers.iter().take(4).map(|o| format!("- {}", option_line(spec.kind, o))).collect::<Vec<_>>().join("\n")
                 ))
             }
         },
@@ -1973,12 +2693,12 @@ pub fn next_in(spec: &BookingSpec, t: &[Value], w: &World, available: &[String])
             let Some((_, m)) = got else {
                 return calls(
                     n,
-                    &tool_for(spec.detail, available),
+                    &tool_for(spec.detail, available, connector),
                     json!({"restaurant_id": c.id, "date": req.date.map(iso).unwrap_or_default(), "party_size": req.party_or(spec.kind)}),
                 );
             };
             tried += 1;
-            let v = json_of(m);
+            let v = data_of(m);
             let slots: Vec<(String, String)> = v
                 .get("slots")
                 .and_then(Value::as_array)
@@ -2041,8 +2761,54 @@ pub fn next_in(spec: &BookingSpec, t: &[Value], w: &World, available: &[String])
                    "kind": "comparison", "options": options, "picked": pick.label}),
         );
     }
+    // 3b. the pick's own data: a Google Flights offer's booking options (who sells it, at what price) and, for the
+    // comparison, a hotel's rooms (the booking stage reads the same call)
+    let mut extra: Vec<String> = Vec::new();
+    if spec.kind == Kind::Flight && pick.id.starts_with("fl_") {
+        let got = calls_of(t, "flight_offer")
+            .into_iter()
+            .rfind(|(a, m)| sget(a, "offer_id") == pick.id && pos(t, m) > search_pos);
+        let Some((_, m)) = got else {
+            let cur = if pick.currency.is_empty() {
+                &req.currency
+            } else {
+                &pick.currency
+            };
+            return calls(
+                n,
+                &tool_for("flight_offer", available, false),
+                json!({"offer_id": pick.id, "currency": cur}),
+            );
+        };
+        extra.extend(booking_options(&data_of(m)));
+    }
+    let rooms_args = json!({"hotel_id": pick.id, "check_in": req.date.map(iso).unwrap_or_default(),
+                            "check_out": req.check_out.map(iso).unwrap_or_default(), "guests": req.party_or(spec.kind)});
+    if spec.kind == Kind::Hotel && !book_it && !pick.id.is_empty() {
+        let rooms_call = calls_of(t, spec.detail)
+            .into_iter()
+            .rfind(|(a, _)| sget(a, "hotel_id") == pick.id);
+        let Some((_, m)) = rooms_call else {
+            return calls(n, &tool_for(spec.detail, available, connector), rooms_args);
+        };
+        let rooms = offers_in(spec.kind, &data_of(m));
+        if let Some((i, why)) = pick_room(&rooms, &req) {
+            let r = &rooms[i];
+            let mut parts = vec![format!("Room at {}: **{}**", pick.label, r.label)];
+            parts.extend(
+                r.details
+                    .iter()
+                    .filter(|d| !pick.details.contains(d))
+                    .cloned(),
+            );
+            if !r.url.is_empty() {
+                parts.push(r.url.clone());
+            }
+            extra.push(format!("{} ({why})", parts.join(" · ")));
+        }
+    }
     if !book_it {
-        return Step::Final(answer_compare(
+        let answer = answer_compare(
             spec,
             &req,
             &pick,
@@ -2050,7 +2816,27 @@ pub fn next_in(spec: &BookingSpec, t: &[Value], w: &World, available: &[String])
             &list,
             &result,
             slot.as_ref().map(|(t, _, _)| t.as_str()),
-        ));
+            &extra,
+        );
+        // "… and email the options to mei@example.com": the comparison mailed to the address in the user's words
+        let Some(to) = mail_to(w.user_texts) else {
+            return Step::Final(then_next(answer));
+        };
+        let Some((_, sent)) = last_after(t, "gmail_send", search_pos) else {
+            return calls(
+                n,
+                "gmail_send",
+                json!({"to": to, "subject": format!("{} for {}", choice_title(spec.kind), searched_line(spec.kind, &req)),
+                       "body": answer}),
+            );
+        };
+        let c = content_of(sent);
+        let done = if c.starts_with("ERROR") || denied(sent) {
+            format!("Not sent to {to}: {}", take_chars(&c, 200))
+        } else {
+            format!("Sent to {to}.")
+        };
+        return Step::Final(then_next(format!("{answer}\n\n{done}")));
     }
     // 4. the item to book
     let item = match spec.kind {
@@ -2075,7 +2861,7 @@ pub fn next_in(spec: &BookingSpec, t: &[Value], w: &World, available: &[String])
             delivery: format!(
                 "E-ticket to {}",
                 Guest {
-                    profile: w.profile,
+                    profile: &profile_with_words(w.profile, w.user_texts),
                     requests: ""
                 }
                 .email()
@@ -2089,15 +2875,10 @@ pub fn next_in(spec: &BookingSpec, t: &[Value], w: &World, available: &[String])
                 .into_iter()
                 .rfind(|(a, _)| sget(a, "hotel_id") == pick.id);
             if rooms_call.is_none() && !pick.id.is_empty() {
-                return calls(
-                    n,
-                    &tool_for(spec.detail, available),
-                    json!({"hotel_id": pick.id, "check_in": req.date.map(iso).unwrap_or_default(),
-                           "check_out": req.check_out.map(iso).unwrap_or_default(), "guests": req.party_or(spec.kind)}),
-                );
+                return calls(n, &tool_for(spec.detail, available, connector), rooms_args);
             }
             let rooms: Vec<Offer> = rooms_call
-                .map(|(_, m)| offers_in(spec.kind, &json_of(m)))
+                .map(|(_, m)| offers_in(spec.kind, &data_of(m)))
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|r| !r.url.is_empty())
@@ -2240,12 +3021,53 @@ pub fn next_in(spec: &BookingSpec, t: &[Value], w: &World, available: &[String])
                 &rule,
                 &list,
                 &result,
-                slot.as_ref().map(|(t, _, _)| t.as_str())
+                slot.as_ref().map(|(t, _, _)| t.as_str()),
+                &extra,
             ),
             pick.label
         ));
     }
     book(spec, t, w, n, &item, &req)
+}
+
+/// The item of a booking stage already under way, from the machine's own calls after the search: the booking link it
+/// opened, and the approved `purchase_confirm` (what, the total, the currency, the delivery) or else the pick shown on
+/// the choice card. `None` before the booking link was opened.
+fn resumed_item(t: &[Value], search_pos: usize) -> Option<Item> {
+    let (nav, _) = calls_of(t, "browser_navigate")
+        .into_iter()
+        .find(|(_, m)| pos(t, m) > search_pos && get_str(m, "tool_call_id").starts_with("bkg_"))?;
+    let url = sget(&nav, "url");
+    let confirm = calls_of(t, "purchase_confirm")
+        .into_iter()
+        .rfind(|(_, m)| pos(t, m) > search_pos)
+        .map(|(a, _)| a);
+    let picked = calls_of(t, "present_choices")
+        .into_iter()
+        .rfind(|(_, m)| pos(t, m) > search_pos)
+        .map(|(a, _)| sget(&a, "picked"))
+        .unwrap_or_default();
+    Some(match confirm {
+        Some(a) => Item {
+            name: a["items"][0]
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or(picked),
+            url,
+            total: a.get("total").and_then(Value::as_f64),
+            currency: sget(&a, "currency"),
+            charged: true,
+            delivery: sget(&a, "delivery"),
+            note: sget(&a, "note"),
+            lines: Vec::new(),
+        },
+        None => Item {
+            name: picked,
+            url,
+            ..Item::default()
+        },
+    })
 }
 
 fn choice_title(kind: Kind) -> &'static str {
@@ -2261,17 +3083,29 @@ fn choice_title(kind: Kind) -> &'static str {
 fn searched_line(kind: Kind, r: &Req) -> String {
     match kind {
         Kind::Flight => format!(
-            "{} to {} on {}{}, {}, {} adult{}{}",
+            "{} to {} {}{}, {}, {} adult{}{}, {}",
             r.origin,
             r.destination,
-            r.date.map(iso).unwrap_or_default(),
+            match r.date_to {
+                Some(to) => format!(
+                    "any day {} to {}",
+                    r.date.map(iso).unwrap_or_default(),
+                    iso(to)
+                ),
+                None => format!("on {}", r.date.map(iso).unwrap_or_default()),
+            },
             r.return_date
                 .map(|d| format!(" (return {})", iso(d)))
                 .unwrap_or_default(),
             r.cabin.replace('_', " "),
             r.party_or(kind),
             if r.party_or(kind) > 1 { "s" } else { "" },
-            if r.nonstop { ", direct" } else { "" }
+            if r.nonstop { ", direct" } else { "" },
+            match r.max_price {
+                Some(p) => format!("under {} {}", r.currency, money(p).trim_end_matches(".00"))
+                    .replace("under  ", "under "),
+                None => "any price".to_string(),
+            }
         ),
         Kind::Hotel => format!(
             "{}, {} to {}, {} guest{}",
@@ -2301,15 +3135,127 @@ fn searched_line(kind: Kind, r: &Req) -> String {
     }
 }
 
-fn option_line(o: &Offer) -> String {
+fn option_line(kind: Kind, o: &Offer) -> String {
     let mut parts = vec![format!("**{}**", o.label)];
     parts.extend(o.details.iter().cloned());
-    if !o.url.is_empty() {
-        parts.push(o.url.clone());
+    if o.preferred {
+        parts.push(match kind {
+            Kind::Flight => "your preferred airline".into(),
+            _ => "your preferred brand".to_string(),
+        });
     }
-    parts.join(" · ")
+    let line = parts.join(" · ");
+    if o.url.is_empty() {
+        return line;
+    }
+    // where to book it: the offer's booking link (Kiwi.com's page for it), and the airline's own site
+    let mut book = format!("Book it at {}", o.url);
+    if o.data == "Kiwi.com" {
+        book.push_str(" (Kiwi.com)");
+    }
+    if !o.book_at.is_empty() {
+        book.push_str(&format!(" or on {}", o.book_at.join(" or ")));
+    }
+    format!("{line} — {book}")
 }
 
+/// A Google Flights offer's booking options (`flight_offer`) as an answer line: who sells it, at what price.
+fn booking_options(v: &Value) -> Vec<String> {
+    let sellers: Vec<String> = v
+        .get("options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|o| !get_str(o, "book_with").is_empty())
+        .map(|o| {
+            let price = num_of(o.get("price"))
+                .map(|p| {
+                    format!(
+                        " {} {}",
+                        get_str(o, "currency"),
+                        money(p).trim_end_matches(".00")
+                    )
+                })
+                .unwrap_or_default();
+            let title = get_str(o, "title");
+            format!(
+                "{}{price}{}",
+                get_str(o, "book_with"),
+                if title.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({title})")
+                }
+            )
+        })
+        .collect();
+    if sellers.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!("Sold by: {}", sellers.join(", "))]
+    }
+}
+
+/// The answer when a search limited to the preferred airlines found none of them: no second search now — the
+/// question whether to search all airlines (and what else came back, when the API searched them all).
+fn no_preferred(req: &Req, others: &[Offer]) -> String {
+    let mut out = format!(
+        "There is no {} flight for {} (the search was limited to your preferred airline{}).",
+        req.airlines.join(" or "),
+        searched_line(Kind::Flight, req),
+        if req.airlines.len() > 1 { "s" } else { "" }
+    );
+    if !others.is_empty() {
+        out.push_str("\nThe search also returned:\n");
+        for o in others.iter().take(4) {
+            out.push_str(&format!("- {}\n", option_line(Kind::Flight, o)));
+        }
+    }
+    out.push_str("\n\nShall I search all airlines?");
+    out
+}
+
+/// The next travel search the request asks for, offered after this one (ONE travel search per request): a flight's
+/// answer offers the hotel, a hotel's the rental car — only when the user's words ask for it.
+pub const NEXT_MARK: &str = "Shall I search the ";
+
+fn next_search(kind: Kind, texts: &[String], req: &Req) -> Option<String> {
+    static HOTEL_W: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(hotels?|accommodation|place to stay|ryokan)\b|酒店|住宿").unwrap()
+    });
+    static CAR_W: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(rental car|car rental|car hire|hire a car|rent a car|a car)\b|租车")
+            .unwrap()
+    });
+    let text = texts.join("\n");
+    let wants_hotel = HOTEL_W.is_match(&text);
+    let wants_car = CAR_W.is_match(&text);
+    match kind {
+        Kind::Flight if wants_hotel => {
+            let area = area_in(&text);
+            Some(format!(
+                "{NEXT_MARK}hotel{} now?",
+                if area.is_empty() {
+                    if req.destination.is_empty() {
+                        String::new()
+                    } else {
+                        CITIES
+                            .iter()
+                            .find(|c| c.code == req.destination)
+                            .map(|c| format!(" in {}", c.name))
+                            .unwrap_or_default()
+                    }
+                } else {
+                    format!(" near {area}")
+                }
+            ))
+        }
+        Kind::Flight | Kind::Hotel if wants_car => Some(format!("{NEXT_MARK}rental car now?")),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn answer_compare(
     spec: &BookingSpec,
     req: &Req,
@@ -2318,22 +3264,73 @@ fn answer_compare(
     list: &[Offer],
     result: &Value,
     time: Option<&str>,
+    extra: &[String],
 ) -> String {
     let mut out = format!(
-        "{} for {}:\n",
+        "{} for {}",
         choice_title(spec.kind),
         searched_line(spec.kind, req)
     );
+    if spec.kind == Kind::Flight {
+        // the cabin searched, as the search reports it (an answer in another cabin is never given as this one)
+        if req.cabin != "economy" {
+            let searched = get_str(&result["searched"], "cabin");
+            out = format!(
+                "{} — searched as {}. {out}",
+                req.cabin.replace('_', " ").to_uppercase()
+                    + if req.cabin == "premium_economy" {
+                        ""
+                    } else {
+                        " CLASS"
+                    },
+                if searched.is_empty() {
+                    req.cabin.replace('_', " ")
+                } else {
+                    searched
+                }
+            );
+        }
+        let data = get_str(result, "data");
+        if !data.is_empty() {
+            out.push_str(&format!(" ({data} data)"));
+        }
+    }
+    out.push_str(":\n");
     let mut shown = vec![pick];
     shown.extend(list.iter().filter(|o| o.label != pick.label).take(3));
     for o in shown {
-        out.push_str(&format!("- {}\n", option_line(o)));
+        out.push_str(&format!("- {}\n", option_line(spec.kind, o)));
     }
     out.push_str(&format!(
         "\nPicked: **{}**{} — {rule}.",
         pick.label,
         time.map(|t| format!(" at {t}")).unwrap_or_default()
     ));
+    for l in extra {
+        out.push_str(&format!("\n{l}"));
+    }
+    // a range of days: ONE search covered them all
+    let days: Vec<String> = result
+        .get("by_date")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|d| get_str(d, "date"))
+        .filter(|d| !d.is_empty())
+        .collect();
+    if days.len() > 1 {
+        out.push_str(&format!(
+            "\n{} days searched in one call ({} to {}){}.",
+            days.len(),
+            days[0],
+            days[days.len() - 1],
+            if pick.date.is_empty() {
+                String::new()
+            } else {
+                format!("; the pick flies on {}", pick.date)
+            }
+        ));
+    }
     let compare = get_str(result, "compare_url");
     if !compare.is_empty() {
         out.push_str(&format!("\nCompare prices on Kayak: {compare}"));
@@ -2435,8 +3432,9 @@ fn next_shop(spec: &BookingSpec, t: &[Value], w: &World, n: usize) -> Step {
         .unwrap_or_default();
     let buy = wants_booking(w.user_texts);
     let cart = buy || CART.is_match(&text);
+    let profile = profile_with_words(w.profile, w.user_texts);
     let guest = Guest {
-        profile: w.profile,
+        profile: &profile,
         requests: "",
     };
     let delivery = format!("Home delivery to {}", guest.address());
@@ -2448,15 +3446,21 @@ fn next_shop(spec: &BookingSpec, t: &[Value], w: &World, n: usize) -> Step {
         else {
             return calls(n, "browser_navigate", json!({"url": url}));
         };
+        // Stride's product page by its fixed parts: the item in the <title> ("<item> — Stride Sports Singapore"),
+        // the amount on the "total S$…" line of its checkout
         let page = snapshot_text(m);
-        static HEADING: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"heading "([^"]+)""#).unwrap());
-        let title = HEADING
-            .captures(&page)
-            .map(|c| c[1].to_string())
+        let title = get_str(&json_of(m), "title")
+            .split(" — ")
+            .next()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(String::from)
             .unwrap_or_else(|| "the item".into());
-        let price =
-            crate::listings::price_after(&page, &title).and_then(|p| num_of(Some(&json!(p))));
+        static TOTAL: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?i)\btotal\s+S\$\s*([\d,]+(?:\.\d+)?)").unwrap());
+        let price = TOTAL
+            .captures(&page)
+            .and_then(|c| c[1].replace(',', "").parse::<f64>().ok());
         if !buy {
             return Step::Final(format!(
                 "{title}: {} on Stride Sports ({url}). Say \"buy it\" and I will fill in the checkout for you to place the order.",
@@ -2494,7 +3498,7 @@ fn next_shop(spec: &BookingSpec, t: &[Value], w: &World, n: usize) -> Step {
     }) else {
         return calls(n, "browser_read", json!({"urls": [url]}));
     };
-    let page = content_of(read);
+    let page = pages_text(read);
     let listings = crate::listings::parse(&page);
     let ranking = shop_ranking(&text);
     let ranked = ranking.apply(&listings);
@@ -2523,8 +3527,10 @@ fn next_shop(spec: &BookingSpec, t: &[Value], w: &World, n: usize) -> Step {
             .iter()
             .map(|l| json!({"label": l.title, "details": [l.price_text, l.rating_text], "source_url": url}))
             .collect();
+        let mut rk = ranking.to_json();
+        rk["url"] = json!(url);
         let mut a = json!({"question": format!("The {} listings on Kaya Mobile's page that meet your criteria ({} compared)", ranked.len(), listings.len()),
-                           "kind": "comparison", "options": options});
+                           "kind": "comparison", "options": options, "ranking": rk});
         if !wants_choose {
             a["picked"] = json!(top.title);
         }

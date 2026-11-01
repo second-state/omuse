@@ -462,6 +462,7 @@ pub fn code_call(call: &ToolCall) -> bool {
         "bkg_",
         "auto_handover_",
         "news_",
+        "pages_read",
         "handback_snapshot_",
     ]
     .iter()
@@ -1336,6 +1337,28 @@ fn report_paths_to_mail(goal: &str, msgs: &[Value]) -> Option<Vec<String>> {
     None
 }
 
+/// The pages a request lists (two or more web addresses, at most eight): one `browser_read` of them all, a call code
+/// makes before the model's first step, so the sites are read side by side, whatever the model would have chosen.
+pub fn pages_read_call(goal: &str) -> Option<ToolCall> {
+    static URL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>)\]]+"#).unwrap());
+    let mut urls: Vec<String> = Vec::new();
+    for m in URL.find_iter(goal) {
+        let u = m
+            .as_str()
+            .trim_end_matches(['.', ',', ';', ':'])
+            .to_string();
+        if !urls.contains(&u) {
+            urls.push(u);
+        }
+    }
+    (2..=8).contains(&urls.len()).then(|| ToolCall {
+        id: "pages_read".into(),
+        name: "browser_read".into(),
+        args: json!({"urls": urls}),
+    })
+}
+
 /// "email it" after a news report, as a call code makes on the follow-up turn: `gmail_send` of the chat's latest
 /// edition to the user's own address (news_report_real 2026-11-01: "email it" got "What would you like me to email,
 /// and to whom?").
@@ -1669,6 +1692,23 @@ choose \"Resume Application\" at {HOME} with your travel document number and the
     format!("{}\n\n{line}", answer.trim_end())
 }
 
+/// `hh_mm` ("17:10", "09:25") in `answer` as written there: 24-hour ("17:10", "9:25") or 12-hour ("5:10 pm", "9:25am").
+fn time_given(answer: &str, hh_mm: &str) -> bool {
+    let Some((h, m)) = hh_mm.split_once(':') else {
+        return answer.contains(hh_mm);
+    };
+    let Ok(h) = h.parse::<u32>() else {
+        return answer.contains(hh_mm);
+    };
+    let h12 = match h % 12 {
+        0 => 12,
+        x => x,
+    };
+    let ampm = if h < 12 { "a" } else { "p" };
+    let pat = format!(r"(?i)(?:^|[^\d:])(?:0?{h}:{m}(?:[^\d]|$)|{h12}:{m}\s?{ampm}\.?m)");
+    Regex::new(&pat).is_ok_and(|r| r.is_match(answer))
+}
+
 /// `answer` giving a delayed flight's original time next to the new one: when a page the run read shows "Scheduled
 /// HH:MM … Estimated HH:MM" with different times (an airline's status page) and the answer gives the estimated time but
 /// not the scheduled one, "(Scheduled departure 09:25, now estimated 17:10.)" is added (claims_real 2026-10-31).
@@ -1689,7 +1729,7 @@ pub fn with_flight_times(transcript: &[Value], answer: &str, zh: bool) -> String
             continue;
         };
         let (old, new) = (s[1].to_string(), e[2].to_string());
-        if old == new || !answer.contains(&new) || answer.contains(&old) {
+        if old == new || !time_given(answer, &new) || time_given(answer, &old) {
             return answer.to_string();
         }
         let line = if zh {
@@ -3554,6 +3594,15 @@ static MAIL_OR_BOOKED: LazyLock<Regex> = LazyLock::new(|| {
 /// ask to find, search, compare … — not to fill a form, a visa, insurance, a claim or a report) that says nothing about
 /// mail or something already booked never reads the user's mail — a `gmail_*` call there is refused.
 /// "Find my hotel confirmation in Gmail, then search a hotel nearby" or "which hotel did I book" may read it.
+/// A request for a new travel search: its words name a flight, hotel, car or restaurant and ask to find, search,
+/// compare … — not a form, a visa, insurance, a claim, a refund or a report, and nothing about mail or a booking made.
+pub fn new_travel_search(goal: &str) -> bool {
+    TRAVEL_WORDS.is_match(goal)
+        && SEARCH_INTENT.is_match(goal)
+        && !NOT_A_SEARCH.is_match(goal)
+        && !MAIL_OR_BOOKED.is_match(goal)
+}
+
 pub fn mail_before_travel_guard(goal: &str, call: &ToolCall) -> Option<String> {
     let base = call.name.rsplit("__").next().unwrap_or(&call.name);
     let new_search =
@@ -3572,6 +3621,11 @@ restaurant search never reads the user's mail."
 /// a call that failed, e.g. on a bad date, may be corrected) is refused, naming that search.
 pub fn one_search_guard(events: impl FnOnce() -> Vec<Value>, call: &ToolCall) -> Option<String> {
     travel_search(&call.name)?;
+    // the booking machine's own calls: it searches once, and the user's connector once more only when the first search
+    // gave nothing priced (booking.rs)
+    if call.id.starts_with("bkg_") {
+        return None;
+    }
     let done = events().into_iter().find(|e| {
         get_str(e, "type") == "tool_result"
             && e["data"]["ok"].as_bool() == Some(true)

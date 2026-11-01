@@ -2925,6 +2925,22 @@ fn a_delays_answer_gives_the_original_time_too() {
     );
     let both = "Delayed from 09:25 to 17:10.";
     assert_eq!(with_flight_times(&t, both, false), both);
+    // the times in 12-hour form (claims_real 2026-11-01: "estimated departure was 5:10 pm", the 09:25 missing)
+    let a = with_flight_times(
+        &t,
+        "Its estimated departure was 5:10 pm from Changi Terminal 3.",
+        false,
+    );
+    assert!(
+        a.ends_with("(Scheduled departure 09:25, now estimated 17:10.)"),
+        "{a}"
+    );
+    let both12 = "Scheduled for 9:25 am, now 5:10 pm.";
+    assert_eq!(with_flight_times(&t, both12, false), both12);
+    assert_eq!(
+        with_flight_times(&t, "Gate opens 15:10.", false),
+        "Gate opens 15:10."
+    );
     assert_eq!(
         with_flight_times(&t, "SQ638 is on time.", false),
         "SQ638 is on time."
@@ -4944,4 +4960,24 @@ fn every_skill_that_fills_a_known_form_is_driven_by_code() {
         missing.is_empty(),
         "skills that fill a known form without a code machine: {missing:?}"
     );
+}
+
+#[test]
+fn the_pages_a_request_lists_are_read_by_code_at_once() {
+    let ask = "Compare these five hotels — price per night and rating, from their own websites:\n- http://shop.test:8115/harbourview\n- http://shop.test:8115/quayside\n- http://shop.test:8115/marinapearl.\n- http://shop.test:8115/quayside";
+    let c = super::guards::pages_read_call(ask).expect("a read");
+    assert_eq!(c.name, "browser_read");
+    assert_eq!(
+        c.args["urls"],
+        json!([
+            "http://shop.test:8115/harbourview",
+            "http://shop.test:8115/quayside",
+            "http://shop.test:8115/marinapearl"
+        ])
+    );
+    assert!(super::guards::code_call(&c));
+    assert!(super::guards::pages_read_call(
+        "Order the socks from http://shop.test:8099/stride_socks.html"
+    )
+    .is_none());
 }

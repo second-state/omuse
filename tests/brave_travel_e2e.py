@@ -29,21 +29,26 @@ D3 = D1 + dt.timedelta(days=3)
 t = K.run(f"BRAVETRAVEL cheapest flight Singapore to Tokyo on {D1.day} {D1:%b %Y}, a 4-star hotel near Ginza for 3 nights, and a compact rental car at Narita DATE={D1}")
 K.trace(t)
 names = K.names(t)
-sysp = [x["system"] for x in c.get(LLM + "/calls_for", params={"marker": "BRAVETRAVEL"}).json()]
+# the flight search is code's (no model call); the instructions a model-path travel request gets, from a question
+K.run("BRAVEPROMPT which sources do you use for flights, hotels and cars?")
+sysp = [x["system"] for x in c.get(LLM + "/calls_for", params={"marker": "BRAVEPROMPT"}).json() if not x["system"].startswith("You name conversations")]
 K.check("the agent's instructions name the Web search API (brave) and the no-browser rule for flights, hotels and cars",
         sysp and "Web search (web_search, always available): search services connected (2 services" in sysp[0] and "car rental" in sysp[0] and "do NOT open Google Flights" in sysp[0]
         and "brave" not in sysp[0].split("Web search (web_search")[1][:200].lower(), sysp[0][:200] if sysp else None)
-K.check("a flight, a hotel and a car in one message: ONE travel search — the flight — and the hotel offered next",
-        t["status"] == "COMPLETED" and names == ["load_skill", "flights_search"] and "Kiwi.com data: SQ638" in (t.get("result") or "")
-        and "Shall I search the hotel" in (t.get("result") or ""), (names, (t.get("result") or "")[:300]))
+K.check("a flight, a hotel and a car in one message: ONE travel search — the flight (Kiwi.com data), the choice card — and the hotel offered next",
+        t["status"] == "COMPLETED" and [x for x in names if x != "load_skill"] == ["flights_search", "present_choices"] and "(Kiwi.com data)" in (t.get("result") or "")
+        and "SQ638" in (t.get("result") or "") and "Shall I search the hotel near Ginza now?" in (t.get("result") or ""), (names, (t.get("result") or "")[:400]))
 K.check("the answer gives the offer's Kiwi.com booking link and the airline's own site (book_at)",
-        "Book the flight at https://kiwi.com/u/abc123 (Kiwi.com) or on singaporeair.com" in (t.get("result") or ""), (t.get("result") or "")[-300:])
+        "Book it at https://kiwi.com/u/abc123 (Kiwi.com) or on singaporeair.com" in (t.get("result") or ""), (t.get("result") or "")[-400:])
 th = K.run(f"BRAVEHOTEL yes, the hotel DATE={D1}", conv=t["_conv"])
 tc = K.run(f"BRAVECAR and now the car DATE={D1}", conv=t["_conv"])
 K.trace(th)
 K.trace(tc)
 K.check("the next two messages search the hotel, then the car — one travel search each", K.names(th) == ["hotels_search"] and K.names(tc) == ["cars_search"]
-        and "SEARCHED VIA ['brave']" in (th.get("result") or "") and "SEARCHED VIA ['brave']" in (tc.get("result") or ""), (K.names(th), K.names(tc), th.get("result"), tc.get("result")))
+        and "SEARCHED VIA ['brave']" in (tc.get("result") or ""), (K.names(th), K.names(tc), th.get("result"), tc.get("result")))
+K.check("the hotel answer gives the web pages the search found (\"from\" prices), Kayak's page for the stay, and offers the car next",
+        "web pages" in (th.get("result") or "") and "Brave snippet" in (th.get("result") or "") and "/kayak/hotels/" in (th.get("result") or "")
+        and "Shall I search the rental car now?" in (th.get("result") or ""), (th.get("result") or "")[:600])
 log = c.get(FAKE + "/search/_log").json()
 K.check("Brave received the hotel fallback and the car query, never a flight query", [x["q"] for x in log if x["provider"] == "brave"][-2:]
         == [f"4 star hotels near Ginza Tokyo {D1} to {D3} price", "small car rental companies Tokyo NRT airport prices"]
