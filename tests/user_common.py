@@ -167,7 +167,7 @@ class User:
         if new_chat:
             await self.new_chat()
         a = Answer()
-        before = await pg.locator(".msg.assistant:not(.live)").count()
+        before = await pg.locator(".msg.assistant:not(.live):has(.bubble:not(.filecard):not(.choices))").count()
         handled_takeovers = await pg.locator(".sys-card.takeover").count()
         await pg.fill("#chatInput", text)
         t0 = time.monotonic()
@@ -225,7 +225,7 @@ class User:
                 await pg.wait_for_selector("#chatInput")
                 continue
             done = await pg.evaluate(
-                f"() => document.querySelectorAll('.msg.assistant:not(.live)').length > {before} && !document.querySelector('.msg.assistant.live')")
+                f"() => document.querySelectorAll('.msg.assistant:not(.live):has(.bubble:not(.filecard):not(.choices))').length > {before} && !document.querySelector('.msg.assistant.live')")
             if done:
                 # a message can come a moment before the takeover card it goes with: that is not the answer yet while
                 # the task is waiting for the user in the browser — wait for the card (up to 30 s), then carry on as
@@ -240,7 +240,7 @@ class User:
         else:
             a.timed_out = True
         a.seconds = time.monotonic() - t0
-        last = pg.locator(".msg.assistant:not(.live) .bubble").last
+        last = pg.locator(".msg.assistant:not(.live) .bubble:not(.filecard):not(.choices)").last
         if await last.count():
             a.text = await last.inner_text()
             a.links = await last.evaluate("b => [...b.querySelectorAll('a[href^=\"http\"]')].map(x => x.href)")
@@ -266,7 +266,7 @@ class User:
         pg = self.page
         if new_chat:
             await self.new_chat()
-        before = await pg.locator(".msg.assistant:not(.live)").count()
+        before = await pg.locator(".msg.assistant:not(.live):has(.bubble:not(.filecard):not(.choices))").count()
         await pg.fill("#chatInput", text)
         t0 = time.monotonic()
         await pg.keyboard.press("Enter")
@@ -277,14 +277,14 @@ class User:
             if live and (not samples or samples[-1][1] != live):
                 samples.append((time.monotonic() - t0, live))
             done = await pg.evaluate(
-                f"() => document.querySelectorAll('.msg.assistant:not(.live)').length > {before} && !document.querySelector('.msg.assistant.live')")
+                f"() => document.querySelectorAll('.msg.assistant:not(.live):has(.bubble:not(.filecard):not(.choices))').length > {before} && !document.querySelector('.msg.assistant.live')")
             if done:
                 break
             await pg.wait_for_timeout(int(every * 1000))
         else:
             a.timed_out = True
         a.seconds = time.monotonic() - t0
-        last = pg.locator(".msg.assistant:not(.live) .bubble").last
+        last = pg.locator(".msg.assistant:not(.live) .bubble:not(.filecard):not(.choices)").last
         if await last.count():
             a.text = await last.inner_text()
             a.links = await last.evaluate("b => [...b.querySelectorAll('a[href^=\"http\"]')].map(x => x.href)")
@@ -460,10 +460,17 @@ class User:
     # ---------------------------------------------------------------- the task's record (state, never the model's words)
     async def conv_id(self) -> str:
         """The open conversation's id (the app's own state; "" before the first message)."""
+        # the app keeps its state out of the page's global scope: the conversation the user last wrote in is the
+        # newest one of the bot they are in (the URL hash names the bot)
         try:
-            return await self.page.evaluate("() => (typeof S !== 'undefined' && S.conv) || ''") or ""
+            bot = await self.page.evaluate("() => (location.hash.match(/^#bot\\/([^/]+)/) || [])[1] || 'main'")
         except Exception:   # noqa: BLE001 — a page in between views
+            bot = "main"
+        try:
+            rows = c.get(B + "/api/conversations", params={"kind": "chat", "bot": bot}).json().get("conversations", [])
+        except Exception:   # noqa: BLE001
             return ""
+        return rows[0]["id"] if rows else ""
 
     async def tasks(self) -> list[dict]:
         """The tasks run for the open conversation (the bots' child tasks included), newest last."""
