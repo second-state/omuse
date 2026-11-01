@@ -73,8 +73,51 @@ async def scenario(p, name, route_stream):
     await b.close()
 
 
+async def answer_while_away(p):
+    """The answer comes while the user is in another view (the browser, after a hand-back): back in the chat it shows.
+    The page dropped the conversation's update while the other view was open and its task was already marked finished
+    (so nothing polled): the chat showed the old copy with no answer forever (2026-11-01, TDAC / Cambodia card)."""
+    import httpx
+    c = httpx.Client(timeout=30, trust_env=False)
+    c.put(URL + "api/settings", json={"stream_answers": True}, headers={"X-Persona-UI": "1"})
+    b = await p.chromium.launch()
+    pg = await b.new_page(viewport={"width": 1280, "height": 800})
+    errs = []
+    pg.on("pageerror", lambda e: errs.append(str(e)))
+    await pg.goto(URL + "#chat")
+    await pg.wait_for_selector("#chatInput")
+    await pg.click("button.newchat")
+    await pg.fill("#chatInput", "STREAMSLOW away test: a story while I look at the browser")
+    await pg.keyboard.press("Enter")
+    await pg.wait_for_selector(".msg.assistant.live", timeout=30000)   # the task is working: its card and bubble are up
+    back = pg.url
+    cid = (back.split("#chat/") + [""])[1]
+    check("away: the chat's address names its conversation", bool(cid), back)
+    await pg.goto(URL + "#tasks")   # another view while the answer is written and stored
+    status = ""
+    for _ in range(240):
+        await pg.wait_for_timeout(250)
+        tasks = c.get(URL + f"api/conversations/{cid}").json().get("tasks") or {}
+        status = next(iter(tasks.values()), {}).get("status", "")
+        if status == "COMPLETED":
+            break
+    check("away: the task finished while the user was in another view", status == "COMPLETED", status)
+    await pg.wait_for_timeout(1000)   # the task's completed update reaches the page while it is away
+    await pg.goto(back)
+    shown = False
+    for _ in range(20):   # well under the 8 s safety poll's period and with no event to come: only a re-read shows it
+        await pg.wait_for_timeout(250)
+        shown = await pg.evaluate("() => !!document.querySelector('.msg.assistant:not(.live) .bubble') && !document.querySelector('.msg.assistant.live')")
+        if shown:
+            break
+    check("away: back in the chat the stored answer is shown (no stale copy, no live bubble left)", shown)
+    check("away: no page errors", not errs, errs)
+    await b.close()
+
+
 async def main():
     async with async_playwright() as p:
+        await answer_while_away(p)
         await scenario(p, "live stream", None)
         await scenario(p, "stream down", lambda route: route.abort())
 

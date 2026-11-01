@@ -305,7 +305,13 @@ async function viewChat(root) {
   }
   renderConvList(list);
   if (S.conv && !S.convData) await openConv(S.conv);
-  else renderThread(thread);
+  else {
+    renderThread(thread);
+    // back from another view (the browser after a hand-back): the conversation's events were not applied while it was
+    // closed, so the kept copy can miss the answer — re-read it (2026-11-01: a TDAC answer that came while the user
+    // was in the browser view never showed, the task already marked finished so nothing polled)
+    if (S.conv) refreshConv();
+  }
   if (S.gmailReady === undefined) {  // only show the "connect your email" hint when no mailbox is connected
     sapi('connections').then(r => {
       const gm = (r.connections || []).find(c => c.name === 'gmail');

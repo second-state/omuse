@@ -2220,6 +2220,44 @@ yourself; ask_bot is not available for it."
                 return self.suspend(task_id, sp, transcript).await;
             }
         }
+        // "book it" after a turn that offered options with booking pages: code opens the chosen offer's page from the
+        // previous run's structured results (`held_offer_call`), the model goes on from that page
+        if t_transcript_empty && !t.get("pending").is_some_and(truthy) && goal.is_none() {
+            let prev = self
+                .store
+                .tasks(Some("COMPLETED"), 5, Some(&conv_id))
+                .unwrap_or_default()
+                .into_iter()
+                .find(|x| get_str(x, "id") != task_id)
+                .and_then(|x| self.store.task(&get_str(&x, "id")).ok().flatten());
+            if let Some(prev) = prev {
+                if let Some(tc) = self
+                    .held_offer_call(
+                        task_id,
+                        &goal_text,
+                        arr(&prev, "transcript"),
+                        &get_str(&prev, "result"),
+                    )
+                    .await
+                {
+                    transcript.push(assistant_with_calls("", std::slice::from_ref(&tc)));
+                    if let Err(sp) = self
+                        .exec_call(
+                            &t,
+                            &tc,
+                            &mut transcript,
+                            &catalog,
+                            &[],
+                            None,
+                            CallMode::MAIN,
+                        )
+                        .await
+                    {
+                        return self.suspend(task_id, sp, transcript).await;
+                    }
+                }
+            }
+        }
         // ---------------------------------------------------------- resume after approval / takeover
         let pend = t.get("pending").cloned().unwrap_or(Value::Null);
         if pend.get("calls").is_some_and(truthy) {
@@ -2982,6 +3020,41 @@ yourself; ask_bot is not available for it."
                     final_ = format!("{}\n\n{}", final_.trim_end(), lines.join("\n"));
                 }
             }
+            // a conversion the request asks for ("300 US dollars in dong"): the rate fetched in code when no result
+            // shows it; the figure is computed and appended below (`fx::with_fx_conversion`)
+            if judged {
+                if let Some(tc) = super::fx::fx_rate_call(&transcript, &goal_text) {
+                    transcript.push(assistant_with_calls("", std::slice::from_ref(&tc)));
+                    if let Err(sp) = self
+                        .exec_call(
+                            &t,
+                            &tc,
+                            &mut transcript,
+                            &catalog,
+                            &[],
+                            None,
+                            CallMode::MAIN,
+                        )
+                        .await
+                    {
+                        return self.suspend(task_id, sp, transcript).await;
+                    }
+                }
+            }
+            // an illness in a travel-health-emergency run (one decision): the place's official medical line from
+            // the fixed table, with its page
+            let mut medical = None;
+            if judged {
+                medical = self.medical_line(task_id, &goal_text, &transcript).await;
+                if let Some(line) = medical {
+                    self.event(
+                        task_id,
+                        "medical_line",
+                        json!({"place": line.place, "url": line.url}),
+                    )
+                    .await;
+                }
+            }
             // a file the user asked for that the run wrote but never sent: sent now, in code
             for path in super::guards::unsent_files(&transcript, &get_str(&t, "goal")) {
                 let r = self.send_file(&t, &json!({"path": path})).await;
@@ -2998,12 +3071,18 @@ yourself; ask_bot is not available for it."
             final_ = super::guards::with_flight_links(&transcript, &final_);
             final_ = super::guards::with_leg_times(&transcript, &final_, lg != "en");
             final_ = super::guards::with_fallback_pages(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_fallback_prices(&transcript, &final_, lg != "en");
             final_ = super::guards::with_choices_listing(&transcript, &final_, lg != "en");
             final_ = super::guards::with_compare_links(&transcript, &final_, lg != "en");
             final_ = super::guards::with_catalog_date(&transcript, &final_, lg != "en");
             final_ = super::guards::with_unverified_rows(&transcript, &final_, lg != "en");
             final_ = super::guards::with_fx_fees(&transcript, &final_, lg != "en");
-            final_ = super::guards::with_uncatalogued_cards(&transcript, &final_, lg != "en");
+            final_ = super::guards::with_uncatalogued_cards(
+                &transcript,
+                &goal_text,
+                &final_,
+                lg != "en",
+            );
             final_ = super::guards::with_purchase_total(&transcript, &final_, lg != "en");
             final_ = super::guards::with_confirmation_ref(&transcript, &final_);
             final_ = super::guards::with_apdt_link(&transcript, &final_, lg != "en");
@@ -3037,8 +3116,14 @@ yourself; ask_bot is not available for it."
                 );
             }
             final_ = super::guards::with_card_comparison(&transcript, &final_, lg != "en");
+            final_ = super::fx::with_fx_conversion(&transcript, &goal_text, &final_, lg != "en");
+            if let Some(line) = medical {
+                // after the grounding above: the number is the table's, checked on the official page
+                final_ = super::judgements::with_medical_line(&final_, line, lg != "en");
+            }
             final_ = super::guards::with_claim_deadlines(&transcript, &final_, lg != "en");
             final_ = super::guards::with_loan_payment(&goal_text, &final_, lg != "en");
+            final_ = super::guards::with_emergency_call_note(&goal_text, &final_, lg != "en");
             final_ = super::guards::with_user_edits(&transcript, &final_, lg != "en");
             final_ = super::guards::with_report_links(
                 &transcript,

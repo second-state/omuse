@@ -62,11 +62,8 @@ CREATE TABLE IF NOT EXISTS phone_calls (
 );
 ";
 
-/// Numbers OMuse must never call: emergency services everywhere it may plausibly run, plus short codes.
-pub const EMERGENCY: &[&str] = &[
-    "911", "112", "999", "995", "993", "000", "110", "119", "120", "122", "100", "101", "102",
-    "108", "111", "113", "117", "118", "190", "192", "193", "197", "198", "15", "17", "18", "08",
-];
+/// Numbers OMuse must never call (emergency services and short codes): the shared list in omuse-common.
+pub use omuse_common::util::EMERGENCY_NUMBERS as EMERGENCY;
 /// Premium-rate prefixes that are always blocked.
 pub const PREMIUM_PREFIXES: &[&str] = &["+1900", "+1976", "+44909", "+44908", "+65190", "+861600"];
 

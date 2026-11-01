@@ -2109,7 +2109,7 @@ static COMPARE_URL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"compare_url\\?"\s*:\s*\\?"(https?://[^"\\\s]+)"#).unwrap());
 
 /// The objects of a tool result's JSON (inside its `<untrusted_content>` wrapper) that have both `field`s.
-fn result_objects(content: &str, a: &str, b: &str, out: &mut Vec<(String, String)>) {
+pub(crate) fn result_objects(content: &str, a: &str, b: &str, out: &mut Vec<(String, String)>) {
     fn walk(v: &Value, a: &str, b: &str, out: &mut Vec<(String, String)>) {
         match v {
             Value::Object(m) => {
@@ -2319,6 +2319,129 @@ pub fn with_fallback_pages(transcript: &[Value], answer: &str, zh: bool) -> Stri
         "The hotels above are from these pages"
     };
     format!("{}\n\n{label}: {links}", answer.trim_end())
+}
+
+/// The hotels a web fallback's listing pages show with their "from" prices, read in code from the page's layout (a
+/// name line, then "Hotel in <area>, <city>", then "Price from" and the price — Booking.com's listing pages), as
+/// `(name, price, page host)`, at most `FALLBACK_PRICES_SHOWN`.
+const FALLBACK_PRICES_SHOWN: usize = 6;
+
+pub fn fallback_prices(transcript: &[Value]) -> Vec<(String, String, String)> {
+    static KIND: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(?:Hotel|Hostel|Inn|Resort|Ryokan|Apartment|Aparthotel|Guest house|Capsule hotel|Love hotel) in \S")
+            .unwrap()
+    });
+    static PRICE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(?:US\$|S\$|HK\$|A\$|SGD ?|USD ?|JPY ?|[$€£¥₩₫฿])\s?\d[\d,]*(?:\.\d{1,2})?$")
+            .unwrap()
+    });
+    fn texts(v: &Value, out: &mut Vec<(String, String)>) {
+        match v {
+            Value::Object(m) => {
+                if let (Some(u), Some(t)) = (
+                    m.get("url").and_then(Value::as_str),
+                    m.get("text").and_then(Value::as_str),
+                ) {
+                    out.push((u.to_string(), t.to_string()));
+                }
+                m.values().for_each(|x| texts(x, out));
+            }
+            Value::Array(xs) => xs.iter().for_each(|x| texts(x, out)),
+            Value::String(t) if t.trim_start().starts_with('{') => {
+                if let Ok(v) = serde_json::from_str::<Value>(t) {
+                    texts(&v, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut pages: Vec<(String, String)> = Vec::new();
+    for m in transcript.iter().filter(|m| get_str(m, "role") == "tool") {
+        let c = content_of(m);
+        if !c.contains("hotels_fallback") {
+            continue;
+        }
+        let before = pages.len();
+        if let (Some(i), Some(j)) = (c.find('{'), c.rfind('}')) {
+            if let Ok(v) = serde_json::from_str::<Value>(&c[i..=j]) {
+                texts(&v, &mut pages);
+            }
+        }
+        if pages.len() == before {
+            // a cut result (no longer whole JSON): its text as written, the escapes undone
+            pages.push((String::new(), c.replace("\\n", "\n").replace("\\\"", "\"")));
+        }
+    }
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for (url, text) in pages {
+        let host = url::Url::parse(&url)
+            .ok()
+            .and_then(|x| x.host_str().map(str::to_string))
+            .unwrap_or_default();
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        let mut i = 1;
+        while i < lines.len() {
+            if KIND.is_match(lines[i]) {
+                let name = lines[i - 1].to_string();
+                // the price of this listing: before the next listing starts
+                let mut j = i + 1;
+                let mut price = None;
+                while j < lines.len() && !KIND.is_match(lines[j]) {
+                    if lines[j].eq_ignore_ascii_case("price from")
+                        || lines[j].eq_ignore_ascii_case("from")
+                    {
+                        if let Some(p) = lines.get(j + 1).filter(|p| PRICE.is_match(p)) {
+                            price = Some(p.to_string());
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                if let Some(p) = price {
+                    if name.chars().count() <= 80 && !out.iter().any(|(n, _, _)| *n == name) {
+                        out.push((name, p, host.clone()));
+                    }
+                }
+                i = j.max(i + 1);
+            } else {
+                i += 1;
+            }
+            if out.len() >= FALLBACK_PRICES_SHOWN {
+                return out;
+            }
+        }
+    }
+    out
+}
+
+/// The answer with the hotels and "from" prices the fallback's pages show, unless it already gives every one of
+/// those prices (structured values): what the pages show is what the user gets, said to be "from" prices
+/// (travel_brave_real 2026-11-01: the hotels named, their prices withheld).
+pub fn with_fallback_prices(transcript: &[Value], answer: &str, zh: bool) -> String {
+    let rows = fallback_prices(transcript);
+    if rows.is_empty() || rows.iter().all(|(_, p, _)| answer.contains(p.as_str())) {
+        return answer.to_string();
+    }
+    let host = rows
+        .iter()
+        .map(|r| r.2.as_str())
+        .find(|h| !h.is_empty())
+        .unwrap_or("the listing page");
+    let head = if zh {
+        format!("{host} 上显示的“起价”（不是这些日期的报价）：")
+    } else {
+        format!("\"From\" prices {host} shows (not quotes for these dates):")
+    };
+    let list = rows
+        .iter()
+        .map(|(n, p, _)| format!("- {n} — from {p}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{}\n\n{head}\n{list}", answer.trim_end())
 }
 
 /// The answer with the comparison it showed as cards (`present_choices`): the options with their details, as checked
@@ -2672,6 +2795,69 @@ fn catalog_cards() -> &'static [Value] {
 
 /// The catalog card a user's card name means: one whose name or an alias contains the name's most telling word
 /// (`card_word`), the issuing market's first.
+/// A request to call an emergency number (the user's words name one from `EMERGENCY_NUMBERS` next to "call"): OMuse
+/// never dials those, so the answer always ends with the line telling the user to call it themselves — from the
+/// request, never the reply (phone_real 2026-11-01: "call 999 yourself", without saying OMuse cannot call).
+pub fn with_emergency_call_note(goal: &str, answer: &str, zh: bool) -> String {
+    static CALL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(call|ring|dial|phone)\b[^.\n]{0,20}?\b(\d{2,3})\b|(打|拨打|拨)[^。\n]{0,6}?(\d{2,3})").unwrap()
+    });
+    let Some(c) = CALL.captures(goal) else {
+        return answer.to_string();
+    };
+    let number = c.get(2).or(c.get(4)).map(|m| m.as_str()).unwrap_or("");
+    if !omuse_common::util::EMERGENCY_NUMBERS.contains(&number) {
+        return answer.to_string();
+    }
+    let line = if zh {
+        format!("OMuse 不能拨打紧急号码（{number}）：请你自己拨打。")
+    } else {
+        format!("OMuse can't call emergency numbers ({number}): please call it yourself.")
+    };
+    format!("{}\n\n{line}", answer.trim_end())
+}
+
+/// The words of a card's name that say nothing about which card it is.
+const CARD_GENERIC: &[&str] = &[
+    "card",
+    "cards",
+    "credit",
+    "debit",
+    "the",
+    "visa",
+    "mastercard",
+    "signature",
+    "infinite",
+    "world",
+    "elite",
+    "american",
+    "express",
+];
+
+/// The catalog row that carries every telling word of the card's name (`catalog_card` with no partial fallback): a
+/// card the catalog lacks gets no row, so a table never shows another card's terms under its name (2026-11-01: Bread
+/// Cashback shown with another cashback card's 1.5% beside "not in the card catalog").
+fn catalog_card_whole(name: &str) -> Option<&'static Value> {
+    let c = catalog_card(name, "")?;
+    let full = std::iter::once(format!("{} {}", sget(c, "issuer"), sget(c, "product")))
+        .chain(arr(c, "aliases").iter().map(omuse_common::util::py_str))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let words: Vec<String> = name
+        .to_lowercase()
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|w| w.chars().count() >= 2 && !CARD_GENERIC.contains(w))
+        .map(str::to_string)
+        .collect();
+    (!words.is_empty() && words.iter().all(|w| full.contains(w.as_str()))).then_some(c)
+}
+
+#[cfg(test)]
+pub fn catalog_card_whole_for_test(name: &str) -> Option<&'static Value> {
+    catalog_card_whole(name)
+}
+
 fn catalog_card(name: &str, market: &str) -> Option<&'static Value> {
     let word = card_word(name);
     if word.is_empty() {
@@ -2908,7 +3094,7 @@ pub fn with_card_comparison(transcript: &[Value], answer: &str, zh: bool) -> Str
     let rows: Vec<String> = cards
         .iter()
         .filter_map(|name| {
-            let c = catalog_card(name, "")?;
+            let c = catalog_card_whole(name)?;
             let fx = c
                 .get("fx_fee_pct")
                 .and_then(Value::as_f64)
@@ -2955,25 +3141,13 @@ fn shipped_card_catalog() -> String {
 }
 
 /// `answer` saying which of the user's cards the card catalog lacks: when a run read a catalog table and the user's
-/// Vault cards (`vault_list`), an answer that names a card with no row in the tables and does not already say so gets
-/// "(<card> is not in the card catalog; its terms were not verified there.)" — a rate the answer gives for it was
-/// looked up or assumed, and the user must know (cards_real 2026-10-30: "assuming it earns 2%").
-pub fn with_uncatalogued_cards(transcript: &[Value], answer: &str, zh: bool) -> String {
-    const GENERIC: &[&str] = &[
-        "card",
-        "cards",
-        "credit",
-        "debit",
-        "the",
-        "visa",
-        "mastercard",
-        "signature",
-        "infinite",
-        "world",
-        "elite",
-        "american",
-        "express",
-    ];
+/// Vault cards (`vault_list`), a Vault card with no row in the tables that the request names (every telling word of
+/// its name) or the run added to the Vault (`vault_add_card`) gets "(<card> is not in the card catalog; its terms were
+/// not verified there.)" — a rate given for it was looked up or assumed, and the user must know (cards_real
+/// 2026-10-30: "assuming it earns 2%"). Decided from the request and the run's calls, never the answer's words
+/// (cards_real 2026-11-01: the answer wrote "Bread's 2% cash back", not "Cashback", and the fact was lost).
+pub fn with_uncatalogued_cards(transcript: &[Value], goal: &str, answer: &str, zh: bool) -> String {
+    const GENERIC: &[&str] = CARD_GENERIC;
     let tools: Vec<String> = transcript
         .iter()
         .filter(|m| get_str(m, "role") == "tool")
@@ -2985,7 +3159,14 @@ pub fn with_uncatalogued_cards(transcript: &[Value], answer: &str, zh: bool) -> 
     // the whole shipped catalog, every market — not only the tables this run read (cards_markets_real 2026-10-30:
     // the Hong Kong card flagged as missing after the agent read another market's table)
     let catalog: String = shipped_card_catalog().to_lowercase();
-    let low = answer.to_lowercase();
+    let asked = goal.to_lowercase();
+    let added: Vec<String> = transcript
+        .iter()
+        .flat_map(tool_calls)
+        .map(stored_call)
+        .filter(|(n, _)| n == "vault_add_card")
+        .map(|(_, a)| sget(&a, "name").trim().to_lowercase())
+        .collect();
     let mut lines = Vec::new();
     let mut seen = HashSet::new();
     {
@@ -3000,13 +3181,9 @@ pub fn with_uncatalogued_cards(transcript: &[Value], answer: &str, zh: bool) -> 
                 continue;
             }
             let listed = words.iter().all(|w| catalog.contains(w.as_str()));
-            // named in the answer: its most telling word (the longest)
-            let key = words
-                .iter()
-                .max_by_key(|w| w.chars().count())
-                .cloned()
-                .unwrap_or_default();
-            if !listed && low.contains(&key) {
+            let named = words.iter().all(|w| asked.contains(w.as_str()))
+                || added.contains(&label.trim().to_lowercase());
+            if !listed && named {
                 lines.push(if zh {
                     format!("（{label} 不在信用卡权益数据库里，它的条款没有核实。）")
                 } else {

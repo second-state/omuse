@@ -461,6 +461,37 @@ fn hotels_from_a_web_fallback_come_with_the_pages_they_came_from() {
 }
 
 #[test]
+fn a_fallback_listing_gives_its_hotels_with_their_from_prices() {
+    // travel_brave_real 2026-11-01: the fallback read Booking.com's Ginza listing; the answer named the hotels and
+    // withheld the prices the page showed — code reads them from the page's layout
+    use super::guards::with_fallback_prices;
+    let text = "Top reviewed\nTHE BLOSSOM HIBIYA\nHotel in Ginza, Tokyo\nTHE BLOSSOM HIBIYA has a fitness center.\n4-star\n\
+Scored out of 10, guest rating 9.0\n9.0\nPrice from\n$368.22\n1 night, 2 adults\nCheck availability\n\
+Mitsui Garden Hotel Ginza Tsukiji\nHotel in Ginza, Tokyo\nWell located in Tokyo.\nFrom\nCanada\nPrice from\n$326.53\n\
+1 night, 2 adults\nNo Price Hotel\nHotel in Ginza, Tokyo\nNo rooms.\n";
+    let web = json!({"results": [], "hotels_fallback": "no SerpApi key for Google Hotels",
+        "pages": [{"url": "https://www.booking.com/fourstars/district/jp/tokyo/ginza.html", "title": "Ginza", "text": text}]});
+    let t = vec![json!({"role": "tool", "tool_call_id": "c1",
+        "content": format!("<untrusted_content source=\"web search\">\n{web}\n</untrusted_content>")})];
+    let a = with_fallback_prices(
+        &t,
+        "Hotels near Ginza: THE BLOSSOM HIBIYA (9.0), Mitsui Garden Hotel Ginza Tsukiji (9.0).",
+        false,
+    );
+    assert!(
+        a.contains("\"From\" prices www.booking.com shows (not quotes for these dates):"),
+        "{a}"
+    );
+    assert!(a.contains("- THE BLOSSOM HIBIYA — from $368.22\n- Mitsui Garden Hotel Ginza Tsukiji — from $326.53"), "{a}");
+    assert!(!a.contains("No Price Hotel"), "{a}");
+    // the answer gives every price already: nothing added
+    let given = "THE BLOSSOM HIBIYA from $368.22; Mitsui Garden Hotel Ginza Tsukiji from $326.53.";
+    assert_eq!(with_fallback_prices(&t, given, false), given);
+    // no fallback: nothing
+    assert_eq!(with_fallback_prices(&[], "x", false), "x");
+}
+
+#[test]
 fn a_cut_fallback_result_still_gives_its_pages_and_cards_give_their_prices() {
     // travel_brave_real 2026-10-31: the long result was cut (not whole JSON) and the answer had no price
     use super::guards::{with_choices_listing, with_fallback_pages};
@@ -1753,6 +1784,37 @@ async fn ask_bot_opens_a_bot_conversation_and_the_answer_comes_back_to_main() {
         .unwrap();
     assert_eq!(sget(&sp2.waiting, "conv_id"), bot_cid);
     assert_eq!(rt.store.msgs(&bot_cid, 10).unwrap().len(), 2);
+    // a follow-up the router sent without the conversation (travel_hotel_real 2026-11-01: "book it" went to a new
+    // Travel conversation that had no booking page) continues the conversation of the bot's latest answer: state decides
+    let p3 = rt
+        .store
+        .create_task("book it", &main_cid, "chat", "", "", None)
+        .unwrap();
+    let sp3 = rt
+        .ask_bot(
+            &p3,
+            &json!({"bot": "travel", "question": "Book the SQ638 flight"}),
+            &c,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(sget(&sp3.waiting, "conv_id"), bot_cid);
+    // another bot's request opens that bot's own conversation
+    let p4 = rt
+        .store
+        .create_task("my card fees", &main_cid, "chat", "", "", None)
+        .unwrap();
+    let sp4 = rt
+        .ask_bot(
+            &p4,
+            &json!({"bot": "cards", "question": "Which card has no FX fee?"}),
+            &c,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_ne!(sget(&sp4.waiting, "conv_id"), bot_cid);
 }
 
 #[tokio::test]
@@ -2037,9 +2099,12 @@ fn a_card_missing_from_the_catalog_is_said_so() {
         tool("- id=vlt_1 · Chase Sapphire Reserve · issued in USA · card · UNKNOWN · fields: \n- id=vlt_2 · Bread Cashback American Express · card · UNKNOWN · fields: "),
         tool("# Credit cards — US (94 cards; catalog as of 2026-08)\n| Chase | Sapphire Reserve | travel 4x |"),
     ];
+    let goal = "I also have a Bread Cashback American Express card. Would it beat my other cards for a US$500 TV?";
+    // cards_real 2026-11-01: the answer wrote "Bread's 2% cash back" (not the card's name): the request decides
     let a = with_uncatalogued_cards(
         &t,
-        "Use the Sapphire Reserve (4x). Bread Cashback: assuming 2%.",
+        goal,
+        "It ties your Citi Double Cash: Bread's 2% cash back is US$10.",
         false,
     );
     assert!(
@@ -2047,21 +2112,30 @@ fn a_card_missing_from_the_catalog_is_said_so() {
         "{a}"
     );
     assert!(!a.contains("Chase Sapphire Reserve is not")); // it has a row
-                                                           // not named, or no catalog read: nothing added
+                                                           // code renders the fact even when the answer mentions it
     let said = "Bread Cashback is not in the card catalog; per Bread's page (read today) 2%.";
-    // code renders the fact even when the answer mentions it
-    let again = with_uncatalogued_cards(&t, said, false);
+    let again = with_uncatalogued_cards(&t, goal, said, false);
     assert!(
         again.starts_with(said) && again.len() > said.len(),
         "{again}"
     );
+    // a request that names only catalogued cards, or no catalog read: nothing added
+    let other = "Which card for a US$80 dinner, my Sapphire Reserve?";
     assert_eq!(
-        with_uncatalogued_cards(&t, "Use the Sapphire Reserve.", false),
+        with_uncatalogued_cards(&t, other, "Use the Sapphire Reserve.", false),
         "Use the Sapphire Reserve."
     );
     assert_eq!(
-        with_uncatalogued_cards(&t[..1], "Bread Cashback 2%", false),
+        with_uncatalogued_cards(&t[..1], goal, "Bread Cashback 2%", false),
         "Bread Cashback 2%"
+    );
+    // the card this run added to the Vault counts as named
+    let mut added = t.to_vec();
+    added.insert(0, json!({"role": "assistant", "content": "", "tool_calls": [{"id": "v1", "type": "function",
+        "function": {"name": "vault_add_card", "arguments": "{\"name\": \"Bread Cashback American Express\"}"}}]}));
+    assert!(
+        with_uncatalogued_cards(&added, "Is my new card any good?", "2%.", false)
+            .contains("Bread Cashback American Express is not in the card catalog")
     );
     // a card in another market's table is in the catalog, whichever table this run read (cards_markets_real 2026-10-30)
     let hk = [
@@ -2069,7 +2143,10 @@ fn a_card_missing_from_the_catalog_is_said_so() {
         t[1].clone(),
     ];
     let a = "Use your Hang Seng Travel+ for the dinner: 5% local dining.";
-    assert_eq!(with_uncatalogued_cards(&hk, a, false), a);
+    assert_eq!(
+        with_uncatalogued_cards(&hk, "Hang Seng Travel+ for dinner?", a, false),
+        a
+    );
 }
 
 #[test]
@@ -4336,6 +4413,103 @@ async fn a_decision_takes_a_listed_choice_retries_once_then_defaults() {
 }
 
 #[tokio::test]
+async fn book_it_after_offered_rooms_opens_the_offers_booking_page_by_code() {
+    // travel_hotel_real 2026-11-01: the previous turn's hotel_rooms result gave the room's booking_url and its answer
+    // linked it; "book it" searched the web, found no booking page and booked nothing — code opens the page now
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            if is_decision(body) {
+                let q = decision_question(body);
+                return reply(if q.contains("buy, book") {
+                    "{\"choice\": \"buy_or_book\"}"
+                } else {
+                    "{\"choice\": \"other\"}"
+                });
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let msgs = body["messages"].as_array().unwrap();
+            if msgs.iter().any(|m| m["tool_calls"][0]["function"]["name"] == "browser_navigate") {
+                return reply("The booking page for the Superior Twin is open.");
+            }
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "w1", "type": "function",
+                "function": {"name": "web_search", "arguments": json!({"query": "Ginza Kaede Hotel booking"}).to_string()}}]})
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let acts = Arc::new(Mutex::new(Vec::new()));
+    let a2 = acts.clone();
+    rt.set_sentinel_hook(Some(Arc::new(move |_, path, payload| {
+        let p = payload.unwrap_or(Value::Null);
+        if path == "/internal/act" {
+            a2.lock().push(p.clone());
+        }
+        Box::pin(async move {
+            Ok(if path == "/internal/act" {
+                json!({"status": "ok", "result": {"url": p["args"]["url"], "title": "Book", "snapshot": "[e1] button \"Confirm booking\""}})
+            } else if path == "/internal/catalog" {
+                json!({"tools": tools(&["browser_navigate", "browser_snapshot", "web_search"]), "connections": {}})
+            } else {
+                json!({})
+            })
+        })
+    })));
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let room = "http://shop.test:8097/book/hotel/H-TYO-1-20261129-20261202-2-R2";
+    let rooms = json!({"hotel": {"hotel_id": "H-TYO-1", "name": "Ginza Kaede Hotel"},
+                       "rooms": [{"room_type": "Superior Twin", "booking_url": room}]});
+    let prev = rt
+        .store
+        .create_task(
+            "Find the cheapest 4-star hotel in Tokyo",
+            &conv,
+            "chat",
+            "",
+            "",
+            None,
+        )
+        .unwrap();
+    rt.store
+        .update_task(
+            &get_str(&prev, "id"),
+            &json!({"status": "COMPLETED", "result": format!("Ginza Kaede Hotel, Superior Twin: [View this room]({room})"),
+                    "transcript": [
+                        {"role": "user", "content": "Find the cheapest 4-star hotel in Tokyo"},
+                        {"role": "assistant", "content": "", "tool_calls": [{"id": "r1", "type": "function",
+                            "function": {"name": "mcp_travel__hotel_rooms", "arguments": "{}"}}]},
+                        {"role": "tool", "tool_call_id": "r1", "content": json!({"content": rooms.to_string()}).to_string()},
+                        {"role": "assistant", "content": format!("Ginza Kaede Hotel, Superior Twin: [View this room]({room})")}]}),
+        )
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await; // created_at orders the conversation's tasks
+    let t = rt
+        .store
+        .create_task(
+            "Book the cheapest 4-star room with free cancellation for me.",
+            &conv,
+            "chat",
+            "",
+            "",
+            None,
+        )
+        .unwrap();
+    let tid = get_str(&t, "id");
+    rt.run(&tid).await.unwrap();
+    let navs: Vec<Value> = acts
+        .lock()
+        .iter()
+        .filter(|a| a["tool"] == "browser_navigate")
+        .map(|a| a["args"]["url"].clone())
+        .collect();
+    assert_eq!(navs.first(), Some(&json!(room)), "{navs:?}");
+    assert_eq!(event_data(&rt, &tid, "held_offer").len(), 1);
+    let t = rt.store.task(&tid).unwrap().unwrap();
+    assert!(get_str(&t, "result").starts_with("The booking page"), "{t}");
+}
+
+#[tokio::test]
 async fn a_held_pick_on_a_buy_request_is_opened_by_code_instead_of_asking() {
     // cards_pay_real 2026-11-01: "Cheapest is Premium; shall I proceed with it?" as the final answer to a request to
     // buy — the request decides, so code opens the picked plan's page and the run goes on
@@ -4644,4 +4818,39 @@ async fn a_deep_link_error_goes_home_and_a_product_page_gets_its_cart_click() {
     );
     assert!(shop.iter().any(|m| get_str(m, "tool_call_id") == "s3_cart"));
     let _ = tr;
+}
+
+#[test]
+fn a_card_missing_from_the_catalog_gets_no_borrowed_row() {
+    use super::guards::catalog_card_whole_for_test;
+    // a card the catalog lacks does not borrow another card's row by a shared word
+    assert!(catalog_card_whole_for_test("Bread Cashback American Express").is_none());
+    // a catalogued card still finds its row
+    assert!(catalog_card_whole_for_test("Citi Double Cash").is_some());
+}
+
+#[test]
+fn a_request_to_call_an_emergency_number_gets_the_line_from_the_request() {
+    use super::guards::with_emergency_call_note;
+    let a = with_emergency_call_note(
+        "Call 911 for me and say I locked myself out of my flat.",
+        "In Singapore call 999.",
+        false,
+    );
+    assert!(
+        a.ends_with("OMuse can't call emergency numbers (911): please call it yourself."),
+        "{a}"
+    );
+    assert_eq!(
+        with_emergency_call_note("Call Zuni Cafe at +1 415 643 2200", "Booked.", false),
+        "Booked."
+    );
+    assert_eq!(
+        with_emergency_call_note(
+            "What is the emergency number in Japan?",
+            "110 and 119.",
+            false
+        ),
+        "110 and 119."
+    );
 }

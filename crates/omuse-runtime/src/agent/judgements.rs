@@ -90,6 +90,144 @@ pub fn held_pick(transcript: &[Value]) -> Option<(String, String)> {
         })
 }
 
+// ---------------------------------------------------------------- a held offer (the previous turn's option)
+
+/// The question choosing among several held offers; the extra choice when the request names none of them.
+pub const OFFER_Q: &str = "Which of these options does the user's request ask to book or buy?";
+pub const NO_OFFER: &str = "none_of_these";
+
+/// The offers the previous turn's answer linked (`answer`): every travel result object in its run (`transcript`) with a
+/// `booking_url` — a room (`room_type`), a hotel (`name`), a flight (`flight_no`) — whose page the answer gives, as
+/// `(label, booking_url)`, deduplicated by URL in the results' order. Empty when that run already booked or handed a
+/// page over (nothing is held then). The booking page of a later "book it" comes from here, never from a web search
+/// (travel_hotel_real 2026-11-01: the agent searched the web for the hotel and found no booking page).
+pub fn held_offers(transcript: &[Value], answer: &str) -> Vec<(String, String)> {
+    if ran_ok(
+        transcript,
+        &["purchase_confirm", "browser_request_takeover"],
+    ) {
+        return Vec::new();
+    }
+    let mut found: Vec<(String, String)> = Vec::new();
+    for m in transcript.iter().filter(|m| get_str(m, "role") == "tool") {
+        let c = content_of(m);
+        if !c.contains("booking_url") {
+            continue;
+        }
+        let mut rooms = Vec::new();
+        super::guards::result_objects(&c, "room_type", "booking_url", &mut rooms);
+        let hotel = {
+            let mut h = Vec::new();
+            super::guards::result_objects(&c, "name", "booking_url", &mut h);
+            h
+        };
+        let mut names = Vec::new();
+        super::guards::result_objects(&c, "name", "hotel_id", &mut names);
+        // a room is labelled with its hotel when the result names one hotel
+        let hotel_name = (names.len() == 1).then(|| names[0].0.clone());
+        for (room, url) in rooms {
+            let label = match &hotel_name {
+                Some(h) => format!("{h} — {room}"),
+                None => room,
+            };
+            found.push((label, url));
+        }
+        found.extend(hotel);
+        super::guards::result_objects(&c, "flight_no", "booking_url", &mut found);
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (label, url) in found {
+        let url = url.trim().to_string();
+        if !(url.starts_with("http://") || url.starts_with("https://"))
+            || !answer.contains(url.as_str())
+            || out.iter().any(|(_, u)| *u == url)
+        {
+            continue;
+        }
+        out.push((label.trim().to_string(), url));
+    }
+    out
+}
+
+// ---------------------------------------------------------------- local medical help in a health emergency
+
+/// The question on the request of a travel-health-emergency run, its choices and the default.
+pub const EMERGENCY_Q: &str = "What is the emergency in the user's request?";
+pub const EMERGENCY_CHOICES: [&str; 3] = ["illness_or_injury", "lost_or_stolen_documents", "other"];
+
+/// An official medical information line of a destination: who runs it, its phone as the official page lists it, its
+/// English hours and the page. Fixed data, checked against the official pages (Oct 2026).
+#[derive(Debug, PartialEq)]
+pub struct MedicalLine {
+    pub place: &'static str,
+    /// lowercase words that name the place in a request
+    pub words: &'static [&'static str],
+    pub service: &'static str,
+    pub phone: &'static str,
+    pub hours: &'static str,
+    pub url: &'static str,
+}
+
+pub const MEDICAL_LINES: &[MedicalLine] = &[
+    MedicalLine {
+        place: "Tokyo",
+        words: &["tokyo", "东京", "東京"],
+        service: "Tokyo Metropolitan Health and Medical Information Center \"Himawari\" (finds a clinic or hospital with \
+English support)",
+        phone: "03-5285-8181",
+        hours: "English daily 9:00–20:00",
+        url: "https://www.hokeniryo.metro.tokyo.lg.jp/iryo/iryo_hoken/medical_info_eng/himawari",
+    },
+    MedicalLine {
+        place: "Japan",
+        words: &["japan", "osaka", "kyoto", "sapporo", "fukuoka", "okinawa", "nagoya", "日本", "大阪", "京都"],
+        service: "Japan Visitor Hotline (JNTO: medical institutions with English, emergencies)",
+        phone: "050-3816-2787",
+        hours: "24 hours",
+        url: "https://www.jnto.go.jp/emergency/eng/mi_guide.html",
+    },
+];
+
+/// Whether the run is a travel-health-emergency one (it loaded that skill).
+pub fn health_run(transcript: &[Value]) -> bool {
+    calls(transcript)
+        .iter()
+        .any(|(_, n, a)| n == "load_skill" && sget(a, "name") == "travel-health-emergency")
+}
+
+/// The medical line for the place the request names — the most specific one (a city before its country).
+pub fn medical_line_for(request: &str) -> Option<&'static MedicalLine> {
+    let low = request.to_lowercase();
+    MEDICAL_LINES.iter().find(|m| {
+        m.words.iter().any(|w| {
+            if w.is_ascii() {
+                Regex::new(&format!(r"\b{}\b", regex::escape(w))).is_ok_and(|r| r.is_match(&low))
+            } else {
+                low.contains(w)
+            }
+        })
+    })
+}
+
+/// The answer with the place's official medical information line, unless the answer already links its page.
+pub fn with_medical_line(answer: &str, line: &MedicalLine, zh: bool) -> String {
+    if answer.contains(line.url) {
+        return answer.to_string();
+    }
+    let text = if zh {
+        format!(
+            "**{}当地医疗咨询：** [{}]({}) — 电话 **{}**（{}）；危及生命请打 119。",
+            line.place, line.service, line.url, line.phone, line.hours
+        )
+    } else {
+        format!(
+            "**Medical help in {}:** [{}]({}) — call **{}** ({}); for a life-threatening emergency call 119.",
+            line.place, line.service, line.url, line.phone, line.hours
+        )
+    };
+    format!("{}\n\n{text}", answer.trim_end())
+}
+
 // ---------------------------------------------------------------- the file formats asked for
 
 pub const FORMATS_Q: &str =
@@ -870,6 +1008,71 @@ impl super::Runtime {
         })
     }
 
+    /// A request to book or buy right after a turn that offered options with booking pages (`held_offers`): one
+    /// decision on the request (buy or book?), one more only when several pages were offered (which one?), then the
+    /// call that opens the chosen page — code opens the page the structured results gave, the model fills it.
+    pub(crate) async fn held_offer_call(
+        &self,
+        task_id: &str,
+        request: &str,
+        prev_transcript: &[Value],
+        prev_answer: &str,
+    ) -> Option<ToolCall> {
+        let offers = held_offers(prev_transcript, prev_answer);
+        if offers.is_empty() {
+            return None;
+        }
+        let wants = self
+            .decide(task_id, BUY_Q, request, &BUY_CHOICES, "compare_only")
+            .await;
+        if wants != "buy_or_book" {
+            return None;
+        }
+        let (label, url) = if offers.len() == 1 {
+            offers[0].clone()
+        } else {
+            let labels: Vec<&str> = offers
+                .iter()
+                .map(|(l, _)| l.as_str())
+                .chain([NO_OFFER])
+                .collect();
+            let context = format!(
+                "The options offered before:\n{}\n\nThe user's request:\n{}",
+                take_chars(prev_answer, 3000),
+                request
+            );
+            let pick = self
+                .decide(task_id, OFFER_Q, &context, &labels, NO_OFFER)
+                .await;
+            offers.into_iter().find(|(l, _)| *l == pick)?
+        };
+        self.event(task_id, "held_offer", json!({"offer": label, "url": url}))
+            .await;
+        Some(ToolCall {
+            id: "offer_1".into(),
+            name: "browser_navigate".into(),
+            args: json!({"url": url}),
+        })
+    }
+
+    /// The official medical line to add to a travel-health-emergency answer: one decision on the request (an illness
+    /// or injury?), then the line of the place it names from the fixed table — never a number from the model.
+    pub(crate) async fn medical_line(
+        &self,
+        task_id: &str,
+        request: &str,
+        transcript: &[Value],
+    ) -> Option<&'static MedicalLine> {
+        if !health_run(transcript) {
+            return None;
+        }
+        let line = medical_line_for(request)?;
+        let kind = self
+            .decide(task_id, EMERGENCY_Q, request, &EMERGENCY_CHOICES, "other")
+            .await;
+        (kind == "illness_or_injury").then_some(line)
+    }
+
     /// The conversions the request's formats need (`conversion_calls`), when the run made a file: one multi-select on
     /// the request, then the calls for each format it did not make.
     pub(crate) async fn format_calls(
@@ -940,6 +1143,95 @@ mod tests {
                    "function": {"name": name, "arguments": args.to_string()}}]}),
             json!({"role": "tool", "tool_call_id": id, "content": result}),
         ]
+    }
+
+    #[test]
+    fn a_tokyo_illness_gets_the_official_medical_line_from_data() {
+        // emergency_real 2026-11-01: the clinic's number was not on a page the run read, so it was cut, and the answer
+        // gave no Tokyo number at all — the city's official medical line comes from the table
+        let req = "I've had a high fever since last night in my hotel in Tokyo. Where can I see an English-speaking doctor?";
+        let line = medical_line_for(req).unwrap();
+        assert_eq!(line.place, "Tokyo");
+        assert_eq!(
+            medical_line_for("I feel sick in Osaka").unwrap().place,
+            "Japan"
+        );
+        assert!(medical_line_for("I feel sick in Lisbon").is_none());
+        let out = with_medical_line("See a doctor today.", line, false);
+        assert!(out.contains("call **03-5285-8181**"), "{out}");
+        assert!(out.contains(line.url));
+        // an answer that already links the page is left as it is
+        let linked = format!("Call [Himawari]({}).", line.url);
+        assert_eq!(with_medical_line(&linked, line, false), linked);
+        let t = step(
+            "s1",
+            "load_skill",
+            json!({"name": "travel-health-emergency"}),
+            "---",
+        );
+        assert!(health_run(&t));
+        assert!(!health_run(&step(
+            "s1",
+            "load_skill",
+            json!({"name": "tokyo"}),
+            "---"
+        )));
+    }
+
+    #[test]
+    fn the_offer_a_previous_answer_linked_is_held_for_book_it() {
+        // travel_hotel_real 2026-11-01: an MCP hotel_rooms result (JSON inside the connector's text), the answer links
+        // one room's page; "book it" searched the web instead and found no booking page
+        let inner = json!({"hotel": {"hotel_id": "H-TYO-1", "name": "Ginza Kaede Hotel", "stars": 4},
+            "rooms": [{"room_type": "Standard Double", "booking_url": "http://shop.test:8097/book/hotel/H-TYO-1-R1"},
+                      {"room_type": "Superior Twin", "booking_url": "http://shop.test:8097/book/hotel/H-TYO-1-R2"}]});
+        let wrapped = format!(
+            "<untrusted_content source=\"MCP Travel · hotel_rooms\">\n{}\n</untrusted_content>",
+            json!({"trust": "untrusted", "content": inner.to_string()})
+        );
+        let t = step(
+            "c1",
+            "mcp_travel__hotel_rooms",
+            json!({"hotel_id": "H-TYO-1"}),
+            &wrapped,
+        );
+        let answer = "**Ginza Kaede Hotel**, Superior Twin, SGD 753 total. \
+[View this room](http://shop.test:8097/book/hotel/H-TYO-1-R2)";
+        assert_eq!(
+            held_offers(&t, answer),
+            vec![(
+                "Ginza Kaede Hotel — Superior Twin".to_string(),
+                "http://shop.test:8097/book/hotel/H-TYO-1-R2".to_string()
+            )]
+        );
+        // an answer that links no offered page holds nothing
+        assert!(held_offers(&t, "Ginza Kaede Hotel is the cheapest.").is_empty());
+        // a flight offer linked by the answer is held too
+        let f = step(
+            "f1",
+            "flights_search",
+            json!({}),
+            &json!({"offers": [{"flight_no": "TR 765", "booking_url": "https://kiwi.test/b/1"},
+                               {"flight_no": "SQ 638", "booking_url": "https://kiwi.test/b/2"}]})
+            .to_string(),
+        );
+        assert_eq!(
+            held_offers(
+                &f,
+                "TR 765 [book](https://kiwi.test/b/1) or SQ 638 [book](https://kiwi.test/b/2)"
+            )
+            .len(),
+            2
+        );
+        // once that run handed a page over, nothing is held
+        let mut done = t.clone();
+        done.extend(step(
+            "c2",
+            "browser_request_takeover",
+            json!({"reason": "Confirm"}),
+            "Takeover finished",
+        ));
+        assert!(held_offers(&done, answer).is_empty());
     }
 
     #[test]

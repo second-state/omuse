@@ -544,3 +544,10 @@ mod search_args_tests {
         assert!(sanitize_search_args(&mut ok).is_empty());
     }
 }
+
+/// Numbers OMuse must never call: emergency services everywhere it may plausibly run, plus short codes (the phone
+/// tools refuse them; the runtime tells the user to call them themselves).
+pub const EMERGENCY_NUMBERS: &[&str] = &[
+    "911", "112", "999", "995", "993", "000", "110", "119", "120", "122", "100", "101", "102",
+    "108", "111", "113", "117", "118", "190", "192", "193", "197", "198", "15", "17", "18", "08",
+];

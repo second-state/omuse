@@ -152,6 +152,20 @@ pub fn checked_route(raw: &Value, goal: &str, conv_ok: impl Fn(&str, &str) -> bo
     Route::Bot(args)
 }
 
+/// The bot conversation a hand-over continues when the router or the model named none: the one that gave the main
+/// conversation's latest answer, when it is the same bot's — a follow-up there ("book it" after the options) keeps
+/// the bot's context and its results (travel_hotel_real 2026-11-01: a new Travel conversation had no booking page
+/// and the room was never booked). `msgs` are the main conversation's messages, oldest first.
+pub fn continued_conv(msgs: &[Value], bot: &str) -> Option<String> {
+    let last = msgs
+        .iter()
+        .rev()
+        .find(|m| get_str(m, "role") == "assistant")?;
+    let h = last.get("meta").and_then(|m| m.get("handoff"))?;
+    let cid = sget(h, "conv_id").trim().to_string();
+    (sget(h, "bot") == bot && !cid.is_empty()).then_some(cid)
+}
+
 impl Runtime {
     /// The main bot's first step: the planner model picks the bot for this request (see the module docs).
     pub(crate) async fn route(&self, t: &Value, history: &[Value]) -> Route {
@@ -266,6 +280,17 @@ impl Runtime {
         let parent_conv = get_str(t, "conv_id");
         let parent_tid = get_str(t, "id");
         let mut cid = sget(args, "conversation_id").trim().to_string();
+        if cid.is_empty() {
+            // a follow-up on the bot's latest answer continues its conversation (decided from state, not the model)
+            let msgs = self.store.msgs(&parent_conv, 30).unwrap_or_default();
+            if let Some(c) = continued_conv(&msgs, &bot.id).filter(|c| {
+                self.store.conv(c).ok().flatten().is_some_and(|x| {
+                    get_str(&x, "bot_id") == bot.id && get_str(&x, "parent_conv") == parent_conv
+                })
+            }) {
+                cid = c;
+            }
+        }
         if !cid.is_empty() {
             let ok = self
                 .store
