@@ -232,11 +232,52 @@ pub fn assess(
     })
 }
 
+/// A request that asks for a message to be sent (an email, a reply, a forward) — the USER's words, never the model's.
+/// A question about how to send one asks for advice, not for the act.
+pub fn asks_send(goal: &str) -> bool {
+    static SEND: LazyLock<Regex> = LazyLock::new(|| {
+        rx(
+            r"(?i)发(一|几)?(封|条)?(邮件|电邮|信|消息)|(邮件|电邮|消息)发(给|出)|回(复|信)(这封|邮件|他|她|对方|给)|转发|\b(send|forward)\b.{0,40}\b(e-?mails?|mails?|messages?|notes?|replies|reply)\b|\b(e-?mail|message|write to)\s+(him|her|them|[A-Z][a-z]+)\b|\breply to\b",
+        )
+    });
+    static HOW: LazyLock<Regex> = LazyLock::new(|| {
+        rx(r"(?i)\b(how|where)\s+(do|can|should|to)\b|怎么|怎样|如何|能不能帮我写|草稿|\bdraft\b")
+    });
+    SEND.is_match(goal) && !HOW.is_match(goal)
+}
+
+/// The request's own asks checked against what ran: a request to send a message with no send in the task is
+/// `send:not_done` (status `unverified`), so the answer gets the true status under it ([`notice`]) whatever it says.
+pub fn with_request(mut result: Value, goal: &str) -> Value {
+    let sent = result
+        .get("actions")
+        .and_then(Value::as_array)
+        .is_some_and(|a| a.iter().any(|x| get_str(x, "kind") == "send"));
+    if sent || !asks_send(goal) {
+        return result;
+    }
+    if let Some(m) = result.get_mut("missing").and_then(Value::as_array_mut) {
+        m.push(json!("send:not_done"));
+    }
+    result["status"] = json!("unverified");
+    result
+}
+
 /// A short line added under the answer when an action ran without its proof (a purchase with no order number on any
-/// page read afterwards).
+/// page read afterwards), or the request's send did not run (`send:not_done`).
 pub fn notice(result: &Value, zh: bool) -> String {
     if get_str(result, "status") != "unverified" {
         return String::new();
+    }
+    let not_sent = result
+        .get("missing")
+        .and_then(Value::as_array)
+        .is_some_and(|m| m.iter().any(|x| x.as_str() == Some("send:not_done")));
+    if not_sent {
+        if zh {
+            return "\n\n> ⚠️ 没有发送：这个任务里没有发出任何邮件或消息。".to_string();
+        }
+        return "\n\n> ⚠️ Not sent: no email or message was sent in this task.".to_string();
     }
     if zh {
         return "\n\n> ⚠️ 结果未经确认：没有找到能证明这一步已完成的订单号或确认信息，请到对应网站或邮箱核对。".to_string();
@@ -247,6 +288,33 @@ pub fn notice(result: &Value, zh: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_send_the_request_asked_for_that_never_ran_is_not_done() {
+        // FAKECLAIM: "send Jennifer an email" and the answer says it was sent, but no send ran — the notice says so
+        let none = json!({"status": "none", "actions": [], "evidence": [], "missing": []});
+        let r = with_request(
+            none.clone(),
+            "给 Jennifer 发一封邮件，说明天的会改到下午 3 点",
+        );
+        assert_eq!(r["status"], "unverified");
+        assert_eq!(r["missing"], json!(["send:not_done"]));
+        assert!(notice(&r, true).contains("没有发送"));
+        assert!(notice(&r, false).contains("Not sent"));
+        assert!(asks_send("Send the report to Jennifer by email") && asks_send("reply to Tom"));
+        // a send that ran, a question about how to send, a draft, a request with no send: unchanged
+        let sent = json!({"status": "verified", "actions": [{"kind": "send", "tool": "gmail_send"}], "evidence": [], "missing": []});
+        assert_eq!(with_request(sent.clone(), "给 Jennifer 发一封邮件"), sent);
+        for g in [
+            "怎么发邮件给海关",
+            "帮我写一封邮件的草稿",
+            "check my email",
+            "summarize my inbox",
+            "How do I send an email to HR?",
+        ] {
+            assert_eq!(with_request(none.clone(), g), none, "{g}");
+        }
+    }
 
     #[test]
     fn refs_with_markdown_bold_on_label_and_number() {

@@ -76,8 +76,13 @@ K.check("each bot lists its own conversations", main_cid in lm and kid_cid not i
 
 # ---------------------------------------------------------------- the main bot has no travel skill of its own
 t3 = K.run("BOTSKILL load the flight skill yourself", bot="main")
-K.check("in Main, load_skill of a travel skill is refused and points to ask_bot", t3["status"] == "COMPLETED"
-        and "belongs to the bot(s) travel" in (t3.get("result") or "") and "ask_bot" in (t3.get("result") or ""), (t3.get("result") or "")[:300])
+hs3 = [e["data"] for e in t3["events"] if e["type"] == "handoff"]
+ab3 = [x for x in K.calls(t3) if x["name"] == "ask_bot"]
+K.check("in Main, load_skill of a travel skill is handed to the Travel bot by code (ask_bot event with the request, handoff)",
+        t3["status"] == "COMPLETED" and K.names(t3) == ["load_skill", "ask_bot"] and ab3 and ab3[0].get("for_skill") == "flight-booking"
+        and ab3[0]["args"].get("bot") == "travel" and "BOTSKILL" in str(ab3[0]["args"].get("question"))
+        and [h.get("bot") for h in hs3] == ["travel"] and (t3.get("result") or "").startswith("TRAVELBOT SKILL ANSWER"),
+        (t3["status"], K.calls(t3), hs3, (t3.get("result") or "")[:200]))
 
 K.check("the planner kept that request in Main (route event: main)", [e["data"].get("bot") for e in t3["events"] if e["type"] == "route"] == ["main"],
         [e["data"] for e in t3["events"] if e["type"] == "route"])
@@ -85,13 +90,14 @@ t3 = K.run(f"BOTTOOL search the flight yourself DATE={DATE}", bot="main")
 fc = [x for x in K.calls(t3) if x["name"] == "flights_search"]
 K.check("Main is not offered the travel searches, and a call to one is refused and points to ask_bot", t3["status"] == "COMPLETED"
         and fc and fc[0]["args"].get("offered") is False and "belongs to the bot(s) travel" in (t3.get("result") or ""), (fc, (t3.get("result") or "")[:300]))
+# (the bot's answer: code puts the flight's date as a heading above it, so "in", not "startswith")
 for marker in ("BOTROUTEFAIL", "BOTROUTEBAD"):
     t4 = K.run(f"{marker} cheapest flight DATE={DATE}", bot="main")
     ro = [e["data"] for e in t4["events"] if e["type"] == "route"]
     hs = [e["data"] for e in t4["events"] if e["type"] == "handoff"]
     K.check(f"{marker}: no usable routing decision (route bot null), so the executor got ask_bot and handed over itself",
             t4["status"] == "COMPLETED" and ro and ro[0].get("bot") is None and hs and not K.calls(t4)[0].get("routed")
-            and (t4.get("result") or "").startswith("TRAVELBOT ANSWER"), (t4["status"], ro, hs, (t4.get("result") or "")[:120]))
+            and "TRAVELBOT ANSWER" in (t4.get("result") or ""), (t4["status"], ro, hs, (t4.get("result") or "")[:120]))
 t4 = K.run(f"BOTCONVBAD cheapest flight DATE={DATE}", bot="main")
 hs = [e["data"] for e in t4["events"] if e["type"] == "handoff"]
 K.check("a conversation the planner names that is not that bot's (conv_nope) is dropped: a new Travel conversation",

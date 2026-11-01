@@ -96,6 +96,21 @@ pub(crate) fn short_fields_first(body: &Value, limit: usize) -> Value {
 }
 
 impl Runtime {
+    /// The bot a Main task's `load_skill` belongs to when the skill is another bot's (`Some(bot id)`): an enabled
+    /// skill Main does not have and a specialised bot lists. `None` in a specialised bot, for Main's own skills and
+    /// for names no skill has (those get `load_skill`'s own answer).
+    pub(crate) fn skill_owner(&self, t: &Value, skill: &str) -> Option<String> {
+        let bot = self.bot_of(t);
+        let skill = skill.trim();
+        if !bot.is_main()
+            || crate::bots::has_skill(bot, skill)
+            || !self.skills().iter().any(|s| get_str(s, "name") == skill)
+        {
+            return None;
+        }
+        crate::bots::owners(skill).first().map(|b| b.id.clone())
+    }
+
     /// A workspace path; errors when it escapes the workspace.
     pub fn path(&self, rel: &str) -> Result<PathBuf, LocalErr> {
         let rel = rel.trim().trim_start_matches('/');
@@ -264,6 +279,17 @@ impl Runtime {
                         json!({"text": v, "rule": "next city = the city the flight came from"}),
                     );
                     args["text"] = json!(v);
+                }
+            }
+            // a news report's schedule carries the mail the user's request asked for (`guards::news_schedule_goal`)
+            if name == "schedule_create" {
+                if let Some(g) = super::guards::news_schedule_goal(
+                    transcript,
+                    &get_str(t, "goal"),
+                    get_str(t, "source") == "schedule",
+                    &args,
+                ) {
+                    args["goal"] = json!(g);
                 }
             }
             // a news research run searches in the browser only (the user's rule for the skill): a web search there skips
@@ -473,6 +499,31 @@ times and is not made again.");
                 content = self.dry_run_stop(&task_id, name, &args, "").await;
                 ok = false;
                 refused = true;
+            } else if let Some(owner) = (name == "load_skill" && !sub)
+                .then(|| self.skill_owner(t, &sget(&args, "name")))
+                .flatten()
+            {
+                // another bot's skill in Main: code hands the request to the bot that owns it (`ask_bot` with the
+                // user's request), instead of a refusal the model would have to act on
+                let ask = ToolCall {
+                    id: call.id.clone(),
+                    name: "ask_bot".into(),
+                    args: json!({"bot": owner, "question": get_str(t, "goal")}),
+                };
+                self.event(
+                    &task_id,
+                    "tool_call",
+                    json!({"call_id": ask.id, "name": "ask_bot", "args": preview_args(&ask.args), "sub": false,
+                           "for_skill": sget(&args, "name").trim()}),
+                )
+                .await;
+                match self.ask_bot(t, &ask.args, &ask, remaining).await {
+                    Ok(sp) => return Err(sp),
+                    Err(e) => {
+                        content = e;
+                        ok = false;
+                    }
+                }
             } else if name == "ask_bot" && !sub {
                 match self.ask_bot(t, &args, call, remaining).await {
                     Ok(sp) => return Err(sp),

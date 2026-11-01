@@ -376,72 +376,60 @@ pub fn next_parallel_stage(plan: Option<&Value>) -> Option<(String, Vec<String>)
     (ids.len() >= 2).then_some((group, ids))
 }
 
-/// The line that tells the executor to run the next parallel stage in one turn (sub-agents / read calls side by side).
-pub fn parallel_hint(plan: Option<&Value>, language: &str) -> String {
-    let Some((group, ids)) = next_parallel_stage(plan) else {
-        return String::new();
-    };
-    let list = ids.join(", ");
-    if language == "en" {
-        format!(
-            "Next: steps {list} (parallel group {group}) are independent — do them in ONE turn: one delegate call per step \
-(step=\"{}\" …; or delegate with tasks=[…]) and/or the read calls themselves (browser_read, gmail_search, market_data…) \
-in the same turn. Same-turn calls run at the same time, every result comes back together, and the plan moves on only \
-when all of them are finished. Do not run them one turn at a time.",
-            ids[0]
-        )
-    } else {
-        format!(
-            "下一步：{list}（并行组 {group}）互不依赖——在同一轮里一起做：每个步骤一个 delegate 调用（step=\"{}\" …，或者 delegate \
-的 tasks=[…]），和/或在同一轮里直接发出各自的只读调用（browser_read、gmail_search、market_data…）。同一轮的调用会同时执行，结果一起返回，\
-全部完成后计划才进入下一步。不要一轮只做一个。",
-            ids[0]
-        )
-    }
-}
-
-/// The live part of the agent's context (time, plan progress, dead ends). It goes at the END of each model request
-/// and is never stored, so the long system prompt + tools stay byte-identical and the model server can reuse its
-/// prompt cache instead of re-reading ~20k tokens every step.
-pub fn status_note(
+/// The live part of the agent's context as data: `{"state": {"time", "minutes", "plan", "dead_ends"}}` — the plan's
+/// steps (`id`, `step`, `status`, `parallel`), the next parallel stage (`next_parallel`: the group and its open step
+/// ids) and the hosts that failed or were refused repeatedly (`dead_ends`: `host`, `fails`, `why_code`). It goes at the
+/// END of each model request and is never stored, so the long system prompt + tools stay byte-identical and the model
+/// server can reuse its prompt cache. No instruction sentences: data only. `None` when there is neither a plan nor a
+/// dead end (a bare clock as the last message got answered instead of the user's request, 2026-10-30).
+pub fn live_state(
     plan: Option<&Value>,
     tz: &str,
     language: &str,
     minutes: f64,
-    dead_ends: &str,
-) -> String {
-    let en = language == "en";
-    let mut lines = vec![format!(
-        "{} — now {}{}",
-        if en {
-            "(System) Status"
-        } else {
-            "（系统）当前状态 Status"
-        },
-        now_str(tz, language),
-        if minutes >= 1.0 {
-            format!(", {:.0} min into this task", minutes)
-        } else {
-            String::new()
+    dead_ends: &[(String, i64)],
+) -> Option<Value> {
+    let steps = plan_steps(plan);
+    if steps.is_none() && dead_ends.is_empty() {
+        return None;
+    }
+    let mut state = serde_json::Map::new();
+    state.insert("time".into(), Value::String(now_str(tz, language)));
+    state.insert("minutes".into(), serde_json::json!(minutes.floor() as i64));
+    if let (Some(steps), Some(p)) = (steps, plan) {
+        let list: Vec<Value> = steps
+            .iter()
+            .map(|x| {
+                let mut o = serde_json::json!({
+                    "id": get_str(x, "id"),
+                    "step": get_str(x, "description"),
+                    "status": x.get("status").filter(|v| truthy(v)).map(py_str).unwrap_or_else(|| "pending".into()),
+                });
+                let g = parallel_group(x);
+                if !g.is_empty() {
+                    o["parallel"] = Value::String(g);
+                }
+                o
+            })
+            .collect();
+        let mut po = serde_json::json!({"objective": get_str(p, "objective"), "steps": list});
+        if let Some((group, ids)) = next_parallel_stage(plan) {
+            po["next_parallel"] = serde_json::json!({"group": group, "steps": ids});
         }
-    )];
-    if let Some(steps) = plan_steps(plan) {
-        let p = plan.unwrap();
-        lines.push(format!("Plan — objective: {}", get_str(p, "objective")));
-        lines.extend(steps.iter().map(step_line));
-        lines.push(
-            "(update it with update_plan as you progress; revise it when something fails)"
-                .to_string(),
-        );
-        let hint = parallel_hint(plan, language);
-        if !hint.is_empty() {
-            lines.push(hint);
-        }
+        state.insert("plan".into(), po);
     }
     if !dead_ends.is_empty() {
-        lines.push(dead_ends.to_string());
+        state.insert(
+            "dead_ends".into(),
+            Value::Array(
+                dead_ends
+                    .iter()
+                    .map(|(h, n)| serde_json::json!({"host": h, "fails": n, "why_code": "failed_repeatedly"}))
+                    .collect(),
+            ),
+        );
     }
-    lines.join("\n")
+    Some(serde_json::json!({ "state": Value::Object(state) }))
 }
 
 fn mailbox_names(gm: &Value) -> Vec<String> {
@@ -761,7 +749,7 @@ pub fn executor_system(p: &ExecutorPrompt) -> String {
 a lookup of a few calls needs no plan, just do it; call plan_task for work that takes several dependent steps, several sources \
 or candidates, sub-agents or approvals in sequence; a skill is followed from its sheet (load_skill), and the few long skills that \
 need a plan bring one with the sheet. The plan and its progress \
-are then in the plan section of this system prompt; update it with update_plan)".to_string()
+then come in the live state (below); update it with update_plan)".to_string()
     };
     if let Some(steps) = plan_steps(p.plan.as_ref()) {
         let plan = p.plan.as_ref().unwrap();
@@ -808,7 +796,7 @@ even if memory, emails or pages are in another language.",
         now_str(&p.tz, language)
     } else {
         format!(
-            "{} (when this task started; the latest Status note has the time now)",
+            "{} (when this task started; the live state has the time now)",
             p.now_txt
         )
     };
@@ -825,6 +813,7 @@ Current time: {now_line}
 
 ## Current plan (update it with update_plan as you progress; revise it when something fails)
 {plan_txt}
+Live state: when a task has a plan or sources that failed repeatedly, the last message is runtime data (not the user's words), a JSON object {{"state": {{"time", "minutes", "plan": {{"objective", "steps": [{{"id", "step", "status", "parallel"}}], "next_parallel": {{"group", "steps"}}}}, "dead_ends": [{{"host", "fails", "why_code"}}]}}}}.
 
 ## What you know about the user (long-term memory, the parts that matter for this request)
 {fact_txt}
@@ -1166,7 +1155,7 @@ mod tests {
         assert!(PLANNER_SYSTEM.contains(
             "Searching or booking a new flight, hotel, restaurant or rental car has no mail step"
         ));
-        assert!(s.contains("plan section of this system prompt"));
+        assert!(s.contains("then come in the live state") && s.contains("{\"state\": {\"time\""));
         let zh = executor_system(&ExecutorPrompt {
             tz: "Asia/Shanghai".into(),
             connections: json!({"gmail": {"ready": true, "accounts": ["a@x.com", "b@y.com"], "providers": {"b@y.com": "Outlook"}},
@@ -1261,24 +1250,35 @@ mod tests {
             next_parallel_stage(Some(&plan)),
             Some(("p1".to_string(), vec!["s2".to_string(), "s3".to_string()]))
         );
-        let en = parallel_hint(Some(&plan), "en");
-        assert!(
-            en.starts_with("Next: steps s2, s3 (parallel group p1)") && en.contains("step=\"s2\"")
+        // the live state carries the plan as data: the steps and the next parallel stage, no instruction text
+        let st = live_state(Some(&plan), "UTC", "en", 0.0, &[]).unwrap();
+        assert_eq!(
+            st["state"]["plan"]["next_parallel"],
+            json!({"group": "p1", "steps": ["s2", "s3"]})
         );
-        let zh = parallel_hint(Some(&plan), "zh");
-        assert!(zh.contains("s2, s3（并行组 p1）") && zh.contains("同一轮"));
-        let note = status_note(Some(&plan), "UTC", "en", 0.0, "");
-        assert!(note.contains("‖ parallel:p1") && note.contains("Next: steps s2, s3"));
+        assert_eq!(
+            st["state"]["plan"]["steps"][1],
+            json!({"id": "s2", "step": "hotel A", "status": "pending", "parallel": "p1"})
+        );
+        assert!(st["state"].get("dead_ends").is_none());
         // a group with one open step left, or a sequential next step: no hint
         let mut p2 = plan.clone();
         p2["steps"][1]["status"] = json!("done");
         assert_eq!(next_parallel_stage(Some(&p2)), None);
-        assert_eq!(parallel_hint(Some(&p2), "en"), "");
+        assert!(
+            live_state(Some(&p2), "UTC", "en", 0.0, &[]).unwrap()["state"]["plan"]
+                .get("next_parallel")
+                .is_none()
+        );
         let seq = json!({"steps": [{"id": "s1", "description": "a", "status": "pending"},
                                    {"id": "s2", "description": "b", "status": "pending", "parallel": "p1"},
                                    {"id": "s3", "description": "c", "status": "pending", "parallel": "p1"}]});
         assert_eq!(next_parallel_stage(Some(&seq)), None);
-        assert!(!status_note(Some(&seq), "UTC", "en", 0.0, "").contains("Next:"));
+        assert!(
+            live_state(Some(&seq), "UTC", "en", 0.0, &[]).unwrap()["state"]["plan"]
+                .get("next_parallel")
+                .is_none()
+        );
         assert_eq!(parallel_group(&json!({"parallel": " p1 "})), "p1");
         assert_eq!(parallel_group(&json!({"parallel": ""})), "");
         assert_eq!(parallel_group(&json!({})), "");
@@ -1329,20 +1329,33 @@ mod tests {
         );
         assert_eq!(request_language("", "zh"), "Simplified Chinese (简体中文)");
         assert_eq!(request_language("https://x.test/中文", "en"), "English");
-        let n = status_note(
+        let n = live_state(
             Some(&json!({"objective": "o", "steps": [{"id": "s1", "description": "d"}]})),
             "Asia/Singapore",
             "en",
-            3.0,
-            "dead",
+            3.4,
+            &[("nosuch.test".to_string(), 3)],
+        )
+        .unwrap();
+        assert_eq!(n["state"]["minutes"], json!(3));
+        assert!(n["state"]["time"]
+            .as_str()
+            .unwrap()
+            .ends_with("(Asia/Singapore)"));
+        assert_eq!(
+            n["state"]["plan"],
+            json!({"objective": "o", "steps": [{"id": "s1", "step": "d", "status": "pending"}]})
         );
-        assert!(n.starts_with("(System) Status — now "));
-        assert!(n.contains(
-            ", 3 min into this task\nPlan — objective: o\n[ ] s1: d\n(update it with update_plan"
-        ));
-        assert!(n.ends_with("\ndead"));
-        assert!(status_note(None, "Nowhere/Zone", "zh", 0.0, "")
-            .starts_with("（系统）当前状态 Status — now "));
+        assert_eq!(
+            n["state"]["dead_ends"],
+            json!([{"host": "nosuch.test", "fails": 3, "why_code": "failed_repeatedly"}])
+        );
+        // nothing live to carry (no plan, no dead end): no state message at all
+        assert!(live_state(None, "Nowhere/Zone", "zh", 0.0, &[]).is_none());
+        assert!(live_state(Some(&json!({"steps": []})), "UTC", "en", 0.0, &[]).is_none());
+        // dead ends alone are enough
+        let d = live_state(None, "UTC", "en", 0.0, &[("x.test".to_string(), 2)]).unwrap();
+        assert!(d["state"].get("plan").is_none() && d["state"]["dead_ends"][0]["host"] == "x.test");
         assert!(now_str("Nowhere/Zone", "en").ends_with(" (UTC)"));
         assert!(
             now_str("Asia/Singapore", "zh").contains("周")

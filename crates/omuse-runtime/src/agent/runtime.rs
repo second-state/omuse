@@ -157,6 +157,18 @@ pub(crate) fn assistant_with_calls(content: &str, calls: &[ToolCall]) -> Value {
                "function": {"name": c.name, "arguments": pyjson::dumps(&c.args)}})).collect::<Vec<_>>()})
 }
 
+/// The hosts that failed or were refused at least twice in this task, most failures first (at most 8).
+pub(crate) fn dead_ends(fails: &indexmap::IndexMap<String, i64>) -> Vec<(String, i64)> {
+    let mut bad: Vec<(String, i64)> = fails
+        .iter()
+        .filter(|(_, n)| **n >= 2)
+        .map(|(h, n)| (h.clone(), *n))
+        .collect();
+    bad.sort_by_key(|(_, n)| -*n); // stable: ties keep the order they first failed in
+    bad.truncate(8);
+    bad
+}
+
 fn content_chars(msgs: &[Value]) -> usize {
     msgs.iter().map(|m| content_of(m).chars().count()).sum()
 }
@@ -2315,12 +2327,13 @@ yourself; ask_bot is not available for it."
                 .task(task_id)?
                 .ok_or_else(|| anyhow!("task vanished"))?;
             let lg = agent_lang(&s);
-            // the system prompt stays identical for the whole run (live state goes in the status note at the end)
+            // the system prompt stays identical for the whole run (the plan and the dead ends go in the live state,
+            // one JSON message at the end of the request: `prompts::live_state`)
             transcript[0] = json!({"role": "system", "content": prompts::executor_system(&prompts::ExecutorPrompt {
                 user_name: get_str(&s, "user_name"),
                 tz: tz.clone(),
                 connections: catalog.get("connections").cloned().unwrap_or_else(|| json!({})),
-                plan: t.get("plan").cloned(),
+                plan: None,
                 facts: facts.clone(),
                 prefs: self.standing_prefs(),
                 skills: bot_skills.clone(),
@@ -2381,7 +2394,14 @@ yourself; ask_bot is not available for it."
             // the budget is spent (gave_up / timed_out / force_final): the model gets no tools, nothing is said to it
             self.event(task_id, "thinking", json!({"step": steps + 1}))
                 .await;
-            let msgs = transcript.clone();
+            let mut msgs = transcript.clone();
+            if !force_final {
+                // the live state as data at the end (not stored): the plan, the next parallel stage, the dead ends
+                let dead = dead_ends(&source_failures(&self.store.events(task_id, 0)?));
+                if let Some(state) = prompts::live_state(t.get("plan"), &tz, lg, minutes, &dead) {
+                    msgs.push(user_msg(state.to_string()));
+                }
+            }
             // a known-form skill (the arrival cards with a form function): code decides the next step, no model call
             // (and the claims and the FWD purchase: `agent/claims.rs`)
             let machine = super::driver::active(&transcript)
@@ -2818,6 +2838,7 @@ yourself; ask_bot is not available for it."
             if !final_.is_empty()
                 && asked.is_none()
                 && !answer_reviewed
+                && !driven_run
                 && !force_final
                 && !timed_out
             {
@@ -2963,12 +2984,24 @@ yourself; ask_bot is not available for it."
                 final_ = self.rewrite_in_english(task_id, &transcript, &final_).await;
             }
             let texts = self.inner.lock().tool_texts.get(task_id).cloned();
-            let oc = crate::outcome::assess(
+            let mut oc = crate::outcome::assess(
                 &self.store.events(task_id, 0)?,
                 &final_,
                 texts.as_deref(),
                 Some(&goal_text),
             );
+            if asked.is_none() {
+                // the request's own asks against what ran (a send the user asked for that never happened)
+                oc = crate::outcome::with_request(oc, &goal_text);
+            }
+            if !arr(&oc, "missing").is_empty() {
+                self.event(
+                    task_id,
+                    "outcome_check",
+                    json!({"status": oc.get("status"), "missing": oc.get("missing")}),
+                )
+                .await;
+            }
             final_ += &crate::outcome::notice(&oc, lg != "en");
             self.store.update_task(task_id, &json!({"outcome": oc}))?;
             self.event(task_id, "outcome", oc.clone()).await;

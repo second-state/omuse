@@ -24,7 +24,9 @@ app = FastAPI()
 PAGE = os.environ.get("TEST_PAGE", "http://example.com/")
 CALLS = []
 RETRY = {}   # scenario -> failures served so far
-MARKUP_FINALS = {}   # MARKUPFINAL goal -> final (tool-free) calls served so far: the first is markup, the next plain text
+# the scripted translations (agent/runtime.rs `rewrite_in_english`): the start of a Chinese reply -> its English
+TRANSLATIONS = [("最重要的邮件是 Google Workspace 发来的可疑登录安全告警，建议尽快检查。",
+                 "Here is the most important email: the security alert from Google Workspace about a suspicious login.")]
 
 
 def tc(name, args):
@@ -199,6 +201,14 @@ async def _chat(req: Request, b: dict):
     sys = msgs[0]["content"] if msgs and msgs[0]["role"] == "system" else ""
     if sys.startswith("## Route"):   # the main bot's router (agent/bots.rs `route`): main, unless bots_e2e asks
         return route_reply(str(msgs[-1]["content"]))
+    if sys.startswith("You check an assistant's final reply"):   # agent/runtime.rs `review_answer`: the reply holds together
+        return reply(json.dumps({"ok": True, "problem": ""}))
+    if sys.startswith("Translate the user's text into English"):   # agent/runtime.rs `rewrite_in_english`: the reply alone
+        text = str(msgs[-1]["content"])
+        for zh, en in TRANSLATIONS:
+            if text.startswith(zh):
+                return reply(en + text[len(zh):])
+        return reply(text)   # a text the fake has no translation for comes back as it was (no language_fixed event)
     # retry policy (retry_e2e.py): the first calls of a task fail, then it works
     goal_txt = "\n".join(str(m["content"]) for m in msgs if m["role"] == "user")   # the goal (the last user message is the status note)
     m = re.search(r"RETRY(429|503)x(\d)", goal_txt)
@@ -305,8 +315,10 @@ async def _chat(req: Request, b: dict):
     if msgs and str(msgs[-1]["content"]).startswith("You are tidying"):
         ids = re.findall(r"^(fact_\w+) \| long \| .*Opened zipair", msgs[-1]["content"], re.M)
         return reply(json.dumps({"demote": [{"id": i, "reason": "process log"} for i in ids]}))
-    users = [m["content"] for m in msgs if m["role"] == "user" and not str(m["content"]).startswith(("（系统）", "(System)"))]
+    # the live state (agent/runtime.rs, prompts::live_state) is runtime data at the end, never the user's request
+    users = [m["content"] for m in msgs if m["role"] == "user" and not str(m["content"]).startswith(("（系统）", "(System)", '{"state"'))]
     goal = users[-1] if users else ""
+    state = live_state(msgs)
     tools_done = [m for m in msgs if m["role"] == "tool"]
     n = len(tools_done)
     last_tool = tools_done[-1]["content"] if tools_done else ""
@@ -669,16 +681,13 @@ async def _chat(req: Request, b: dict):
             return reply("", [tc("make_xlsx", {"output": "trip.xlsx", "sheets": [{"name": "Plan", "columns": ["Day", "Cost"],
                                                                                    "rows": [["D1", 100 + n]]}]})])
         return reply("REMAKE DONE:\n" + "\n=====\n".join(str(m["content"])[:400] for m in tools_done))
-    if "MARKUPFINAL" in goal:   # the 2026-10-02 Tesla run: a final answer (no tools offered) that was only tool-call markup
-        if b.get("tools"):
-            return reply("", [tc("browser_navigate", {"url": PAGE + f"?m={n}"})])
-        # the fake's own count of tool-free calls for this goal: the first final is markup, any later one plain text
-        # (whether the runtime asks again or drops the markup in code, the suite checks that no markup reaches the user)
-        MARKUP_FINALS[goal] = MARKUP_FINALS.get(goal, 0) + 1
-        if MARKUP_FINALS[goal] % 2 == 1 and not finals:
-            return reply('<tool_call>\n<function=update_plan>\n<parameter=steps>\n[{"id": "s1", "status": "done"}]\n'
-                         '</parameter>\n</function>\n</tool_call>')
-        return reply("MARKUP FIXED: plain answer")
+    if "MARKUPFINAL" in goal:   # the 2026-10-02 Tesla run: a reply that was only tool-call markup (cut off, so no call
+        # could be read from it) — the runtime strips it and writes the answer with its tool-free reply call (rescue_final)
+        if not b.get("tools"):
+            return reply("MARKUP FIXED: plain answer")
+        if n == 0:
+            return reply("", [tc("browser_navigate", {"url": PAGE + "?m=0"})])
+        return reply('<tool_call>\n<function=update_plan>\n<parameter=steps>\n[{"id": "s1", "status": "done"}]\n')
     if "CHARTTEST" in goal:   # make_chart: a line chart shown in the chat, a bad spec, a flow chart embedded in a PDF
         if n == 0:
             return reply("", [tc("make_chart", {"type": "line", "title": "腾讯 0700.HK 近一年", "source": "测试数据",
@@ -692,20 +701,23 @@ async def _chat(req: Request, b: dict):
         if n == 3:
             return reply("", [tc("make_pdf", {"markdown": "# 报告\n\n![流程](charts/报销流程.png)\n", "output": "reports/chart_report.pdf"})])
         return reply("CHART RESULTS:\n" + "\n=====\n".join(str(m["content"])[:300] for m in tools_done))
-    if "SLOWTASK" in goal:   # a slow research task: told to wrap up at 70% of the time budget, answers at 100%
+    if "SLOWTASK" in goal:   # a slow research task: reads pages while browser_navigate is offered (past 70% of the time
+        # budget only the finishing tools are: agent/runtime.rs `budget`), then keeps notes until no tool is offered
         if not b.get("tools"):
-            return reply(f"SLOW SUMMARY after {n} pages; wrap-up note seen: {'time budget' in allu}")
+            return reply(f"SLOW SUMMARY after {n} results; navigate withdrawn before the limit: {'files_write' in called}")
         import asyncio as _a
         await _a.sleep(4)
-        return reply("", [tc("browser_navigate", {"url": PAGE + f"?page={n}"})])
+        if "browser_navigate" in tnames:
+            return reply("", [tc("browser_navigate", {"url": PAGE + f"?page={n}"})])
+        return reply("", [tc("files_write", {"path": f"notes/slow{n}.md", "content": f"notes {n}"})])
     if "STUCKLOOP" in goal:   # the 2026-10-02 HSBC run: the same Google Finance link, 3 copies per turn, forever
         if not b.get("tools"):
-            return reply(f"STUCK SUMMARY after {n} tool results; asked to stop: {'停止重试' in allu or 'retrying has stopped' in allu}")
+            return reply(f"STUCK SUMMARY after {n} tool results; no tools offered: {not tnames}")
         url = "http://shop.test:8099/page.html?quote=HSBC&window=5Y"
         return reply("", [tc("browser_navigate", {"url": url}), tc("browser_navigate", {"url": url}),
                           tc("browser_navigate", {"url": url})])
     if "SWITCHSRC" in goal:   # a source that keeps failing: after 3 failures the host is blocked, the agent switches site
-        dead_seen = "Dead ends in this task" in allu
+        dead_seen = any(d.get("host") == "nosuch.test" for d in (state.get("dead_ends") or []))
         if n < 4:
             return reply("", [tc("browser_navigate", {"url": f"http://nosuch.test:8099/quote{n}"})])
         if n == 4:
@@ -905,6 +917,17 @@ async def _chat(req: Request, b: dict):
         if _kw in goal:   # travel_*_e2e.py: data connector first, the browser only for the booking page
             return travel_book(_kind, goal, msgs, tnames)
     return reply("<think>reasoning here</think>你好！这是一个普通回答。")
+
+
+def live_state(msgs):
+    """The runtime's live state (`{"state": {...}}`, the last message when there is a plan or a dead end), or {}."""
+    last = msgs[-1] if msgs else {}
+    if last.get("role") == "user" and str(last.get("content") or "").startswith('{"state"'):
+        try:
+            return json.loads(last["content"])["state"]
+        except (ValueError, KeyError):
+            return {}
+    return {}
 
 
 @app.get("/calls_for")
@@ -1341,6 +1364,8 @@ def bots_flow(goal, sys, msgs, tools_done, n, allu):
         return reply("MAIN SAW: " + str(tools_done[-1]["content"])[:200])
     if main and "BOTSKILL" in goal:
         return reply("MAIN SAW: " + str(tools_done[-1]["content"])[:200])
+    if travel and "BOTSKILL" in goal:   # Main's load_skill of the flight skill, handed over by code (agent/exec.rs)
+        return reply("TRAVELBOT SKILL ANSWER: handed over with the flight skill's request.")
     if travel and "BOTKID1" in goal:
         if n == 0:
             return reply("", [tc("load_skill", {"name": "flight-booking"})])

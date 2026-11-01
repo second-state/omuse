@@ -3564,12 +3564,13 @@ fn a_flight_answer_gives_the_day_it_is_for() {
         false,
     );
     assert!(a.starts_with("**Tuesday, 1 December 2026**"), "{a}");
+    // the heading comes from the search's date in code, whatever the answer's words say (guards.rs, 2026-11-01)
     let dated = "On 1 December the cheapest is SGD 304.";
-    assert_eq!(with_flight_date(&t, dated, false), dated);
     assert_eq!(
-        with_flight_date(&t, "Dec 1: SGD 304.", false),
-        "Dec 1: SGD 304."
+        with_flight_date(&t, dated, false),
+        format!("**Tuesday, 1 December 2026**\n\n{dated}")
     );
+    assert_eq!(with_flight_date(&t, &a, false), a); // once only
     assert_eq!(with_flight_date(&[], "SGD 304.", false), "SGD 304.");
 }
 
@@ -3883,4 +3884,341 @@ fn a_card_run_appends_the_users_cards_from_the_catalog() {
         t[1].clone(),
     ];
     assert_eq!(with_card_comparison(&one, "x", false), "x");
+}
+
+// ---------------------------------------------------------------- the run loop against a scripted model
+type Script = dyn Fn(&Value) -> Value + Send + Sync;
+
+/// A scripted model: `script(request json)` gives the assistant message; every request is recorded.
+struct Scripted {
+    script: Box<Script>,
+    seen: Arc<Mutex<Vec<Value>>>,
+}
+
+impl crate::llm::LlmTransport for Scripted {
+    fn send(
+        &self,
+        req: crate::llm::HttpRequest,
+    ) -> futures::future::BoxFuture<'_, Result<crate::llm::HttpResponse, String>> {
+        let body = req.json.unwrap_or(Value::Null);
+        self.seen.lock().push(body.clone());
+        let msg = (self.script)(&body);
+        let fr = if msg.get("tool_calls").is_some() {
+            "tool_calls"
+        } else {
+            "stop"
+        };
+        let out = json!({"choices": [{"message": msg, "finish_reason": fr}],
+                         "usage": {"prompt_tokens": 1, "completion_tokens": 1}});
+        Box::pin(async move {
+            Ok(crate::llm::HttpResponse {
+                status: 200,
+                retry_after: None,
+                text: out.to_string(),
+            })
+        })
+    }
+}
+
+fn system_of(body: &Value) -> String {
+    get_str(&body["messages"][0], "content")
+}
+
+fn last_of(body: &Value) -> String {
+    body["messages"]
+        .as_array()
+        .and_then(|a| a.last())
+        .map(|m| get_str(m, "content"))
+        .unwrap_or_default()
+}
+
+/// The helper calls every run makes besides the executor's (routing, titles, the answer review, memory).
+fn helper_reply(body: &Value) -> Option<Value> {
+    let sys = system_of(body);
+    if sys.starts_with("## Route") {
+        return Some(json!({"role": "assistant", "content": "{\"bot\": \"main\"}"}));
+    }
+    if sys.starts_with("You check an assistant") {
+        return Some(json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\"}"}));
+    }
+    if body.get("tools").is_none()
+        && !sys.starts_with("You write the final answer")
+        && !sys.starts_with("Translate the user's text")
+        && !sys.contains("You are OMuse")
+    {
+        return Some(json!({"role": "assistant", "content": "{}"}));
+    }
+    None
+}
+
+async fn scripted_rt(
+    script: impl Fn(&Value) -> Value + Send + Sync + 'static,
+    settings: Value,
+) -> (Arc<Runtime>, tempfile::TempDir, Arc<Mutex<Vec<Value>>>) {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg =
+        Arc::new(Config::parse(&format!("[data]\ndir = \"{}\"\n", dir.path().display())).unwrap());
+    let publish: Publish = Arc::new(|_ev| Box::pin(async {}));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let rt = Runtime::with_llm_transport(
+        &dir.path().join("runtime"),
+        cfg,
+        publish,
+        Some(Arc::new(Scripted {
+            script: Box::new(script),
+            seen: seen.clone(),
+        })),
+    )
+    .unwrap();
+    rt.set_sentinel_hook(Some(Arc::new(|_, _, _| Box::pin(async { Ok(json!({})) }))));
+    let mut s = json!({"model_base_url": "http://model.test/v1", "model_name": "fake", "model_api_key": "k",
+                       "memory_extraction": false});
+    for (k, v) in settings.as_object().cloned().unwrap_or_default() {
+        s[k] = v;
+    }
+    rt.store.set_settings(&s).unwrap();
+    (rt, dir, seen)
+}
+
+fn executor_calls(seen: &Mutex<Vec<Value>>) -> Vec<Value> {
+    seen.lock()
+        .iter()
+        .filter(|b| b.get("tools").is_some())
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn live_state_is_one_json_message_and_the_system_prompt_never_changes() {
+    // the plan and the dead ends go in ONE JSON message at the end of each request; the system prompt is the same on
+    // every step (the model server reuses its prompt cache) and never carries the plan
+    let (rt, _d, seen) = scripted_rt(
+        |body| {
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let tools_done = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["role"] == "tool")
+                .count();
+            if tools_done < 2 {
+                return json!({"role": "assistant", "content": "", "tool_calls": [{"id": format!("c{tools_done}"),
+                    "type": "function", "function": {"name": "calculate", "arguments": format!("{{\"expression\": \"{tools_done}+1\"}}")}}]});
+            }
+            json!({"role": "assistant", "content": "Both sums are done: 1 and 2."})
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("add the numbers", &conv, "chat", "", "", None)
+        .unwrap();
+    let tid = get_str(&t, "id");
+    rt.store
+        .update_task(
+            &tid,
+            &json!({"plan": {"objective": "sums", "steps": [
+                {"id": "s1", "description": "hotel A", "status": "pending", "parallel": "p1"},
+                {"id": "s2", "description": "hotel B", "status": "pending", "parallel": "p1"}]}}),
+        )
+        .unwrap();
+    rt.run(&tid).await.unwrap();
+    let t = rt.store.task(&tid).unwrap().unwrap();
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    let ex = executor_calls(&seen);
+    assert_eq!(ex.len(), 3, "{ex:?}");
+    let systems: std::collections::BTreeSet<String> = ex.iter().map(system_of).collect();
+    assert_eq!(systems.len(), 1, "the system prompt changed between steps");
+    let sys = systems.into_iter().next().unwrap();
+    assert!(!sys.contains("hotel A"), "the plan is in the system prompt");
+    for b in &ex {
+        let last: Value = serde_json::from_str(&last_of(b)).expect("the last message is JSON");
+        let st = &last["state"];
+        assert_eq!(st["plan"]["steps"][0]["step"], "hotel A");
+        assert_eq!(
+            st["plan"]["next_parallel"],
+            json!({"group": "p1", "steps": ["s1", "s2"]})
+        );
+        assert!(st["time"].is_string());
+    }
+    // the stored transcript never keeps the live state
+    assert!(!arr_has_state(&t["transcript"]));
+}
+
+fn arr_has_state(tr: &Value) -> bool {
+    tr.as_array().is_some_and(|a| {
+        a.iter()
+            .any(|m| get_str(m, "content").starts_with("{\"state\""))
+    })
+}
+
+#[tokio::test]
+async fn a_reply_of_only_tool_markup_is_rescued_and_the_task_completes() {
+    // stuck_e2e MARKUPFINAL: a reply that is only (cut-off) tool-call markup — no call can be read from it — is
+    // stripped in code, the answer comes from the tool-free reply call (rescue_final) and the task completes
+    let (rt, _d, seen) = scripted_rt(
+        |body| {
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            if system_of(body).starts_with("You write the final answer") {
+                return json!({"role": "assistant", "content": "Tesla's report: revenue was up."});
+            }
+            let n = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["role"] == "tool")
+                .count();
+            if n == 0 {
+                return json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c0", "type": "function",
+                    "function": {"name": "calculate", "arguments": "{\"expression\": \"1+1\"}"}}]});
+            }
+            json!({"role": "assistant",
+                   "content": "<tool_call>\n<function=update_plan>\n<parameter=steps>\n[{\"id\": \"s1\", \"status\": \"done\"}]\n"})
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("look up Tesla's report", &conv, "chat", "", "", None)
+        .unwrap();
+    let tid = get_str(&t, "id");
+    rt.run(&tid).await.unwrap();
+    let t = rt.store.task(&tid).unwrap().unwrap();
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    assert_eq!(get_str(&t, "result"), "Tesla's report: revenue was up.");
+    let types: Vec<String> = rt
+        .store
+        .events(&tid, 0)
+        .unwrap()
+        .iter()
+        .map(|e| get_str(e, "type"))
+        .collect();
+    assert!(types.iter().any(|x| x == "rescued_final"), "{types:?}");
+    assert!(seen
+        .lock()
+        .iter()
+        .any(|b| system_of(b).starts_with("You write the final answer")));
+}
+
+#[tokio::test]
+async fn a_chinese_answer_in_english_mode_is_translated_with_the_event() {
+    // e2e_028 ZHANSWER: Settings → English, the model answers in Chinese: the reply alone is translated (one call
+    // outside the run's conversation) and `language_fixed` is emitted
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            if system_of(body).starts_with("Translate the user's text") {
+                return json!({"role": "assistant",
+                              "content": "Here is the most important email: the security alert from Google Workspace."});
+            }
+            json!({"role": "assistant", "content": "最重要的邮件是 Google Workspace 发来的可疑登录安全告警，建议尽快检查。"})
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("ZHANSWER 帮我看看最重要的邮件", &conv, "chat", "", "", None)
+        .unwrap();
+    let tid = get_str(&t, "id");
+    rt.run(&tid).await.unwrap();
+    let t = rt.store.task(&tid).unwrap().unwrap();
+    assert!(
+        get_str(&t, "result").starts_with("Here is the most important email"),
+        "{}",
+        get_str(&t, "result")
+    );
+    assert!(rt
+        .store
+        .events(&tid, 0)
+        .unwrap()
+        .iter()
+        .any(|e| get_str(e, "type") == "language_fixed"));
+}
+
+#[tokio::test]
+async fn main_hands_another_bots_skill_to_that_bot_in_code() {
+    // bots_e2e BOTSKILL: in Main, load_skill of the Travel bot's skill is not a refusal the model must act on — code
+    // hands the user's request to the bot that owns the skill (ask_bot), and the task waits for that bot
+    let (rt, _d) = rt();
+    let main_cid = rt.store.create_conv("x", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("find me a flight to Tokyo", &main_cid, "chat", "", "", None)
+        .unwrap();
+    assert_eq!(
+        rt.skill_owner(&t, "flight-booking").as_deref(),
+        Some("travel")
+    );
+    assert_eq!(rt.skill_owner(&t, "news-search"), None); // Main's own
+    assert_eq!(rt.skill_owner(&t, "no-such-skill"), None);
+    let c = call("c1", "load_skill", json!({"name": "flight-booking"}));
+    let mut tr = vec![];
+    let r = rt
+        .exec_call(
+            &t,
+            &c,
+            &mut tr,
+            &json!({"tools": []}),
+            &[],
+            None,
+            super::exec::CallMode::MAIN,
+        )
+        .await;
+    let sp = match r {
+        Err(sp) => sp,
+        Ok(o) => panic!("not handed over: {:?}", o.ok),
+    };
+    assert_eq!(sget(&sp.waiting, "bot"), "travel");
+    assert_eq!(sp.waiting["_pending"]["calls"][0]["name"], "ask_bot");
+    let tid = get_str(&t, "id");
+    let evs = rt.store.events(&tid, 0).unwrap();
+    let ask = evs
+        .iter()
+        .find(|e| get_str(e, "type") == "tool_call" && e["data"]["name"] == "ask_bot")
+        .expect("an ask_bot event");
+    assert_eq!(ask["data"]["for_skill"], "flight-booking");
+    assert_eq!(ask["data"]["args"]["question"], "find me a flight to Tokyo");
+    assert!(evs.iter().any(|e| get_str(e, "type") == "handoff"));
+    // a specialised bot keeps load_skill's own answer (no hand-over from there)
+    let cid = rt.store.create_conv("y", "chat", None).unwrap();
+    rt.store.set_conv_bot(&cid, "photos", "").unwrap();
+    let t2 = rt
+        .store
+        .create_task("y", &cid, "chat", "", "", None)
+        .unwrap();
+    assert_eq!(rt.skill_owner(&t2, "flight-booking"), None);
+}
+
+#[test]
+fn dead_ends_for_the_live_state() {
+    let mut ev = Vec::new();
+    for (i, host) in ["a.test", "b.test", "b.test", "c.test", "c.test", "c.test"]
+        .iter()
+        .enumerate()
+    {
+        ev.push(json!({"type": "tool_call", "data": {"call_id": format!("c{i}"), "args": {"url": format!("http://{host}/q{i}")}}}));
+        ev.push(json!({"type": "tool_result", "data": {"call_id": format!("c{i}"), "ok": false}}));
+    }
+    let d = super::runtime::dead_ends(&source_failures(&ev));
+    assert_eq!(
+        d,
+        vec![("c.test".to_string(), 3), ("b.test".to_string(), 2)]
+    );
+    let st = crate::prompts::live_state(None, "UTC", "en", 0.0, &d).unwrap();
+    assert_eq!(
+        st["state"]["dead_ends"][0],
+        json!({"host": "c.test", "fails": 3, "why_code": "failed_repeatedly"})
+    );
 }

@@ -237,10 +237,27 @@ request — keep it short and leave out what the request does not need. The skil
                 }
                 let profile = self.store.profile().unwrap_or_else(|_| json!({}));
                 let transcript = arr(t, "transcript");
+                // a listing searched and not shown yet: the options first, the question after
+                let events = self.store.events(&tid, 0).unwrap_or_default();
+                if let Some(refusal) = super::guards::ask_before_listing(&events) {
+                    self.event(&tid, "ask_user_refused", refusal.clone()).await;
+                    return Ok(pyjson::dumps(&refusal));
+                }
+                // the trip's dates the request itself gives ("2 nights … next week"), in the user's timezone
+                let today = get_str(&self.settings(), "timezone")
+                    .parse::<chrono_tz::Tz>()
+                    .map(|z| chrono::Utc::now().with_timezone(&z).date_naive())
+                    .unwrap_or_else(|_| chrono::Local::now().date_naive());
+                let request = get_str(t, "goal");
                 let known: Vec<Value> = fields
                     .iter()
                     .filter_map(|f| {
-                        super::guards::known_answer(f, &profile, transcript)
+                        let from_request = (f == "trip_dates")
+                            .then(|| super::guards::trip_dates_from_request(&request, today))
+                            .flatten()
+                            .map(|v| ("request", v));
+                        from_request
+                            .or_else(|| super::guards::known_answer(f, &profile, transcript))
                             .map(|(src, v)| json!({"field": f, "value": v, "source": src}))
                     })
                     .collect();
@@ -1089,6 +1106,16 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                 ))
             }
             "trigger_create" => {
+                // "… until X" in the user's own request is a goal (it stops when X happens), as for schedule_create:
+                // made a daily-check goal in code — only for the user's own request, not inside a schedule's or
+                // goal's run (automations_real 2026-11-01: "keep an eye on my inbox until my landlord replies"
+                // became a gmail.new_email trigger)
+                if get_str(t, "schedule_id").is_empty() {
+                    if let Some(success) = until_in_request(&get_str(t, "goal")) {
+                        let ga = goal_args_from_trigger(a, &success);
+                        return self.local(t, "goal_create", &ga).await;
+                    }
+                }
                 let every = a
                     .get("every")
                     .filter(|v| truthy(v))
@@ -2871,4 +2898,78 @@ pub(crate) fn skill_profile_note(
         "\n\n{}",
         pyjson::dumps(&json!({"profile": Value::Object(m)}))
     )
+}
+
+/// The condition of an "until …" in the user's own request ("Keep an eye on my inbox until my landlord replies about
+/// the rent renewal." → "my landlord replies about the rent renewal"): the words after "until" / "till" / 直到 up to
+/// the end of the sentence. Read from the user's words, never the model's.
+pub(crate) fn until_in_request(request: &str) -> Option<String> {
+    static UNTIL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(?:until|till)\s+([^.!?\n]{3,160})|直到([^。！？\n]{2,80})").unwrap()
+    });
+    let c = UNTIL.captures(request)?;
+    let cond = c.get(1).or_else(|| c.get(2))?.as_str();
+    let cond = cond
+        .trim()
+        .trim_end_matches(|ch: char| ch == ',' || ch == '，' || ch.is_whitespace())
+        .trim_end_matches("为止")
+        .trim();
+    (!cond.is_empty()).then(|| cond.to_string())
+}
+
+/// The goal a `trigger_create` with an "until" condition becomes: its name and instruction, the trigger's mail
+/// query folded into the objective, checked once a day (1440 minutes) until the condition is met.
+pub(crate) fn goal_args_from_trigger(a: &Value, success: &str) -> Value {
+    let mut objective = sget(a, "goal");
+    let query = a
+        .get("params")
+        .map(|p| sget(p, "query"))
+        .unwrap_or_default();
+    if !query.trim().is_empty() {
+        objective = format!(
+            "{} (search: {})",
+            objective.trim_end_matches('.'),
+            query.trim()
+        );
+    }
+    json!({
+        "title": sget(a, "name"),
+        "objective": objective,
+        "success_criteria": success,
+        "check_kind": "interval",
+        "check_spec": "1440",
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_trigger_with_until_in_the_request_becomes_a_daily_goal() {
+        // automations_real on b24962d: a gmail.new_email trigger instead of the landlord goal
+        let ask = "Keep an eye on my inbox until my landlord replies about the rent renewal. Check once a day.";
+        let success = until_in_request(ask).unwrap();
+        assert_eq!(success, "my landlord replies about the rent renewal");
+        let trigger = json!({"name": "Landlord rent-renewal reply watch", "source": "gmail.new_email",
+            "params": {"query": "rent OR renewal OR lease", "account": "tester@example.com"}, "every": 1440,
+            "goal": "Review each new matching email and notify the user only if it is a reply from their landlord about the rent renewal."});
+        let g = goal_args_from_trigger(&trigger, &success);
+        assert_eq!(g["title"], "Landlord rent-renewal reply watch");
+        assert_eq!(
+            (g["check_kind"].as_str(), g["check_spec"].as_str()),
+            (Some("interval"), Some("1440"))
+        );
+        assert_eq!(g["success_criteria"], success.as_str());
+        assert!(sget(&g, "objective").ends_with("(search: rent OR renewal OR lease)"));
+        // a plain trigger stays a trigger
+        assert_eq!(
+            until_in_request("Summarize every new message in #general."),
+            None
+        );
+        assert_eq!(
+            until_in_request("帮我盯着邮箱，直到房东回复为止").as_deref(),
+            Some("房东回复")
+        );
+    }
 }

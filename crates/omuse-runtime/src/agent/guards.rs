@@ -781,12 +781,14 @@ pub fn claim_run(transcript: &[Value]) -> bool {
 }
 
 static WEBSITE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)https?://|\bwww\.|\b[a-z0-9-]+\.(com|org|net|gov|edu|io|co|sg|hk|jp|uk|au|cn|tw|kr|th|my|travel)\b|\b(web ?site|web ?page|site|portal|online form|search page)s?\b|网站|网页|官网|页面")
+    Regex::new(r"(?i)https?://|\bwww\.|\b[a-z0-9-]+\.(com|org|net|gov|edu|io|co|sg|hk|jp|uk|au|cn|tw|kr|th|my|travel)\b|\b(web ?site|web ?page|site|portal|online form|page)s?\b|\bgoogle maps\b|网站|网页|官网|页面|地图")
         .unwrap()
 });
 
-/// Whether the user's request names a website or a page to open (a URL, a domain, "the … site / page / portal"):
-/// a skill's `browser: off` then leaves the browser on. Read from the user's words, never the model's.
+/// Whether the user's request names a website or a page to open (a URL, a domain, "the … site / page / portal", a
+/// web map such as Google Maps): a skill's `browser: off` then leaves the browser on. Read from the user's words,
+/// never the model's. browser_auto_real 2026-11-01: "look the hotel up on Google Maps and open its map page" was not
+/// recognised, the Tokyo guide turned the browser off and the page was never opened (no auto-approved card).
 pub fn names_website(goal: &str) -> bool {
     WEBSITE.is_match(goal)
 }
@@ -1396,6 +1398,47 @@ pub fn news_report_action(
         });
     }
     None
+}
+
+/// The goal of a `schedule_create` the model makes in a news research run, fixed in code: when the user's own request
+/// asks for the editions by mail ("send me a new edition every week", `REPORT_EMAIL` on the user's words), the
+/// schedule's goal carries the delivery `news_report_action` reads in the scheduled run ("… and email it to me").
+/// With a report published, the goal is the code's own wording (the subject from the report); before one, the
+/// model's goal gets the fixed delivery clause appended. `None`: no change (not a news run, a run of a schedule, no
+/// mail asked, or the goal already is the code's). news_report_real 2026-11-01: the model's goal said "Deliver the
+/// new edition in chat", so the scheduled edition was not emailed.
+pub fn news_schedule_goal(
+    transcript: &[Value],
+    user_goal: &str,
+    scheduled: bool,
+    args: &Value,
+) -> Option<String> {
+    const DELIVERY: &str = " and email it to me";
+    if scheduled || !news_research_run(transcript) || !REPORT_EMAIL.is_match(user_goal) {
+        return None;
+    }
+    let goal = sget(args, "goal");
+    let fixed = match published_report(transcript) {
+        Some(rep) => {
+            // the subject the report was made on (the call's own argument), else the report's title
+            let asked = transcript
+                .iter()
+                .flat_map(tool_calls)
+                .map(stored_call)
+                .filter(|(n, _)| n == "news_report")
+                .map(|(_, a)| sget(&a, "subject"))
+                .rfind(|s| !s.trim().is_empty());
+            let subject = asked
+                .into_iter()
+                .chain([get_str(&rep, "subject"), get_str(&rep, "title")])
+                .find(|s| !s.trim().is_empty())
+                .unwrap_or_default();
+            format!("News report on {subject}: research the latest news with the news-research skill and publish the newspaper report{DELIVERY}")
+        }
+        None if goal.trim_end().ends_with(DELIVERY) => goal.clone(),
+        None => format!("{}{DELIVERY}", goal.trim_end().trim_end_matches('.')),
+    };
+    (fixed != goal).then_some(fixed)
 }
 
 /// A run that published a news report: its two links are in the answer (added when the model left one out), and with a
@@ -2374,46 +2417,43 @@ pub fn fix_relative_day(goal: &str, purpose: &str, today: chrono::NaiveDate) -> 
     Some(out)
 }
 
-/// A flight answer gives the day it is for: the date of the run's flight search, when the answer does not show it in
-/// any usual writing, goes in front (travel_kiwi_real 2026-11-01: "The cheapest result is SGD 304 …", no day).
+/// A flight answer gives the day it is for: the date of the run's last flight search (its `date` argument, and its
+/// `date_to` for a range) goes first, as a line of its own — always, without reading the answer (a date inside a
+/// booking link or another number does not stand for it). Once per answer: an answer that already starts with this
+/// very line (code's own) is left as it is. travel_kiwi_real 2026-11-01: "The cheapest result is SGD 304 …", no day.
 pub fn with_flight_date(transcript: &[Value], answer: &str, zh: bool) -> String {
-    let date = transcript
+    let parse = |d: &str| chrono::NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok();
+    let last = transcript
         .iter()
         .flat_map(tool_calls)
-        .filter_map(|tc| {
-            let (name, args) = stored_call(tc);
-            (name == "flights_search").then(|| sget(&args, "date"))
+        .map(stored_call)
+        .filter(|(name, _)| name == "flights_search")
+        .filter_map(|(_, args)| {
+            parse(&sget(&args, "date")).map(|d| (d, parse(&sget(&args, "date_to"))))
         })
-        .filter_map(|d| chrono::NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok())
         .next_back();
-    let Some(d) = date else {
+    let Some((d, to)) = last else {
         return answer.to_string();
     };
-    let forms = [
-        d.format("%Y-%m-%d").to_string(),
-        d.format("%-d %B").to_string(),
-        d.format("%-d %b").to_string(),
-        d.format("%B %-d").to_string(),
-        d.format("%b %-d").to_string(),
-        d.format("%-m月%-d日").to_string(),
-        d.format("%-d/%-m").to_string(),
-    ];
-    if forms.iter().any(|f| answer.contains(f.as_str())) || answer.trim().is_empty() {
+    if answer.trim().is_empty() {
         return answer.to_string();
     }
-    if zh {
-        format!(
-            "**{}**\n\n{}",
-            d.format("%Y年%-m月%-d日"),
-            answer.trim_start()
-        )
-    } else {
-        format!(
-            "**{}**\n\n{}",
-            d.format("%A, %-d %B %Y"),
-            answer.trim_start()
-        )
+    let day = |x: chrono::NaiveDate| {
+        if zh {
+            x.format("%Y年%-m月%-d日").to_string()
+        } else {
+            x.format("%A, %-d %B %Y").to_string()
+        }
+    };
+    let line = match to.filter(|t| *t > d) {
+        Some(t) => format!("**{} – {}**", day(d), day(t)),
+        None => format!("**{}**", day(d)),
+    };
+    let body = answer.trim_start();
+    if body.starts_with(&line) {
+        return answer.to_string();
     }
+    format!("{line}\n\n{body}")
 }
 
 /// The answer with the times of each flight leg it names without them: a flight search result gives every leg its
@@ -3690,6 +3730,41 @@ pub fn asked_user(transcript: &[Value]) -> Option<(Vec<String>, String)> {
         })
 }
 
+/// The search tools whose results are a listing for the user (flights, hotels, cars, places, the MICHELIN guide's
+/// restaurants), by their base name (an MCP server's prefix dropped).
+fn listing_search(name: &str) -> bool {
+    let base = name.rsplit("__").next().unwrap_or(name);
+    travel_search(base).is_some() || matches!(base, "michelin_search" | "restaurants_search")
+}
+
+/// `ask_user` refused while a listing search's results are in the run and not shown yet: a request for options is
+/// answered with the options first (the answer or `present_choices`); what only matters for a booking (party size, a
+/// time) is asked after the user has seen them. Decided from the task's `tool_result` events (the tool, whether it
+/// went through, in order), never from the question's words. `Some(refusal)`: the structured refusal to return.
+/// travel_ask_real 2026-11-01: "What are my options?" for a 3-star restaurant in Tokyo got "How many people …?" with
+/// the guide's results in hand.
+pub fn ask_before_listing(events: &[Value]) -> Option<Value> {
+    let mut last_search: Option<(usize, String)> = None;
+    let mut last_shown: Option<usize> = None;
+    for (i, e) in events.iter().enumerate() {
+        if get_str(e, "type") != "tool_result" || e["data"]["ok"].as_bool() != Some(true) {
+            continue;
+        }
+        let name = get_str(&e["data"], "name");
+        if listing_search(&name) {
+            last_search = Some((i, name.rsplit("__").next().unwrap_or(&name).to_string()));
+        } else if name == "present_choices" {
+            last_shown = Some(i);
+        }
+    }
+    let (at, tool) = last_search?;
+    if last_shown.is_some_and(|s| s > at) {
+        return None;
+    }
+    Some(json!({"refused": "results_not_shown", "search": tool,
+                "rule": "the user asked for options: show the results of the search first (the answer, or present_choices); anything only a booking needs is asked after they have seen them"}))
+}
+
 /// The fields `ask_user` may name.
 pub const ASK_FIELDS: [&str; 15] = [
     "flight",
@@ -3761,6 +3836,64 @@ pub fn known_answer(
     }
 }
 
+/// The trip's dates when the user's request names a relative start and a length: "next week" (the Monday of the next
+/// calendar week), "this weekend" (the coming Saturday), "today" / "tonight", "tomorrow", "in N days", "next
+/// <weekday>" — and "N nights" (digits or a word). `today` is the user's (their timezone). "YYYY-MM-DD to YYYY-MM-DD"
+/// (check-in to check-out), or `None` when either part is missing. Read from the user's words only. chat_real
+/// 2026-11-01: "my 2 nights in Singapore next week" was asked back as `ask_user{trip_dates}`.
+pub fn trip_dates_from_request(request: &str, today: chrono::NaiveDate) -> Option<String> {
+    use chrono::{Datelike, Duration, Weekday};
+    static NIGHTS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)[\s-]+nights?\b|(\d{1,2})\s*(晚|夜)").unwrap()
+    });
+    static START: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(next week|this weekend|tonight|today|tomorrow|in (\d{1,2}) days|next (monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b|下周|下星期|这个周末|本周末|今晚|今天|明天").unwrap()
+    });
+    let word = |w: &str| -> Option<i64> {
+        w.parse::<i64>().ok().or_else(|| {
+            [
+                "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+            ]
+            .iter()
+            .position(|x| x.eq_ignore_ascii_case(w))
+            .map(|i| i as i64 + 1)
+        })
+    };
+    let n = NIGHTS
+        .captures(request)
+        .and_then(|c| c.get(1).or_else(|| c.get(2)).and_then(|m| word(m.as_str())))?;
+    if !(1..=60).contains(&n) {
+        return None;
+    }
+    let c = START.captures(request)?;
+    let what = c[0].to_lowercase();
+    let days_to = |wd: Weekday| -> i64 {
+        (wd.num_days_from_monday() as i64 - today.weekday().num_days_from_monday() as i64)
+            .rem_euclid(7)
+    };
+    let start = if what == "next week" || what == "下周" || what == "下星期" {
+        today + Duration::days(7 - today.weekday().num_days_from_monday() as i64)
+    } else if what == "this weekend" || what == "这个周末" || what == "本周末" {
+        today + Duration::days(days_to(Weekday::Sat))
+    } else if what == "tonight" || what == "today" || what == "今晚" || what == "今天" {
+        today
+    } else if what == "tomorrow" || what == "明天" {
+        today + Duration::days(1)
+    } else if let Some(k) = c.get(2) {
+        today + Duration::days(k.as_str().parse::<i64>().ok()?)
+    } else {
+        let wd: Weekday = c.get(3)?.as_str().parse().ok()?;
+        // "next Friday": the Friday after the coming one when today's week still has it
+        let k = days_to(wd);
+        today + Duration::days(if k == 0 { 7 } else { k })
+    };
+    Some(format!(
+        "{} to {}",
+        start.format("%Y-%m-%d"),
+        (start + Duration::days(n)).format("%Y-%m-%d")
+    ))
+}
+
 /// Tool arguments for the event log: long strings cut to 300 characters.
 pub fn preview_args(a: &Value) -> Value {
     let mut out = Map::new();
@@ -3776,4 +3909,162 @@ pub fn preview_args(a: &Value) -> Value {
         }
     }
     Value::Object(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn step(id: &str, name: &str, args: Value, result: &str) -> Vec<Value> {
+        vec![
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
+                   "function": {"name": name, "arguments": args.to_string()}}]}),
+            json!({"role": "tool", "tool_call_id": id, "content": result}),
+        ]
+    }
+
+    #[test]
+    fn a_flight_answer_always_starts_with_the_day_searched() {
+        // travel_kiwi_real on b24962d: the answer's booking link held 2026-12-01, so no day line went in
+        let t = step(
+            "f1",
+            "flights_search",
+            json!({"origin": "SIN", "destination": "TYO", "date": "2026-12-01", "date_to": ""}),
+            "{}",
+        );
+        let a = "The cheapest option found is SGD 304 one-way on China Southern. [Book](https://www.kiwi.com/en/search/results/sin/tyo/2026-12-01/no-return)";
+        let out = with_flight_date(&t, a, false);
+        assert_eq!(out, format!("**Tuesday, 1 December 2026**\n\n{a}"));
+        // once per answer: run again, unchanged
+        assert_eq!(with_flight_date(&t, &out, false), out);
+        // an answer naming the day itself still gets the line (code does not read it)
+        assert!(with_flight_date(&t, "On 1 December: SGD 304.", false)
+            .starts_with("**Tuesday, 1 December 2026**\n\nOn 1 December"));
+        // a date range, the last search's; Chinese; no search; an empty answer
+        let mut t2 = t.clone();
+        t2.extend(step(
+            "f2",
+            "flights_search",
+            json!({"date": "2026-12-01", "date_to": "2026-12-05"}),
+            "{}",
+        ));
+        assert!(with_flight_date(&t2, "SGD 304.", false)
+            .starts_with("**Tuesday, 1 December 2026 – Saturday, 5 December 2026**\n\n"));
+        assert!(with_flight_date(&t, "最便宜 SGD 304。", true).starts_with("**2026年12月1日**\n\n"));
+        assert_eq!(with_flight_date(&[], "SGD 304.", false), "SGD 304.");
+        assert_eq!(with_flight_date(&t, "  ", false), "  ");
+    }
+
+    #[test]
+    fn a_map_page_in_the_request_keeps_the_browser() {
+        assert!(names_website("Find my Tokyo hotel booking in my email, then look the hotel up on Google Maps and open its map page, and tell me the hotel name, address and whether the map found it. Research only."));
+        assert!(names_website("look it up on Google Maps"));
+        assert!(names_website("open the booking page"));
+        assert!(names_website("Fill in the form on www.example.com"));
+        assert!(!names_website(
+            "What should I eat in Tokyo? Any tips for the trains?"
+        ));
+    }
+
+    #[test]
+    fn no_question_before_a_listing_is_shown() {
+        // travel_ask_real on b24962d: michelin_search returned the 3-star restaurant, then ask_user("How many people?")
+        let ev = |name: &str, ok: bool| json!({"type": "tool_result", "data": {"call_id": "c", "name": name, "ok": ok}});
+        let mut events = vec![ev("load_skill", true)];
+        assert_eq!(ask_before_listing(&events), None);
+        events.push(ev("mcp_travel__michelin_search", true));
+        let r = ask_before_listing(&events).unwrap();
+        assert_eq!(
+            (sget(&r, "refused").as_str(), sget(&r, "search").as_str()),
+            ("results_not_shown", "michelin_search")
+        );
+        // shown as cards: a question may follow
+        events.push(ev("present_choices", true));
+        assert_eq!(ask_before_listing(&events), None);
+        // a choice card refused (not shown) does not count
+        let refused = vec![ev("flights_search", true), ev("present_choices", false)];
+        assert!(ask_before_listing(&refused).is_some());
+        // a failed search holds no results; a mail search is not a listing
+        assert_eq!(ask_before_listing(&[ev("flights_search", false)]), None);
+        assert_eq!(ask_before_listing(&[ev("gmail_search", true)]), None);
+    }
+
+    #[test]
+    fn trip_dates_come_from_a_relative_period_and_a_length() {
+        let monday = chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        // chat_real on b24962d: asked back as ask_user{trip_dates}
+        let ask =
+            "Compare these five hotels for my 2 nights in Singapore next week and recommend one.";
+        assert_eq!(
+            trip_dates_from_request(ask, monday).as_deref(),
+            Some("2026-11-09 to 2026-11-11")
+        );
+        let sunday = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        assert_eq!(
+            trip_dates_from_request(ask, sunday).as_deref(),
+            Some("2026-11-02 to 2026-11-04")
+        );
+        assert_eq!(
+            trip_dates_from_request("a hotel for two nights this weekend", monday).as_deref(),
+            Some("2026-11-07 to 2026-11-09")
+        );
+        assert_eq!(
+            trip_dates_from_request("3-night stay from tomorrow", monday).as_deref(),
+            Some("2026-11-03 to 2026-11-06")
+        );
+        assert_eq!(
+            trip_dates_from_request("1 night in 10 days", monday).as_deref(),
+            Some("2026-11-12 to 2026-11-13")
+        );
+        assert_eq!(
+            trip_dates_from_request("2 nights next Friday", monday).as_deref(),
+            Some("2026-11-06 to 2026-11-08")
+        );
+        // a length without a start, or a start without a length: asked
+        assert_eq!(
+            trip_dates_from_request("2 nights in Singapore", monday),
+            None
+        );
+        assert_eq!(trip_dates_from_request("a hotel next week", monday), None);
+    }
+
+    #[test]
+    fn a_news_schedule_carries_the_mail_the_user_asked_for() {
+        // news_report_real on b24962d: "Send me a new edition every week" — the model's schedule said "Deliver the new
+        // edition in chat", so the scheduled edition was never emailed
+        let ask = "Research the latest news on Lumora tidal power and make me a newspaper-style report. Send me a new edition every week.";
+        let mut t = vec![json!({"role": "user", "content": ask})];
+        t.extend(step(
+            "k1",
+            "load_skill",
+            json!({"name": "news-research"}),
+            "---",
+        ));
+        let model = json!({"name": "Weekly Lumora tidal power news edition", "kind": "cron", "spec": "0 8 * * 1",
+            "goal": "Research the latest news on Lumora tidal power with the news-research skill and publish a newspaper-style report. Deliver the new edition in chat with its HTML and PDF links."});
+        // before the report: the delivery appended
+        let g = news_schedule_goal(&t, ask, false, &model).unwrap();
+        assert!(g.ends_with("HTML and PDF links and email it to me"), "{g}");
+        // after the report: the code's own wording, which the scheduled run's mail rule reads
+        t.extend(step("r1", "news_report", json!({"subject": "Lumora tidal power", "title": "The Tidal Current"}),
+            "{\"published\": true, \"title\": \"The Tidal Current\", \"stories\": 6, \"html_url\": \"/artifacts/news/x.html\", \"html_path\": \"artifacts/news/x.html\", \"pdf_url\": \"/artifacts/news/x.pdf\", \"pdf_path\": \"artifacts/news/x.pdf\"}"));
+        let g = news_schedule_goal(&t, ask, false, &model).unwrap();
+        assert_eq!(g, "News report on Lumora tidal power: research the latest news with the news-research skill and publish the newspaper report and email it to me");
+        // that goal makes the scheduled edition a mail to the user's own address
+        let c = news_report_action(&t, &g, true, "me@example.com", false).unwrap();
+        assert_eq!(
+            (c.name.as_str(), sget(&c.args, "to").as_str()),
+            ("gmail_send", "me@example.com")
+        );
+        assert_eq!(c.args["attachments"][0], "artifacts/news/x.pdf");
+        // already the code's goal, no mail asked, a schedule's own run, or no news run: unchanged
+        assert_eq!(
+            news_schedule_goal(&t, ask, false, &json!({"goal": g})),
+            None
+        );
+        let no_mail = "Research the latest news on Lumora and make me a report every week.";
+        assert_eq!(news_schedule_goal(&t, no_mail, false, &model), None);
+        assert_eq!(news_schedule_goal(&t, ask, true, &model), None);
+        assert_eq!(news_schedule_goal(&t[..1], ask, false, &model), None);
+    }
 }

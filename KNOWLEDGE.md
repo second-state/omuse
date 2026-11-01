@@ -536,8 +536,10 @@ the reply the user reads; everything else is data or a code action:
   past `TIME_NUDGE` of the minute budget; the page-reading tools withdrawn after `RESEARCH_NUDGE_PAGES + 3` page
   visits; the search tools withdrawn after `WEB_NUDGE` web searches (`guards::web_budget_guard` refuses one more in the
   same turn). When the step or minute budget is spent the model gets no tools and no message. A stuck run (every call
-  of a turn refused) re-plans at the second turn and stops at the third; the plan reaches the model as data in the
-  system prompt (`ExecutorPrompt.plan`), not as a status note.
+  of a turn refused) re-plans at the second turn and stops at the third. The live state reaches the model as ONE JSON
+  message at the end of each request, never stored (`prompts::live_state`: `{"state": {time, minutes, plan: {objective,
+  steps: [{id, step, status, parallel}], next_parallel}, dead_ends: [{host, fails, why_code}]}}`, only when there is a
+  plan or a dead end); the system prompt is identical on every step of a task (prompt-cache reuse).
 - **Refusals are results, not instructions**: every guard answers `ERROR: [reason_code] one neutral sentence` (bilingual,
   `system_text_en` keeps the English half): `repeat`, `retype`, `unknown_id`, `dead_host`, `one_search`,
   `search_order`, `no_mail_for_search`, `empty_mail`, `arrival_mail`, `user_submits` (the sentence `… that click is the

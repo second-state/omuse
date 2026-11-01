@@ -1,16 +1,17 @@
 """Parallel plan steps: the exact lane and concurrency guarantees a real-model run cannot see (scripted model). The use
 case — several sites compared in one request, read side by side, so the answer comes sooner than reading them one after
 another would allow — is tested from the user's side by tests/chat_real.py (four slow hotel sites). What stays here,
-and why it cannot be e2e: the plan's parallel group, the status note that names it, one sub-agent per step started
+and why it cannot be e2e: the plan's parallel group, the live state (JSON) that names the stage, one sub-agent per step started
 before any finished, each in its own lane and browser page, overlapping page loads, the steps marked done by their
 sub-agents with ok and a duration, the one parallel batch per turn (all internal events and the scripted model's
 requests).
 
-The planner labels independent steps with one `parallel` group, the status note tells the
-executor to do that stage in one turn, and the executor runs the turn's delegate calls at the same time: one sub-agent
+The planner labels independent steps with one `parallel` group, the live state carries the stage as data
+(`plan.next_parallel`), and the executor runs the turn's delegate calls at the same time: one sub-agent
 per step, each with its own browser tab (lane), marking its step done. The batch form delegate(tasks=[…]) does the same
 in one call. Scripted model: PARALLEL / PARALLELBATCH goals in tests/fake_llm.py; the pages are tests/fake_apps.py's
 /slow (2 s each), so three of them in well under 6 s proves they ran side by side."""
+import json
 import sys
 import time
 
@@ -54,8 +55,9 @@ for label, goal in (("three delegate calls in one turn", "PARALLEL compare three
     check(f"{label}: the plan carries the parallel group",
           [s.get("parallel") for s in plan.get("steps", [])] == ["p1", "p1", "p1", None], plan)
     calls = c.get(LLM + "/calls_for", params={"marker": goal}).json()
-    check(f"{label}: the status note names the parallel stage and how to run it",
-          any("Next: steps s1, s2, s3 (parallel group p1)" in x["last"] and "ONE turn" in x["last"] for x in calls),
+    states = [json.loads(x["last"])["state"] for x in calls if x["last"].startswith('{"state"')]
+    check(f"{label}: the live state (JSON) carries the parallel stage",
+          any((st.get("plan") or {}).get("next_parallel") == {"group": "p1", "steps": ["s1", "s2", "s3"]} for st in states),
           [x["last"][-400:] for x in calls][:2])
     starts = [e for e in ev if e["type"] == "subagent_start"]
     dones = [e for e in ev if e["type"] == "subagent_done"]

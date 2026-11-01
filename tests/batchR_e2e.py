@@ -1,5 +1,6 @@
 """Batch R (browser robustness, no detection evasion) end to end, local stack:
-1. a bot-wall page is detected → the task is told to switch source / request takeover (not a retry loop)
+1. a bot-wall page is detected → the site is refused by code for the rest of the task (the SITE BLOCKED reason code),
+   the task completes on another site without re-opening the blocked one
 2. the blocked site is remembered as a site habit (to confirm), so next time OMuse goes another way
 3. the Trust page browser metric counts the block
 """
@@ -34,10 +35,16 @@ tid = c.post(B + "/api/chat", json={"message": "BLOCKSITE open the shop"}, heade
 t = wait_task(tid)
 ev = t["events"]
 check("the bot wall is detected (site_blocked event)", any(e["type"] == "site_blocked" for e in ev), [e["type"] for e in ev])
-calls = c.get(LLM + "/calls_for", params={"marker": "BLOCKSITE"}).json()
-seen = " ".join(x["tools"] for x in calls)
-check("the task is told to switch source / request a takeover, not keep retrying",
-      "SITE BLOCKED" in seen and ("browser_request_takeover" in seen or "其他" in seen or "another source" in seen), seen[:300])
+navs = {e["data"]["call_id"]: e["data"]["args"].get("url", "") for e in ev if e["type"] == "tool_call" and e["data"]["name"] == "browser_navigate"}
+res = [(navs.get(e["data"]["call_id"], ""), e["data"]) for e in ev if e["type"] == "tool_result" and e["data"]["name"] == "browser_navigate"]
+wall = [r for u, r in res if "opentable.test" in u]
+check("the wall page is marked with the SITE BLOCKED reason code; the next visit to the site is refused by code, not run",
+      len(wall) == 2 and wall[0]["preview"].startswith("[SITE BLOCKED site=opentable]")
+      and wall[1]["preview"].startswith("ERROR: [SITE BLOCKED site=opentable]") and wall[1].get("ok") is False,
+      [(u, r.get("ok"), r.get("preview", "")[:80]) for u, r in res])
+check("the task completes on another site (the blocked one is not opened again)",
+      t["status"] == "COMPLETED" and any("shop.test" in u and r.get("ok") for u, r in res)
+      and sum(1 for e in ev if e["type"] == "site_blocked") == 1, (t["status"], [(u, r.get("ok")) for u, r in res]))
 
 mem = c.get(B + "/api/memory", headers=H).json()
 site = [f for f in mem["facts"] if f["domain"] == "site" and "opentable" in f["fact"] and f["status"] == "pending"]

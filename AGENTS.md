@@ -122,7 +122,8 @@ receives money — a refund method — takes a Vault card without a purchase, `g
 The planner runs only when the executor asks for a plan (`plan_task`) or loads a skill whose front matter says
 `plan: on` (`Runtime::plan_on_request`; ordinary skills are followed from their sheet), not before every turn; simple requests are answered by the executor directly (`tests/integration.py` checks that a plain
 chat makes no plan). The planner (`prompts::PLANNER_SYSTEM`) gives steps that do not depend on each other the same `parallel` label; the
-status note (`prompts::parallel_hint`) tells the executor to do the next such group in one turn. The executor loop
+live state (`prompts::live_state`, JSON at the end of each request) carries the next such group as data
+(`plan.next_parallel`). The executor loop
 (`agent/runtime.rs`) runs a turn's calls that are all in `tools::PARALLEL_TOOLS` (sub-agents and reads that never touch
 the task's browser page) at the same time, with `no_ask`, and appends the results in call order; everything else runs
 one by one. `delegate` takes one sub-task or `tasks=[{role, task, step}]`; sub-agents of one call, or of one turn, run

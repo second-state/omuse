@@ -166,8 +166,76 @@ pub const CARDS: &[CardSpec] = &[
     },
 ];
 
-/// The card whose skill this run loaded last, when it is one the driver knows.
+/// The user's own messages of the transcript, without the system notes appended to them.
+pub(crate) fn user_words(transcript: &[Value]) -> Vec<String> {
+    transcript
+        .iter()
+        .filter(|m| get_str(m, "role") == "user")
+        .map(|m| {
+            let c = content_of(m);
+            match c.find("\n\n(System)").or_else(|| c.find("\n\n（系统）")) {
+                Some(i) => c[..i].to_string(),
+                None => c,
+            }
+        })
+        .filter(|c| !c.starts_with("(System)") && !c.starts_with("（系统）"))
+        .collect()
+}
+
+/// A request to do the form or the claim for the user: fill in / out, submit, apply for, file, complete, do, prepare,
+/// start or make a claim, claim it — with what it acts on, so "anything I have to file before I arrive" is not one.
+static ACT_WORDS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\bfill(ing)?\s+(it\s+|them\s+)?(in|out)\b|\b(fill|submit|complete|file|lodge)\s+(my|the|our|it|this|that|them|an?)\b|\bapply\s+for\b|\bdo\s+(my|our)\b|\bprepare\s+(my|the|our|an?)\b|\bstart\s+(my|the|our|an?)\b[^.?!\n]{0,40}\bclaim|\bmake\s+(a|the|my)\s+claim|\bclaim\s+(it|this|that|them|my|the|for)\b|帮我填|填写|填一下|填好|提交|申请|办理|帮我(理赔|索赔)|去(理赔|索赔)",
+    )
+    .unwrap()
+});
+/// A sentence that asks for information ("Do I need to fill in an arrival card …?", "What do I need to …?"), not a
+/// request to act ("Can you claim it for me?" is one).
+static INFO_QUESTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\W*(do|does|did|should|must|is|are|was|were|what|which|how|when|where|who|why|need|have)\b|需要.*吗|要不要|是否")
+        .unwrap()
+});
+
+/// Whether the user's own words ask code to act (the regex `act` on the sentences that are not an information
+/// question) — read from the user's messages, never from the model's.
+pub(crate) fn user_asks(texts: &[String], act: &Regex) -> bool {
+    texts.iter().any(|t| {
+        let mut start = 0;
+        let mut found = false;
+        for (i, ch) in t.char_indices() {
+            if matches!(ch, '.' | '!' | '?' | '\n' | '。' | '！' | '？')
+                || i + ch.len_utf8() == t.len()
+            {
+                let end = i + ch.len_utf8();
+                let sentence = t[start..end].trim();
+                start = end;
+                let question = sentence.ends_with('?') || sentence.ends_with('？');
+                if question && INFO_QUESTION.is_match(sentence) {
+                    continue;
+                }
+                if act.is_match(sentence) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        found
+    })
+}
+
+/// Whether the user's own request asks for a form or a claim to be done (`ACT_WORDS`), not information about it.
+pub(crate) fn asks_to_act(transcript: &[Value]) -> bool {
+    user_asks(&user_words(transcript), &ACT_WORDS)
+}
+
+/// The card whose skill this run loaded last, when it is one the driver knows — only when the user's own request asks
+/// for it to be filled in (`asks_to_act`): a card's skill loaded for information leaves the run to the model
+/// (travel_info_real 2026-11-01: "what do I need to enter each country?" became an SG Arrival Card fill).
 pub fn active(transcript: &[Value]) -> Option<&'static CardSpec> {
+    if !asks_to_act(transcript) {
+        return None;
+    }
     transcript
         .iter()
         .flat_map(tool_calls)
@@ -539,6 +607,28 @@ pub(crate) fn json_of(m: &Value) -> Value {
     serde_json::from_str(&c[i..=j]).unwrap_or(Value::Null)
 }
 
+/// The page text of a `browser_snapshot` result: the sentinel wraps it in its untrusted envelope
+/// (`{"trust", "source", "url", "title", "snapshot": "…"}`), so the lines and quotes of the snapshot are JSON-escaped
+/// in the message. The `snapshot` field when the envelope parses; an envelope cut short (a long page) is unescaped
+/// as text; a plain message (no envelope) as it is.
+pub(crate) fn snapshot_text(m: &Value) -> String {
+    let v = json_of(m);
+    if let Some(s) = v.get("snapshot").and_then(Value::as_str) {
+        return s.to_string();
+    }
+    let c = content_of(m);
+    let start = ["\"snapshot\": \"", "\"snapshot\":\""]
+        .iter()
+        .find_map(|k| c.find(k).map(|i| i + k.len()));
+    match start {
+        Some(i) => c[i..]
+            .replace("\\n", "\n")
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\"),
+        None => c,
+    }
+}
+
 pub(crate) fn walk_messages(v: &Value, out: &mut Vec<Value>) {
     match v {
         Value::Object(m) => {
@@ -719,24 +809,46 @@ pub fn next(card: &CardSpec, transcript: &[Value], w: &World) -> Step {
                         trip.stay_address = addr.clone();
                         trip.stay_kind = "own".into();
                     }
-                    None if !asked_before(transcript, WHICH_MARK) => {
-                        let list: Vec<String> =
-                            own.iter().map(|(l, a)| format!("- **{l}**: {a}")).collect();
-                        return Step::Final(if w.zh {
-                            format!(
-                                "你的档案里有几个{}地址。这次住哪一个？\n{}",
-                                card.country,
-                                list.join("\n")
-                            )
-                        } else {
-                            format!(
-                                "{WHICH_MARK} in {} are you staying at this time?\n{}",
-                                card.country,
-                                list.join("\n")
-                            )
-                        });
+                    None => {
+                        // the question is a choice card (`present_choices`, the addresses by their labels, no pick):
+                        // asked once — keyed on that call, never on the text of a message
+                        let asked = results_of(transcript, "present_choices")
+                            .into_iter()
+                            .filter(|(a, _)| sget(a, "question").starts_with(WHICH_MARK))
+                            .map(|(_, m)| pos(transcript, m))
+                            .next_back();
+                        match asked {
+                            None => {
+                                let options: Vec<Value> = own
+                                    .iter()
+                                    .map(|(l, a)| json!({"label": l, "details": [a]}))
+                                    .collect();
+                                return Step::Calls(vec![call(
+                                    n,
+                                    "present_choices",
+                                    json!({"question": format!("{WHICH_MARK} in {} are you staying at this time?", card.country),
+                                           "kind": "clarify", "options": options}),
+                                )]);
+                            }
+                            // shown, and the user has not answered yet: the turn ends (the card is the question)
+                            Some(p)
+                                if !transcript[p..]
+                                    .iter()
+                                    .any(|m| get_str(m, "role") == "user") =>
+                            {
+                                return Step::Final(if w.zh {
+                                    format!("你的档案里有几个{}地址，请在上面的选项里选这次住的那一个。", card.country)
+                                } else {
+                                    format!(
+                                        "You have {} addresses in {} on your profile: pick the one you are staying at this time above.",
+                                        own.len(),
+                                        card.country
+                                    )
+                                });
+                            }
+                            Some(_) => {}
+                        }
                     }
-                    None => {}
                 }
             }
             _ => {}
@@ -920,7 +1032,7 @@ I've set a reminder for that morning and will fill it in then. Nothing is filed 
             json!({"max_chars": 6000}),
         )]);
     }
-    let page = content_of(snaps.last().unwrap().1);
+    let page = snapshot_text(snaps.last().unwrap().1);
     let reference = Regex::new(card.ref_re)
         .ok()
         .and_then(|r| r.find(&page).map(|m| m.as_str().to_string()))
@@ -1083,6 +1195,41 @@ mod tests {
     }
 
     #[test]
+    fn a_card_is_driven_only_when_the_user_asks_for_it_to_be_filled() {
+        let with = |ask: &str| {
+            let mut t = vec![json!({"role": "user", "content": ask})];
+            t.extend(step(
+                "k1",
+                "load_skill",
+                json!({"name": "sg-arrival-card"}),
+                "---",
+            ));
+            t
+        };
+        // travel_info_real on b24962d: an information question became an SG Arrival Card fill
+        assert!(active(&with("I'm flying to Bangkok on Monday, 9 November 2026 and then on to Singapore on Friday, 13 November 2026. What do I need to enter each country? Please set reminders for anything I have to file before I arrive.")).is_none());
+        assert!(active(&with("I'm flying to Paris next month. Do I need to fill in an arrival card or ETIAS or anything before the trip?")).is_none());
+        for ask in [
+            "Please fill in my SG Arrival Card for my trip to Singapore — it's a holiday.",
+            "Please do my Visit Japan Web registration for my trip to Tokyo — it's a holiday.",
+            "Please apply for my UK ETA for my trip to London — it's a holiday.",
+            "Can you fill out the arrival card for me?",
+            "帮我填新加坡入境卡",
+        ] {
+            assert_eq!(
+                active(&with(ask)).map(|c| c.skill),
+                Some("sg-arrival-card"),
+                "{ask}"
+            );
+        }
+        // the request in a later message of the chat counts too
+        let mut t = with("What is the SG Arrival Card?");
+        assert!(active(&t).is_none());
+        t.push(json!({"role": "user", "content": "OK, go ahead and fill in the form."}));
+        assert!(active(&t).is_some());
+    }
+
+    #[test]
     fn the_own_address_rule() {
         let p = json!({"address_home": "12 Harbour St, Sydney NSW 2000, Australia", "address:Singapore flat": "10 Bayfront Ave, Singapore 018956",
                        "address:Parents in Singapore": "5 Jalan Kayu, Singapore 799999"});
@@ -1090,6 +1237,90 @@ mod tests {
         assert_eq!(own.len(), 2);
         assert_eq!(own[0].0, "Singapore flat");
         assert!(own_addresses(&p, "Malaysia").is_empty());
+    }
+
+    #[test]
+    fn two_own_addresses_are_a_choice_card_then_the_users_label() {
+        // arrival_address2_real "two" on b24962d: the question was the final text, not a choice card
+        let card = CARDS.iter().find(|c| c.skill == "sg-arrival-card").unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let profile = json!({"name_en": "JORDAN LU", "nationality": "Australia",
+                             "address:Singapore flat": "10 Bayfront Avenue, Singapore 018956",
+                             "address:Parents in Singapore": "5 Jalan Kayu, Singapore 799487"});
+        let mut user = vec![
+            "Please fill in my SG Arrival Card for my trip to Singapore — it's a holiday."
+                .to_string(),
+        ];
+        let mut t = vec![json!({"role": "user", "content": user[0]})];
+        t.extend(step(
+            "k1",
+            "load_skill",
+            json!({"name": "sg-arrival-card"}),
+            "---",
+        ));
+        t.extend(step("drv_1", "gmail_search", json!({}), "{\"count\": 1, \"messages\": [{\"id\": \"m1\", \"subject\": \"Your e-ticket: SQ 231\"}]}"));
+        t.extend(step(
+            "drv_2",
+            "gmail_search",
+            json!({}),
+            "{\"count\": 0, \"messages\": []}",
+        ));
+        let (f, s, b) = eticket();
+        t.extend(step(
+            "drv_3",
+            "gmail_get_message",
+            json!({"message_id": "m1"}),
+            &json!({"from": f, "subject": s, "body": b}).to_string(),
+        ));
+        let w = World {
+            user_texts: &user,
+            profile: &profile,
+            today,
+            mail_ready: true,
+            zh: false,
+        };
+        let Step::Calls(c) = next(card, &t, &w) else {
+            panic!("expected the choice card")
+        };
+        assert_eq!(c[0].name, "present_choices");
+        assert_eq!(sget(&c[0].args, "kind"), "clarify");
+        assert!(c[0].args.get("picked").is_none());
+        let labels: Vec<String> = c[0].args["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| sget(o, "label"))
+            .collect();
+        assert_eq!(labels, ["Singapore flat", "Parents in Singapore"]);
+        assert_eq!(
+            c[0].args["options"][0]["details"][0],
+            "10 Bayfront Avenue, Singapore 018956"
+        );
+        t.extend(step(
+            "drv_4",
+            "present_choices",
+            c[0].args.clone(),
+            "{\"shown\": 2, \"verified\": false, \"picked\": \"\"}",
+        ));
+        // shown: the turn ends without asking again
+        let Step::Final(a) = next(card, &t, &w) else {
+            panic!("expected the end of the turn")
+        };
+        assert!(a.contains("pick the one"), "{a}");
+        // the user's label: the parents' address goes into the card
+        user.push("The Parents in Singapore one, please.".into());
+        t.push(json!({"role": "user", "content": user[1]}));
+        let w = World {
+            user_texts: &user,
+            profile: &profile,
+            today,
+            mail_ready: true,
+            zh: false,
+        };
+        let Step::Calls(c) = next(card, &t, &w) else {
+            panic!("expected the form")
+        };
+        assert_ne!(c[0].name, "present_choices");
     }
 
     #[test]
@@ -1108,12 +1339,13 @@ mod tests {
             mail_ready: true,
             zh: false,
         };
-        let mut t = step(
+        let mut t = vec![json!({"role": "user", "content": user[0]})];
+        t.extend(step(
             "k1",
             "load_skill",
             json!({"name": "sg-arrival-card"}),
             "---\nname: sg-arrival-card\n---",
-        );
+        ));
         assert_eq!(active(&t).map(|c| c.skill), Some("sg-arrival-card"));
         // 1. the two searches
         let Step::Calls(c) = next(card, &t, &w) else {

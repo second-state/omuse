@@ -16,8 +16,8 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use super::driver::{
-    asked_before, country_of_city, dates_in, flight_no_in, handed_back, json_of, pos, results_of,
-    stopped, walk_messages, Step, World,
+    asked_before, asks_to_act, country_of_city, dates_in, flight_no_in, handed_back, json_of, pos,
+    results_of, snapshot_text, stopped, user_asks, user_words, walk_messages, Step, World,
 };
 use super::util::{content_of, sget, stored_call, tool_calls};
 use crate::llm::ToolCall;
@@ -173,27 +173,15 @@ fn spec(flow: Flow) -> &'static ClaimSpec {
     SPECS.iter().find(|s| s.flow == flow).unwrap()
 }
 
-/// The user's own messages of the transcript, without the system notes appended to them.
-fn user_words(transcript: &[Value]) -> Vec<String> {
-    transcript
-        .iter()
-        .filter(|m| get_str(m, "role") == "user")
-        .map(|m| {
-            let c = content_of(m);
-            match c.find("\n\n(System)").or_else(|| c.find("\n\n（系统）")) {
-                Some(i) => c[..i].to_string(),
-                None => c,
-            }
-        })
-        .filter(|c| !c.starts_with("(System)") && !c.starts_with("（系统）"))
-        .collect()
-}
-
 static CLAIM_WORDS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bclaims?\b|\breimburs|理赔|索赔").unwrap());
 static BUY_WORDS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(buy|purchase|get me|quote|insure|cover(age)? for|insurance for|which .* plan|cheapest)\b|买|购买|报价")
         .unwrap()
+});
+/// A request to buy (not a question about a plan).
+static BUY_ACT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(buy|purchase|get me|insure me|sign me up)\b|帮我买|买一份|购买").unwrap()
 });
 static DELAY_WORDS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bdelay(ed|s)?\b|延误|延誤").unwrap());
@@ -220,25 +208,26 @@ pub fn active(transcript: &[Value]) -> Option<&'static ClaimSpec> {
         .filter(|n| SPECS.iter().any(|s| s.skill == n))
         .collect();
     let skill = loaded.last()?;
+    // the user's own request asks for the claim to be made (or the policy bought): a skill loaded for information
+    // ("what can I claim?") leaves the run to the model
+    let act = asks_to_act(transcript);
     if skill == "csr-trip-claim" {
-        return Some(spec(Flow::CsrTrip));
+        return act.then(|| spec(Flow::CsrTrip));
     }
-    let words = user_words(transcript).join("\n");
+    let texts = user_words(transcript);
+    let words = texts.join("\n");
     let claim = CLAIM_WORDS.is_match(&words);
     let buy = !claim && BUY_WORDS.is_match(&words);
+    if !(act || (buy && user_asks(&texts, &BUY_ACT))) {
+        return None;
+    }
     let hk = HK_WORDS.is_match(&words);
     let sg = SG_WORDS.is_match(&words);
     if claim || (!buy && DELAY_WORDS.is_match(&words)) {
         if !DELAY_WORDS.is_match(&words) {
             return None;
         }
-        let hk_mail = transcript
-            .iter()
-            .filter(|m| get_str(m, "role") == "tool")
-            .any(|m| {
-                let c = content_of(m).to_lowercase();
-                c.contains("fwd.com.hk") || c.contains("bolttech")
-            });
+        let hk_mail = policy_market(transcript) == Some(Market::Hk);
         return Some(if hk || (!sg && hk_mail) {
             spec(Flow::FwdHkClaim)
         } else {
@@ -249,6 +238,69 @@ pub fn active(transcript: &[Value]) -> Option<&'static ClaimSpec> {
         return Some(spec(Flow::FwdSgBuy));
     }
     None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Market {
+    Sg,
+    Hk,
+}
+
+/// The market of the FWD policy in the mail: only the emails of an FWD or bolttech sender count (the policy email),
+/// read from the structured results of `gmail_search` / `gmail_get_message` — the sender's domain first
+/// (`fwd.com.hk` or bolttech: Hong Kong; `fwd.com.sg`: Singapore), then the currency of its subject and body. `None`
+/// when no such email was read (the caller defaults to Singapore). The skill's own text, which names bolttech and
+/// fwd.com.hk, never counts (the gate on b24962d sent a Singapore claim to bolttech because of it).
+fn policy_market(transcript: &[Value]) -> Option<Market> {
+    static HKD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bHKD\b|HK\$").unwrap());
+    static SGD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bSGD\b|S\$").unwrap());
+    let mut mails: Vec<Value> = Vec::new();
+    for tool in ["gmail_search", "gmail_get_message"] {
+        for (_, m) in results_of(transcript, tool) {
+            let v = json_of(m);
+            if v.get("from").is_some() {
+                mails.push(v.clone());
+            }
+            if let Some(list) = v.get("messages").and_then(Value::as_array) {
+                mails.extend(list.iter().cloned());
+            }
+        }
+    }
+    let mut found = None;
+    for v in &mails {
+        let from = get_str(v, "from").to_lowercase();
+        if !(from.contains("fwd") || from.contains("bolttech")) {
+            continue;
+        }
+        let domain = from.rsplit('@').next().unwrap_or("").trim_end_matches('>');
+        let by_domain = if domain.ends_with(".hk") || domain.contains("bolttech") {
+            Some(Market::Hk)
+        } else if domain.ends_with(".sg") {
+            Some(Market::Sg)
+        } else {
+            None
+        };
+        let text = ["subject", "snippet", "body"]
+            .iter()
+            .map(|k| get_str(v, k))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let by_currency = if HKD.is_match(&text) {
+            Some(Market::Hk)
+        } else if SGD.is_match(&text) {
+            Some(Market::Sg)
+        } else {
+            None
+        };
+        if let Some(m) = by_domain.or(by_currency) {
+            // a fetched message (with its body) outranks a search hit read earlier
+            found = Some(m);
+            if !get_str(v, "body").is_empty() {
+                return found;
+            }
+        }
+    }
+    found
 }
 
 // ---------------------------------------------------------------- the mail, read back
@@ -1470,7 +1522,7 @@ fn snapshot_after(transcript: &[Value], n: usize, after: usize) -> Result<String
     results_of(transcript, "browser_snapshot")
         .last()
         .filter(|(_, m)| pos(transcript, m) > after)
-        .map(|(_, m)| content_of(m))
+        .map(|(_, m)| snapshot_text(m))
         .ok_or_else(|| {
             Step::Calls(vec![call(
                 n,
@@ -1847,7 +1899,7 @@ fn next_sg_claim(s: &ClaimSpec, transcript: &[Value], w: &World, n: usize) -> St
         let snap = results_of(transcript, "browser_snapshot")
             .last()
             .filter(|(_, m)| pos(transcript, m) > fill_pos)
-            .map(|(_, m)| content_of(m));
+            .map(|(_, m)| snapshot_text(m));
         match snap {
             None => {
                 return Step::Calls(vec![call(
@@ -2286,7 +2338,7 @@ fn next_sg_buy(s: &ClaimSpec, transcript: &[Value], w: &World, n: usize) -> Step
         .iter()
         .find(|(_, m)| pos(transcript, m) > quote_pos)
     {
-        Some((_, m)) => (content_of(m), pos(transcript, m)),
+        Some((_, m)) => (snapshot_text(m), pos(transcript, m)),
         None => {
             return Step::Calls(vec![call(
                 n,
@@ -2373,7 +2425,7 @@ fn next_sg_buy(s: &ClaimSpec, transcript: &[Value], w: &World, n: usize) -> Step
         let snap = results_of(transcript, "browser_snapshot")
             .iter()
             .find(|(_, m)| pos(transcript, m) > ppos)
-            .map(|(_, m)| content_of(m));
+            .map(|(_, m)| snapshot_text(m));
         let Some(snap) = snap else {
             return Step::Calls(vec![call(
                 n,
@@ -2519,6 +2571,15 @@ mod tests {
         ]
     }
 
+    /// A `browser_snapshot` result as the sentinel returns it: the snapshot inside the untrusted JSON envelope.
+    fn page(url: &str, snapshot: &str) -> String {
+        format!(
+            "<untrusted_content source=\"web page {url}\">\n{}\n</untrusted_content>",
+            json!({"trust": "untrusted", "source": format!("web page {url}"), "url": url,
+                   "title": "FWD", "tabs": [], "snapshot": snapshot})
+        )
+    }
+
     fn msg(id: &str, from: &str, subject: &str, body: &str) -> Msg {
         Msg {
             id: id.into(),
@@ -2643,13 +2704,66 @@ mod tests {
     }
 
     #[test]
+    fn the_interruption_answer_carries_both_deadlines_and_the_status() {
+        // cards_interruption_real on b24962d: the answer the user saw had no 90-day date and "may have been submitted"
+        // (the driven answer was replaced by the runtime's rescue; this is the answer code gives)
+        let s = spec(Flow::CsrTrip);
+        let user = vec!["I broke my wrist in Tokyo on 2026-10-25 and cut my trip short. Please start the card's insurance claim for me on the claims site — I'll review it and press Submit myself.".to_string()];
+        let profile = json!({});
+        let w = world(&user, &profile, true);
+        let t = TripClaim {
+            benefit: "Trip Interruption".into(),
+            loss_date: "2026-10-25".into(),
+            change_fee: 300.0,
+            lost: 750.0,
+            amount: 1050.0,
+            card_product: "Chase Sapphire Reserve".into(),
+            reason: "injury of the cardholder".into(),
+            travellers: 1,
+            ..Default::default()
+        };
+        for (reference, status) in [
+            (
+                Some("CBS-26-118204"),
+                "You submitted it on eClaimsLine: claim number **CBS-26-118204**.",
+            ),
+            (None, "nothing has been submitted for you"),
+        ] {
+            let a = answer_csr(s, &t, reference, &w);
+            assert!(
+                a.contains("notify the administrator by **14 November 2026**")
+                    && a.contains("documents by **23 January 2027**")
+                    && a.contains(status),
+                "{a}"
+            );
+        }
+    }
+
+    #[test]
     fn the_csr_claim_steps_follow_the_transcript() {
         let s = spec(Flow::CsrTrip);
         let user = vec!["I came down with food poisoning and couldn't take my United flight to Tokyo on 2026-10-28. I paid for it with my Chase Sapphire Reserve — claim the card's trip cancellation insurance. I'll press Submit myself.".to_string()];
         let profile = json!({"name_en": "LUCAS LU", "email_personal": "lucas@example.com", "phone": "+1 415 555 0100"});
         let w = world(&user, &profile, true);
-        let mut t = step("k1", "load_skill", json!({"name": "csr-trip-claim"}), "---");
+        let mut t = vec![json!({"role": "user", "content": user[0]})];
+        t.extend(step(
+            "k1",
+            "load_skill",
+            json!({"name": "csr-trip-claim"}),
+            "---",
+        ));
         assert_eq!(active(&t).map(|s| s.flow), Some(Flow::CsrTrip));
+        // the same skill loaded for a question about the benefit: not driven
+        let mut info = vec![
+            json!({"role": "user", "content": "What does my Chase Sapphire Reserve's trip cancellation insurance cover? Can I claim a cancelled flight?"}),
+        ];
+        info.extend(step(
+            "k1",
+            "load_skill",
+            json!({"name": "csr-trip-claim"}),
+            "---",
+        ));
+        assert!(active(&info).is_none());
         // 1. the four fixed searches
         let Step::Calls(c) = next(s, &t, &w) else {
             panic!()
@@ -3113,6 +3227,23 @@ mod tests {
     const QUOTE_SNAPSHOT: &str = "# Get a travel insurance quote\n  Single trip cover for Singapore residents.\n[e1] textbox \"Destination\" value=\"Japan\"\n[e5] button \"Get quote\"\n## Your plans\n  Trip: Japan, 2026-11-24 to 2026-12-01, 1 traveller(s)\n  Plan Premium Overseas medical Trip cancellation Travel delay Baggage\n  Premium SGD 34.00 SGD 200,000 SGD 5,000 SGD 100 every 6 hours, up to SGD 1,000 SGD 3,000\n[e6] link \"Select Premium\" → https://www.fwd.com.sg/fwd_sg_apply.html?plan=Premium&premium=34.00\n  Business SGD 47.00 SGD 1,000,000 SGD 10,000 SGD 100 every 6 hours, up to SGD 1,500 SGD 5,000\n[e7] link \"Select Business\" → https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business&premium=47.00\n  First SGD 68.00 SGD 1,500,000 SGD 15,000 SGD 100 every 6 hours, up to SGD 2,000 SGD 7,500\n[e8] link \"Select First\" → https://www.fwd.com.sg/fwd_sg_apply.html?plan=First&premium=68.00\n  Premiums include 9% GST.";
 
     #[test]
+    fn a_snapshot_is_read_out_of_its_envelope() {
+        let url = "https://www.fwd.com.sg/travel-insurance/online-quote/";
+        let m = json!({"role": "tool", "content": page(url, QUOTE_SNAPSHOT)});
+        assert_eq!(snapshot_text(&m), QUOTE_SNAPSHOT);
+        assert_eq!(plans_in(&snapshot_text(&m)).len(), 3);
+        // an envelope cut short (a long page) is still read line by line
+        let full = page(url, QUOTE_SNAPSHOT);
+        let cut = &full[..full.find("[e8]").unwrap()];
+        let text = snapshot_text(&json!({"role": "tool", "content": cut}));
+        assert!(text.contains("\n[e7] link \"Select Business\""), "{text}");
+        assert_eq!(plans_in(&text).len(), 2);
+        // a plain message stays as it is
+        let plain = json!({"role": "tool", "content": "[e3] textbox \"Policy number\""});
+        assert_eq!(snapshot_text(&plain), "[e3] textbox \"Policy number\"");
+    }
+
+    #[test]
     fn the_plans_are_read_from_the_page_and_picked_by_rule() {
         let plans = plans_in(QUOTE_SNAPSHOT);
         assert_eq!(
@@ -3210,7 +3341,15 @@ mod tests {
             ),
             ("Japan", "2026-11-24", "2026-12-01", "1")
         );
-        run(&mut t, "browser_snapshot", QUOTE_SNAPSHOT);
+        // the snapshot as the sentinel returns it (the JSON envelope): the gate on b24962d read no plan from it
+        run(
+            &mut t,
+            "browser_snapshot",
+            &page(
+                "https://www.fwd.com.sg/travel-insurance/online-quote/",
+                QUOTE_SNAPSHOT,
+            ),
+        );
         let a = run(
             &mut t,
             "present_choices",
@@ -3245,7 +3384,7 @@ mod tests {
             ("v2", Some(47.0), "SGD")
         );
         assert!(sget(&a["items"][0], "name").starts_with("Business travel insurance, Japan"));
-        run(&mut t, "browser_snapshot", "[e11] textbox \"Card number\" value=[hidden]\n[e12] textbox \"Expiry\" placeholder=\"MM/YY\" value=[hidden]\n[e13] textbox \"CVC\" value=[hidden]\n[e14] textbox \"Name on card\" value=\"\"\n[e15] checkbox \"I have read the policy wording and the declarations.\" [unchecked]\n[e16] button \"Pay now\"");
+        run(&mut t, "browser_snapshot", &page("https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business", "[e11] textbox \"Card number\" value=[hidden]\n[e12] textbox \"Expiry\" placeholder=\"MM/YY\" value=[hidden]\n[e13] textbox \"CVC\" value=[hidden]\n[e14] textbox \"Name on card\" value=\"\"\n[e15] checkbox \"I have read the policy wording and the declarations.\" [unchecked]\n[e16] button \"Pay now\""));
         for (field, r) in [
             ("number", "e11"),
             ("expiry", "e12"),
@@ -3440,6 +3579,9 @@ mod tests {
             .map(|s| s.flow),
             Some(Flow::FwdHkClaim)
         );
+        // a question about the policy, not a request to claim: not driven
+        assert!(active(&load("Is my SQ 638 flight to Tokyo today delayed? What are my options, what can I claim from my FWD travel insurance?")).is_none());
+        assert!(active(&load("Which FWD plan is the cheapest for Japan?")).is_none());
         // a lost bag or a clinic bill: not driven (the model path)
         assert!(active(&load(
             "file a claim with FWD for the clinic bill in Bangkok"
@@ -3455,6 +3597,25 @@ mod tests {
             "{\"messages\": [{\"id\": \"p1\", \"from\": \"FWD Hong Kong <noreply@fwd.com.hk>\"}]}",
         ));
         assert_eq!(active(&t).map(|s| s.flow), Some(Flow::FwdHkClaim));
+        // the skill's own text names bolttech and fwd.com.hk: a Singapore policy email keeps the Singapore claim
+        // (the gate on b24962d: "FWD Hong Kong travel delay claim — handled by bolttech" for TI-SG-2026-55123)
+        let skill = "---\nname: fwd-travel-insurance\ndescription: FWD travel insurance in Singapore and Hong Kong (Hong Kong claims: bolttech, claims.hk@bolttechinsurance.com, fwd.com.hk)";
+        let words = "My flight SQ 636 to Tokyo on 2026-10-30 was delayed by more than 7 hours. Please claim it on my FWD travel insurance — the policy and the airline's delay certificate are in my email.";
+        let mut t = vec![json!({"role": "user", "content": words})];
+        t.extend(step(
+            "k1",
+            "load_skill",
+            json!({"name": "fwd-travel-insurance"}),
+            skill,
+        ));
+        assert_eq!(active(&t).map(|s| s.flow), Some(Flow::FwdSgClaim));
+        t.extend(step("clm_1", "gmail_search", json!({}), "<untrusted_content source=\"gmail_search\">\n{\"count\": 1, \"messages\": [{\"id\": \"i-8\", \"from\": \"FWD Singapore <noreply@fwd.com.sg>\", \"subject\": \"Your FWD Travel Insurance policy TI-SG-2026-55123\"}]}\n</untrusted_content>"));
+        t.extend(step("clm_2", "gmail_get_message", json!({"message_id": "i-8"}), "<untrusted_content source=\"email\">\n{\"id\": \"i-8\", \"from\": \"FWD Singapore <noreply@fwd.com.sg>\", \"subject\": \"Your FWD Travel Insurance policy TI-SG-2026-55123\", \"body\": \"Travel delay: SGD 100 for every 6 hours\"}\n</untrusted_content>"));
+        assert_eq!(active(&t).map(|s| s.flow), Some(Flow::FwdSgClaim));
+        // a policy in Hong Kong dollars from an FWD sender of no country domain: Hong Kong
+        let mut t2 = t[..3].to_vec();
+        t2.extend(step("clm_2", "gmail_get_message", json!({"message_id": "p"}), "{\"id\": \"p\", \"from\": \"FWD <noreply@fwd.com>\", \"subject\": \"Your MyTravel policy\", \"body\": \"Travel delay: HKD 300 for every 6 hours\"}"));
+        assert_eq!(active(&t2).map(|s| s.flow), Some(Flow::FwdHkClaim));
         // the arrival-card skill is not a claim
         assert!(active(&step(
             "k1",
