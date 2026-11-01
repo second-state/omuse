@@ -4222,3 +4222,426 @@ fn dead_ends_for_the_live_state() {
         json!({"host": "c.test", "fails": 3, "why_code": "failed_repeatedly"})
     );
 }
+
+// ---------------------------------------------------------------- decisions (`decide`) and the judgements on them
+fn is_decision(body: &Value) -> bool {
+    system_of(body).starts_with("You make one decision")
+}
+
+/// The question line of a decision request.
+fn decision_question(body: &Value) -> String {
+    get_str(&body["messages"][1], "content")
+}
+
+fn reply(text: &str) -> Value {
+    json!({"role": "assistant", "content": text})
+}
+
+fn event_data(rt: &Runtime, tid: &str, type_: &str) -> Vec<Value> {
+    rt.store
+        .events(tid, 0)
+        .unwrap()
+        .iter()
+        .filter(|e| get_str(e, "type") == type_)
+        .map(|e| e["data"].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_decision_takes_a_listed_choice_retries_once_then_defaults() {
+    // the model's replies, in order: a listed choice; prose then a choice; prose twice; a multi-select; prose twice
+    let replies = Arc::new(Mutex::new(vec![
+        "{\"choice\": \"Error_Page\"}",
+        "It looks like an error page.",
+        "{\"choice\": \"login_page\"}",
+        "error",
+        "{\"choice\": \"broken\"}",
+        "{\"choices\": [\"docx\", \"pdf\"]}",
+        "pdf please",
+        "{\"choices\": [\"pptx\"]}",
+    ]));
+    let r2 = replies.clone();
+    let (rt, _d, seen) = scripted_rt(
+        move |body| {
+            assert!(is_decision(body), "only decisions here");
+            assert!(body.get("tools").is_none());
+            assert_eq!(body["temperature"], json!(0.0));
+            reply(r2.lock().remove(0))
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("x", &conv, "chat", "", "", None)
+        .unwrap();
+    let tid = get_str(&t, "id");
+    let c = ["error_page", "normal_page", "login_page"];
+    assert_eq!(
+        rt.decide(&tid, "Which page?", "Title: Error", &c, "normal_page")
+            .await,
+        "error_page"
+    );
+    assert_eq!(
+        rt.decide(&tid, "Which page?", "Title: Sign in", &c, "normal_page")
+            .await,
+        "login_page"
+    );
+    assert_eq!(
+        rt.decide(&tid, "Which page?", "Title: ?", &c, "normal_page")
+            .await,
+        "normal_page"
+    );
+    let f = ["pdf", "xlsx", "docx", "md", "none"];
+    assert_eq!(
+        rt.decide_many(&tid, "Formats?", "a Word file and a PDF", &f, &["none"])
+            .await,
+        ["docx", "pdf"]
+    );
+    assert_eq!(
+        rt.decide_many(&tid, "Formats?", "slides", &f, &["none"])
+            .await,
+        ["none"]
+    );
+    assert!(replies.lock().is_empty());
+    assert_eq!(seen.lock().len(), 8); // one call, one retry at most
+                                      // the retry shows the model its answer and the list again
+    let retry = &seen.lock()[2];
+    assert_eq!(retry["messages"].as_array().unwrap().len(), 4);
+    assert!(last_of(retry).contains("[\"error_page\",\"normal_page\",\"login_page\"]"));
+    let ev = event_data(&rt, &tid, "decision");
+    let flags: Vec<(Value, bool, bool)> = ev
+        .iter()
+        .map(|e| {
+            (
+                e["picked"].clone(),
+                e["retried"].as_bool().unwrap(),
+                e["defaulted"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            (json!("error_page"), false, false),
+            (json!("login_page"), true, false),
+            (json!("normal_page"), true, true),
+            (json!(["docx", "pdf"]), false, false),
+            (json!(["none"]), true, true),
+        ]
+    );
+    assert_eq!(ev[0]["question"], "Which page?");
+    assert_eq!(ev[0]["choices"], json!(c));
+}
+
+#[tokio::test]
+async fn a_held_pick_on_a_buy_request_is_opened_by_code_instead_of_asking() {
+    // cards_pay_real 2026-11-01: "Cheapest is Premium; shall I proceed with it?" as the final answer to a request to
+    // buy — the request decides, so code opens the picked plan's page and the run goes on
+    let (rt, _d, seen) = scripted_rt(
+        |body| {
+            if is_decision(body) {
+                let q = decision_question(body);
+                return reply(if q.contains("buy, book") {
+                    "{\"choice\": \"buy_or_book\"}"
+                } else if q.contains("go ahead") {
+                    "{\"choice\": \"asks_to_proceed\"}"
+                } else {
+                    "{\"choice\": \"none\"}"
+                });
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let msgs = body["messages"].as_array().unwrap();
+            let navigated = msgs.iter().any(|m| {
+                m["tool_calls"][0]["function"]["name"] == "browser_navigate"
+            });
+            if navigated {
+                return reply("The Premium plan page is open; the payment is yours to press.");
+            }
+            if msgs.iter().any(|m| m["role"] == "tool") {
+                return reply("Cheapest is Premium at SGD 34; shall I proceed with it?");
+            }
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+                "function": {"name": "present_choices", "arguments": json!({"question": "Plans", "kind": "clarify",
+                    "picked": "Premium", "options": [{"label": "Premium", "source_url": "https://shop.test/plans/premium"},
+                                                     {"label": "Business", "source_url": "https://shop.test/plans/business"}]}).to_string()}}]})
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let acts = Arc::new(Mutex::new(Vec::new()));
+    let a2 = acts.clone();
+    rt.set_sentinel_hook(Some(Arc::new(move |_, path, payload| {
+        let p = payload.unwrap_or(Value::Null);
+        if path == "/internal/act" {
+            a2.lock().push(p.clone());
+        }
+        Box::pin(async move {
+            Ok(if path == "/internal/act" {
+                json!({"status": "ok", "result": {"url": p["args"]["url"], "title": "Premium plan", "snapshot": "[e1] button \"Pay\""}})
+            } else if path == "/internal/catalog" {
+                json!({"tools": tools(&["browser_navigate", "browser_snapshot"]), "connections": {}})
+            } else {
+                json!({})
+            })
+        })
+    })));
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task(
+            "Buy me the cheapest travel insurance plan on shop.test",
+            &conv,
+            "chat",
+            "",
+            "",
+            None,
+        )
+        .unwrap();
+    let tid = get_str(&t, "id");
+    rt.run(&tid).await.unwrap();
+    let t = rt.store.task(&tid).unwrap().unwrap();
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    assert!(get_str(&t, "result").starts_with("The Premium plan page is open"));
+    let navs: Vec<Value> = acts
+        .lock()
+        .iter()
+        .filter(|a| a["tool"] == "browser_navigate")
+        .map(|a| a["args"]["url"].clone())
+        .collect();
+    assert_eq!(navs, [json!("https://shop.test/plans/premium")]);
+    assert_eq!(event_data(&rt, &tid, "held_pick").len(), 1);
+    // the decisions asked: the request first, then the reply (once — the second answer is not judged again)
+    let qs: Vec<String> = seen
+        .lock()
+        .iter()
+        .filter(|b| is_decision(b))
+        .map(decision_question)
+        .collect();
+    assert_eq!(qs.len(), 2, "{qs:?}");
+    assert!(qs[0].contains("Buy me the cheapest") && qs[1].contains("shall I proceed"));
+}
+
+#[tokio::test]
+async fn a_format_the_request_asks_for_is_made_from_the_runs_file_and_sent() {
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            if is_decision(body) {
+                return reply("{\"choices\": [\"md\", \"docx\"]}");
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            if body["messages"].as_array().unwrap().iter().any(|m| m["role"] == "tool") {
+                return reply("Your itinerary is ready.");
+            }
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+                "function": {"name": "files_write", "arguments": json!({"path": "reports/trip.md",
+                    "content": "# Trip\n\n| Day | City |\n| --- | --- |\n| 1 | Tokyo |"}).to_string()}}]})
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task(
+            "Plan my Tokyo day trip and give me the itinerary as a Word document",
+            &conv,
+            "chat",
+            "",
+            "",
+            None,
+        )
+        .unwrap();
+    let tid = get_str(&t, "id");
+    rt.run(&tid).await.unwrap();
+    let t = rt.store.task(&tid).unwrap().unwrap();
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    assert!(rt.workspace.join("reports/trip.docx").is_file());
+    let calls: Vec<(String, Value)> = t["transcript"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(super::util::tool_calls)
+        .map(super::util::stored_call)
+        .collect();
+    let docx = calls
+        .iter()
+        .position(|(n, _)| n == "make_docx")
+        .expect("make_docx");
+    assert_eq!(sget(&calls[docx].1, "source"), "reports/trip.md");
+    assert_eq!(calls[docx + 1].0, "send_file");
+    assert_eq!(sget(&calls[docx + 1].1, "path"), "reports/trip.docx");
+    // md was made already: no second file
+    assert_eq!(calls.iter().filter(|(n, _)| n == "files_write").count(), 1);
+    assert_eq!(event_data(&rt, &tid, "format_conversion").len(), 1);
+}
+
+#[tokio::test]
+async fn visa_free_days_left_out_are_read_from_the_official_page_by_code() {
+    // travel_info_real 2026-11-01: Thailand's exemption with "verify the visa length", no days
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            if is_decision(body) {
+                return reply("{\"choice\": \"mentions_visa_free_without_days\"}");
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            if body["messages"].as_array().unwrap().iter().any(|m| m["role"] == "tool") {
+                return reply("Thailand: Australians can enter visa-free; verify the length before you go. Fill in the TDAC.");
+            }
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+                "function": {"name": "load_skill", "arguments": "{\"name\": \"entry-requirements\"}"}}]})
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let read = Arc::new(Mutex::new(Vec::new()));
+    let r2 = read.clone();
+    rt.set_sentinel_hook(Some(Arc::new(move |_, path, payload| {
+        let p = payload.unwrap_or(Value::Null);
+        if path == "/internal/act" && p["tool"] == "browser_read" {
+            r2.lock().push(p["args"]["urls"].clone());
+        }
+        Box::pin(async move {
+            Ok(if path == "/internal/act" && p["tool"] == "browser_read" {
+                json!({"status": "ok", "result": {"pages": [{"url": "https://www.thaievisa.go.th/",
+                    "text": "Visa exemption: passport holders of Australia may stay visa-free for up to 60 days."}]}})
+            } else if path == "/internal/catalog" {
+                json!({"tools": tools(&["browser_read", "browser_navigate"]), "connections": {}})
+            } else {
+                json!({})
+            })
+        })
+    })));
+    // the skill is the Travel bot's
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    rt.store.set_conv_bot(&conv, "travel", "").unwrap();
+    let t = rt
+        .store
+        .create_task(
+            "I'm flying to Bangkok next week on my Australian passport. What do I need to enter?",
+            &conv,
+            "chat",
+            "",
+            "",
+            None,
+        )
+        .unwrap();
+    let tid = get_str(&t, "id");
+    rt.run(&tid).await.unwrap();
+    let t = rt.store.task(&tid).unwrap().unwrap();
+    let result = get_str(&t, "result");
+    assert!(
+        result.contains("Visa-free stay in Thailand: up to 60 days (official source: https://www.thaievisa.go.th/)"),
+        "{result}"
+    );
+    assert_eq!(*read.lock(), [json!(["https://www.thaievisa.go.th/"])]);
+    let ev = event_data(&rt, &tid, "visa_days");
+    assert_eq!((ev.len(), ev[0]["days"].clone()), (1, json!(60)));
+}
+
+#[tokio::test]
+async fn a_deep_link_error_goes_home_and_a_product_page_gets_its_cart_click() {
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            assert!(is_decision(body));
+            let ctx = decision_question(body);
+            reply(if ctx.contains("Title: Error") {
+                "{\"choice\": \"error_page\"}"
+            } else if ctx.contains("Title: Case") {
+                "{\"choice\": \"product_page\"}"
+            } else {
+                "{\"choice\": \"normal_page\"}"
+            })
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let acts = Arc::new(Mutex::new(Vec::new()));
+    let a2 = acts.clone();
+    rt.set_sentinel_hook(Some(Arc::new(move |_, path, payload| {
+        let p = payload.unwrap_or(Value::Null);
+        if path == "/internal/act" {
+            a2.lock().push((get_str(&p, "tool"), p["args"].clone()));
+        }
+        let url = get_str(&p["args"], "url");
+        Box::pin(async move {
+            Ok(if url.contains("/manage/") {
+                json!({"status": "ok", "result": {"url": "https://air.test/error?code=500", "title": "Error", "snapshot": "Something went wrong"}})
+            } else if url.contains("/p/case") {
+                json!({"status": "ok", "result": {"url": url, "title": "Case for iPhone", "snapshot": "[e7] button \"Add to Wishlist\"\n[e9] button \"Add to Cart\""}})
+            } else {
+                json!({"status": "ok", "result": {"url": url, "title": "Home", "snapshot": "[e1] link \"Manage booking\""}})
+            })
+        })
+    })));
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .store
+        .create_task("check my booking", &conv, "chat", "", "", None)
+        .unwrap();
+    let mut tr: Vec<Value> = vec![];
+    let nav = |id: &str, url: &str| call(id, "browser_navigate", json!({"url": url}));
+    let run = |c: ToolCall, mut tr: Vec<Value>| {
+        tr.push(super::runtime::assistant_with_calls(
+            "",
+            std::slice::from_ref(&c),
+        ));
+        let rt = rt.clone();
+        let t = t.clone();
+        async move {
+            let _ = rt
+                .exec_call(
+                    &t,
+                    &c,
+                    &mut tr,
+                    &json!({"tools": tools(&["browser_navigate", "browser_click"])}),
+                    &[],
+                    None,
+                    super::exec::CallMode::MAIN,
+                )
+                .await;
+            tr
+        }
+    };
+    tr = run(nav("n1", "https://air.test/manage/booking?pnr=ABC123"), tr).await;
+    assert_eq!(
+        acts.lock().last().unwrap(),
+        &(
+            "browser_navigate".to_string(),
+            json!({"url": "https://air.test/"})
+        )
+    );
+    assert_eq!(
+        event_data(&rt, &get_str(&t, "id"), "deep_link_error").len(),
+        1
+    );
+    // once per site: the same redirect again is left to the agent
+    let before = acts.lock().len();
+    tr = run(nav("n2", "https://air.test/manage/other"), tr).await;
+    assert_eq!(acts.lock().len(), before + 1);
+    // a shopping run: back on a product page it left without adding to the cart → the page's own button is clicked
+    let mut shop = vec![];
+    shop.extend(tool_step(
+        "k1",
+        "load_skill",
+        json!({"name": "online-shopping"}),
+        "---",
+    ));
+    shop = run(nav("s1", "https://shop.test/p/case-1"), shop).await;
+    assert!(acts.lock().iter().all(|(n, _)| n != "browser_click")); // first visit: nothing
+    shop = run(nav("s2", "https://shop.test/search?q=case"), shop).await;
+    shop = run(nav("s3", "https://shop.test/p/case-1"), shop).await;
+    assert_eq!(
+        acts.lock().last().unwrap(),
+        &("browser_click".to_string(), json!({"ref": "e9"}))
+    );
+    assert!(shop.iter().any(|m| get_str(m, "tool_call_id") == "s3_cart"));
+    let _ = tr;
+}

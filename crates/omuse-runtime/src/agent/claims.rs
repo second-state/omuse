@@ -1532,6 +1532,14 @@ fn snapshot_after(transcript: &[Value], n: usize, after: usize) -> Result<String
         })
 }
 
+/// Whether the claim's form is open (the driver navigated to it). Every value the form needs is settled before that —
+/// the facts, the defaults, the one question — so once it is open no question is asked again: a fact lost from the
+/// transcript since (compression) is a blank field the user fills in at the hand-over, never a pause mid-form. The
+/// only pauses after it are the hand-overs for the user's own steps.
+fn form_open(transcript: &[Value]) -> bool {
+    !results_of(transcript, "browser_navigate").is_empty()
+}
+
 fn opened(transcript: &[Value], host: &str, path: &str) -> bool {
     results_of(transcript, "browser_navigate")
         .iter()
@@ -1628,7 +1636,11 @@ fn next_csr(s: &ClaimSpec, transcript: &[Value], w: &World, n: usize) -> Step {
     if missing && (!msgs.is_empty() || w.user_texts.len() > 1) && extracted(transcript).is_none() {
         return Step::Extract(extract_text(&msgs, w.user_texts));
     }
-    if missing && !asked_before(transcript, ASK_LOSS) && !asked_before(transcript, "哪一天") {
+    if missing
+        && !form_open(transcript)
+        && !asked_before(transcript, ASK_LOSS)
+        && !asked_before(transcript, "哪一天")
+    {
         let mut lines = Vec::new();
         if t.loss_date.is_empty() {
             lines.push(format!("- {ASK_LOSS} (the date)"));
@@ -1831,7 +1843,10 @@ fn delay_missing(transcript: &[Value], w: &World, msgs: &[Msg], d: &DelayClaim) 
     if (!msgs.is_empty() || w.user_texts.len() > 1) && extracted(transcript).is_none() {
         return Some(Step::Extract(extract_text(msgs, w.user_texts)));
     }
-    if asked_before(transcript, ASK_DELAY) || asked_before(transcript, "原定") {
+    if form_open(transcript)
+        || asked_before(transcript, ASK_DELAY)
+        || asked_before(transcript, "原定")
+    {
         return None;
     }
     let mut lines = Vec::new();
@@ -2298,7 +2313,7 @@ fn next_sg_buy(s: &ClaimSpec, transcript: &[Value], w: &World, n: usize) -> Step
     {
         q.keep_from(&a);
     }
-    if !q.complete() {
+    if !q.complete() && !form_open(transcript) {
         if !asked_before(transcript, ASK_TRIP) && !asked_before(transcript, "出发和返回") {
             let mut lines = Vec::new();
             if q.destination.is_empty() {
@@ -3636,5 +3651,103 @@ mod tests {
         assert_eq!(money(1_000_000.0), "1,000,000.00");
         assert_eq!(money(47.0), "47.00");
         assert!(amounts_in("Visa ending 4321 on 2026-09-21").is_empty());
+    }
+
+    /// The flow's run from its form opened, with the facts gone (no mail, a bare request): it fills what it has and
+    /// hands over — no question after the navigate (`driver::drive_to_end` panics on one).
+    fn no_question_after_the_form(words: &str, flow: Flow, nav_result: &str) -> Vec<Value> {
+        use super::super::driver::{drive_to_end, questions_after_navigate};
+        let s = spec(flow);
+        let user = vec![words.to_string()];
+        let profile = json!({"name_en": "TAN WEI MING"});
+        let w = world(&user, &profile, false);
+        let mut t = vec![json!({"role": "user", "content": words})];
+        t.extend(step("k1", "load_skill", json!({"name": s.skill}), "---"));
+        assert_eq!(active(&t).map(|x| x.flow), Some(flow), "{words}");
+        t.extend(step(
+            "clm_1",
+            "browser_navigate",
+            json!({"url": s.start_url}),
+            nav_result,
+        ));
+        let Step::Calls(c) = next(s, &t, &w) else {
+            panic!("{flow:?}: a question or an end right after the form opened")
+        };
+        assert!(
+            matches!(c[0].name.as_str(), "form_fill" | "pdf_form_fill"),
+            "{flow:?}: {}",
+            c[0].name
+        );
+        let snap = format!(
+            "{QUOTE_SNAPSHOT}\n[e11] textbox \"Card number\" value=[hidden]\n[e12] textbox \"Expiry\" value=[hidden]\n[e13] textbox \"CVC\" value=[hidden]\n[e14] textbox \"Name on card\" value=\"\"\n[e16] button \"Pay now\""
+        );
+        let (t, _) = drive_to_end(
+            t,
+            |t| next(s, t, &w),
+            |name| {
+                match name {
+                "form_fill" => "{\"url\": \"x\", \"filled\": []}".into(),
+                "pdf_form_fill" => "{\"output\": \"attachments/claim.pdf\", \"filled\": 3}".into(),
+                "browser_request_takeover" => BACK.into(),
+                "browser_snapshot" => page(s.start_url, &snap),
+                "vault_list" => "- id=v2 · Visa Wei Ming · card · •••• 1111 · fields: number, expiry, cvc, holder".into(),
+                "purchase_confirm" => "{\"status\": \"ok\"}".into(),
+                _ => "ok".into(),
+            }
+            },
+            "clm_t",
+        );
+        assert!(questions_after_navigate(&t).is_empty());
+        t
+    }
+
+    #[test]
+    fn the_csr_claim_asks_nothing_after_its_form_opens() {
+        no_question_after_the_form(
+            "Claim the trip cancellation insurance on my Chase Sapphire Reserve for me, I'll press Submit myself.",
+            Flow::CsrTrip,
+            "<untrusted_content source=\"web page https://www.eclaimsline.com/\">{}</untrusted_content>",
+        );
+    }
+
+    #[test]
+    fn the_fwd_sg_claim_asks_nothing_after_its_form_opens() {
+        no_question_after_the_form(
+            "Please claim my delayed flight on my FWD travel insurance.",
+            Flow::FwdSgClaim,
+            "<untrusted_content source=\"web page https://www.fwd.com.sg/claim-online/travel.html\">{}</untrusted_content>",
+        );
+    }
+
+    #[test]
+    fn the_fwd_hk_claim_asks_nothing_after_its_form_opens() {
+        let t = no_question_after_the_form(
+            "Please prepare the delay claim on my FWD MyTravel policy.",
+            Flow::FwdHkClaim,
+            "{\"url\": \"https://www.fwd.com.hk/files/x.pdf\", \"pdf\": {\"path\": \"downloads/travel-insurance-clm-form-fillable.pdf\"}}",
+        );
+        assert!(t
+            .iter()
+            .flat_map(tool_calls)
+            .any(|tc| stored_call(tc).0 == "gmail_create_draft"));
+    }
+
+    #[test]
+    fn the_fwd_purchase_asks_nothing_after_its_quote_form_opens() {
+        // the comparison it shows holds its pick (shown, not asked): the only pause is the hand-over for Pay now
+        let t = no_question_after_the_form(
+            "Buy me FWD's cheapest travel insurance plan for my Tokyo trip next month and pay for it with my card from the Vault.",
+            Flow::FwdSgBuy,
+            "<untrusted_content source=\"web page https://www.fwd.com.sg/travel-insurance/online-quote/\">{}</untrusted_content>",
+        );
+        let shown: Vec<Value> = t
+            .iter()
+            .flat_map(tool_calls)
+            .map(stored_call)
+            .filter(|(n, _)| n == "present_choices")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(shown.len(), 1);
+        assert!(!sget(&shown[0], "picked").is_empty());
     }
 }

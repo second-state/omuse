@@ -15,6 +15,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use super::ext::at;
 use super::guards::*;
+use super::judgements::{page_check_for, PageCheck};
 use super::lang::agent_lang;
 use super::runtime::{Runtime, Suspend};
 use super::tools::{is_local, tool_name, DRY_RUN_LOCAL, REMAKE_TOOLS};
@@ -404,6 +405,9 @@ impl Runtime {
             let mut content: String;
             // a parked / for-sale domain the agent opened: set below, acted on after the result is recorded
             let mut parked: Option<String> = None;
+            // a page just opened that needs one judgement (`judgements`): a deep link that was redirected, a shop's
+            // product page the agent came back to without adding to the cart — decided after the result is recorded
+            let mut page_check: Option<PageCheck> = None;
             let skill_off = if !super::runtime::browser_policy_allows(name) {
                 self.inner.lock().no_browser.get(&task_id).cloned()
             } else {
@@ -709,6 +713,10 @@ blocked automated browsing in this task; it is not opened again.");
                         if name == "browser_navigate" && super::guards::parked_domain(&ti, &sn) {
                             parked = Some(nurl.clone());
                         }
+                        if name == "browser_navigate" && !sub && parked.is_none() {
+                            page_check =
+                                page_check_for(transcript, &sget(&args, "url"), &nurl, &ti, &sn);
+                        }
                         let note = self.site_note(&task_id, &nurl).await;
                         if !note.is_empty() {
                             content = format!("{}\n{}", note, content);
@@ -800,6 +808,16 @@ This is a bot-protection wall ({detail}), not the site's content; the site is no
                             .await;
                     }
                 }
+            }
+            if let Some(tc) = match page_check.take() {
+                Some(pc) => self.page_check_call(&task_id, &call.id, pc).await,
+                None => None,
+            } {
+                transcript.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": tc.id, "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+                return self
+                    .exec_call(t, &tc, transcript, catalog, remaining, allow, mode)
+                    .await;
             }
             if !sub {
                 if let Some(button) = hand_over_button(&content) {

@@ -517,7 +517,8 @@ a step, a refusal, a rewrite or a hint, and no tool result tells the model what 
 the reply the user reads; everything else is data or a code action:
 
 - **Model calls that return JSON only**: the planner and the bots router (`agent/bots.rs`), the driver's extraction
-  (`driver::EXTRACT_SYSTEM`), `Runtime::until_condition`, and `Runtime::review_answer` — the one reading of the final
+  (`driver::EXTRACT_SYSTEM`), `Runtime::until_condition`, the decisions (`Runtime::decide`, below), and
+  `Runtime::review_answer` — the one reading of the final
   answer as the user would (ok / problem); when it does not hold together the answer is written again from the run's
   facts by `rescue_final` (code, once), never by a hint. `rescue_final` also writes the reply when the model returned
   no text or only tool markup (`strip_tool_markup` runs on every final answer). A reply cut by the token limit
@@ -586,10 +587,50 @@ Gone with the rule (2026-11-02): `answer_traits` / `AnswerTraits` and every hint
 `requests_info`, `asks_user`, `cut_off_final`, `self_corrects`, `with_hours`, the time / web / stuck / step-limit /
 status-note / cut-off / plain-text / number / outcome / replan "(System)" messages, `outcome::nudge` and its claim
 regexes, the page hints (`deep_link_hint`, `product_page_hint`, `refusal_hint`, `parked_domain_hint`), and the
-"(System note)" tool-result notes. What they covered and code does not decide now, by product choice: a reply that asks
-whether to proceed with a held pick, a visa exemption stated without its days, a missing second file format, a deep
-link that lands on a site's error page, a product page the agent keeps leaving — these are the model's reply to the
-user, reviewed once by `review_answer`.
+"(System note)" tool-result notes. Four of the judgements they covered are back as decisions (below).
+
+### Decisions: `Runtime::decide` (`agent/decide.rs`, 2026-11-02)
+
+When a step genuinely needs the model's judgement, it is a decision API call: the question, the context and the
+choices as a JSON array; the model answers `{"choice": "<one of them>"}` (`decide`) or `{"choices": [...]}`
+(`decide_many`), temperature 0, 60 tokens, no tools. The answer must be a listed choice (exact, case-insensitive,
+returned in the list's spelling); anything else gets ONE retry (the bad answer and the list again), then the caller's
+default; an unreachable model gives the default at once. Every call emits a `decision` event `{question, choices,
+picked, retried, defaulted}`. Code acts on the choice; defaults are the no-op choice. The four judgements
+(`agent/judgements.rs`, pure helpers + the calls; none in a driven run):
+
+- **Held pick** (end of run): a shown `present_choices` with `picked` whose option has a `source_url`, no OK
+  `purchase_confirm` / `browser_request_takeover` → decide on the REQUEST `buy_or_book | compare_only`, then on the
+  final reply `asks_to_proceed | done | other`; on `asks_to_proceed` code opens the picked page (`browser_navigate`,
+  `held_pick` event) and the loop goes on. The FWD purchase is the claims driver's (it continues by itself).
+- **File formats** (end of run, when the run made a file): `decide_many` on the request over `pdf | xlsx | docx | md |
+  none`; for each format the run did not make, `judgements::conversion_calls` converts from the first made file with
+  Markdown (its source file, its text, an Excel call's `sheets`, a CSV source read from the workspace): `make_pdf` /
+  `make_docx` from the `.md` source or the text, `files_write` for `md`, `make_xlsx` from a Markdown table; each new
+  file is `send_file`d (`fmt_<n>` calls, `format_conversion` event).
+- **Visa-free days** (end of an `entry-requirements` run): per destination the REQUEST names that is in
+  `VISA_PAGES` (SG, TH, MY, ID, VN, KR, JP, TW, CN, PH, KH: the official immigration / foreign-ministry page), decide on
+  the reply `states_visa_free_days | mentions_visa_free_without_days | no_visa_free`; on the middle one the days come
+  from that page — read in the run already, else `browser_read` by code — only when it gives one number (for the
+  profile's nationality when it names it; `judgements::visa_days`), and the answer gets the line with the page's link
+  (without a number when the page gives none; never invented; `visa_days` event). Check the table's URLs when a site
+  moves.
+- **A page just opened** (`exec_call`, main run): a deep link (a path or query) redirected elsewhere → decide on the
+  title + first lines `error_page | normal_page | login_page`; `error_page` → code opens `scheme://host/`
+  (`deep_link_error`, once per site). In an `online-shopping` run, back on a page it opened and left without clicking
+  that page's Add-to-Cart button (found by code: `[eN] button "Add to cart|bag|basket"`) → decide `product_page |
+  listing_page | cart_page | other`; `product_page` → code clicks that ref (`add_to_cart`, once per page).
+
+### Driven forms settle every value before the form opens
+
+In `agent/driver.rs` and `agent/claims.rs` the facts, the defaults, the choice of address and the one question come
+before the `browser_navigate` to the form. Once the form is open (`form_open`) no question is asked again — not the
+address card, not the missing-facts question, not the trip question of the FWD purchase: a fact lost since
+(compression) is a blank field the user fills in at the hand-over. The only pauses after the navigate are the
+hand-overs for the user's own steps. The FWD purchase's plan comparison after the quote holds its pick (shown, not
+asked). Tests: `driver::tests::every_card_settles_its_values_before_the_form_and_asks_nothing_after` and the four
+`claims::tests::*_asks_nothing_after_*` (`driver::drive_to_end` panics on an `ask_user` / pick-less
+`present_choices` after the navigate, or an end before the hand-over).
 
 ## News research reports (`skills/news-research/`, 2026-11-01)
 

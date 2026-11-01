@@ -10,6 +10,8 @@
 //! * [`tools`] — the local tool schema (`LOCAL_TOOLS`) and the tool-name sets.
 //! * [`lang`] — the agent's language (`agent_lang`) with the per-task overrides the Python kept in contextvars.
 //! * [`runtime`] — the [`Runtime`] itself: Sentinel client, events, task lifecycle and the planner/executor loop.
+//! * [`decide`] — the decision API: a question and a JSON array of choices, the model answers one (`Runtime::decide`).
+//! * [`judgements`] — the judgements the run still asks the model, each a decision and a fixed code action.
 //! * [`bots`] — the bot of a task (its skills and prompt) and the hand-off from the main bot (`ask_bot`).
 //! * [`exec`] — one tool call: guards, Sentinel `/internal/act`, result formatting, vision helpers, evidence.
 //! * [`local`] — the local tools (files, documents, data, memory, schedules, goals, choices, …).
@@ -24,11 +26,13 @@
 
 pub mod bots;
 pub mod claims;
+pub mod decide;
 pub mod driver;
 pub mod exec;
 pub mod ext;
 pub mod guards;
 pub mod images;
+pub mod judgements;
 pub mod lang;
 pub mod local;
 pub mod market_text;

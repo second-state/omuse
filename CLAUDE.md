@@ -31,7 +31,13 @@ possible choices** and have it return one of them (a decision API: `{"choice": "
 holds even when the input is a picture or a page: the possible decisions are listed in JSON for the model to choose
 from (what field, which option, which button — never "what should I do next?").
 
-**Hard rule: no natural language from the model anywhere in the decision flow** — not as an instruction to it (no "(System)" hints), not as an input read back to decide a step. Natural language the model writes is used for ONE thing: the reply the user reads. Anything in a test that checks
+**Hard rule: no natural language from the model anywhere in the decision flow** — not as an instruction to it (no "(System)" hints), not as an input read back to decide a step. A judgement the model must make goes through `decide(question, choices)`: the question and a JSON array of choices go
+in, exactly one choice must come out — anything else gets one retry, then the default (the most common or safe
+choice); code acts on the choice. A form workflow starts only when every input value is known (collected from the
+user's data, computed as a default, or asked once *before* the form opens); nothing is asked in the middle depending
+on the form's response — the only pauses are the user's own steps (sign-in, emailed code, CAPTCHA, photo, Submit/Pay).
+
+Natural language the model writes is used for ONE thing: the reply the user reads. Anything in a test that checks
 the model's words to decide the next step marks a step that belongs in code (or in a JSON choice). The final
 natural-language answer is itself reviewed once by the model, as the user would read it (`Runtime::review_answer`).
 

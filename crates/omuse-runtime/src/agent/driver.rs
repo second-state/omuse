@@ -789,6 +789,12 @@ pub fn next(card: &CardSpec, transcript: &[Value], w: &World) -> Step {
             .join("\n\n");
         return Step::Extract(take_chars(&joined, 12000).to_string());
     }
+    // every value the form needs is settled before the form opens (the facts, the defaults, the choice of address, the
+    // one question): once the official page is open no question is asked again — a fact lost from the transcript
+    // since (compression) is a blank field the user fills in at the hand-over, never a pause mid-form
+    let form_open = results_of(transcript, "browser_navigate")
+        .iter()
+        .any(|(a, _)| sget(a, "url").contains(card.host));
     // 3. the stay: a booking wins; else the user's own address in the country
     let own = own_addresses(w.profile, card.country);
     if trip.stay_name.is_empty() && trip.stay_address.is_empty() {
@@ -809,6 +815,7 @@ pub fn next(card: &CardSpec, transcript: &[Value], w: &World) -> Step {
                         trip.stay_address = addr.clone();
                         trip.stay_kind = "own".into();
                     }
+                    None if form_open => {}
                     None => {
                         // the question is a choice card (`present_choices`, the addresses by their labels, no pick):
                         // asked once — keyed on that call, never on the text of a message
@@ -868,6 +875,7 @@ pub fn next(card: &CardSpec, transcript: &[Value], w: &World) -> Step {
     .map(|(_, k)| *k)
     .collect();
     if !missing.is_empty()
+        && !form_open
         && !asked_before(transcript, ASK_MARK)
         && !asked_before(transcript, "哪个航班")
     {
@@ -900,7 +908,7 @@ pub fn next(card: &CardSpec, transcript: &[Value], w: &World) -> Step {
         trip.purpose = "holiday".into();
     }
     // 5. the filing window: too early → a reminder, and the answer
-    if let (Some(arr), true) = (trip.arrival(), card.window_days > 0) {
+    if let (Some(arr), true) = (trip.arrival(), card.window_days > 0 && !form_open) {
         let opens = arr - chrono::Duration::days(card.window_days);
         if w.today < opens {
             let made = results_of(transcript, "schedule_create");
@@ -925,10 +933,7 @@ I've set a reminder for that morning and will fill it in then. Nothing is filed 
         }
     }
     // 6. the official page
-    let opened = results_of(transcript, "browser_navigate")
-        .iter()
-        .any(|(a, _)| sget(a, "url").contains(card.host));
-    if !opened {
+    if !form_open {
         return Step::Calls(vec![call(
             n,
             "browser_navigate",
@@ -1130,6 +1135,65 @@ pub fn extract_exchange(n: usize, text: &str, facts: &Value) -> Vec<Value> {
                "function": {"name": "extract_facts", "arguments": json!({"chars": text.chars().count()}).to_string()}}]}),
         json!({"role": "tool", "tool_call_id": id, "content": Value::Object(m).to_string()}),
     ]
+}
+
+/// The questions a driven run put to the user after its form opened (`ask_user`, a `present_choices` with no pick —
+/// a comparison that holds its pick is shown, not asked): the drivers' tests assert there are none.
+#[cfg(test)]
+pub(crate) fn questions_after_navigate(transcript: &[Value]) -> Vec<String> {
+    let calls: Vec<(String, Value)> = transcript
+        .iter()
+        .flat_map(tool_calls)
+        .map(stored_call)
+        .collect();
+    let Some(nav) = calls.iter().position(|(n, _)| n == "browser_navigate") else {
+        return Vec::new();
+    };
+    calls[nav + 1..]
+        .iter()
+        .filter(|(n, a)| {
+            n == "ask_user" || (n == "present_choices" && sget(a, "picked").trim().is_empty())
+        })
+        .map(|(n, a)| format!("{n} {a}"))
+        .collect()
+}
+
+/// Drives `next` from `t` until the run ends, answering each call with `answer(name)`; panics on a question to the user
+/// after the form opened (a call above, or a final text before the hand-over that is not the end). The transcript and
+/// the final text.
+#[cfg(test)]
+pub(crate) fn drive_to_end(
+    mut t: Vec<Value>,
+    next: impl Fn(&[Value]) -> Step,
+    answer: impl Fn(&str) -> String,
+    prefix: &str,
+) -> (Vec<Value>, String) {
+    for i in 0..40 {
+        match next(&t) {
+            Step::Calls(c) => {
+                for (j, call) in c.iter().enumerate() {
+                    t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": format!("{prefix}{i}_{j}"), "type": "function",
+                        "function": {"name": call.name, "arguments": call.args.to_string()}}]}));
+                    t.push(json!({"role": "tool", "tool_call_id": format!("{prefix}{i}_{j}"), "content": answer(&call.name)}));
+                }
+                let q = questions_after_navigate(&t);
+                assert!(q.is_empty(), "a question after the form opened: {q:?}");
+            }
+            Step::Final(a) => {
+                let handed = t.iter().flat_map(tool_calls).any(|tc| {
+                    stored_call(tc).0 == "browser_request_takeover"
+                        || stored_call(tc).0 == "gmail_create_draft"
+                });
+                assert!(
+                    handed,
+                    "the run ended before the hand-over (a question mid-form?): {a}"
+                );
+                return (t, a);
+            }
+            Step::Extract(_) => panic!("an extraction after the form opened"),
+        }
+    }
+    panic!("the run did not end")
 }
 
 #[cfg(test)]
@@ -1650,6 +1714,55 @@ mod tests {
                 }
                 other => panic!("round {round}: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn every_card_settles_its_values_before_the_form_and_asks_nothing_after() {
+        // the facts, the defaults, the address and the one question all come before browser_navigate: a run whose
+        // facts are gone once the form is open (compression; no mail, a bare request) fills what it has and hands over
+        // — no ask_user, no choice card, no question as the reply
+        let today = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        for card in CARDS {
+            let user = vec![format!("Please fill in my {}.", card.name)];
+            // two own addresses in the country: the choice card would be a question
+            let profile = json!({format!("address:Flat in {}", card.country): format!("1 Main Road, {}", card.country),
+                                 format!("address:Parents in {}", card.country): format!("2 Side Road, {}", card.country)});
+            let w = World {
+                user_texts: &user,
+                profile: &profile,
+                today,
+                mail_ready: false,
+                zh: false,
+            };
+            let mut t = vec![json!({"role": "user", "content": user[0]})];
+            t.extend(step("k1", "load_skill", json!({"name": card.skill}), "---"));
+            t.extend(step(
+                "drv_1",
+                "browser_navigate",
+                json!({"url": card.start_url}),
+                &format!(
+                    "<untrusted_content source=\"web page {}\">{{}}</untrusted_content>",
+                    card.start_url
+                ),
+            ));
+            let Step::Calls(c) = next(card, &t, &w) else {
+                panic!("{}: not the fill", card.skill)
+            };
+            assert_eq!(c[0].name, "form_fill", "{}", card.skill);
+            let (t, _) = drive_to_end(
+                t,
+                |t| next(card, t, &w),
+                |name| match name {
+                    "form_fill" => "{\"url\": \"x\", \"filled\": []}".into(),
+                    "browser_request_takeover" => {
+                        "\"Takeover finished: the user handed browser control back.\"".into()
+                    }
+                    _ => "Submitted.".into(),
+                },
+                "drv_t",
+            );
+            assert!(questions_after_navigate(&t).is_empty());
         }
     }
 }

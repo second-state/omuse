@@ -107,6 +107,8 @@ pub(crate) struct Inner {
     pub ranking_asked: HashSet<String>,
     /// tasks whose known page already got its fixed ticks (`guards::apdt_fixed_ticks`)
     pub fixed_ticks: HashSet<String>,
+    /// `task|kind|key` of the pages a judgement already looked at (`judgements::PageCheck`): once each
+    pub page_checked: HashSet<String>,
 }
 
 /// The agent runtime. Always used behind `Arc` ([`Runtime::new`] returns one).
@@ -2309,6 +2311,7 @@ yourself; ask_bot is not available for it."
         let mut auto_handed = false;
         let mut answer_reviewed = false;
         let mut handback_snapped = false;
+        let mut pick_continued = false;
         let mut news_acted: HashSet<String> = HashSet::new();
         let mut ctx_retries = 0;
         loop {
@@ -2833,6 +2836,34 @@ yourself; ask_bot is not available for it."
                     Err(sp) => return self.suspend(task_id, sp, transcript).await,
                 }
             }
+            // a held pick the reply asks to proceed with, on a request to buy or book (two decisions): code opens the
+            // picked option's page and the run goes on (the FWD purchase is the claims driver's, `driven_run`)
+            let judged =
+                !final_.is_empty() && asked.is_none() && !driven_run && !force_final && !timed_out;
+            if judged && !pick_continued {
+                pick_continued = true;
+                if let Some(tc) = self
+                    .held_pick_call(task_id, &goal_text, &transcript, &final_)
+                    .await
+                {
+                    transcript.push(assistant_with_calls("", std::slice::from_ref(&tc)));
+                    match self
+                        .exec_call(
+                            &t,
+                            &tc,
+                            &mut transcript,
+                            &catalog,
+                            &[],
+                            None,
+                            CallMode::MAIN,
+                        )
+                        .await
+                    {
+                        Ok(_) => continue,
+                        Err(sp) => return self.suspend(task_id, sp, transcript).await,
+                    }
+                }
+            }
             // the answer read once by the model as the user would (JSON out): when it does not hold together, the
             // answer is written again from the run's facts in code (`rescue_final`), once — no message to the model
             if !final_.is_empty()
@@ -2888,6 +2919,67 @@ yourself; ask_bot is not available for it."
                 {
                     Ok(_) => continue,
                     Err(sp) => return self.suspend(task_id, sp, transcript).await,
+                }
+            }
+            // the file formats the request asks for (one decision): each one the run did not make is converted from
+            // what it made and sent, in code
+            if judged {
+                let conv = self.format_calls(task_id, &goal_text, &transcript).await;
+                for tc in &conv {
+                    transcript.push(assistant_with_calls("", std::slice::from_ref(tc)));
+                    if let Err(sp) = self
+                        .exec_call(&t, tc, &mut transcript, &catalog, &[], None, CallMode::MAIN)
+                        .await
+                    {
+                        return self.suspend(task_id, sp, transcript).await;
+                    }
+                }
+            }
+            // an entry-requirements answer that mentions a visa exemption without its days (one decision per
+            // destination): the days from the official page — one the run read, else read now — with the page's link
+            if judged {
+                let nationality = get_str(&self.store.profile().unwrap_or_default(), "nationality");
+                let mut lines = Vec::new();
+                for page in self
+                    .visa_days_missing(task_id, &goal_text, &transcript, &final_)
+                    .await
+                {
+                    let mut days =
+                        super::judgements::days_from_results(&transcript, page, &nationality);
+                    if days.is_none() {
+                        let tc = ToolCall {
+                            id: format!("visa_{}_{steps}", page.code),
+                            name: "browser_read".into(),
+                            args: json!({"urls": [page.url]}),
+                        };
+                        transcript.push(assistant_with_calls("", std::slice::from_ref(&tc)));
+                        if let Err(sp) = self
+                            .exec_call(
+                                &t,
+                                &tc,
+                                &mut transcript,
+                                &catalog,
+                                &[],
+                                None,
+                                CallMode::MAIN,
+                            )
+                            .await
+                        {
+                            return self.suspend(task_id, sp, transcript).await;
+                        }
+                        days =
+                            super::judgements::days_from_results(&transcript, page, &nationality);
+                    }
+                    self.event(
+                        task_id,
+                        "visa_days",
+                        json!({"country": page.country, "days": days, "url": page.url}),
+                    )
+                    .await;
+                    lines.push(super::judgements::visa_line(page, days, lg != "en"));
+                }
+                if !lines.is_empty() {
+                    final_ = format!("{}\n\n{}", final_.trim_end(), lines.join("\n"));
                 }
             }
             // a file the user asked for that the run wrote but never sent: sent now, in code
