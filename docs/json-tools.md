@@ -29,10 +29,37 @@ reply the user reads ◀──model── JSON result ◀───────�
   review (`Runtime::review_answer`, the model) gets the result and adds what the reply left out. Code never scans the
   reply's prose.
 
+## Checking the model's JSON (one layer, for every tool call and every JSON the model returns)
+
+The model's JSON is checked at the boundary where language becomes data, in one place (`agent/json_in.rs`), never in
+each machine:
+
+1. **Repair the syntax.** Arguments that do not parse are repaired in code first: a missing closing `"`, `}` or `]`,
+   a trailing comma, single quotes, an unquoted key, a code fence or prose around the object, a number with absurd
+   precision (`0.0360000…` cut to its value). Today this is `llm::extract_json` and the `_unparsed` /
+   `[bad_arguments]` path in `llm.rs` / `agent/exec.rs`; they move behind this layer.
+2. **Validate against the tool's schema.** Required fields present, types right, enums in their list, then the tool's
+   own field checks (dates parse, a city is in the table, an address is well-formed, a mailed-to address appears in the
+   user's words). A field that can be fixed is fixed (`"2"` → `2`, a date in another format → ISO), one that cannot is
+   dropped and reported.
+3. **Regenerate with the planner model when it is truly wrong.** Still unparseable, or a required field missing or
+   invalid after the repair: code asks the **planner model** once for the JSON again — the user's message (and the
+   conversation's last answer), the tool's schema, the rejected JSON and the problems found go in; JSON comes out and
+   goes through steps 1–2 again. Still wrong: the tool result is `{"status": "invalid", "problems": [...]}` and the
+   executor model gets one more turn to call again; after that the workflow stops with a reply that says what is
+   missing (`needs_input`).
+
+Regenerating is part of turning language into JSON (the model's side of the line), so the runtime may call the planner
+here; a code tool still never calls a model. Every repair and every regeneration is an event (`json_repaired`,
+`json_regenerated`) so the timeline shows it, and each has a unit test with the broken JSON that caused it.
+
+The same layer checks every other JSON the model returns: `decide()` choices, the news stories for `news_publish`, the
+final review's verdict.
+
 ## The protocol in the run loop
 
 1. The model calls a workflow tool `T(args)`.
-2. Code validates `args`. Problems that the model can fix (a field in the wrong form) → the tool result is
+2. Code checks `args` through the JSON layer above (repair, schema, planner regeneration). Problems that the model can fix (a field in the wrong form) → the tool result is
    `{"status": "invalid", "problems": [...]}` and the model calls again. A field only the user can give →
    `{"status": "needs_input", "missing": [...]}` and the model asks the user; the user's answer comes back as a new
    message and the model calls `T` again with every field.
