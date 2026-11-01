@@ -80,8 +80,6 @@ pub(crate) struct Inner {
     pub sent_files: HashSet<(String, String, u64, i64)>,
     /// task_id -> pages/emails actually read (for present_choices)
     pub evidence: HashMap<String, Vec<Value>>,
-    /// task_id -> "legacy" (golden A/B of personal context)
-    pub ctx_mode: HashMap<String, String>,
     /// task_id -> sites whose remembered habits were shown
     pub site_noted: HashMap<String, HashSet<String>>,
     /// task_id -> full tool results, newest last (outcome evidence)
@@ -357,13 +355,23 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
             mail_ready,
             zh: lg != "en",
         };
+        // the catalog's tool names: the booking machine calls a travel connector's tool when the native one is missing
+        let available: Vec<String> = arr(catalog, "tools")
+            .iter()
+            .map(|t| tool_name(t).to_string())
+            .collect();
         let next = |t: &[Value]| match machine {
             Machine::Card(c) => super::driver::next(c, t, &w),
+            Machine::Booking(b) => super::booking::next_in(b, t, &w, &available),
             Machine::Claim(c) => super::claims::next(c, t, &w),
+            Machine::Apdt(s) => super::apdt::next(s, t, &w),
         };
         let (prefix, extract_system) = match machine {
             Machine::Card(_) => ("drv_", super::driver::EXTRACT_SYSTEM),
             Machine::Claim(_) => ("clm_", super::claims::EXTRACT_SYSTEM),
+            // regexes only: the refund's machine never asks for an extraction
+            Machine::Apdt(_) => ("apd_", ""),
+            Machine::Booking(_) => ("bkg_", super::booking::EXTRACT_SYSTEM),
         };
         let mut step = next(transcript);
         if let Step::Extract(text) = &step {
@@ -392,6 +400,8 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
             transcript.extend(match machine {
                 Machine::Card(_) => super::driver::extract_exchange(n, text, &facts),
                 Machine::Claim(_) => super::claims::extract_exchange(n, text, &facts),
+                Machine::Apdt(_) => Vec::new(),
+                Machine::Booking(_) => super::booking::extract_exchange(n, text, &facts),
             });
             step = next(transcript);
         }
@@ -411,7 +421,7 @@ recurring job (\"every morning send me …\"). success: that condition in a few 
         self.event(
             task_id,
             "driver",
-            json!({"card": match machine { Machine::Card(c) => c.skill, Machine::Claim(c) => c.skill }, "calls": tool_calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), "final": !content.is_empty()}),
+            json!({"card": match machine { Machine::Card(c) => c.skill, Machine::Claim(c) => c.skill, Machine::Apdt(s) => s.skill, Machine::Booking(b) => b.skill }, "calls": tool_calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), "final": !content.is_empty()}),
         )
         .await;
         ChatReply {
@@ -757,28 +767,6 @@ missing details are NOT problems (ok = true). problem: one short sentence naming
         };
         *self.catalog_cache.lock() = (now_ts(), Some(cat.clone()));
         cat
-    }
-
-    /// Golden (test) runs stop where a real run would change something or need the user; the stop is the result.
-    pub(crate) async fn dry_run_stop(
-        &self,
-        task_id: &str,
-        name: &str,
-        args: &Value,
-        why: &str,
-    ) -> String {
-        self.event(
-            task_id,
-            "dry_run_stop",
-            json!({"tool": name, "args": preview_args(args), "why": truncate(why, 200)}),
-        )
-        .await;
-        format!(
-            "（演练模式）到这一步会真正执行操作或需要用户批准，演练到此为止，没有执行：{}。不要重试这一步，也不要换别的方法绕过；直接写最终回答，说明准备怎么做、做到了哪一步。\
- (Dry run: this step would act for real or need the user's approval, so it was not run. Do not retry it or \
-work around it; write the final answer saying what you would do and how far you got.)",
-            if why.is_empty() { name } else { why }
-        )
     }
 
     pub(crate) fn note_tool_text(&self, task_id: &str, content: &str) {
@@ -1478,8 +1466,6 @@ work around it; write the final answer saying what you would do and how far you 
         self.skills_dirs.enabled(&self.settings())
     }
 
-    /// Long-term facts for this task (personal context v1): the ones that matter for what is asked, grouped by
-    /// domain. A golden A/B run can ask for the old selection with `ctx_mode[task_id] = "legacy"`.
     /// The profile's standing preferences for the executor prompt, as (label, value): the fixed
     /// `preferred_airline` / `preferred_hotel_brand` / `preferred_car_rental` fields, then any custom field whose label carries one of
     /// `store::PREFERENCE_WORDS` (a second airline, a loyalty programme, a seat wish…). Empty values are skipped;
@@ -1518,10 +1504,9 @@ work around it; write the final answer saying what you would do and how far you 
         out
     }
 
-    pub fn facts_for(&self, goal: &str, history_txt: &str, task_id: &str) -> Vec<Value> {
-        if self.inner.lock().ctx_mode.get(task_id).map(String::as_str) == Some("legacy") {
-            return self.facts_legacy(goal);
-        }
+    /// Long-term facts for this task (personal context v1): the ones that matter for what is asked, grouped by
+    /// domain.
+    pub fn facts_for(&self, goal: &str, history_txt: &str) -> Vec<Value> {
         let users: Vec<&str> = history_txt
             .lines()
             .filter_map(|ln| ln.strip_prefix("user: "))
@@ -1530,17 +1515,8 @@ work around it; write the final answer saying what you would do and how far you 
         let facts = self.store.facts(500, Some("long")).unwrap_or_default();
         let ents = self.store.entities(None).unwrap_or_default();
         let out = crate::context::select(goal, &facts, Some(&ents), 12, &users);
-        let golden = self
-            .store
-            .task(task_id)
-            .ok()
-            .flatten()
-            .map(|t| get_str(&t, "source") == "golden")
-            .unwrap_or(false);
-        if !golden {
-            let ids: Vec<String> = out.iter().take(12).map(|f| get_str(f, "id")).collect();
-            let _ = self.store.mark_used(&ids);
-        }
+        let ids: Vec<String> = out.iter().take(12).map(|f| get_str(f, "id")).collect();
+        let _ = self.store.mark_used(&ids);
         out
     }
 
@@ -1865,7 +1841,7 @@ work around it; write the final answer saying what you would do and how far you 
         let t = self.store.task(task_id).ok().flatten()?;
         let goal_text = get_str(&t, "goal");
         let (_, history_txt) = self.history(&get_str(&t, "conv_id"), task_id);
-        let facts = self.facts_for(&goal_text, &history_txt, task_id);
+        let facts = self.facts_for(&goal_text, &history_txt);
         let mut pt = t.clone();
         let atts = arr(&t, "attachments");
         if !atts.is_empty() {
@@ -2022,7 +1998,7 @@ work around it; write the final answer saying what you would do and how far you 
         let conv_id = get_str(&t, "conv_id");
         let (history, history_txt) = self.history(&conv_id, task_id);
         let goal_text = get_str(&t, "goal");
-        let facts = self.facts_for(&goal_text, &history_txt, task_id);
+        let facts = self.facts_for(&goal_text, &history_txt);
         let t_transcript_empty = arr(&t, "transcript").is_empty();
         if facts
             .first()
@@ -2409,6 +2385,16 @@ yourself; ask_bot is not available for it."
                     goal.is_some(),
                 );
                 let tl = self.without_browser_if_off(task_id, tl);
+                // the page input tools and form_fill only while browser-use is loaded (forms are code's, fixed ids)
+                let input_ok = super::guards::browser_use_active(&transcript);
+                let tl: Vec<Value> = tl
+                    .into_iter()
+                    .filter(|x| {
+                        let n = tool_name(x);
+                        input_ok
+                            || !(super::guards::MODEL_INPUT_TOOLS.contains(&n) || n == "form_fill")
+                    })
+                    .collect();
                 // ask_bot is the main bot's; a tool a bot file claims (the travel searches) only its bots'
                 let tl: Vec<Value> = tl
                     .into_iter()
@@ -2447,7 +2433,9 @@ yourself; ask_bot is not available for it."
             // (and the claims and the FWD purchase: `agent/claims.rs`)
             let machine = super::driver::active(&transcript)
                 .map(Machine::Card)
-                .or_else(|| super::claims::active(&transcript).map(Machine::Claim));
+                .or_else(|| super::claims::active(&transcript).map(Machine::Claim))
+                .or_else(|| super::apdt::active(&transcript).map(Machine::Apdt))
+                .or_else(|| super::booking::active(&transcript).map(Machine::Booking));
             let driven = match machine {
                 Some(m) if !force_final => {
                     Some(self.drive(task_id, m, &mut transcript, &catalog, lg).await)
@@ -2806,7 +2794,9 @@ yourself; ask_bot is not available for it."
                 };
             }
             let driven_run = super::driver::active(&transcript).is_some()
-                || super::claims::active(&transcript).is_some();
+                || super::claims::active(&transcript).is_some()
+                || super::apdt::active(&transcript).is_some()
+                || super::booking::active(&transcript).is_some();
             // a news report's delivery is code's: the scheduled edition's mail, or the schedule asked for (once each)
             if !final_.is_empty() && asked.is_none() && !force_final && !timed_out {
                 let own = own_mailbox(&catalog);
@@ -3043,14 +3033,29 @@ yourself; ask_bot is not available for it."
             }
             // an illness in a travel-health-emergency run (one decision): the place's official medical line from
             // the fixed table, with its page
-            let mut medical = None;
+            let (mut medical, mut consular) = (None, None);
             if judged {
-                medical = self.medical_line(task_id, &goal_text, &transcript).await;
+                let nationality = self
+                    .store
+                    .profile()
+                    .map(|p| get_str(&p, "nationality"))
+                    .unwrap_or_default();
+                (medical, consular) = self
+                    .emergency_lines(task_id, &goal_text, &transcript, &nationality)
+                    .await;
                 if let Some(line) = medical {
                     self.event(
                         task_id,
                         "medical_line",
                         json!({"place": line.place, "url": line.url}),
+                    )
+                    .await;
+                }
+                if let Some(help) = &consular {
+                    self.event(
+                        task_id,
+                        "consular_line",
+                        json!({"citizens": help.line.citizens, "embassy": help.embassy.map(|e| e.name)}),
                     )
                     .await;
                 }
@@ -3120,6 +3125,10 @@ yourself; ask_bot is not available for it."
             if let Some(line) = medical {
                 // after the grounding above: the number is the table's, checked on the official page
                 final_ = super::judgements::with_medical_line(&final_, line, lg != "en");
+            }
+            if let Some(help) = &consular {
+                // likewise: the consulate's line from the table, in its international form
+                final_ = super::judgements::with_consular_line(&final_, help, lg != "en");
             }
             final_ = super::guards::with_claim_deadlines(&transcript, &final_, lg != "en");
             final_ = super::guards::with_loan_payment(&goal_text, &final_, lg != "en");
@@ -3772,19 +3781,6 @@ try a clearly different query or source, or say in the answer that it wasn't fou
         }
         out
     }
-
-    /// `rt.ctx_mode[task_id] = mode` / `pop`.
-    pub fn set_ctx_mode(&self, task_id: &str, mode: Option<&str>) {
-        let mut inner = self.inner.lock();
-        match mode {
-            Some(m) => {
-                inner.ctx_mode.insert(task_id.to_string(), m.to_string());
-            }
-            None => {
-                inner.ctx_mode.remove(task_id);
-            }
-        }
-    }
 }
 
 /// Drop the private `_refused` marker of a stored call before parsing it back.
@@ -3930,14 +3926,8 @@ impl RuntimeApi for Runtime {
     fn is_running(&self, task_id: &str) -> bool {
         Runtime::is_running(self, task_id)
     }
-    fn set_ctx_mode(&self, task_id: &str, mode: Option<&str>) {
-        Runtime::set_ctx_mode(self, task_id, mode)
-    }
     fn catalog(&self) -> BoxFuture<'_, Value> {
         Box::pin(Runtime::catalog(self, false))
-    }
-    fn facts_legacy(&self, goal: &str) -> Vec<Value> {
-        Runtime::facts_legacy(self, goal)
     }
     fn facts_select(&self, goal: &str) -> Vec<Value> {
         let facts = self.store.facts(500, Some("long")).unwrap_or_default();
@@ -4017,10 +4007,12 @@ fn own_mailbox(catalog: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// The code machine that decides a driven run's steps: an arrival card (`agent/driver.rs`) or a claim / the FWD
-/// purchase (`agent/claims.rs`).
+/// The code machine that decides a driven run's steps: an arrival card (`agent/driver.rs`), a claim / the FWD
+/// purchase (`agent/claims.rs`) or the Hong Kong departure tax refund (`agent/apdt.rs`).
 #[derive(Clone, Copy)]
 enum Machine {
     Card(&'static super::driver::CardSpec),
     Claim(&'static super::claims::ClaimSpec),
+    Apdt(&'static super::apdt::ApdtSpec),
+    Booking(&'static super::booking::BookingSpec),
 }

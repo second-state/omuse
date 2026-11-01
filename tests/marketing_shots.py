@@ -5,13 +5,12 @@ scenarios (SHOW_* in tests/fake_llm.py) give presentable English answers:
     OMUSE_E2E_OUT=/tmp/market bash tests/run_in_docker.sh marketing_shots
     cp /tmp/market/market/*.webp /tmp/market/market/overview.png deploy/market/assets/
 
-Writes featured.webp, promote-1…7 *.webp (1440×900) and overview.png (the collage) to <OMUSE_E2E_OUT>/market."""
+Writes featured.webp, the promote-*.webp frames (1440×900) and overview.png (the collage) to <OMUSE_E2E_OUT>/market."""
 import asyncio
 import base64
 import io
 import os
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PIL import Image  # noqa: E402
@@ -29,7 +28,6 @@ B = K.B + "/"
 # the showcase prompts the scripted model knows (SHOW_* in tests/fake_llm.py)
 SHOW_TRIP = "What's on my Tokyo trip this week? Check my mail and calendar."
 SHOW_CITY = "We're moving to Shanghai for work with two kids. Where do expat families live, and what does rent cost?"
-SHOW_SGAC = "Fill in my Singapore arrival card for Sunday's flight."
 
 
 # ------------------------------------------------------------------ the world in the pictures
@@ -56,16 +54,6 @@ def seed():
                   phone="+61 400 000 000")
     K.vault_item("Passport Lucas", "id_document", {"number": "E1234567X", "name": "LU LUCAS", "expiry": "2031-05-01", "country": "AU"},
                  domains="ica.gov.sg,shop.test")
-
-
-def wait_status(tid, want, timeout=90):
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        t = K.c.get(f"{K.B}/api/tasks/{tid}").json()
-        if t["status"] in want:
-            return t
-        time.sleep(0.3)
-    return t
 
 
 # ------------------------------------------------------------------ screenshots
@@ -109,20 +97,8 @@ async def screenshots():
         await pp.evaluate("localStorage.setItem('omuse_ui', 'en')")
         out["phone_city"] = await shoot(pp, "phone_city", f"chat/{city['_conv']}", settle=2500)
         out["phone_trip"] = await shoot(pp, "phone_trip", f"chat/{trip['_conv']}", settle=2500)
-        # the arrival card last: its approval dialog opens over whatever page is showing
-        sg = K.run(SHOW_SGAC, approve=False)
-        print("sgac", sg["status"])
-        await pg.goto(B + "#chat/" + sg["_conv"])
-        await pg.wait_for_selector(".approval", timeout=15000)
-        await pg.wait_for_timeout(1200)
-        out["approval"] = os.path.join(SHOTS, "approval.png")
-        await pg.screenshot(path=out["approval"])
-        for a in K.c.get(K.S + "/approvals?status=pending", headers=K.H).json()["approvals"]:
-            K.c.post(f"{K.S}/approvals/{a['id']}/resolve", json={"decision": "approve", "scope": "ONCE"}, headers=K.H)
-        wait_status(sg["id"], ("WAITING_EXTERNAL", "COMPLETED", "FAILED"))
-        out["takeover"] = await shoot(pg, "takeover", f"chat/{sg['_conv']}", settle=3000)
-        K.hand_back()
-        wait_status(sg["id"], ("COMPLETED", "FAILED"))
+        # the arrival-card approval / takeover shots are gone with the scripted model's field-by-field typing: the
+        # card is now filled by code (forms.rs); the real flow has no scripted stand-in here
         out["audit"] = await shoot(pg, "audit", "activity")
         await br.close()
     return out
@@ -228,13 +204,6 @@ def main():
         ("promote-1-chat", promo("Tell it what you need. It plans — and does it.",
                                  "OMuse breaks a request into steps, runs independent ones in parallel and works through your mail, calendar, Notion, Slack and the web.",
                                  s["chat"])),
-        ("promote-2-approval", promo("Nothing risky happens without you.",
-                                     "Sending, paying, filling in your passport number: Sentinel, an independent guard, holds it until you approve. Secrets stay in the Vault.",
-                                     s["approval"])),
-        ("promote-3-travel", promo("Arrival cards, filled. You press Submit.",
-                                   "Flight and hotel from your mail, your details from the profile, the passport from the Vault — the form is ready, you review it.",
-                                   s["takeover"], layout="side",
-                                   ticks=["11 countries' arrival cards", "Today's trip, gaps and conflicts", "Delays, lost bags, expense reports"])),
         ("promote-4-cityguides", promo("City guides for 15 Asian cities.",
                                        "Neighbourhoods, rents, schools, getting around and business customs for Westerners — answered from dated facts, without opening a browser.",
                                        s["city"])),

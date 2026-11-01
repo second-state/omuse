@@ -542,32 +542,6 @@ fn action_error_status_mapping() {
 }
 
 #[test]
-fn dry_run_side_effects() {
-    use super::act::dry_run_side_effect;
-    assert!(dry_run_side_effect("purchase_confirm", &json!({})));
-    assert!(!dry_run_side_effect(
-        "phone_hangup",
-        &json!({"capability": "call"})
-    ));
-    assert!(dry_run_side_effect(
-        "mcp_x__y",
-        &json!({"connector": "mcp:x", "capability": "write"})
-    ));
-    assert!(!dry_run_side_effect(
-        "mcp_x__z",
-        &json!({"connector": "mcp:x", "capability": "read"})
-    ));
-    assert!(dry_run_side_effect(
-        "gmail_send",
-        &json!({"connector": "gmail", "capability": "send"})
-    ));
-    assert!(!dry_run_side_effect(
-        "gmail_search",
-        &json!({"connector": "gmail", "capability": "read"})
-    ));
-}
-
-#[test]
 fn ledger_summary_warns_without_hits() {
     let mut s = json!({"fields": [], "warning": ""});
     super::act::ledger_summary(&mut s, &[], Some(&json!({"name": "Cancel order"})));

@@ -8,7 +8,7 @@ user's side by tests/memory_real.py (and tests/assistant_real.py). What stays he
   * a site's habits shown to the model when the browser lands there (internal prompt);
   * a habit OMuse learned by itself waits for the user's OK but is used meanwhile (a real model learning a habit on
     its own cannot be produced on demand: forced with the scripted model);
-  * the personal-context probe (a developer tool) and the health check API."""
+  * the health check API."""
 import os
 import sys
 import time
@@ -104,19 +104,6 @@ check("a habit OMuse learned itself waits for the user's OK", len(pend) == n0 + 
 check("…but is used meanwhile, marked unconfirmed", any("guest checkout" in f for f in preview("在 shop.test 买个水壶")))
 c.put(f"{B}/api/memory/{pend[0]['id']}", json={"status": "active"}, headers=H)
 check("the user confirms it on the Memory page", next(f for f in mem()["facts"] if f["id"] == pend[0]["id"])["status"] == "active")
-
-# ---- 5b. the fast personal-context probe runs end to end (plan + statement, nothing executed)
-r = c.post(B + "/api/golden/run", json={"suite": "context_probe", "context": "legacy"}, headers=H).json()
-t0 = time.time()
-while time.time() - t0 < 120:
-    runs = c.get(B + "/api/golden/runs?limit=1", headers=H).json()["runs"]
-    if runs and runs[0]["status"] != "running":
-        break
-    time.sleep(2)
-run = c.get(B + "/api/golden/runs?limit=1", headers=H).json()["runs"][0]
-check("context probe scores all 10 requests without running any tool", run["trigger"] == "manual:context-legacy" or
-      (run["trigger"] == "probe:context-legacy" and run["status"] == "done" and len(run["results"]) == 10
-       and all("plan" in x and "context" in x for x in run["results"])), run)
 
 # ---- 6. mailbox health
 st = c.post(B + "/api/health/check", json={}, headers=H).json()

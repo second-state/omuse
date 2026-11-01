@@ -1093,7 +1093,7 @@ pub fn card_box_mismatch(field: &str, name: &str) -> String {
     String::new()
 }
 
-// Enter in a price / size / quantity filter box only narrows a list (2026-10-06 golden G03: decathlon.sg's "max price"
+// Enter in a price / size / quantity filter box only narrows a list (2026-10-06: decathlon.sg's "max price"
 // number box asked for approval). Not on checkout / payment pages, and only short values.
 re!(
     FILTER_NAME,

@@ -1,4 +1,4 @@
-"""2026-10-06 golden G04: decathlon.sg's search page showed "Loading..." where the results go; the snapshot was taken
+"""2026-10-06: decathlon.sg's search page showed "Loading..." where the results go; the snapshot was taken
 before they arrived. The broker now waits a little for such a page."""
 import sys
 import time

@@ -63,7 +63,7 @@ Rules:
 - Verify each shortlisted restaurant (usually 3–5) with **delegate — one sub-agent per restaurant**. Their steps don't use
   your budget, so every candidate gets checked instead of only the first one. Give each sub-agent everything it needs:
   "Check real availability at <restaurant> (<address>) on <date> around <time> for <n> people. Open <Reserve with Google
-  link or booking page URL>, set party size and date, read the offered times (the time list shows them). Do NOT press Book Now / Reserve /
+  link or booking page URL> with the party size and date in the link (code builds it for the known providers; a page that needs them typed goes to the browser-use skill), read the offered times (the time list shows them). Do NOT press Book Now / Reserve /
   Continue / Confirm.
   Report: verified times (or 'none near <time>'), booking provider, deposit/min spend, link."
 - If a sub-agent can't verify, keep that restaurant as "未核实 unverified" — never fill in times yourself.
@@ -74,14 +74,16 @@ Recommend 1–2 with a short reason. If the user already said "just book the bes
 (one short question) and stop.
 
 ## 4. Book
-- Open the chosen booking page, set date / time / party, fill name, phone, email (profile_get) and special requests.
-- The final Confirm / Book / Reserve click is the user's: fill everything else, then hand the page over with
+- Code opens the chosen booking link and fills it on known sites — date / time / party, name, phone, email
+  (profile_get) and special requests (form_fill is called by code, not by you). A site with no form function goes to
+  the `browser-use` skill.
+- The final Confirm / Book / Reserve click is the user's: the filled page is handed over with
   browser_request_takeover naming the button (Sentinel refuses that click and the runtime hands the page over if you try).
   Don't ask for confirmation in chat.
 - Login needed (Google account, Chope account…) → browser_request_takeover("请登录 … 以完成订位"). Never type passwords.
-- Credit card guarantee, deposit or prepayment → say the amount and the cancellation terms first. If a card is in the vault
-  (vault_list), fill it with browser_fill_secret (the user approves each field); otherwise browser_request_takeover so the
-  user enters it. Never type card numbers yourself.
+- Credit card guarantee, deposit or prepayment → say the amount and the cancellation terms first. A card in the vault
+  (vault_list) is filled by code (the user approves each field); otherwise the user enters it in the hand-over. Never
+  ask for card numbers in chat.
 - Read the confirmation page: reference number, date, time, party size, address. "Request received / pending" means NOT
   confirmed yet — say so.
 

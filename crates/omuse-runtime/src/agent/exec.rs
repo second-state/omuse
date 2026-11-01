@@ -18,7 +18,7 @@ use super::guards::*;
 use super::judgements::{page_check_for, PageCheck};
 use super::lang::agent_lang;
 use super::runtime::{Runtime, Suspend};
-use super::tools::{is_local, tool_name, DRY_RUN_LOCAL, REMAKE_TOOLS};
+use super::tools::{is_local, tool_name, REMAKE_TOOLS};
 use super::util::{arr, relpath, sget, LocalErr};
 use super::{RESULT_LIMIT, SEARCH_RESULT_LIMIT};
 use crate::llm::{ChatOpts, LlmError, ToolCall};
@@ -375,6 +375,7 @@ impl Runtime {
                 .or_else(|| retype_guard(transcript, call))
                 .or_else(|| empty_mail_guard(call))
                 .or_else(|| arrival_submit_guard(transcript, call))
+                .or_else(|| super::guards::input_scope_guard(transcript, call))
                 .or_else(|| arrival_mail_guard(transcript, &goal, call))
                 .or_else(|| clear_guard(transcript, call))
                 .or_else(|| apdt_face_guard(transcript, call))
@@ -499,10 +500,6 @@ call was not run.".to_string();
 times and is not made again.");
                 ok = false;
                 refused = true;
-            } else if DRY_RUN_LOCAL.contains(&name) && get_str(t, "source") == "golden" {
-                content = self.dry_run_stop(&task_id, name, &args, "").await;
-                ok = false;
-                refused = true;
             } else if let Some(owner) = (name == "load_skill" && !sub)
                 .then(|| self.skill_owner(t, &sget(&args, "name")))
                 .flatten()
@@ -575,7 +572,6 @@ blocked automated browsing in this task; it is not opened again.");
             } else if let Some(m) = form_msg.take() {
                 content = m;
             } else if ext_names.contains(&name) {
-                let golden = get_str(t, "source") == "golden";
                 // a known page's fixed answers, ticked in code before the agent's click moves on (once per task)
                 if let Some(fill) = super::guards::apdt_fixed_ticks(transcript, call)
                     .filter(|f| !f["on_box"].as_bool().unwrap_or(false))
@@ -591,7 +587,7 @@ blocked automated browsing in this task; it is not opened again.");
                     }
                 }
                 let mut act = json!({"task_id": task_id, "call_id": call.id, "tool": name,
-                        "args": args, "no_ask": sub || mode.batch, "dry_run": golden});
+                        "args": args, "no_ask": sub || mode.batch});
                 if !mode.lane.is_empty() {
                     act["lane"] = json!(mode.lane);
                 }
@@ -604,11 +600,6 @@ blocked automated browsing in this task; it is not opened again.");
                         json!({"status": "error", "error": format!("Sentinel 不可用: {}", exc_msg(&e))})
                     }
                 };
-                if truthy(res.get("dry_run").unwrap_or(&Value::Null)) {
-                    let why = sget(&res, "reason");
-                    res = json!({"status": "denied", "reason": self.dry_run_stop(&task_id, name, &args, &why).await});
-                    refused = true;
-                }
                 if mode.batch && !sub && truthy(res.get("needs_approval").unwrap_or(&Value::Null)) {
                     // the user's approval dialog can only wait on a call the task is suspended on: ask for it again alone
                     res = json!({"status": "denied", "reason": "[needs_approval_alone] 这个调用需要用户审批，不能和同一轮的其他调用并行执行。 This call needs the user's approval and cannot run beside the other calls of a turn"});
@@ -1650,8 +1641,7 @@ form_fill."
         }
         let Some((form, f)) = crate::forms::form_for(&url) else {
             return Err(format!(
-                "No form function knows this page ({}). Fill it field by field from the snapshot (browser_type, \
-browser_select, browser_fill_secret for passport fields), then hand it over with browser_request_takeover.",
+                "ERROR: [no_form_function] no form function knows this page ({}); a site without one is filled only inside the browser-use skill.",
                 truncate(&url, 120)
             ));
         };

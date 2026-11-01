@@ -24,6 +24,8 @@
 //! Every user-facing and model-facing string is byte-identical to the Python source: the scripted model of the
 //! end-to-end suites (`tests/fake_llm.py`) matches on them.
 
+pub mod apdt;
+pub mod booking;
 pub mod bots;
 pub mod claims;
 pub mod decide;

@@ -70,22 +70,22 @@ Search and compare with data tools; open the browser only for the provider's boo
 
 ## 4. Guest details
 - Name, email, phone; arrival time and requests are optional. Use the request, then memory / profile_get; ask once for
-  anything missing. Membership numbers: vault (browser_fill_secret), never in chat.
-- Prepaid rates need a card: vault_list → browser_fill_secret (number, expiry, cvc, holder). Pay-at-hotel rates do not;
-  leave optional card fields empty.
+  anything missing. Membership numbers: from the Vault, never in chat.
+- Prepaid rates need a card: vault_list for it (code fills it from the Vault after purchase_confirm). Pay-at-hotel
+  rates do not.
 
 ## 5. Book (browser — only the booking page)
 1. purchase_confirm once: site = booking page domain, items = [{name: "<hotel> – <room type>, <check-in> to
    <check-out> (<n> nights)", price: total}], total = the stay total from the data, currency, delivery = "Hotel stay,
    <pay at hotel | prepaid>", card_item_id when paying by card, note = the cancellation policy.
-2. browser_navigate(room booking_url) → the snapshot has the form with refs; check the total matches.
-3. browser_type name, email, phone (one turn); vault fills if needed.
-   Send each browser_fill_secret as its own turn (one call, nothing else in that turn).
-4. **The last click is the user's**: never press "Confirm booking" (Sentinel refuses it). With the page filled as far as
-   you can (a card saved by name only, or no card in the Vault: the card boxes stay empty), call
+2. Code opens the booking link (the room's booking_url) and fills it on known sites — name, email, phone and, for a
+   prepaid rate, the card from the Vault (form_fill is called by code, not by you). A site with no form function goes
+   to the `browser-use` skill.
+3. **The last click is the user's**: never press "Confirm booking" (Sentinel refuses it). Once code has filled the page
+   (a card saved by name only, or no card in the Vault: the card boxes stay empty), call
    browser_request_takeover with the reason "The booking page is filled in: check it (type the card if a prepaid rate needs one), press Confirm booking yourself and
    hand the browser back". The chat shows the user a link to take over.
-5. After the hand-back, read the confirmation from one browser_snapshot. No confirmation → the booking is not made:
+4. After the hand-back, read the confirmation from one browser_snapshot. No confirmation → the booking is not made:
    say so and that the page stays open for them.
 
 ## 6. Answer

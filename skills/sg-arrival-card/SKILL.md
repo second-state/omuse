@@ -11,7 +11,7 @@ profile: nationality
 Every traveller entering Singapore (citizens and residents too) files the SG Arrival Card with its electronic health
 declaration, free, within the 3 days before arrival, only at the ICA site: https://eservices.ica.gov.sg/sgarrivalcard/
 (any site that charges a fee is a scam; never use one). Transit passengers who stay airside do not file. This is a
-legal declaration by the traveller: you fill it, the user reviews it and presses Submit.
+legal declaration by the traveller: code fills it (a form function with fixed ids), the user reviews it and presses Submit.
 
 **How the user wants this done — applies to every step below.** Fill the whole form in one go and end with ONE
 browser_request_takeover; never end the task with a question in the chat about a value that has a default. Answer the
@@ -82,16 +82,14 @@ type the CAPTCHA and press Submit; hand the browser back when the confirmation s
 
 ## 3. Fill the form (browser)
 1. browser_navigate https://eservices.ica.gov.sg/sgarrivalcard/.
-2. **form_fill** with the trip facts from step 1 — flight_no, arrival_date, origin_city / origin_country, departure_date and
+2. Code (not you) calls **form_fill** with the trip facts from step 1 — flight_no, arrival_date, origin_city / origin_country, departure_date and
    next_city only when the mail or the user gave them, stay_name / stay_address / stay_kind (hotel, own, friends, other),
    purpose. Code fills the whole form from them, the profile and the Vault (the visitor's form, the passport, the dates,
    the lookups, No to the health and declaration questions) and stops at Review. The result lists what was filled and
    what was not.
 3. Fields form_fill could not fill are left for the user: hand the page over now — browser_request_takeover, the reason
    naming the declaration, Submit and anything form_fill left empty. Do not re-type what form_fill filled.
-4. form_fill says no form function knows the page (the site changed): fill it field by field from the snapshot instead
-   (browser_type / browser_select, browser_fill_secret for the passport number and expiry), answer the health and
-   declaration questions No, then hand over the same way.
+4. A page no form function knows (the site changed) goes to the `browser-use` skill.
 5. After the hand-back: browser_snapshot. A DE number (Declaration Entry) on the page = filed: quote it, the names
    covered, what the user changed and their email. No confirmation → say it is not confirmed yet.
 

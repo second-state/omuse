@@ -77,8 +77,8 @@ The insurance pays only what the supplier does not refund. Before or alongside t
   (product) and its last 4 digits (from the charge in mail — not a secret), the benefit (Trip Cancellation or Trip
   Interruption — the one from step 1), the date of loss, the amount claimed (the `calculate` result, plain digits like
   1753.60), the reason in general terms ("sickness of the cardholder", never the diagnosis) and the supplier and booking
-  reference. Fill every field you know from step 3 and choose the selects with browser_select; a full card number only
-  through browser_fill_secret from the Vault (a card saved by name only has none — leave it to the user). **The
+  reference. Code fills the form with these facts (the eClaimsLine form function — form_fill is called by code, not
+  by you); a full card number is never typed from chat (a card saved by name only has none — it is the user's). **The
   sign-in and the final submission are the user's**: once the form is filled, or when the portal asks for a login,
   password, one-time code or the card's security code, browser_request_takeover with the reason ("review the claim and
   press Submit"; "sign in"). This hand-over is required, not optional: a filled form the user is only told about in

@@ -33,7 +33,9 @@ Buy before departure; it never covers something that already happened.
      `…/travelcare-plus-insurance/en/`, `…/gba-easy-travel-insurance/en` (Greater Bay Area trips).
      Eligibility (read it on the page and check it): **HKID card holder, in Hong Kong when applying, the trip starts
      from Hong Kong**. Not met → say so and stop.
-   browser_navigate, type the trip facts, read the plans the page returns.
+   SG: code fills the quote form with the trip facts (form function — form_fill is called by code, not by you). HK: no
+   form function — browser_navigate the plan page and browser_request_takeover for the user to enter the trip facts
+   ("enter the trip and press Get a quote, then hand back"). Then read the plans the page returns.
 3. **Compare** with present_choices(kind="comparison"): label = the plan name exactly as on the page, details = the
    premium (with currency), medical limit, trip cancellation, delay benefit, baggage, and anything the user asked about
    — exact strings from the page; source_url = the quote page. Point out what the trip needs (a cancellation-for-any-
@@ -46,15 +48,14 @@ Buy before departure; it never covers something that already happened.
    (the comparison is shown to the user and you go on) and continue with step 4 in the same turn — no question; the
    final answer says which rule picked the chosen plan.
 4. **Apply** (the plan the user picked):
-   - vault_list first. Type names, dates of birth, email and phone (profile_get). The NRIC / HKID or passport number
-     only from the Vault with browser_fill_secret — never typed from chat, never in the answer.
-   - Answer the health and declaration questions only from what the user said; anything you do not know → ask, never
-     tick "no" for them. When the user's answers cover them (e.g. "no pre-existing conditions"), also tick the page's
-     final declaration / terms box — FWD will not take the payment without it, and the user reads it before paying.
+   - Code fills the application (SG: the FWD form function — names, dates of birth, contact from the profile, the
+     NRIC / passport number from the Vault; form_fill is called by code, not by you). A site with no form function
+     (HK) goes to the `browser-use` skill. ID numbers never come from chat and never appear in the answer.
+   - The health and declaration answers come only from what the user said; anything not known → ask once, before the
+     form opens.
    - purchase_confirm once: site = the domain, items = [{name: "<plan> travel insurance, <destination>, <dates>,
      <n> travellers", price: premium}], total, currency, card_item_id when a card is in the Vault.
-   - Fill the card from the Vault after the approval (each browser_fill_secret in its own turn). No card in the Vault →
-     say so in one line.
+   - After the approval code fills the card from the Vault. No card in the Vault → say so in one line.
    - Then browser_request_takeover: "the application is filled in — check it and press Pay". Never press Pay unless the
      user told you to complete the purchase.
 5. After the hand-back: read the confirmation (policy number), memory_remember (domain=trip: insurer, plan, policy
@@ -81,9 +82,9 @@ Medical details stay in the claim documents — never in memory, the profile or 
 - **Tell FWD within 30 days** of the incident (loss date + 30 days: state the date). Overseas emergencies: **+65 6322
   2072**; in Singapore: **+65 6820 8888**.
 - Online: browser_navigate `https://www.fwd.com.sg/claim-online/travel.html` (or the customer portal
-  `https://www.fwd.com.sg/portal/` when the user prefers to sign in). Fill what is known: policy number, claimant,
-  contact, the incident (type, date, place, what happened), the amount; the NRIC / passport only through
-  browser_fill_secret; the documents with browser_upload (approval) from the saved attachments.
+  `https://www.fwd.com.sg/portal/` when the user prefers to sign in). Code fills the claim form (form function —
+  form_fill is called by code, not by you): policy number, claimant, contact, the incident (type, date, place, what
+  happened), the amount, the NRIC / passport from the Vault and the saved attachments as documents.
 - **The sign-in and the final Submit are the user's**: when the form is filled, or when it asks for a login, Singpass or
   a one-time code → browser_request_takeover ("check the claim and press Submit"). Never press Submit yourself.
 - Record the claim reference after the hand-back.

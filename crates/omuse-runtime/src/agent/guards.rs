@@ -434,6 +434,80 @@ pub fn with_confirmation_ref(transcript: &[Value], answer: &str) -> String {
 }
 
 /// The label the newest page snapshot gives a field ref (`[e17] textbox "Intended date of departure"`).
+/// The browser tools that put a value into a page. The model may use them only while the `browser-use` skill is
+/// loaded (a site with no form function); everywhere else forms are filled by code with fixed input ids.
+pub const MODEL_INPUT_TOOLS: [&str; 5] = [
+    "browser_type",
+    "browser_select",
+    "browser_fill_secret",
+    "browser_upload",
+    "browser_press",
+];
+
+/// Whether this run loaded the `browser-use` skill (the only place the model may fill a page).
+pub fn browser_use_active(transcript: &[Value]) -> bool {
+    transcript.iter().flat_map(tool_calls).any(|tc| {
+        let (name, args) = stored_call(tc);
+        name == "load_skill" && sget(&args, "name") == "browser-use"
+    })
+}
+
+/// A call made by a code machine (the arrival cards, the claims, APDT, booking): its fills are code's, with fixed
+/// ids, never the model's.
+pub fn code_call(call: &ToolCall) -> bool {
+    [
+        "drv_",
+        "clm_",
+        "apd_",
+        "bkg_",
+        "auto_handover_",
+        "news_",
+        "handback_snapshot_",
+    ]
+    .iter()
+    .any(|p| call.id.starts_with(p))
+        || call.id.ends_with("_handover")
+}
+
+/// The role a snapshot gave an element (`[e12] checkbox "…"` → "checkbox").
+fn ref_role(transcript: &[Value], r: &str) -> Option<String> {
+    let re = Regex::new(&format!(r#"\[{}\]\s+(\w+)"#, regex::escape(r))).ok()?;
+    transcript
+        .iter()
+        .rev()
+        .filter(|m| get_str(m, "role") == "tool")
+        .find_map(|m| re.captures(&content_of(m)).map(|c| c[1].to_lowercase()))
+}
+
+/// A model call that would put a value into a page outside the `browser-use` skill is refused: the input tools,
+/// `form_fill` (code computes its facts), a `browser_click_at` that types, and a click on a checkbox, radio, option or
+/// combobox. Code machines' calls are exempt (they fill by fixed ids).
+pub fn input_scope_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
+    if code_call(call) || browser_use_active(transcript) {
+        return None;
+    }
+    let refused = match call.name.as_str() {
+        n if MODEL_INPUT_TOOLS.contains(&n) => true,
+        "form_fill" => true,
+        "browser_click_at" => {
+            !sget(&call.args, "text").is_empty()
+                || call.args.get("submit").and_then(Value::as_bool) == Some(true)
+        }
+        "browser_click" => ref_role(transcript, &sget(&call.args, "ref")).is_some_and(|r| {
+            matches!(
+                r.as_str(),
+                "checkbox" | "radio" | "option" | "combobox" | "switch"
+            )
+        }),
+        _ => false,
+    };
+    refused.then(|| {
+        "ERROR: [input_scope] form inputs are filled by code with fixed ids; a site with no form function is filled \
+only inside the browser-use skill."
+            .to_string()
+    })
+}
+
 fn field_label(transcript: &[Value], r: &str) -> Option<String> {
     let re = Regex::new(&format!(
         r#"\[{}\]\s+\w+\s+\\?"([^"\\]+)"#,
@@ -1570,6 +1644,14 @@ pub fn with_apdt_link(transcript: &[Value], answer: &str, zh: bool) -> String {
     let Some((url, code)) = found else {
         return answer.to_string();
     };
+    // the refund's own driver (`agent::apdt`) already wrote this step from the page: its link and the face step
+    let decoded = crate::links::decode(answer);
+    if decoded.contains(&url)
+        && (decoded.contains("Face recognition — your step")
+            || decoded.contains("人脸识别——由你自己完成"))
+    {
+        return answer.to_string();
+    }
     // a fact code owns: always written from the page, even when the answer already gives the reference
     // (apdt_real 2026-10-31: "continue with reference EEL7GH" with no link and no word of the phone)
     let line = if zh {

@@ -2,8 +2,7 @@
 1. health watch — a missing model raises ONE Telegram alert, then a recovery message
 2. failure streak — 3 tasks failing for the same reason raise an alert; the next completed task clears it
 3. outcome evidence — an answer that claims "sent" with nothing sent is caught and rewritten
-4. golden run — dry run stops at the watch / takeover, scores the cases, stays out of the chat list and the metrics
-5. metrics — counts and failure causes
+4. metrics — counts and failure causes
 """
 import sys
 import time
@@ -114,32 +113,11 @@ check("outcome stored on the task (unverified, send:not_done)", (t.get("outcome"
 r = c.post(f"{B}/api/outcome/{tid}", json={}, headers=H)
 check("outcome can be re-assessed for an older task", r.status_code == 200 and r.json()["outcome"]["status"] in ("none", "unverified"), r.text[:200])
 
-# ---------------------------------------------------------------- 4 golden run (dry run)
-r = c.post(B + "/api/golden/run", json={"only": ["G12", "G19", "G20"]}, headers=H)
-check("golden run started", r.status_code == 200 and r.json().get("run_id"), r.text)
-ok = wait_for(lambda: c.get(B + "/api/golden/runs").json()["runs"][0]["status"] == "done", 300, 2)
-run = c.get(B + "/api/golden/runs").json()["runs"][0]
-res = {x["id"]: x for x in run["results"]}
-check("golden run finished", ok, run)
-check("3/3 golden cases passed", run["passed"] == 3 and run["total"] == 3, [(x["id"], x["why"]) for x in run["results"]])
-check("G12 stopped at watch_create (nothing created)", res.get("G12", {}).get("stops") == ["watch_create"], res.get("G12"))
-sch = c.get(B + "/api/schedules").json()["schedules"]
-check("no real watch / schedule was created", not any("Kiprun" in (s.get("name", "") + s.get("goal", "")) for s in sch), sch)
-check("G20 stopped at the takeover request", res.get("G20", {}).get("stops") == ["browser_request_takeover"], res.get("G20"))
-bst = c.get(B + "/sentinel/api/browser/state").json()
-check("no takeover pop-up left for the user", not bst.get("requests"), bst.get("requests"))
-check("no approval cards for the user", not c.get(B + "/sentinel/api/approvals?status=pending").json()["approvals"])
-convs = c.get(B + "/api/conversations").json()["conversations"]
-check("golden conversations are kept out of the chat list", all(x["kind"] == "golden" for x in convs if x["title"].startswith("[黄金测试]")) and
-      not [x for x in convs if x["kind"] == "chat" and x["title"].startswith("[黄金测试]")])
-check("golden summary sent to Telegram", wait_for(lambda: any("黄金测试 3/3 通过" in t for t in tg_texts()), 10), tg_texts()[-3:])
-
-# ---------------------------------------------------------------- 5 metrics
+# ---------------------------------------------------------------- 4 metrics
 m = c.get(B + "/api/metrics?days=7").json()
 mm = m["metrics"]
-check("metrics count chat tasks only (golden left out)", mm["tasks"] >= 6 and mm["failed"] >= 3, mm)
+check("metrics count the tasks", mm["tasks"] >= 6 and mm["failed"] >= 3, mm)
 check("failure cause = model", mm["failure_causes"] and mm["failure_causes"][0]["cause"] == "model", mm["failure_causes"])
-check("golden runs on the metrics page", m["golden"]["runs"] and m["golden"]["runs"][0]["passed"] == 3)
 
 print("\n" + ("ALL PASS" if not fails else f"{len(fails)} FAILED: {fails}"))
 sys.exit(1 if fails else 0)

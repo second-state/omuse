@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use crate::prompts;
 
 /// Tools a read-only sub-agent may use.
-pub const SUBAGENT_TOOLS: [&str; 31] = [
+pub const SUBAGENT_TOOLS: [&str; 28] = [
     "gmail_search",
     "gmail_get_message",
     "gmail_get_thread",
@@ -20,12 +20,9 @@ pub const SUBAGENT_TOOLS: [&str; 31] = [
     "browser_news_search",
     "browser_read",
     "browser_click",
-    "browser_type",
-    "browser_press",
     "browser_scroll",
     "browser_back",
     "browser_wait",
-    "browser_select",
     "browser_find",
     "browser_look",
     "browser_locate",
@@ -115,28 +112,6 @@ pub fn concurrent_runs(calls: &[(&str, bool)]) -> Vec<std::ops::Range<usize>> {
     }
     runs
 }
-
-/// local tools that change something lasting: a golden (test) run stops at them instead of running them
-pub const DRY_RUN_LOCAL: [&str; 18] = [
-    "memory_remember",
-    "vault_add_card",
-    "memory_forget",
-    "profile_suggest",
-    "schedule_create",
-    "trigger_create",
-    "watch_create",
-    "goal_create",
-    "goal_update",
-    "goal_delete",
-    "schedule_delete",
-    "schedule_state_set",
-    "notify_user",
-    "files_write",
-    "make_pdf",
-    "make_docx",
-    "make_xlsx",
-    "pdf_form_fill",
-];
 
 pub const REMAKE_TOOLS: [&str; 11] = [
     "make_xlsx",

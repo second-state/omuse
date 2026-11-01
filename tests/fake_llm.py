@@ -234,7 +234,7 @@ async def _chat(req: Request, b: dict):
         last = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
         if "很长很长" in str(last):   # resize_ui.py needs its long first-question title kept: "nothing usable" from the model
             return reply("")
-        for ask, title in ((SHOW_TRIP, "Tokyo trip this week"), (SHOW_CITY, "Moving to Shanghai"), (SHOW_SGAC, "Singapore arrival card")):
+        for ask, title in ((SHOW_TRIP, "Tokyo trip this week"), (SHOW_CITY, "Moving to Shanghai")):
             if ask in str(last):   # marketing_shots.py: real-looking titles in the pictures
                 return reply(title)
         users = re.findall(r"User: (.*)", str(last))   # the latest request: deterministic, and the title follows the chat
@@ -278,12 +278,6 @@ async def _chat(req: Request, b: dict):
             {"id": "s1", "description": "Find the flight, hotel and restaurant bookings in mail", "tool_hint": "gmail", "risk": "read", "parallel": "p1"},
             {"id": "s2", "description": "Read this week's calendar", "tool_hint": "calendar", "risk": "read", "parallel": "p1"},
             {"id": "s3", "description": "Build the day-by-day timeline and flag gaps and conflicts", "tool_hint": "trip-today", "risk": "read"}]}))
-    if "planning module" in sys and SHOW_SGAC in msgs[-1]["content"]:
-        return reply(json.dumps({"objective": "Fill in the SG Arrival Card for Sunday's flight", "steps": [
-            {"id": "s1", "description": "Find the flight and the hotel in mail", "tool_hint": "gmail", "risk": "read", "parallel": "p1"},
-            {"id": "s2", "description": "Read the traveller's details from the profile and the Vault", "tool_hint": "profile", "risk": "read", "parallel": "p1"},
-            {"id": "s3", "description": "Fill the ICA form; the passport number from the Vault (approval)", "tool_hint": "browser", "risk": "write"},
-            {"id": "s4", "description": "Hand the form over for review and Submit", "tool_hint": "browser", "risk": "read"}]}))
     if "planning module" in sys and SHOW_CITY in msgs[-1]["content"]:
         return reply(json.dumps({"objective": "Brief a family moving to Shanghai on neighbourhoods and rents", "steps": [
             {"id": "s1", "description": "Load the Shanghai city guide", "tool_hint": "shanghai", "risk": "read"},
@@ -358,21 +352,6 @@ async def _chat(req: Request, b: dict):
         if finals:   # asked again (its claim is back in the transcript): the honest answer
             return reply("我还没有发送邮件：这个任务里没有执行发送，下面是准备好的草稿内容。")
         return reply("好的，邮件已发送给 Jennifer。")
-    if "Kiprun 跑步袜 Run 100" in goal:   # golden G12: a price watch (a local tool the dry run stops)
-        if n == 0:
-            return reply("", [tc("watch_create", {"url": "https://www.decathlon.sg/p/kiprun-run-100", "mode": "price_below",
-                                                   "threshold": 3, "keyword": "Kiprun", "current_price": 3.9})])
-        return reply("准备好了降价提醒：价格低于 S$3 时通知你（演练模式，未实际创建）。")
-    if "按月复利" in goal:   # golden G19
-        if n == 0:
-            return reply("", [tc("calculate", {"expression": "1500*((1+0.03/12)**60-1)/(0.03/12)"})])
-        num = re.findall(r"\d[\d,]*\.?\d*", last_tool)
-        return reply(f"5 年后大约有 S${num[-1] if num else '?'}。")
-    if "新加坡 10 月的天气" in goal:   # golden G20: asks for a takeover, which a dry run stops (no pop-up for the user)
-        if n == 0:
-            return reply("", [tc("browser_request_takeover", {"reason": "请帮我通过验证"})])
-        return reply("10 月是西南季风转东北季风的过渡期，午后多雷阵雨。来源：https://www.weather.gov.sg/climate-climate-of-singapore/ ，"
-                     "https://en.wikipedia.org/wiki/Climate_of_Singapore")
     if "ZHANSWER" in goal:   # a model that answers in Chinese although the setting is English
         if finals:   # asked again (its Chinese answer is back in the transcript): the English one
             return reply("Here is the most important email: the security alert from Google Workspace about a suspicious login.")
@@ -495,64 +474,6 @@ async def _chat(req: Request, b: dict):
         if n == 2:
             return reply("", [tc("send_file", {"path": "forms/permission_slip-filled.pdf", "note": "请检查"})])
         return reply("PDF DONE: " + "\n".join(str(m["content"])[:600] for m in tools_done))
-    if "SUPPORTCHAT" in goal:   # a Tidio-style chat bot whose widget lives in an open shadow root
-        def ref_of(pattern, text):
-            m = re.search(r"\[((?:f\d+)?e\d+)\][^\n]*" + pattern, text, re.I)
-            return m.group(1) if m else None
-        if n == 0:
-            return reply("", [tc("browser_navigate", {"url": "http://shop.test:8099/support.html"})])
-        if n == 1:
-            return reply("", [tc("browser_look", {"question": "Is there a chat launcher? Name its label."})])
-        if n == 2:
-            ref = (re.search(r"click \[((?:f\d+)?e\d+)\]", last_tool) or [None, None])[1]
-            return reply("", [tc("browser_click", {"ref": ref or "e1"})])
-        if n == 3:
-            return reply("", [tc("browser_find", {"query": "Type your message"})])
-        if n == 4:
-            return reply("", [tc("browser_type", {"ref": ref_of("Type your message", last_tool) or "e1", "submit": True,
-                                                 "text": "Hi! Do you have a free plan, and how many AI conversations does it include?"})])
-        if n == 5:
-            return reply("", [tc("browser_wait", {"seconds": 3})])
-        if n == 6:
-            return reply("", [tc("browser_snapshot", {})])
-        m = re.search(r"Lyra: ([^\n\"\\]+)", last_tool)
-        return reply("SUPPORT DONE: " + (m.group(1) if m else "NO REPLY " + last_tool[:800]))
-    if "BUBBLECHAT" in goal:   # the Tidio case: bubble + chat window inside a cross-origin iframe, no names, no refs
-        def xy(text):
-            m = re.search(r"browser_click_at \{\\?\"x\\?\": (\d+), \\?\"y\\?\": (\d+)\}", text)
-            return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
-        if n == 0:
-            return reply("", [tc("browser_navigate", {"url": "http://shop.test:8099/bubble.html"})])
-        if n == 1:
-            return reply("", [tc("browser_locate", {"target": "the blue round chat bubble in the bottom-right corner"})])
-        if n == 2:
-            x, y = xy(last_tool)
-            return reply("", [tc("browser_click_at", {"x": x, "y": y})])
-        if n == 3:
-            return reply("", [tc("browser_locate", {"target": "the yellow message box of the chat window"})])
-        if n == 4:
-            x, y = xy(last_tool)
-            return reply("", [tc("browser_click_at", {"x": x, "y": y, "text": "Hi! Do you have a free plan?", "submit": True})])
-        if n == 5:
-            return reply("", [tc("browser_wait", {"seconds": 3})])
-        if n == 6:
-            return reply("", [tc("browser_snapshot", {})])
-        m = re.search(r"Bot: Yes[^\n\"\\]+", last_tool)
-        return reply("BUBBLE DONE: " + (m.group(0) if m else "NO REPLY " + last_tool[:1500]))
-    if "SUPPORTIFRAME" in goal:   # a Zendesk-style messaging window inside an iframe
-        if n == 0:
-            return reply("", [tc("browser_navigate", {"url": "http://shop.test:8099/support_iframe.html"})])
-        if n == 1:
-            return reply("", [tc("browser_look", {"question": "Where do I type a message? Name its label."})])
-        if n == 2:
-            ref = (re.search(r"click \[((?:f\d+)?e\d+)\]", last_tool) or [None, None])[1]
-            return reply("", [tc("browser_type", {"ref": ref or "e1", "submit": True, "text": "How long does delivery take?"})])
-        if n == 3:
-            return reply("", [tc("browser_wait", {"seconds": 3})])
-        if n == 4:
-            return reply("", [tc("browser_snapshot", {})])
-        m = re.search(r"Zed: Standard[^\n\"\\]+", last_tool)
-        return reply("IFRAME DONE: " + (m.group(0) if m else "NO REPLY " + last_tool[:800]))
     if "SHOPSCROLL" in goal:
         if n == 0:
             return reply("", [tc("browser_navigate", {"url": "http://shop.test:8099/shop.html"})])
@@ -766,12 +687,12 @@ async def _chat(req: Request, b: dict):
             m = re.search(r"\[(e\d+)\] button \\\"Submit order", last_tool) or re.search(r"\[(e\d+)\] button", last_tool)
             return reply("", [tc("browser_click", {"ref": m.group(1) if m else "e1"})])
         return reply(f"Browsed. Last: {last_tool[:300]}")
-    if "TYPEPW" in goal:
+    if "TYPEPW" in goal:   # browser_type outside the browser-use skill: code refuses it ([input_scope])
         if n == 0:
             return reply("", [tc("browser_navigate", {"url": PAGE})])
         if n == 1:
-            m = re.search(r"\[(e\d+)\] textbox \\\"Password", last_tool)
-            return reply("", [tc("browser_type", {"ref": m.group(1) if m else "e1", "text": "hunter2"})])
+            m = re.search(r"\[(e\d+)\] (?:searchbox|textbox) \\\"Search orders", last_tool)
+            return reply("", [tc("browser_type", {"ref": m.group(1) if m else "e1", "text": "order 1234"})])
         return reply(f"Typed. {last_tool[:300]}")
     if "ATTACHTEST" in goal:   # files attached to the message: their content arrives with the message
         return reply("ATTACHOK docx=" + str("Quarterly report" in goal) + " img=" + str("VISION-SEEN" in goal)
@@ -1305,7 +1226,6 @@ STREAM_STORY = ("Once upon a time, in a small town by the sea, there lived a lig
                 "The fishermen said the light had guided them home. THE END.")
 SHOW_TRIP = "What's on my Tokyo trip this week? Check my mail and calendar."
 SHOW_CITY = "We're moving to Shanghai for work with two kids. Where do expat families live, and what does rent cost?"
-SHOW_SGAC = "Fill in my Singapore arrival card for Sunday's flight."
 
 
 def route_reply(user):
@@ -1448,57 +1368,6 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         return reply("TRIP TIMELINE (from your mail and calendar):\n" + "\n".join(f"- {x}" for x in subs) +
                      "\n\nGAP: no hotel for the night of 2026-11-23 (Hotel Ginza Grand checks out 23 Nov, SQ 637 flies 24 Nov).\n"
                      "Insurance: no travel insurance email was found — delays and lost luggage are common claims; are you covered?")
-    if "SGAC" in goal or "SGACPICK" in goal or str(goal).startswith(SHOW_SGAC):   # sg-arrival-card: gather, fill, hand the Submit to the user (or click it when told to)
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "sg-arrival-card"})])
-        if n == 1:
-            return reply("", [tc_("gmail_search", {"query": "(Singapore OR SIN OR Changi) (flight OR e-ticket) newer_than:60d"}),
-                              tc_("gmail_search", {"query": "(hotel OR booking) Singapore newer_than:60d"})])
-        if n == 3:
-            return reply("", [tc_("profile_get", {"fields": ["name_en", "birthday", "nationality", "email_personal", "phone",
-                                                              "address_home", "address_work", "address:*"]})])
-        # the accommodation: a hotel booking in mail wins; else the profile address in Singapore (one → use it, several →
-        # ask in the chat which, unless the user already picked one); else ask
-        hotel = "Marina Bayfront Hotel" if n >= 3 and "Marina Bayfront Hotel" in str(tools_done[2]["content"]) else None
-        prof = str(tools_done[3]["content"]) if n > 3 else ""
-        sg_addr = [(lab, val) for lab, val in re.findall(r"Address — ([^(]+?) \(address:[^)]*\): (.+)", prof) if "Singapore" in val]
-        if n > 3 and not hotel:
-            if "SGACPICK" in goal:
-                sg_addr = [x for x in sg_addr if x[0].lower() in goal.lower()] or sg_addr[:1]
-            if len(sg_addr) > 1 and n == 4:
-                return reply("You have " + str(len(sg_addr)) + " addresses in Singapore in your profile: " +
-                             " / ".join(f"**{lab}** ({val})" for lab, val in sg_addr) + ". Which one are you staying at? Reply with the name and I'll fill the card.")
-            if not sg_addr and n == 4:
-                return reply("WAITING FOR DATA: where are you staying in Singapore (hotel name or address)? Or upload the booking confirmation.")
-        stay = hotel or (sg_addr[0][1] if sg_addr else "?")
-        if n == 4:
-            return reply("", [tc_("vault_list", {})])
-        if n == 5:
-            return reply("", [tc_("browser_navigate", {"url": PAGES + "/sgac_classic.html"})])   # the scripted flow keeps the old one-page layout
-        if n == 6:
-            page = last_tool
-            vals = [("Full name", "LUCAS LU"), ("Date of birth", "1985-04-12"), ("Nationality", "Australia"),
-                    ("Arrival flight", "SQ 231"), ("Arrival date", (re.search(r"SQ 231 SYD-SIN (20\d\d-\d\d-\d\d)", str(tools_done[1]["content"])) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-11-02")).group(1)),
-                    ("Accommodation", stay)]
-            return reply("", [tc_("browser_type", {"ref": _snap_ref(page, lab) or "e1", "text": v}) for lab, v in vals])
-        if n == 12:
-            vid = re.search(r"id=(vlt_\w+) · Passport", str(tools_done[4]["content"]))
-            page = tools_done[5]["content"]
-            return reply("", [tc_("browser_fill_secret", {"ref": _snap_ref(page, "Passport number") or "e4", "item_id": vid.group(1) if vid else "x", "field": "number"})])
-        if n == 13:
-            if "submit it for me without review" in goal:
-                return reply("", [tc_("browser_click", {"ref": _snap_ref(tools_done[5]["content"], "Submit declaration", role="button") or "e12"})])
-            return reply("", [tc_("browser_request_takeover", {"reason": "Review the SG Arrival Card and press Submit yourself; hand the browser back when the DE number shows"})])
-        if n == 14 and "submit it for me without review" not in goal:
-            return reply("", [tc_("browser_snapshot", {})])
-        de = re.search(r"DE\d{12}", "\n".join(str(m["content"]) for m in tools_done[13:]))
-        if de:
-            if not any(c["function"]["name"] == "memory_remember" for m in msgs if m.get("role") == "assistant" for c in (m.get("tool_calls") or [])):
-                return reply("", [tc_("memory_remember", {"fact": "SG Arrival Card filed for the Nov 2026 Singapore trip", "domain": "place"})])
-            return reply(f"FILED. DE Number: {de.group(0)} for LUCAS LU, arriving on SQ 231. Show your passport at the checkpoint; ICA emails an acknowledgement.")
-        used = "" if hotel else " (your profile address in Singapore)"
-        return reply(f"NOT SUBMITTED: the SG Arrival Card is still open with every field filled (LUCAS LU · 1985-04-12 · Australia · SQ 231 · "
-                     f"{stay}{used} · passport from the vault). Press Submit in the browser tab when you are ready, or ask me again.")
     if "ENTRYREQ" in goal:   # entry-requirements: official pages read, reminder set
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "entry-requirements"})])

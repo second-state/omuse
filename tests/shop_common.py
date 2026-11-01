@@ -1,4 +1,4 @@
-"""Helpers for the real-model suites of everyday use cases (shopping_real, watch_real, support_chat_real,
+"""Helpers for the real-model suites of everyday use cases (shopping_real, watch_real,
 pdf_forms_real, brief_real, gcal_real, assistant_real), on top of tests/user_common.py. Everything here acts as the user
 does or reads what the user sees: the app's pages (Settings, Automations, Connections, Memory), the toasts and dialogs,
 the browser view at a takeover, the user's own calendar and the mail the school receives. The world (shop pages, the

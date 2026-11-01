@@ -90,31 +90,6 @@ pub fn editable(tool: &str) -> &'static [&'static str] {
     }
 }
 
-/// `DRY_RUN_CAPS` / `DRY_RUN_TOOLS`.
-const DRY_RUN_CAPS: [&str; 7] = [
-    "send", "write", "draft", "organize", "upload", "notify", "call",
-];
-const DRY_RUN_TOOLS: [&str; 3] = [
-    "purchase_confirm",
-    "browser_fill_secret",
-    "browser_request_takeover",
-];
-
-/// A call a golden (test) run must not make even when policy would allow it.
-pub fn dry_run_side_effect(tool: &str, t: &Value) -> bool {
-    if DRY_RUN_TOOLS.contains(&tool) {
-        return true;
-    }
-    if tool == "phone_call_status" || tool == "phone_hangup" {
-        return false;
-    }
-    let cap = get_str(t, "capability");
-    if get_str(t, "connector").starts_with("mcp:") {
-        return cap != "read";
-    }
-    DRY_RUN_CAPS.contains(&cap.as_str())
-}
-
 /// `_safe_args`: long strings cut for the audit log.
 pub fn safe_args(args: &Value) -> Value {
     let mut out = Map::new();
@@ -1302,36 +1277,6 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
     if d.decision == DENY {
         ctx.audit("sentinel", &tool, au("denied", DENY, detail));
         return Ok(Json(json!({"status": "denied", "reason": d.reason})));
-    }
-    if b.get("dry_run").is_some_and(truthy) && (d.decision == ASK || dry_run_side_effect(&tool, &t))
-    {
-        // golden (test) run: stop where a real run would act or ask — nothing is sent, bought or written
-        ctx.audit(
-            "sentinel",
-            &tool,
-            au(
-                "dry_run",
-                DENY,
-                merged(&detail, vec![("would", json!(d.decision))]),
-            ),
-        );
-        let what = if d.decision == ASK {
-            "需要你批准"
-        } else {
-            "会真正执行"
-        };
-        let title = {
-            let x = s_opt(&t, "title");
-            if x.is_empty() {
-                tool.clone()
-            } else {
-                x
-            }
-        };
-        return Ok(Json(json!({
-            "status": "denied", "dry_run": true,
-            "reason": format!("{title}：{what}（{}）", take_chars(&d.reason, 120)),
-        })));
     }
     if d.decision == ASK && b.get("no_ask").is_some_and(truthy) {
         ctx.audit(

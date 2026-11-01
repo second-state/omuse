@@ -31,7 +31,16 @@ possible choices** and have it return one of them (a decision API: `{"choice": "
 holds even when the input is a picture or a page: the possible decisions are listed in JSON for the model to choose
 from (what field, which option, which button — never "what should I do next?").
 
-**Hard rule: no natural language from the model anywhere in the decision flow** — not as an instruction to it (no "(System)" hints), not as an input read back to decide a step. A judgement the model must make goes through `decide(question, choices)`: the question and a JSON array of choices go
+**Hard rule: no natural language from the model anywhere in the decision flow** — not as an instruction to it (no "(System)" hints), not as an input read back to decide a step. **Form filling is code with fixed input ids, always.** Every value typed, selected, ticked or uploaded into a web
+page comes from a form function with hard-coded selectors (`crates/omuse-runtime/src/forms.rs`), run by a code machine
+(`agent/driver.rs`, `agent/claims.rs`, …). The model never fills an input, and code never guesses a field from its
+label. A site without a form function is the one exception: code opens the page and passes control to the `browser-use`
+skill, the only place the model may use the browser input tools (they are withdrawn from the model everywhere else,
+in code). That path is not e2e-tested, since its results vary with every try; the final Submit / Pay is still the
+user's. Any skill that fills or submits a known site's form must be driven by a code machine, whatever its front
+matter says.
+
+A judgement the model must make goes through `decide(question, choices)`: the question and a JSON array of choices go
 in, exactly one choice must come out — anything else gets one retry, then the default (the most common or safe
 choice); code acts on the choice. A form workflow starts only when every input value is known (collected from the
 user's data, computed as a default, or asked once *before* the form opens); nothing is asked in the middle depending

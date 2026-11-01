@@ -216,7 +216,7 @@ scenario (`tests/parallel_steps_e2e.py`).
     (helpers `claims_common.py`; `fake_apps.official_hits` returns the official stand-ins to searches).
   - Credit cards: `cards_real`, `cards_markets_real`, `cards_pay_real`, `cards_claim_real`, `cards_interruption_real`
     (cards in the Vault by name; helpers `cards_common.py`).
-  - Everyday: `shopping_real`, `watch_real`, `support_chat_real`, `pdf_forms_real`, `brief_real`, `gcal_real`,
+  - Everyday: `shopping_real`, `watch_real`, `pdf_forms_real`, `brief_real`, `gcal_real`,
     `assistant_real` (`shop_common.py`); Drive and media: `drive_storybook_real`, `drive_video_real`,
     `drive_cleanup_real`, `attach_media_real`, `chart_real`, `library_real` (about 22 min), `market_real`
     (`drive_common.py`); connectors and memory: `apps_real`, `automations_real`, `telegram_real`, `mcp_real`,

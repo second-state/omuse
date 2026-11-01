@@ -128,10 +128,9 @@ Before any call, take from the user's words (ask once only when one is genuinely
 ## 3a. "Book it" — the flight was already found in this conversation
 - When an earlier turn already searched and the user now says "book it", "book the SQ 638", "go ahead with the 9 am
   JAL": **no plan_task, no new search, no present_choices again.** Take the offer from the conversation (its
-  booking_url) and run steps 4–5 as ONE flow: vault_list; the booking page; the
-  traveller typed in from the profile (profile_get for name / email / phone when not in the conversation); the passport
-  filled from the vault; **purchase_confirm with card_item_id** (the total shown on the page — Sentinel fills a card
-  only after this summary); the card filled from the vault when it is complete; then hand the filled page over with
+  booking_url) and run steps 4–5 as ONE flow: vault_list; profile_get for name / email / phone when not in the
+  conversation; **purchase_confirm with card_item_id** (the total shown on the page — a card is filled only after this
+  summary); code opens the booking page and fills the traveller, the passport and the complete card; then hand the filled page over with
   browser_request_takeover ("the booking page is filled in, check it and press Pay") — the Pay click is always the
   user's. No card in the vault, or only a card saved by name (number UNKNOWN) → say so in one line and leave the card
   boxes for them to type; never ask for the number in chat.
@@ -143,24 +142,22 @@ Before any call, take from the user's words (ask once only when one is genuinely
 - Needed: full name exactly as in the passport, email, phone, passport number, card. Use what the request says, then
   memory / profile (profile_get). If something is still missing, ask once — one message listing everything missing.
 - Passport and card numbers are never typed or asked for in chat: check vault_list for an ID document (passport) and a
-  card. Fill them with browser_fill_secret (field `number` for the passport; `number`, `expiry`, `cvc`, `holder` for a
-  card). Optional fields (e.g. passport expiry) stay empty unless the page requires them. No vault item → browser_request_takeover so the user types it.
+  card; code fills them from the Vault on the booking page. No vault item → the user types it in the hand-over.
 
 ## 5. Book (browser — only the booking page: the offer's booking_url, the airline's site, or the agency the user chose)
 1. purchase_confirm once: site = the booking page's domain, items = [{name: "<flight no> <from>-<to> <date>, <n> adult",
    price: fare}], total = the total from the data (it must match the page), currency, delivery = "E-ticket to <email>",
    card_item_id = the vault card id, note = baggage + refund rules.
-2. browser_navigate(booking_url). The snapshot lists the form fields with refs; check the page total matches.
-3. browser_type name, email, phone (several calls in one turn are fine); browser_fill_secret for passport and card.
-   Send each browser_fill_secret as its own turn (one call, nothing else in that turn).
-4. **The last click is the user's**: never press "Pay now / Confirm booking" (Sentinel refuses it). With the page filled as far as
-   you can (a card saved by name only, or no card in the Vault: the card boxes stay empty), call
+2. Code opens the booking link (booking_url) and fills it on known sites — name, email, phone, the passport and the
+   card from the Vault (form_fill is called by code, not by you). A site with no form function goes to the
+   `browser-use` skill.
+3. **The last click is the user's**: never press "Pay now / Confirm booking" (Sentinel refuses it). Once code has filled the page
+   (a card saved by name only, or no card in the Vault: the card boxes stay empty), call
    browser_request_takeover with the reason "The booking page is filled in: check it (type the card if it is empty), press Pay now / Confirm booking yourself and
    hand the browser back". The chat shows the user a link to take over.
-5. After the hand-back, read the confirmation from one browser_snapshot. No confirmation → the booking is not made:
+4. After the hand-back, read the confirmation from one browser_snapshot. No confirmation → the booking is not made:
    say so and that the page stays open for them.
 - Do not re-open the page, do not take extra snapshots, do not use browser_look on payment pages.
-- An error on the page ("Please complete: …") → fill only what it names and click again.
 
 ## 6. Answer
 - Booking reference exactly as shown, flight number, route, local departure/arrival times (+1 if next day), total paid,

@@ -11,7 +11,6 @@ pub mod bots;
 pub mod context;
 pub mod forms;
 pub mod goals;
-pub mod golden;
 pub mod health;
 pub mod ids;
 pub mod imagegen;

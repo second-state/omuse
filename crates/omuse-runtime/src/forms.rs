@@ -329,6 +329,12 @@ const FORMS: &[(&str, &str, &str, FormFn)] = &[
     ("fwd-sg-claim", "www.fwd.com.sg", "/claim-online/travel", fwd_sg_claim),
     ("fwd-sg-quote", "www.fwd.com.sg", "/travel-insurance/online-quote", fwd_sg_quote),
     ("fwd-sg-apply", "www.fwd.com.sg", "/fwd_sg_apply", fwd_sg_apply),
+    // the Hong Kong departure tax refund driven by `agent::apdt`: one function per page (the start page last: its
+    // path is the prefix of the others)
+    ("hk-apdt-upload", "app.apdtrefund.hk", "/hktaxmobile/apdt_upload", apdt_upload),
+    ("hk-apdt-refund", "app.apdtrefund.hk", "/hktaxmobile/apdt_refund", apdt_refund),
+    ("hk-apdt-confirm", "app.apdtrefund.hk", "/hktaxmobile/apdt_confirm", apdt_confirm),
+    ("hk-apdt-start", "app.apdtrefund.hk", "/hktaxmobile/", apdt_start),
 ];
 
 /// The function for the page at `url`, with its name: `None` for a page no function knows (the generic path).
@@ -1853,6 +1859,108 @@ fn fwd_sg_apply(i: &Inputs) -> Vec<Op> {
     ]
 }
 
+// ---------------------------------------------------------------- the Hong Kong departure tax refund (`agent::apdt`)
+
+/// The Airport Authority's Refund Application Platform (https://app.apdtrefund.hk/hkTaxMobile/), its start page:
+/// "Notes for Application" — both Personal Information Collection Statement boxes (the user asked OMuse to apply for
+/// them) and Confirm — then "Start New Application" → "Start Now" (the upload page). When the statement was agreed
+/// before, the page opens on the home tabs: the ticks and Confirm find nothing visible and Start Now goes on.
+fn apdt_start(_: &Inputs) -> Vec<Op> {
+    vec![
+        tick_sel("pics_agree", "#pics_agree"),
+        tick_sel("pics_declare", "#pics_declare"),
+        button("confirm_notice", "Confirm"),
+        wait(600),
+        button("start_new", "Start New Application"),
+        button("start_now", "Start Now"),
+        wait(1200),
+    ]
+}
+
+/// "YYYY-MM-DD" → the platform's "YYYY/MM/DD".
+fn apdt_date(iso: &str) -> String {
+    date(NaiveDate::parse_from_str(iso, "%Y-%m-%d").ok(), "%Y/%m/%d")
+}
+
+/// The platform's upload page (`apdt_upload.html`), the documents already in their boxes (`browser_upload` by the
+/// driver): entered by air (2 one-way tickets), a passport, the name as printed on it (surname first, from the
+/// profile's passport name), the passport number from the Vault, the birthday (YYYY/MM/DD) and the nationality from
+/// the profile, the arrival and the departure flights with their dates (from the boarding passes), the third-party
+/// authorisation (OMuse submits for the applicant) and "Next Step" — the platform then shows the reference. Stage
+/// `continue`: the reference's "Continue" (the refund page).
+fn apdt_upload(i: &Inputs) -> Vec<Op> {
+    if i.arg("stage") == "continue" {
+        return vec![button("continue", "Continue"), wait(1200)];
+    }
+    let (given, family) = i.name_parts();
+    let name = [family, given]
+        .into_iter()
+        .filter(|x| !x.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    vec![
+        radio("mode", "mode", "air"),
+        select("doctype", "#doctype", "Passport"),
+        text("doc_name", "#doc_name", &name),
+        vault_as("doc_no", "text", "#doc_no", "number", ""),
+        text("doc_dob", "#doc_dob", &date(i.birthday(), "%Y/%m/%d")),
+        text("doc_nat", "#doc_nat", &i.nationality()),
+        text("in_flight", "#in_flight", &i.arg("in_flight")),
+        text("in_date", "#in_date", &apdt_date(&i.arg("in_date"))),
+        text("out_flight", "#out_flight", &i.arg("out_flight")),
+        text("out_date", "#out_date", &apdt_date(&i.arg("out_date"))),
+        tick_sel("third_party", "#third"),
+        button("next", "Next Step"),
+        wait(1200),
+    ]
+}
+
+/// The platform's refund page (`apdt_refund.html`): the method the user asked for — a card (the processing-fee
+/// agreement ticked: it is part of the refund they asked for; the holder from the profile; the number and expiry go in
+/// from the Vault with `browser_fill_secret`, by the driver — or, with no complete card, Card Number focused for the
+/// user to type it), an e-wallet with its account and its fee agreement, or cash. Stage `next`: "Next" (the
+/// confirmation page).
+fn apdt_refund(i: &Inputs) -> Vec<Op> {
+    if i.arg("stage") == "next" {
+        return vec![button("next", "Next"), wait(1200)];
+    }
+    match i.arg("method").as_str() {
+        "card" => {
+            let mut ops = vec![
+                radio("method", "refund", "bank"),
+                text("card_holder", "#card_holder", &i.arg("holder")),
+                tick_sel("fee_agree", "#fee_agree"),
+            ];
+            if i.arg("card") == "type" {
+                ops.push(Op::new(
+                    "card_number",
+                    json!({"op": "focus", "sel": "#card_number"}),
+                    "x",
+                ));
+            }
+            ops
+        }
+        "cash" => vec![radio("method", "refund", "cash")],
+        w @ ("alipay" | "wechat" | "alipayHK" | "wechatHK") => vec![
+            radio("method", "refund", w),
+            text("account", "#account", &i.arg("account")),
+            tick_sel("fee_agree", "#fee_agree_w"),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// The platform's confirmation page (`apdt_confirm.html`): "By confirming your submission, you guarantee…" and
+/// "Confirm and Next Step" — it only submits the application for checking (no money moves); the next page is the face
+/// recognition, which is the user's own step on their phone and is never pressed.
+fn apdt_confirm(_: &Inputs) -> Vec<Op> {
+    vec![
+        tick_sel("info_true", "#info_true"),
+        button("confirm", "Confirm and Next Step"),
+        wait(1200),
+    ]
+}
+
 /// bolttech's Travel Insurance Claim Form (the fillable PDF FWD Hong Kong links, `travel-insurance-clm-form-fillable.pdf`),
 /// its field names as the form defines them: the values `pdf_form_fill` gets for a flight-delay claim. The HKID number,
 /// the bank account, the signature and the date of signing are the user's and never set.
@@ -2973,6 +3081,124 @@ mod tests {
             form_for("https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business").map(|(n, _)| n),
             Some("fwd-sg-apply")
         );
+    }
+
+    #[test]
+    fn the_hk_refund_pages_fill_their_fixed_ids() {
+        let page = |u: &str| form_for(u).map(|(n, _)| n);
+        assert_eq!(
+            page("https://app.apdtrefund.hk/hkTaxMobile/?lang=en"),
+            Some("hk-apdt-start")
+        );
+        assert_eq!(
+            page("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en"),
+            Some("hk-apdt-upload")
+        );
+        assert_eq!(
+            page("https://app.apdtrefund.hk/hkTaxMobile/apdt_refund.html?bizId=K7P2QD"),
+            Some("hk-apdt-refund")
+        );
+        assert_eq!(
+            page("https://app.apdtrefund.hk/hkTaxMobile/apdt_confirm.html?bizId=K7P2QD"),
+            Some("hk-apdt-confirm")
+        );
+        let p =
+            json!({"name_en": "LUCAS LU", "birthday": "1985-04-12", "nationality": "Australia"});
+        let plan = |f: FormFn, a: Value| -> Vec<Value> {
+            let facts = Facts::from_args(&a);
+            f(&Inputs {
+                facts: &facts,
+                profile: &p,
+            })
+            .iter()
+            .filter_map(Op::to_json)
+            .collect()
+        };
+        let by = |plan: &[Value], field: &str| {
+            plan.iter()
+                .find(|o| o["field"] == field)
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        // the start page: both statements, Confirm, Start Now
+        let start = plan(apdt_start, json!({}));
+        assert_eq!(by(&start, "pics_agree")["sel"], "#pics_agree");
+        assert_eq!(by(&start, "start_now")["text"], "Start Now");
+        // the upload page: by air, a passport, the name surname first, the number from the Vault (never in the plan),
+        // the flights and dates as the platform writes them, the third-party box, Next Step
+        let up = plan(
+            apdt_upload,
+            json!({"in_flight": "SQ890", "in_date": "2026-10-29", "out_flight": "CX500", "out_date": "2026-10-30"}),
+        );
+        assert_eq!(
+            (
+                by(&up, "mode")["sel"].clone(),
+                by(&up, "mode")["value"].clone()
+            ),
+            (json!("mode"), json!("air"))
+        );
+        assert_eq!(by(&up, "doctype")["value"], "Passport");
+        assert_eq!(by(&up, "doc_name")["value"], "LU LUCAS");
+        assert_eq!(by(&up, "doc_no")["vault"]["field"], "number");
+        assert!(by(&up, "doc_no").get("value").is_none());
+        assert_eq!(by(&up, "doc_dob")["value"], "1985/04/12");
+        assert_eq!(by(&up, "doc_nat")["value"], "Australia");
+        assert_eq!(
+            [
+                by(&up, "in_flight")["value"].clone(),
+                by(&up, "in_date")["value"].clone(),
+                by(&up, "out_flight")["value"].clone(),
+                by(&up, "out_date")["value"].clone()
+            ],
+            [
+                json!("SQ890"),
+                json!("2026/10/29"),
+                json!("CX500"),
+                json!("2026/10/30")
+            ]
+        );
+        assert_eq!(by(&up, "third_party")["sel"], "#third");
+        assert_eq!(by(&up, "next")["text"], "Next Step");
+        let cont = plan(apdt_upload, json!({"stage": "continue"}));
+        assert_eq!(cont[0]["text"], "Continue");
+        assert_eq!(cont.len(), 2);
+        // the refund page: the card with the fee agreement (the number comes from the Vault, by the driver)
+        let card = plan(
+            apdt_refund,
+            json!({"method": "card", "holder": "LUCAS LU", "card": "vault"}),
+        );
+        assert_eq!(by(&card, "method")["value"], "bank");
+        assert_eq!(by(&card, "fee_agree")["sel"], "#fee_agree");
+        assert_eq!(by(&card, "card_holder")["value"], "LUCAS LU");
+        assert!(by(&card, "card_number").is_null());
+        let typed = plan(
+            apdt_refund,
+            json!({"method": "card", "holder": "LUCAS LU", "card": "type"}),
+        );
+        assert_eq!(by(&typed, "card_number")["op"], "focus");
+        let wallet = plan(
+            apdt_refund,
+            json!({"method": "alipayHK", "account": "lucas88"}),
+        );
+        assert_eq!(
+            (
+                by(&wallet, "method")["value"].clone(),
+                by(&wallet, "account")["value"].clone()
+            ),
+            (json!("alipayHK"), json!("lucas88"))
+        );
+        assert_eq!(
+            plan(apdt_refund, json!({"stage": "next"}))[0]["text"],
+            "Next"
+        );
+        // the confirmation: the declaration and "Confirm and Next Step" — never the face recognition
+        let conf = plan(apdt_confirm, json!({}));
+        assert_eq!(by(&conf, "confirm")["text"], "Confirm and Next Step");
+        for f in [apdt_start, apdt_upload, apdt_refund, apdt_confirm] {
+            assert!(!plan(f, json!({"method": "card"}))
+                .iter()
+                .any(|o| o.to_string().to_lowercase().contains("facial")));
+        }
     }
 
     #[test]

@@ -9,7 +9,7 @@ profile: nationality
 # China online arrival card / 中国在线入境卡
 
 Since 20 November 2025 foreigners entering mainland China file the arrival card online, free, at https://s.nia.gov.cn/ArrivalCardFillingPC/ (or the NIA 12367 app and the WeChat / Alipay mini programs); it can also be done on the devices at the port, and paper cards still exist. It applies with or without a visa (visa-free entries included) and to air, land and sea arrivals. Exempt: holders of the Foreign Permanent Resident ID card, Mainland Travel Permit holders (HK / Macau residents), group-visa travellers, direct transit under 24 h inside the restricted area, cruise passengers in and out on the same ship, crew. The NIA warns about fake paid sites — only the addresses above.
-This is the traveller's own legal declaration: you fill it, the user reviews it and presses Submit.
+This is the traveller's own legal declaration: code fills it (a form function with fixed ids), the user reviews it and presses Submit.
 
 **How the user wants this done — applies to every step below.** Fill the whole form in one go and end with ONE
 browser_request_takeover; never end the task with a question in the chat about a value that has a default. Answer the
@@ -75,42 +75,13 @@ It can be filed in advance at any time once the flight and hotel are known (ther
 1. browser_navigate https://s.nia.gov.cn/ArrivalCardFillingPC/ → "Entry Declaration" → I AGREE.
 2. Step 1 asks for a photo of the passport's data page (the site reads it): that upload is the user's — hand the page
    over (browser_request_takeover, the reason "upload a photo of your passport's data page, then hand the browser
-   back"). If the user attached the photo in this chat, upload it with browser_upload instead.
-3. After the upload: **form_fill** with the trip facts from step 1 — flight_no, arrival_airport (from the e-ticket),
+   back"); a photo attached in this chat is uploaded by the user too.
+3. After the upload: code (not you) calls **form_fill** with the trip facts from step 1 — flight_no, arrival_airport (from the e-ticket),
    arrival_date, stay_name / stay_address / stay_kind, purpose. Code fills Basic, Personal and Travel Information (by
    their labels) and stops before the companion question; it says what it filled and what it left.
 4. Hand the page over again — browser_request_takeover, the reason naming the companion question, Submit and anything
    form_fill left. After the hand-back: browser_snapshot and quote the reference if it shows.
-5. Only when form_fill says no form function knows the page (the site changed), fill it field by field instead:
-
-1. browser_navigate the official page above and read it before every step — forms change; follow the screen, not this
-   list. Choose the individual (or family) form.
-2. browser_type / browser_select the non-secret values: name as in the passport, sex, date of birth, nationality,
-   email, phone, flight number and arrival date, last port / next destination, length of stay, accommodation
-   (hotel name and address), purpose. Passport number and expiry only with browser_fill_secret from the vault item
-   (fields `number`, `expiry`), one fill per turn; if Sentinel says the item is restricted to
-   other sites, ask the user to add this site to the vault item (Memory → Profile → Vault) and stop.
-3. **Answer the health, customs and declaration questions yourself: No** (symptoms, travel history, other names or
-   passports, refused entry / deportation, criminal record, security, goods / cash to declare), unless the user said
-   otherwise in this conversation. This is how the user wants these forms filled: click every No — never leave one
-   blank, never ask about them, never hand them to the user; they read every answer before they press Submit and
-   change any that is not true for them. Likewise fill the departure date (arrival + 7 days) and the next city (the
-   city the flight came from) when nothing in mail or the request says otherwise — never leave them for the user.
-4. Fill everything you can; the CAPTCHA is left for the one final takeover (step 5) — never hand over just for it while
-   other fields are still empty. A widget you cannot fill — a CAPTCHA, a signature pad, a photo upload, an OTP, a sign-in,
-   a payment, a value you do not have — stays as it is: never guess, never solve a CAPTCHA, never enter card data here.
-5. **The Submit is the user's**: first check the page (browser_snapshot): every field you have a value for is
-   filled (name, sex, birth date, nationality, passport, contact details, flight, arrival date, last and next city,
-   departure date, purpose, accommodation) and every Yes/No question has its No; fill what is missing. Then, with the form filled as far as you can, call browser_request_takeover with the reason
-   "Review the form, fill <what is left, by name — e.g. the CAPTCHA> and press Submit yourself; hand the browser back
-   when the confirmation shows" — a card opens in the chat and
-   the live view, the user checks the values (passport number masked on the page), presses Submit (and pays, where a
-   fee applies), then hands back. Never click Submit yourself unless the user wrote "submit it for me without review"
-   in the request; then click it once and read the result page.
-6. After the hand-back: browser_snapshot. A reference / QR / confirmation on the page = filed: quote it exactly, say
-   where the acknowledgement arrives (email / app), offer to attach it to the arrival-day calendar event and
-   memory_remember "<card> filed for <trip>". Still the form = not submitted: say so, leave the values in place and
-   tell the user the tab stays open for them (or ask you again).
+5. A page no form function knows (the site changed) goes to the `browser-use` skill.
 
 ## 4. Answer
 Status (filed / ready to submit / waiting for data / too early + reminder set), the values entered (no passport

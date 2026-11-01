@@ -143,11 +143,13 @@ to search; the browser is for the final booking page only.
 ### Japan
 - Compare on one aggregator plus one company site: ToCoo! (`https://www2.tocoo.jp/en/`), Tabirai (`https://www.tabirai.net/car/`),
   Rakuten Travel rent-a-car, or the companies directly — Toyota Rent a Car (`https://rent.toyota.co.jp/en/`), Times Car
-  Rental, Nippon Rent-A-Car, Orix. Set pick-up/return place, dates and car class, then read the quote page (stop there).
+  Rental, Nippon Rent-A-Car, Orix. Open the rental site's search link with the pick-up/return place, dates and car class
+  in its query parameters and read the quote page (stop there); a site with no such link goes to the `browser-use`
+  skill.
 - For winter (Dec–Mar, Hokkaido/Tohoku) report: studless winter tyres included or extra (and the fee), 4WD option,
   CDW (免責補償) price, NOC (Non-Operation Charge, 营业损失赔偿) amount and the cover that waives it, ETC card, and
   whether an International Driving Permit (1949 Geneva) is accepted for a Singapore licence.
-- If a quote needs a login or a date picker that will not take input after two tries, use the other site.
+- If a quote needs a login, use the other site.
 
 ## 8. Insurance and other plan tables
 - Read the insurer's official plan / benefits table or policy wording (PDF). Quote numbers with plan names exactly as

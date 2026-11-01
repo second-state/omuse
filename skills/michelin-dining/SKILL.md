@@ -46,22 +46,22 @@ is for that booking page only.
 ## 4. Guest details
 - Name, email, phone (request → memory / profile_get → ask once for what is missing). Dietary needs / occasion go in
   the requests field.
-- A deposit or card guarantee needs a card: vault_list → browser_fill_secret (number, expiry, cvc, holder). Never type
-  or ask for card numbers in chat. No vault card → browser_request_takeover for the card fields.
+- A deposit or card guarantee needs a card: vault_list for it (code fills it from the Vault). Never ask for card
+  numbers in chat. No vault card → the user types it in the hand-over.
 
 ## 5. Book (browser — only the booking page)
 1. If money is charged now (a deposit): purchase_confirm once — site = booking page domain, items =
    [{name: "<restaurant> <date> <time>, <n> guests – deposit", price: deposit total}], total = deposit due now,
    currency = the local currency, delivery = "Table reservation", card_item_id, note = cancellation/refund rule.
    No deposit → skip purchase_confirm.
-2. browser_navigate(slot booking_url) → the form with refs; check date, time, party and deposit match.
-3. browser_type name, email, phone, requests (one turn); vault fills for the card.
-   Send each browser_fill_secret as its own turn (one call, nothing else in that turn).
-4. **The last click is the user's**: never press "Confirm booking" (Sentinel refuses it). With the page filled as far as
-   you can (a card saved by name only, or no card in the Vault: the card boxes stay empty), call
+2. Code opens the booking link (the slot's booking_url) and fills it on known sites — name, email, phone, requests and
+   the card from the Vault (form_fill is called by code, not by you). A site with no form function goes to the
+   `browser-use` skill.
+3. **The last click is the user's**: never press "Confirm booking" (Sentinel refuses it). Once code has filled the page
+   (a card saved by name only, or no card in the Vault: the card boxes stay empty), call
    browser_request_takeover with the reason "The booking page is filled in: check it (type the card for the deposit if it is empty), press Confirm booking yourself and
    hand the browser back". The chat shows the user a link to take over.
-5. After the hand-back, read the confirmation from one browser_snapshot. No confirmation → the booking is not made:
+4. After the hand-back, read the confirmation from one browser_snapshot. No confirmation → the booking is not made:
    say so and that the page stays open for them.
 
 ## 6. Answer

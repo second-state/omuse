@@ -1,17 +1,12 @@
-//! Trust: metrics, health, golden runs, the purchase ledger, outcomes — and notifications.
+//! Trust: metrics, health, the purchase ledger, outcomes — and notifications.
 
-use std::time::Duration;
-
-use axum::body::Bytes;
 use axum::extract::Path as UrlPath;
-use axum::http::HeaderMap;
 use axum::Json;
 use omuse_common::params;
 use omuse_common::util::{as_f64, get_str, py_str, truthy};
 use serde_json::{json, Value};
 
-use super::{body_opt, http, int_param, Fail, St, Q, R};
-use crate::golden::{CASES, CTX_CASES};
+use super::{http, int_param, Fail, St, Q, R};
 use crate::outcome;
 
 pub async fn api_metrics(st: St, q: Q) -> R {
@@ -26,10 +21,8 @@ pub async fn api_metrics(st: St, q: Q) -> R {
     let m = tokio::task::spawn_blocking(move || crate::metrics::compute(&store, days, None, off))
         .await
         .map_err(|e| Fail::Internal(e.into()))??;
-    let runs = st.golden.runs(6)?;
     Ok(Json(
-        json!({"metrics": m, "health": st.rt.health().status(),
-                   "golden": {"running": st.golden.running(), "runs": runs}}),
+        json!({"metrics": m, "health": st.rt.health().status()}),
     ))
 }
 
@@ -44,57 +37,6 @@ pub async fn api_health_check(st: St) -> R {
         h.observe(&comp, ok, &detail, false).await;
     }
     Ok(Json(h.status()))
-}
-
-fn case_list(cases: &[Value]) -> Vec<Value> {
-    cases
-        .iter()
-        .map(|c| json!({"id": c["id"], "title": c["title"], "prompt": c["prompt"]}))
-        .collect()
-}
-
-pub async fn golden_runs(st: St, q: Q) -> R {
-    let limit = int_param(&q, "query", "limit", Some(10))?;
-    Ok(Json(
-        json!({"running": st.golden.running(), "runs": st.golden.runs(limit.min(50))?,
-                   "cases": case_list(&CASES), "context_cases": case_list(&CTX_CASES)}),
-    ))
-}
-
-pub async fn golden_run(st: St, headers: HeaderMap, body: Bytes) -> R {
-    let b = body_opt(&headers, &body, &["0"])?;
-    if !st.golden.running().is_empty() {
-        return Err(http(409, "黄金测试已在运行 (already running)"));
-    }
-    let g = st.golden.clone();
-    let ctx_legacy = b.get("context").and_then(Value::as_str) == Some("legacy");
-    if b.get("suite").and_then(Value::as_str) == Some("context_probe") {
-        let mode = if ctx_legacy { "legacy" } else { "v1" };
-        tokio::spawn(async move {
-            if let Err(e) = g.context_probe(mode).await {
-                println!("[golden] {:#}", e);
-            }
-        });
-    } else {
-        let only: Vec<String> = match b.get("only") {
-            Some(Value::Array(a)) => a.iter().map(py_str).collect(),
-            _ => vec![],
-        };
-        let only = if only.is_empty() { None } else { Some(only) };
-        let suite = if b.get("suite").and_then(Value::as_str) == Some("context") {
-            "context"
-        } else {
-            ""
-        };
-        let ctx = if ctx_legacy { "legacy" } else { "" };
-        tokio::spawn(async move {
-            if let Err(e) = g.run("manual", only, suite, ctx).await {
-                println!("[golden] {:#}", e);
-            }
-        });
-    }
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    Ok(Json(json!({"ok": true, "run_id": st.golden.running()})))
 }
 
 /// The tool results kept in a task's transcript.

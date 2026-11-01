@@ -833,7 +833,7 @@ for the user and say so in the takeover reason.)"
             && injection.is_empty()
             && !receives
         {
-            // 2026-10-06 golden G04: the card was filled before the purchase was confirmed, so the user would get a
+            // 2026-10-06: the card was filled before the purchase was confirmed, so the user would get a
             // card-fill approval and then the purchase card. One card for the whole purchase: confirm first.
             return Ok(Decision::new(DENY, "high", "填银行卡之前先调用 purchase_confirm：在显示最终总价的页面写清商品、运费、总价、送货方式和这张卡（card_item_id）。用户批准这一张卡之后，填卡和下单都不用再单独批准。 (Call purchase_confirm first, on the page that shows the final total; once the user approves it, the card fills and the order click go through without more approvals.)"));
         }

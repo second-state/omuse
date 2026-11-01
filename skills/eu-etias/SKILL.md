@@ -34,29 +34,13 @@ This is the traveller's own legal declaration, so the user confirms every value 
   still missing.
 - When ETIAS opens it will ask: passport data, nationality, email, home address, education / occupation, the first intended country, and security questions — the defaults above (No) unless the user said otherwise; payment is the user's step.
 ## 2. Timing
-Today: no application; tell the user about EES at the border (passport, biometrics, 90/180-day count) and the usual Schengen entry checks (6-month-valid passport for many nationalities, return ticket, funds, insurance). Once ETIAS is live, the same flow as the other skills: fill, show, the user submits and pays.
+Today: no application; tell the user about EES at the border (passport, biometrics, 90/180-day count) and the usual Schengen entry checks (6-month-valid passport for many nationalities, return ticket, funds, insurance). Once ETIAS is live it gets a fixed-id driver like the other cards; the user submits and pays.
 
-## 3. Fill the form (browser)
-1. browser_navigate the official page above and read it before every step — forms change; follow the screen, not this
-   list. Choose the individual (or family) form.
-2. browser_type / browser_select the non-secret values: name as in the passport, sex, date of birth, nationality,
-   email, phone, flight number and arrival date, last port / next destination, length of stay, accommodation
-   (hotel name and address), purpose. Passport number and expiry only with browser_fill_secret from the vault item
-   (fields `number`, `expiry`), one fill per turn; if Sentinel says the item is restricted to
-   other sites, ask the user to add this site to the vault item (Memory → Profile → Vault) and stop.
-3. Health, customs and declaration questions: the defaults above (No), unless the user said otherwise.
-4. Fill everything you can. A widget you cannot fill — a CAPTCHA, a signature pad, a photo upload, an OTP, a sign-in,
-   a payment, a value you do not have — stays as it is: never guess, never solve a CAPTCHA, never enter card data here.
-5. **The Submit is the user's**: with the form filled as far as you can, call browser_request_takeover with the reason
-   "Review the form, fill <what is left, by name — e.g. the CAPTCHA> and press Submit yourself; hand the browser back
-   when the confirmation shows" — a card opens in the chat and
-   the live view, the user checks the values (passport number masked on the page), presses Submit (and pays, where a
-   fee applies), then hands back. Never click Submit yourself unless the user wrote "submit it for me without review"
-   in the request; then click it once and read the result page.
-6. After the hand-back: browser_snapshot. A reference / QR / confirmation on the page = filed: quote it exactly, say
-   where the acknowledgement arrives (email / app), offer to attach it to the arrival-day calendar event and
-   memory_remember "<card> filed for <trip>". Still the form = not submitted: say so, leave the values in place and
-   tell the user the tab stays open for them (or ask you again).
+## 3. Nothing to file yet
+ETIAS is not in operation: there is no form to open or fill. Give the information from step 2 (ETIAS not live yet,
+EES at the border, the usual entry checks) with the official links (https://travel-europe.europa.eu/etias, https://travel-europe.europa.eu/ees). When ETIAS
+opens, OMuse needs a fixed-id driver for its form before it can fill one; until then a site offering an "ETIAS application" is not
+official.
 
 ## 4. Answer
 Status (filed / ready to submit / waiting for data / too early + reminder set), the values entered (no passport

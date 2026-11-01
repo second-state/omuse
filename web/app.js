@@ -892,19 +892,16 @@ function fillTimeline(tl, events) {
 
 // ================================================================== TASKS
 async function viewTasks(root) {
-  const golden = S.taskFilter === 'golden';
-  const r = await api('tasks' + (S.taskFilter && !golden ? '?status=' + S.taskFilter : ''));
-  // golden (weekly test) runs live on the Trust page; the task list shows them only under their own filter
-  r.tasks = r.tasks.filter(t => golden ? t.source === 'golden' : t.source !== 'golden');
+  const r = await api('tasks' + (S.taskFilter ? '?status=' + S.taskFilter : ''));
   r.tasks.forEach(t => { S.tasks[t.id] = { ...(S.tasks[t.id] || {}), ...t }; });
   const filters = [['', T('全部 All')], ['RUNNING,PLANNING,CREATED', T('执行中 Running')], ['WAITING_APPROVAL,WAITING_EXTERNAL,PAUSED', T('等待中 Waiting')],
-    ['COMPLETED', T('已完成 Done')], ['FAILED,CANCELLED', T('失败 Failed')], ['golden', T('🧪 黄金测试')]];
+    ['COMPLETED', T('已完成 Done')], ['FAILED,CANCELLED', T('失败 Failed')]];
   const left = h('div', null, h('div', { class: 'filters' }, filters.map(([v, l]) => h('button', { class: S.taskFilter === v ? 'on' : '', onclick: () => { S.taskFilter = v; route(); } }, l))));
   const list = h('div', { class: 'list' });
   if (!r.tasks.length) list.append(h('div', { class: 'empty' }, T('还没有任务。去「对话」里给 OMuse 布置一个吧。')));
   for (const t of r.tasks) list.append(h('button', { class: 'item' + (S.selTask === t.id ? ' active' : ''), onclick: () => { location.hash = 'tasks/' + t.id; } },
     h('div', { class: 'top' }, pill(t.status), h('span', { class: 'title' }, t.goal)),
-    h('div', { class: 'small muted' }, Tf("{0} · {1} · {2} 步", (fmtTime(t.created_at)), (t.source === 'schedule' ? T('⏰ 定时') : t.source === 'golden' ? T('🧪 黄金测试') : T('💬 对话')), (t.steps || 0)))));
+    h('div', { class: 'small muted' }, Tf("{0} · {1} · {2} 步", (fmtTime(t.created_at)), (t.source === 'schedule' ? T('⏰ 定时') : T('💬 对话')), (t.steps || 0)))));
   left.append(list);
   const right = h('div', { id: 'taskDetail' });
   root.append(h('div', { class: 'split' + (S.selTask ? ' has-sel' : '') }, left, right));
@@ -925,7 +922,7 @@ async function renderTaskDetail(box, id) {
     h('div', { class: 'row' }, pill(t.status), h('b', { style: 'flex:1' }, t.goal)),
     h('dl', { class: 'kv' },
       h('dt', null, T('任务 ID')), h('dd', { class: 'mono' }, t.id),
-      h('dt', null, T('来源 Source')), h('dd', null, t.source === 'schedule' ? T('⏰ 定时任务 schedule') : t.source === 'golden' ? T('🧪 黄金测试（演练，不真正执行）') : T('💬 对话 chat')),
+      h('dt', null, T('来源 Source')), h('dd', null, t.source === 'schedule' ? T('⏰ 定时任务 schedule') : T('💬 对话 chat')),
       h('dt', null, T('创建 Created')), h('dd', null, fmtTime(t.created_at)),
       h('dt', null, T('步数 Steps')), h('dd', null, t.steps || 0),
       t.outcome && t.outcome.status !== 'none' ? [h('dt', null, T('结果证据 Evidence')), h('dd', null, outcomeBadge(t.outcome))] : null,
@@ -952,20 +949,17 @@ function outcomeBadge(o) {
     : h('span', { class: 'chip bad', title: (o.missing || []).join(', ') }, T('⚠ 未确认 not confirmed'));
 }
 
-// ================================================================== TRUST (metrics, health, golden runs)
+// ================================================================== TRUST (metrics, health)
 async function viewTrust(root) {
   S.trustDays = S.trustDays || 7;
   const r = await api('metrics?days=' + S.trustDays);
-  const m = r.metrics, hs = r.health || {}, g = r.golden || {};
+  const m = r.metrics, hs = r.health || {};
   const pct = x => x == null ? '—' : Math.round(x * 100) + '%';
   const kpi = (label, value, note, cls) => h('div', { class: 'kpi' + (cls ? ' ' + cls : '') }, h('div', { class: 'kpi-v' }, value),
     h('div', { class: 'kpi-l' }, label), note ? h('div', { class: 'kpi-n' }, note) : null);
   const days = h('div', { class: 'filters' }, [7, 30].map(d => h('button', { class: S.trustDays === d ? 'on' : '', onclick: () => { S.trustDays = d; route(); } },
     Tf("最近 {0} 天", d))));
   const checkBtn = h('button', { class: 'btn small', onclick: safe(async () => { await api('health/check', { method: 'POST', body: {} }); route(); }) }, T('立即检查 Check now'));
-  const runBtn = h('button', { class: 'btn small primary', disabled: !!g.running, onclick: safe(async () => {
-    await api('golden/run', { method: 'POST', body: {} }); toast(T('黄金测试已开始，大约需要 30–60 分钟，完成后会通知你')); route(); }) },
-    g.running ? T('黄金测试运行中…') : T('▶ 运行黄金测试 Run golden tasks'));
   // health
   const comps = Object.entries(hs.components || {});
   const names = { model: T('模型服务'), browser: T('浏览器'), sentinel: T('安全网关 Sentinel'), tasks: T('任务执行') };
@@ -996,20 +990,9 @@ async function viewTrust(root) {
     m.failure_causes.length ? h('div', { class: 'small' }, T('失败原因：'), m.failure_causes.map(c => `${c.label} ${c.count}`).join(' · ')) : null,
     m.top_errors.length ? h('details', null, h('summary', { class: 'small' }, T('最常见的错误')),
       m.top_errors.map(e => h('div', { class: 'small mono' }, `${e.count}× ${e.error}`))) : null);
-  // golden runs
-  const last = (g.runs || [])[0];
-  const golden = h('div', { class: 'card stack' }, h('h3', null, T('🧪 黄金测试任务 Golden tasks')),
-    h('p', { class: 'sub' }, T('20 个日常任务，每周日凌晨 3 点自动演练一次：真实读邮件、浏览网页，但在发送、下单、改日历、打电话之前停下，不打扰你。')),
-    h('div', { class: 'row' }, runBtn),
-    (g.runs || []).length ? h('div', { class: 'small' }, g.runs.map(x => `${fmtTime(x.started_at)} ${x.version || ''}：${x.passed}/${x.total}` + (x.status === 'running' ? T('（运行中）') : '')).join('  ·  ')) : null,
-    last ? h('div', { class: 'tablewrap' }, h('table', { class: 'data' },
-      h('thead', null, h('tr', null, ['', T('任务'), T('用时'), T('没通过的原因')].map(x => h('th', null, x)))),
-      h('tbody', null, (last.results || []).map(x => h('tr', null, h('td', null, x.passed ? '✅' : '❌'),
-        h('td', null, x.task_id ? h('a', { href: '#tasks/' + x.task_id }, `${x.id} ${x.title}`) : `${x.id} ${x.title}`),
-        h('td', { class: 'mono' }, x.seconds != null ? x.seconds + 's' : ''), h('td', { class: 'small' }, (x.why || []).join('；'))))))) : null);
   const ledgerCard = h('div', { class: 'card stack' }, h('h3', null, T('🧾 交易账本 Ledger')));
   const fewer = h('div', { class: 'stack' });
-  root.append(h('div', { class: 'stack' }, h('div', { class: 'row' }, days), tiles, fewer, h('div', { class: 'grid2' }, health, golden), browserCard(m.browser || {}), ledgerCard, perDay));
+  root.append(h('div', { class: 'stack' }, h('div', { class: 'row' }, days), tiles, fewer, health, browserCard(m.browser || {}), ledgerCard, perDay));
   fillLedger(ledgerCard).catch(() => ledgerCard.append(h('div', { class: 'muted small' }, T('账本暂时打不开'))));
   fillSuggestions(fewer).catch(() => {});
 }

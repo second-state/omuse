@@ -7,7 +7,7 @@ form: on
 
 1. **Search with a direct URL** (fast, no typing):
    Amazon: `https://www.amazon.<sg|com|co.jp…>/s?k=<words+joined+by+plus>` · Lazada: `https://www.lazada.sg/catalog/?q=<words>` ·
-   Shopee: `https://shopee.sg/search?keyword=<words>` · other shops: their search box (browser_type with submit=true).
+   Shopee: `https://shopee.sg/search?keyword=<words>` · other shops: their own search-URL template when you know it, else web_search("<words> site:<shop domain>").
    FairPrice: `https://www.fairprice.com.sg/search?query=<words>` · Lazada / Shopee may show a robot check → takeover.
    **A shopping list of several items** (2026-10-04 V3-03: 12 items were searched three times over and nothing was written
    down): read 3–4 search URLs per browser_read call, and as soon as you have an item's best match and price, write it down
@@ -40,7 +40,8 @@ form: on
    the exact model, e.g. iPhone 17 Pro Max, not 17 Pro). Prefer good ratings with many reviews; skip "Sponsored" unless it fits best.
    The user wants to choose themselves → show the candidates as cards with present_choices (see "Comparing and watching").
 4. **Open the product page** (click its title link), then find the button: browser_find("Add to Cart") (Amazon also uses
-   "Add to Basket"); if there are options (colour/size), select them first — browser_look("which colour/size options are shown?").
+   "Add to Basket"); an option the request names (colour/size) is selected by code on a known shop (its form function);
+   on another shop the product page goes to the browser-use skill.
 5. **Add to cart** by clicking the button's ref. Adding to the cart is not a purchase and doesn't need approval.
    Checkout only when the user explicitly asked to buy; the click that pays or places the order (Buy Now, Place order,
    Pay) is always the user's — hand the filled page over (below).
@@ -49,26 +50,20 @@ form: on
 7. **Login / CAPTCHA / robot check** → first finish everything that needs no login (look up every item on the list,
    prices, totals, budget checks — product pages are public), then browser_request_takeover for the cart / checkout step
    and say what is already done. Do not stop the whole task at the first "Log in" button.
-   Never type passwords. Shipping name / phone / address: profile_get. Card details at checkout: vault_list + browser_fill_secret (each fill approved by the user), otherwise take over; the final Pay / Place order click is approved separately.
+   Never type passwords. Shipping and card details at checkout are filled by code (step 8), otherwise the user enters them in the hand-over; the final Pay / Place order click is approved separately.
 8. **Buying (the user asked you to actually order)**: delivery to the user's home unless they say otherwise.
-   - Shipping details: profile_get (name_en, phone, address_home). Before typing a phone number, check memory for a format
-     this site accepted before (memory_search "<site> phone"). If the field rejects it, read the hint and retry in another
-     common format (Singapore: "88478582", "8847 8582", "+65 88478582"; a separate country-code box → "+65" there and 8 digits
-     in the number box). Once a format is accepted, memory_remember "<site> accepts the phone number as …".
+   - The checkout form is filled by code on known sites — shipping name / phone / address from the profile, the card from
+     the Vault after purchase_confirm (form_fill is called by code, not by you). A site with no form function goes to the
+     `browser-use` skill.
    - Go through checkout up to the page that shows the final total (items + shipping + tax) and the delivery address.
      "Proceed to checkout", "Next step" and "Continue to payment" only move between pages and need no approval; do not
      stop to ask the user about them.
    - Then call **purchase_confirm ONCE**: site, items (name, qty, price as shown), shipping, total, currency, delivery
      ("Home delivery to <address>, <ETA>"), card_item_id (vault_list → the card the user keeps for shopping, when it is
-     complete). After it the card fills go through (browser_fill_secret, one call per field). **The Place order / Pay
-     click is the user's** (Sentinel refuses it): with everything filled — a card saved by name only, or no card, leaves
-     the card boxes empty — call browser_request_takeover ("Check the order, type the card if it is empty and press
+     complete). After it code fills the card. **The Place order / Pay click is the user's** (Sentinel refuses it): with
+     everything filled — a card saved by name only, or no card, leaves the card boxes empty — call browser_request_takeover ("Check the order, type the card if it is empty and press
      Place order yourself; hand the browser back when it is done").
-   - If the total, the item, the card or the site changes, call purchase_confirm again. A card form inside a payment
-     iframe: snapshot shows its fields with refs like f1e3 — fill those. Payment pages (Adyen, Stripe) put EACH card box in
-     its own iframe: the number in one (e.g. f9e1), the expiry in the next (f10e1), the CVC in another (f11e1). Fill each
-     detail into its own box — never two details into one box; if a box is missing, browser_snapshot again or
-     browser_find("Expiry date") before asking the user to take over.
+   - If the total, the item, the card or the site changes, call purchase_confirm again.
    - After the hand-back: read the confirmation page and report the order number, items, total and delivery date; no
      confirmation → the order was not placed, say so.
 9. **Final answer**: product title, price, seller/rating, link, and "added to cart ✓ (not checked out)"; mention anything uncertain.
@@ -91,7 +86,7 @@ form: on
   shop by its domain) and the shop's confirmation email (gmail_search the order number or the shop) for the order page's
   link; act on that exact order.
 - **The final button is the user's** (Place order, Pay, Request cancellation, Return, Refund): Sentinel refuses that
-  click. Open the order's cancel / return page, fill everything else (reason, items, refund method as the user said),
-  then call browser_request_takeover("press <the button's label> to cancel order <number>") — do not stop with "press
+  click. Open the order's cancel / return page; its form (reason, items, refund method as the user said) is filled in
+  the `browser-use` skill; then call browser_request_takeover("press <the button's label> to cancel order <number>") — do not stop with "press
   it yourself" in the answer without the takeover. After the hand-back, browser_snapshot the page and report what it
   says: the order number, cancellation / return requested or not, the refund amount and when it arrives, any reference.

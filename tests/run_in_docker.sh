@@ -17,7 +17,7 @@ travel_user_real travel_kiwi_real travel_brave_real travel_connect_real media_re
 insurance_hk_real claims_real emergency_real refunds_real tax_refund_real \
 cards_markets_real cards_pay_real cards_claim_real cards_interruption_real apdt_real \
 trip_hotel_real travel_info_real travel_receipts_real city_guides2_real \
-shopping_real watch_real support_chat_real pdf_forms_real brief_real gcal_real assistant_real \
+shopping_real watch_real pdf_forms_real brief_real gcal_real assistant_real \
 drive_storybook_real drive_video_real drive_cleanup_real attach_media_real chart_real market_real \
 apps_real automations_real telegram_real mcp_real phone_real memory_real chat_real library_real"
 # the real-data suites use the real services the way a user's install does — SerpApi, Kiwi.com, Kayak, Rentalcars.com

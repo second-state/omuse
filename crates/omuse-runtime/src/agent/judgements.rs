@@ -228,6 +228,141 @@ pub fn with_medical_line(answer: &str, line: &MedicalLine, zh: bool) -> String {
     format!("{}\n\n{text}", answer.trim_end())
 }
 
+// ---------------------------------------------------------------- the consulate in a lost-passport emergency
+
+/// A government's 24-hour consular emergency line for its citizens abroad, as its official page lists it (fixed data,
+/// Oct 2026): the line the answer to a lost or stolen passport always carries, in its international form.
+#[derive(Debug, PartialEq)]
+pub struct ConsularLine {
+    /// the citizenship, as the answer names it ("Australian")
+    pub citizens: &'static str,
+    /// lowercase nationalities of the profile it serves
+    pub nationality: &'static [&'static str],
+    pub service: &'static str,
+    /// international form ("+61 2 6261 3305")
+    pub phone: &'static str,
+    pub url: &'static str,
+}
+
+#[rustfmt::skip]
+pub const CONSULAR_LINES: &[ConsularLine] = &[
+    ConsularLine { citizens: "Australian", nationality: &["australia", "australian"],
+        service: "Australian Government 24-hour Consular Emergency Centre", phone: "+61 2 6261 3305",
+        url: "https://www.smartraveller.gov.au/" },
+    ConsularLine { citizens: "British", nationality: &["united kingdom", "uk", "british", "great britain"],
+        service: "Foreign, Commonwealth & Development Office (24 hours)", phone: "+44 20 7008 5000",
+        url: "https://www.gov.uk/guidance/contact-the-fcdo" },
+    ConsularLine { citizens: "US", nationality: &["united states", "usa", "us", "american"],
+        service: "U.S. Department of State, Overseas Citizens Services (24 hours)", phone: "+1 202 501 4444",
+        url: "https://travel.state.gov/content/travel/en/contact-us/Emergencies-Abroad.html" },
+    ConsularLine { citizens: "Canadian", nationality: &["canada", "canadian"],
+        service: "Global Affairs Canada Emergency Watch and Response Centre (24 hours)", phone: "+1 613 996 8885",
+        url: "https://travel.gc.ca/assistance/emergency-assistance" },
+    ConsularLine { citizens: "New Zealand", nationality: &["new zealand", "new zealander"],
+        service: "MFAT 24-hour Consular Emergency Line", phone: "+64 99 20 20 20",
+        url: "https://www.safetravel.govt.nz/" },
+    ConsularLine { citizens: "Singapore", nationality: &["singapore", "singaporean"],
+        service: "MFA Duty Office (24 hours)", phone: "+65 6379 8800",
+        url: "https://www.mfa.gov.sg/travelling-overseas/general-travel-advice-for-singaporeans/" },
+];
+
+/// An embassy of a nationality in a destination, its phone as its official page lists it (international form and
+/// the form dialled locally) and that page — fixed data, checked against the embassy's site (Oct 2026).
+#[derive(Debug, PartialEq)]
+pub struct EmbassyLine {
+    /// `ConsularLine::citizens` of the nationality it serves
+    pub citizens: &'static str,
+    /// lowercase words that name the destination in a request
+    pub words: &'static [&'static str],
+    pub name: &'static str,
+    pub phone: &'static str,
+    pub local: &'static str,
+    pub url: &'static str,
+}
+
+#[rustfmt::skip]
+pub const EMBASSY_LINES: &[EmbassyLine] = &[
+    EmbassyLine { citizens: "Australian",
+        words: &["japan", "tokyo", "osaka", "kyoto", "sapporo", "fukuoka", "okinawa", "nagoya", "日本", "东京", "東京", "大阪", "京都"],
+        name: "Australian Embassy Tokyo", phone: "+81 3 5232 4111", local: "03-5232-4111",
+        url: "https://japan.embassy.gov.au/tkyo/consular.html" },
+];
+
+/// The consular help for a lost or stolen passport: the nationality's 24-hour line and, when the request names a
+/// destination the table knows, its embassy there.
+#[derive(Debug, PartialEq)]
+pub struct ConsularHelp {
+    pub line: &'static ConsularLine,
+    pub embassy: Option<&'static EmbassyLine>,
+}
+
+fn names_place(low: &str, words: &[&str]) -> bool {
+    words.iter().any(|w| {
+        if w.is_ascii() {
+            Regex::new(&format!(r"\b{}\b", regex::escape(w))).is_ok_and(|r| r.is_match(low))
+        } else {
+            low.contains(w)
+        }
+    })
+}
+
+/// The consular help for the profile's nationality and the place the request names; `None` for a nationality the
+/// table does not know (nothing is added — never a guess).
+pub fn consular_help_for(nationality: &str, request: &str) -> Option<ConsularHelp> {
+    let nat = nationality.trim().to_lowercase();
+    let line = CONSULAR_LINES
+        .iter()
+        .find(|l| l.nationality.contains(&nat.as_str()))?;
+    let low = request.to_lowercase();
+    let embassy = EMBASSY_LINES
+        .iter()
+        .find(|e| e.citizens == line.citizens && names_place(&low, e.words));
+    Some(ConsularHelp { line, embassy })
+}
+
+/// The digits of every international phone number written in `text` ("+81 3 5232 4111" → "81352324111").
+fn intl_phones(text: &str) -> Vec<String> {
+    static PHONE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\+\d{1,3}[\s-]?\(?\d{1,4}\)?(?:[\s-]?\d{2,4}){2,4}").unwrap()
+    });
+    PHONE
+        .find_iter(text)
+        .map(|m| m.as_str().chars().filter(char::is_ascii_digit).collect())
+        .collect()
+}
+
+/// The answer with the consulate's emergency line in its international form (and the embassy's, with its page),
+/// unless the answer already gives one of them that way: a number written only in its local form ("03-5232-4111")
+/// cannot be dialled from the user's own phone abroad (emergency_real 2026-11-01).
+pub fn with_consular_line(answer: &str, help: &ConsularHelp, zh: bool) -> String {
+    let have = intl_phones(answer);
+    let digits = |p: &str| p.chars().filter(char::is_ascii_digit).collect::<String>();
+    let ours = std::iter::once(help.line.phone).chain(help.embassy.map(|e| e.phone));
+    if ours.map(digits).any(|d| have.contains(&d)) {
+        return answer.to_string();
+    }
+    let l = help.line;
+    let text = match (help.embassy, zh) {
+        (Some(e), false) => format!(
+            "**Consular emergency line ({} citizens):** {} **{}** (24 hours); [{}]({}) **{}** (locally {}).",
+            l.citizens, l.service, l.phone, e.name, e.url, e.phone, e.local
+        ),
+        (Some(e), true) => format!(
+            "**领事紧急电话（{}公民）：** {} **{}**（24 小时）；[{}]({}) **{}**（当地拨打 {}）。",
+            l.citizens, l.service, l.phone, e.name, e.url, e.phone, e.local
+        ),
+        (None, false) => format!(
+            "**Consular emergency line ({} citizens):** [{}]({}) **{}** (24 hours).",
+            l.citizens, l.service, l.url, l.phone
+        ),
+        (None, true) => format!(
+            "**领事紧急电话（{}公民）：** [{}]({}) **{}**（24 小时）。",
+            l.citizens, l.service, l.url, l.phone
+        ),
+    };
+    format!("{}\n\n{text}", answer.trim_end())
+}
+
 // ---------------------------------------------------------------- the file formats asked for
 
 pub const FORMATS_Q: &str =
@@ -1055,22 +1190,33 @@ impl super::Runtime {
         })
     }
 
-    /// The official medical line to add to a travel-health-emergency answer: one decision on the request (an illness
-    /// or injury?), then the line of the place it names from the fixed table — never a number from the model.
-    pub(crate) async fn medical_line(
+    /// The official lines to add to a travel-health-emergency answer: one decision on the request (an illness or
+    /// injury, or lost / stolen documents?), then from the fixed tables the medical line of the place it names (an
+    /// illness) or the consulate's emergency line for the profile's nationality and its embassy there (a lost
+    /// passport) — never a number from the model or the reply.
+    pub(crate) async fn emergency_lines(
         &self,
         task_id: &str,
         request: &str,
         transcript: &[Value],
-    ) -> Option<&'static MedicalLine> {
+        nationality: &str,
+    ) -> (Option<&'static MedicalLine>, Option<ConsularHelp>) {
         if !health_run(transcript) {
-            return None;
+            return (None, None);
         }
-        let line = medical_line_for(request)?;
+        let medical = medical_line_for(request);
+        let consular = consular_help_for(nationality, request);
+        if medical.is_none() && consular.is_none() {
+            return (None, None);
+        }
         let kind = self
             .decide(task_id, EMERGENCY_Q, request, &EMERGENCY_CHOICES, "other")
             .await;
-        (kind == "illness_or_injury").then_some(line)
+        match kind.as_str() {
+            "illness_or_injury" => (medical, None),
+            "lost_or_stolen_documents" => (None, consular),
+            _ => (None, None),
+        }
     }
 
     /// The conversions the request's formats need (`conversion_calls`), when the run made a file: one multi-select on
@@ -1176,6 +1322,43 @@ mod tests {
             json!({"name": "tokyo"}),
             "---"
         )));
+    }
+
+    #[test]
+    fn a_lost_passport_gets_the_consulates_emergency_line_from_data() {
+        // emergency_real 2026-11-01: the answer gave the embassy's line only as "03-5232-4111" (the local form), so
+        // the user abroad had no number to dial from their own phone — the line comes from the table, international
+        let req = "I lost my passport in Tokyo this morning — what do I do?";
+        let help = consular_help_for("Australia", req).unwrap();
+        assert_eq!(help.line.phone, "+61 2 6261 3305");
+        assert_eq!(help.embassy.unwrap().phone, "+81 3 5232 4111");
+        let reply =
+            "1. Get a police report.\n2. Call the Consular Emergency Centre at 03-5232-4111.";
+        let out = with_consular_line(reply, &help, false);
+        assert!(out.starts_with(reply));
+        assert!(
+            out.contains("**+61 2 6261 3305**") && out.contains("**+81 3 5232 4111**"),
+            "{out}"
+        );
+        assert!(out.contains("https://japan.embassy.gov.au/tkyo/consular.html"));
+        // an answer that already gives one of the lines in its international form is left alone
+        let given = "Call the Consular Emergency Centre on +61 2 6261 3305.";
+        assert_eq!(with_consular_line(given, &help, false), given);
+        let given = "The embassy: +81-3-5232-4111.";
+        assert_eq!(with_consular_line(given, &help, false), given);
+        // a destination with no embassy entry: the nationality's line and its page
+        let lisbon = consular_help_for("australian", "I lost my passport in Lisbon").unwrap();
+        assert!(lisbon.embassy.is_none());
+        let out = with_consular_line("Go to the police.", &lisbon, false);
+        assert!(
+            out.contains("+61 2 6261 3305") && out.contains(lisbon.line.url),
+            "{out}"
+        );
+        // another nationality never gets the Australian embassy; an unknown one gets nothing
+        let uk = consular_help_for("United Kingdom", req).unwrap();
+        assert_eq!((uk.line.phone, uk.embassy), ("+44 20 7008 5000", None));
+        assert!(consular_help_for("Atlantis", req).is_none());
+        assert!(with_consular_line("x", &help, true).contains("领事紧急电话"));
     }
 
     #[test]

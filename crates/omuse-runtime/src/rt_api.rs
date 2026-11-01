@@ -1,5 +1,5 @@
-//! The slice of the `Runtime` object (`app/runtime/agent.py`) that the scheduler, goals, golden runs and the health
-//! watch call. `agent.rs` implements it for `Runtime`; the modules here hold an `Arc<dyn RuntimeApi>` so they can be
+//! The slice of the `Runtime` object (`app/runtime/agent.py`) that the scheduler, goals and the health watch
+//! call. `agent.rs` implements it for `Runtime`; the modules here hold an `Arc<dyn RuntimeApi>` so they can be
 //! built and unit-tested with a fake.
 //!
 //! Conventions:
@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::llm::Llm;
 use crate::store::Store;
 
-/// What `scheduler.py`, `goals.py`, `golden.py` and `health.py` use of `Runtime`.
+/// What `scheduler.py`, `goals.py` and `health.py` use of `Runtime`.
 pub trait RuntimeApi: Send + Sync + 'static {
     /// `rt.store`.
     fn store(&self) -> &Arc<Store>;
@@ -64,15 +64,9 @@ pub trait RuntimeApi: Send + Sync + 'static {
     /// `rt.running.get(task_id)` is a live (not done) worker.
     fn is_running(&self, task_id: &str) -> bool;
 
-    /// `rt.ctx_mode[task_id] = mode` (`Some("legacy")`) / `rt.ctx_mode.pop(task_id, None)` (`None`).
-    fn set_ctx_mode(&self, task_id: &str, mode: Option<&str>);
-
     /// `await rt.catalog()` — Sentinel's tool catalog (`{"tools": [...], "connections": {...}}`), cached 20 s;
     /// never fails (empty catalog when Sentinel is down).
     fn catalog(&self) -> BoxFuture<'_, Value>;
-
-    /// `rt._facts_legacy(goal)` — the pre-batch-2 fact selection (golden A/B).
-    fn facts_legacy(&self, goal: &str) -> Vec<Value>;
 
     /// `context.select(goal, rt.store.facts(500), rt.store.entities(), limit=12)` — personal context v1.
     fn facts_select(&self, goal: &str) -> Vec<Value>;
@@ -260,12 +254,8 @@ pub(crate) mod testing {
         fn is_running(&self, _task_id: &str) -> bool {
             false
         }
-        fn set_ctx_mode(&self, _task_id: &str, _mode: Option<&str>) {}
         fn catalog(&self) -> BoxFuture<'_, Value> {
             Box::pin(async { json!({"tools": [], "connections": {}}) })
-        }
-        fn facts_legacy(&self, _goal: &str) -> Vec<Value> {
-            vec![]
         }
         fn facts_select(&self, _goal: &str) -> Vec<Value> {
             vec![]

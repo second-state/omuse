@@ -2606,6 +2606,9 @@ fn the_hk_refund_answer_ends_with_its_reference_and_link() {
         "{again}"
     );
     assert_eq!(with_apdt_link(&t[1..], "Done.", false), "Done.");
+    // the driver's answer (`agent::apdt::answer`) already carries the step with this page's link: not written twice
+    let driven = format!("Reference **5SGM8C**.\n\n**Face recognition — your step:** open [your refund application 5SGM8C]({submit}).");
+    assert_eq!(with_apdt_link(&t, &driven, false), driven);
 }
 
 #[test]
@@ -4852,5 +4855,93 @@ fn a_request_to_call_an_emergency_number_gets_the_line_from_the_request() {
             false
         ),
         "110 and 119."
+    );
+}
+
+#[test]
+fn the_model_fills_no_page_outside_browser_use() {
+    use super::guards::input_scope_guard;
+    let page = "<untrusted_content source=\"web page https://shop.test/x\">\n  [e3] textbox \"Search orders\"\n  [e4] checkbox \"I agree\"\n  [e5] button \"Next\"</untrusted_content>";
+    let t = tool_step(
+        "n1",
+        "browser_navigate",
+        json!({"url": "https://shop.test/x"}),
+        page,
+    );
+    for (name, args) in [
+        ("browser_type", json!({"ref": "e3", "text": "order 1234"})),
+        ("browser_select", json!({"ref": "e3", "value": "x"})),
+        (
+            "browser_fill_secret",
+            json!({"ref": "e3", "item_id": "v1", "field": "number"}),
+        ),
+        ("browser_upload", json!({"ref": "e3", "path": "a.pdf"})),
+        ("browser_press", json!({"key": "Enter"})),
+        ("form_fill", json!({"arrival_date": "2026-11-03"})),
+        (
+            "browser_click_at",
+            json!({"x": 10, "y": 10, "text": "hello"}),
+        ),
+        ("browser_click", json!({"ref": "e4"})),
+    ] {
+        let r = input_scope_guard(&t, &call("c1", name, args)).unwrap_or_default();
+        assert!(r.starts_with("ERROR: [input_scope]"), "{name}: {r}");
+    }
+    // a plain button click is not an input; a code machine's call is code's; browser-use opens them all
+    assert_eq!(
+        input_scope_guard(&t, &call("c1", "browser_click", json!({"ref": "e5"}))),
+        None
+    );
+    assert_eq!(
+        input_scope_guard(&t, &call("drv_3", "form_fill", json!({}))),
+        None
+    );
+    let mut bu = t.clone();
+    bu.extend(tool_step(
+        "k1",
+        "load_skill",
+        json!({"name": "browser-use"}),
+        "---\nname: browser-use\n---",
+    ));
+    assert_eq!(
+        input_scope_guard(
+            &bu,
+            &call("c1", "browser_type", json!({"ref": "e3", "text": "x"}))
+        ),
+        None
+    );
+}
+
+#[test]
+fn every_skill_that_fills_a_known_form_is_driven_by_code() {
+    // a skill whose text says code fills its form must be in one of the code machines — a missing front-matter tag
+    // can never again leave a known form to the model (2026-11-01: the APDT refund, untagged, was model-steered)
+    let says_code_fills = regex::Regex::new(r"(?i)\bform_fill\b|form function|code fills").unwrap();
+    let driven: std::collections::HashSet<&str> = super::driver::CARDS
+        .iter()
+        .map(|c| c.skill)
+        .chain(super::claims::SPECS.iter().map(|c| c.skill))
+        .chain(std::iter::once(super::apdt::APDT.skill))
+        .chain(super::booking::SPECS.iter().map(|c| c.skill))
+        .collect();
+    let mut missing = Vec::new();
+    for d in crate::skills::BUILTIN.dirs() {
+        let name = d.path().to_string_lossy().to_string();
+        if name == "browser-use" {
+            continue;
+        }
+        let Some(text) = d
+            .get_file(format!("{name}/SKILL.md"))
+            .and_then(|f| f.contents_utf8())
+        else {
+            continue;
+        };
+        if says_code_fills.is_match(text) && !driven.contains(name.as_str()) {
+            missing.push(name);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "skills that fill a known form without a code machine: {missing:?}"
     );
 }

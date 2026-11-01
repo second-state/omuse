@@ -1,5 +1,4 @@
-//! Shared state of the runtime HTTP API (the module globals of `app/runtime/main.py`: `subscribers`, `rt`, `sched`
-//! — plus `rt.golden`, which lives here because the Rust `Runtime` has no golden field).
+//! Shared state of the runtime HTTP API (the module globals of `app/runtime/main.py`: `subscribers`, `rt`, `sched`).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,7 +12,6 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::agent::{Publish, Runtime};
-use crate::golden::Golden;
 use crate::rt_api::RuntimeApi;
 use crate::scheduler::Scheduler;
 
@@ -73,11 +71,10 @@ pub struct State {
     pub hub: Arc<Hub>,
     pub rt: Arc<Runtime>,
     pub sched: Arc<Scheduler>,
-    pub golden: Arc<Golden>,
 }
 
 impl State {
-    /// Build the runtime, scheduler and golden harness (nothing started yet; see `routes::serve`).
+    /// Build the runtime, and scheduler (nothing started yet; see `routes::serve`).
     pub fn new(cfg: Arc<Config>) -> anyhow::Result<Arc<State>> {
         let hub = Arc::new(Hub::default());
         let h = hub.clone();
@@ -89,14 +86,12 @@ impl State {
         std::fs::create_dir_all(&data)?;
         let rt = Runtime::new(&data, cfg.clone(), publish)?;
         let api: Arc<dyn RuntimeApi> = rt.clone();
-        let sched = Arc::new(Scheduler::new(api.clone()));
-        let golden = Arc::new(Golden::new(api)?);
+        let sched = Arc::new(Scheduler::new(api));
         Ok(Arc::new(State {
             cfg,
             hub,
             rt,
             sched,
-            golden,
         }))
     }
 
