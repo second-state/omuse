@@ -20,4 +20,4 @@ Code does the work; you turn the user's words into the tool's arguments and the 
 - `shown`: the restaurants (distinction, cuisine, price per person in local currency), the pick, the free time found
   (`pick.time`). `nothing_found` with `checked`: no table at those restaurants — offer another date or time.
 - `booked`: reference, restaurant, date (weekday), time, party, the deposit charged and its refund rule, seating limit,
-  dress code. Every fact in `must_say` goes into the reply. No reference → not confirmed.
+  dress code. The facts in `show` are appended to the reply by code. No reference → not confirmed.

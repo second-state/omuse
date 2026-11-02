@@ -9,7 +9,7 @@
 //! tool       {"status": "running", "args": {validated}}   (or "invalid" / "needs_input": the model calls again / asks)
 //! assistant  tool_calls [bkg_1 …]  /  tool  …             (the machine's steps, id prefix per machine)
 //! assistant  tool_calls [res_<n>: T_result {}]            (code)
-//! tool       {"status": "shown", …, "must_say": […]}      (the machine's JSON result)
+//! tool       {"status": "shown", …, "hints": […]}      (the machine's JSON result)
 //! assistant  the reply                                     (the model; T is not offered on this turn)
 //! ```
 //!
@@ -158,10 +158,10 @@ pub fn reply_turn(transcript: &[Value]) -> bool {
         })
 }
 
-/// The facts a machine's result says the reply must carry (`must_say`).
-pub fn must_say(result: &Value) -> Vec<String> {
+/// The facts a machine's result says the reply must carry (`hints`).
+pub fn hints(result: &Value) -> Vec<String> {
     result
-        .get("must_say")
+        .get("hints")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
@@ -210,16 +210,13 @@ mod tests {
             (1, "travel_search", Some("flight"))
         );
         assert!(!reply_turn(&t));
-        let res = json!({"status": "shown", "must_say": ["SQ 638 SGD 620"]});
+        let res = json!({"status": "shown", "hints": ["SQ 638 SGD 620"]});
         let ex = result_exchange(&t, "travel_search", &res);
         t.extend(ex);
         assert!(active(&t, &["travel_search"]).is_none());
         assert!(reply_turn(&t));
         assert_eq!(latest_result(&t).unwrap()["status"], "shown");
-        assert_eq!(
-            must_say(&latest_result(&t).unwrap()),
-            vec!["SQ 638 SGD 620"]
-        );
+        assert_eq!(hints(&latest_result(&t).unwrap()), vec!["SQ 638 SGD 620"]);
     }
 
     #[test]

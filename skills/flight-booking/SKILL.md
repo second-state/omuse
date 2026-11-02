@@ -68,7 +68,7 @@ Code does the work; you turn the user's words into the tool's arguments and the 
   follows as `travel_search_result` / `travel_book_result`.
 
 ## 3. Write the reply from the result
-- Every fact in `must_say` goes into the reply, as given (names, prices with currency, links, references).
+- The facts in `show` are appended to the reply by code (names, prices with currency, links, references).
 - `shown`: the options (airline, flight numbers, times, stops, price and each offer's `booking_url`, `book_at` the
   airline's own site), the pick and its rule, the cabin searched (`cabin_searched`), `days_searched` for a range, the
   Kayak `links.compare_url` once, `sellers` when present. The cards are already on screen. Offer to book ("say book

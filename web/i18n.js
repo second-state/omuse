@@ -684,7 +684,7 @@ window.OMUSE_EN = {
 "条件：change / text / price_below": "Condition: change / text / price_below",
 "等待出现的文字（mode=text）": "Text to wait for (mode=text)",
 "价格低于（mode=price_below）": "Price below (mode=price_below)",
-"只看这个词附近（可选，如商品名）": "Only near this word (optional, e.g. the product name)",
+"商品名（可选）": "Item name (optional)",
 "🌐 网页变化 / 降价 / 到货": "🌐 Web page change / price drop / back in stock",
 "（只通知）": "(notify only) ",
 "网页监控：「要做什么」留空 = 只给你发通知（不运行 Agent）。同一个变化只提醒一次；检查失败会自动拉长间隔，连续失败会停用并告诉你。": "Web page watch: leave “Then do” empty to just get a notification (no agent run). Each change is reported once; failed checks back off, and repeated failures turn the watch off and tell you.",

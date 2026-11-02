@@ -40,7 +40,7 @@ a full number), `doctor_letter`, `supplier_letter`, `travellers`.
   hands the page over for the user to review and press **Submit claim** (never you), reads the claim number from the
   confirmation page, and sets the reminders (7 days before the documents deadline, a mail check every 10 days).
 - Its JSON result has the status (`handed_over`: filled, waiting for the user's Submit; `submitted`: the claim number),
-  the amount and its arithmetic, the dates, the documents and `must_say`. Never say the claim was submitted unless the
+  the amount and its arithmetic, the dates, the documents and `show`. Never say the claim was submitted unless the
   result has a claim number.
 - By phone, when the portal cannot be reached: Sapphire Reserve 1-800-350-1697, Sapphire Preferred 1-800-350-1362
   (US; collect from abroad at the number in the Guide to Benefits).
@@ -77,7 +77,7 @@ it denies, read the reason (wrong benefit, pre-existing condition, trip over 60 
 the appeal with the missing proof.
 
 ## 7. Answer
-Write it from claim_file's JSON result, with every fact in its `must_say`: the benefit that applies and the two dates
+Write it from claim_file's JSON result, using its `hints` (code appends the facts in `show` to the reply): the benefit that applies and the two dates
 first, then the amount and how it was computed, the status (filled and waiting for the user's Submit, or the claim
 number), the documents the user must get (doctor, airline) with the status of each, the airline letter drafted, the
 packet and the reminders. Plain about limits: the administrator decides; pre-existing conditions, voluntary changes of

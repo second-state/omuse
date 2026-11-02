@@ -7,7 +7,7 @@ profile: nationality
 
 Rules change often and depend on the passport. Facts below were checked in October 2026 and carry that date. Call
 `visa_rules` with the destinations first: its JSON gives each one's official page and, where the official table has
-the passport, the visa-free days (its must_say goes in the answer). Before quoting any other rule, browser_read the
+the passport, the visa-free days (code appends its show facts to the answer). Before quoting any other rule, browser_read the
 official page named here and say the date you checked. A fee for an arrival card is
 always a scam — only the government sites named here.
 

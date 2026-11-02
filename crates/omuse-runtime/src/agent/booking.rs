@@ -17,7 +17,7 @@
 //! page with no form function here is opened and handed to the `browser-use` skill (`status: browser_use`).
 //!
 //! The machine ends with [`Step::Done`]: a JSON result (status, options, the pick and its rule, the booking, links,
-//! the mail sent, `must_say` — the facts the reply must carry). The model writes the reply from it; no answer text is
+//! the mail sent, `hints` — the facts the reply must carry). The model writes the reply from it; no answer text is
 //! written here.
 //!
 //! As in [`super::driver`], the next step is a function of the validated arguments and the transcript after the tool
@@ -32,6 +32,7 @@ use serde_json::{json, Map, Value};
 
 use super::claims::{money, pick_card, vault_cards, VaultCard};
 use super::driver::{handed_back, json_of, pos, Step};
+use super::show as S;
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
 use super::workflow::{self, Checked};
@@ -186,8 +187,8 @@ pub fn tool_schemas() -> Vec<Value> {
         TRAVEL_SEARCH,
         "Search and compare flights, hotels, MICHELIN restaurants or restaurants. Code runs ONE search with these arguments, \
 picks by rule (the cheapest, or the user's criteria), shows the options as choice cards and returns the result as JSON \
-(options, the pick and its rule, links, must_say). Nothing is booked. Write the reply from the result, with every fact in \
-its must_say. status needs_input: ask the user for the missing fields, then call again with every field; invalid: fix \
+(options, the pick and its rule, links, show, hints). Nothing is booked. Write the reply from the result, using its hints \
+(code appends the facts in show to the reply). status needs_input: ask the user for the missing fields, then call again with every field; invalid: fix \
 the arguments and call again.",
         travel.clone(),
         &["kind"],
@@ -198,7 +199,7 @@ the arguments and call again.",
         "Book a flight, a hotel room or a table — only when the user asks to book. Same arguments as travel_search, plus \
 pick. Code searches, takes the pick (or picks by rule), asks the user to approve the payment, opens the booking page, \
 fills it from the profile and the Vault and hands the final Pay / Confirm click to the user; the JSON result has the \
-booking reference (status booked) or says why not. Write the reply from it, with every fact in its must_say.",
+booking reference (status booked) or says why not. Write the reply from it, using its hints (code appends the facts in show to the reply).",
         travel,
         &["kind"],
     );
@@ -207,7 +208,7 @@ booking reference (status booked) or says why not. Write the reply from it, with
         "Compare, add to the cart or buy on a shop whose link the user gave. Code reads the shop's results page, ranks the \
 listings by the criteria, shows them as choice cards, and for cart / buy adds the item and fills the checkout from the \
 profile and the Vault (Place order is the user's). A shop code has no form for is opened and handed to the browser-use \
-skill (status browser_use). Write the reply from the JSON result, with every fact in its must_say.",
+skill (status browser_use). Write the reply from the JSON result, using its hints (code appends the facts in show to the reply).",
         json!({
             "url": {"type": "string", "description": "the shop's link the user gave in this chat (a results or product page) — the same link again when a later message asks to add to the cart or buy"},
             "action": {"type": "string", "enum": ["compare", "cart", "buy"]},
@@ -1774,8 +1775,8 @@ fn option_json(o: &Offer) -> Value {
     Value::Object(m)
 }
 
-/// The fact the reply must carry about one option: its name, its price as the result wrote it, its booking link.
-fn offer_fact(o: &Offer) -> String {
+/// An offer as items to show (agent/show.rs): `- {label}: {offer} — {price}{extra}` and its booking link.
+fn offer_show(label: &str, label_zh: &str, o: &Offer, extra: &str) -> Vec<Value> {
     let price = if o.price_text.is_empty() {
         o.price
             .map(|p| format!("{} {}", o.currency, money(p).trim_end_matches(".00")))
@@ -1783,17 +1784,23 @@ fn offer_fact(o: &Offer) -> String {
     } else {
         o.price_text.clone()
     };
-    let mut s = o.label.clone();
+    let mut v = o.label.clone();
     if !price.trim().is_empty() {
-        s = format!("{s} — {}", price.trim());
-    }
-    if !o.url.is_empty() {
-        s = format!("{s} — book at {}", o.url);
+        v = format!("{v} — {}", price.trim());
     }
     if !o.book_at.is_empty() {
-        s = format!("{s} (or on {})", o.book_at.join(" or "));
+        v = format!("{v} (or on {})", o.book_at.join(" or "));
     }
-    s
+    let mut out = vec![S::fact(label, label_zh, &format!("{v}{extra}"))];
+    if !o.url.is_empty() {
+        out.push(S::link(
+            &format!("Book {}", o.label),
+            &format!("预订 {}", o.label),
+            "",
+            &o.url,
+        ));
+    }
+    out
 }
 
 /// A flight offer's departure → arrival line from the result's own details (the first one with a clock time), seconds
@@ -2339,18 +2346,25 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             return Step::Done(no_preferred(req, &searched, &[]));
         }
         if !pages.is_empty() {
-            let mut must: Vec<String> = pages
+            let mut show: Vec<Value> = pages
                 .iter()
-                .map(|p| format!("{} — {}", get_str(p, "title"), get_str(p, "url")))
+                .map(|p| S::link("Web page", "网页", &get_str(p, "title"), &get_str(p, "url")))
                 .collect();
-            must.push(
-                "these are web pages about it: any price on them is a \"from\" price, not a quote for the dates".into(),
-            );
+            show.push(S::fact(
+                "Prices",
+                "价格",
+                "these are web pages about it: any price on them is a \"from\" price, not a quote for the dates",
+            ));
             if !compare.is_empty() {
-                must.push(format!("compare prices for the dates on Kayak: {compare}"));
+                show.push(S::link(
+                    "Compare prices for the dates on Kayak",
+                    "在 Kayak 比较这些日期的价格",
+                    "Kayak",
+                    &compare,
+                ));
             }
             let mut out = json!({"status": "shown", "source": "web", "searched": searched,
-                                 "options": [], "web_pages": pages, "must_say": must});
+                                 "options": [], "web_pages": pages, "show": show, "hints": []});
             if !compare.is_empty() {
                 out["links"] = json!({"compare_url": compare});
             }
@@ -2360,7 +2374,7 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             return Step::Done(out);
         }
         return Step::Done(json!({"status": "nothing_found", "searched": searched,
-            "must_say": [format!("the search found nothing for {}", searched_line(kind, req))]}));
+            "show": [S::fact("Nothing found", "没有找到结果", &searched_line(kind, req))], "hints": []}));
     }
     // a search limited to the preferred airlines that found none of them: say so, ask before searching all airlines
     if kind == Kind::Flight
@@ -2380,7 +2394,9 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
                     "unmet": rule.trim_end_matches(", the cheapest"),
                     "results": offers.len(),
                     "options": offers.iter().take(4).map(option_json).collect::<Vec<_>>(),
-                    "must_say": [format!("none of the {} results meets {}", offers.len(), rule.trim_end_matches(", the cheapest"))]}));
+                    "show": [S::fact(&format!("None of the {} results meets", offers.len()), &format!("{} 个结果都不符合", offers.len()),
+                                     rule.trim_end_matches(", the cheapest"))],
+                    "hints": []}));
             }
         },
     };
@@ -2434,8 +2450,10 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
                     .collect();
                 return Step::Done(json!({"status": "nothing_found", "searched": searched,
                     "checked": checked,
-                    "must_say": [format!("no table on {} for {} at {}", req.date.map(long).unwrap_or_default(),
-                                         req.party_or(kind), checked.join(", "))]}));
+                    "show": [S::fact(&format!("No table on {} for {}", req.date.map(long).unwrap_or_default(), req.party_or(kind)),
+                                     &format!("{} {} 人没有空位", req.date.map(long).unwrap_or_default(), req.party_or(kind)),
+                                     &checked.join(", "))],
+                    "hints": []}));
             }
         }
     }
@@ -2477,28 +2495,30 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     let mut out = json!({"status": "shown", "searched": searched,
                          "options": shown.iter().map(option_json).collect::<Vec<_>>(),
                          "pick": {"label": pick.label, "rule": rule}});
-    let mut must: Vec<String> = vec![
-        format!("picked: {} ({rule})", offer_fact(&pick)),
-        format!("searched: {}", searched_line(kind, req)),
-    ];
+    let must: Vec<String> = Vec::new();
+    // the facts the user must read: appended to the reply by code (agent/show.rs)
+    let mut show: Vec<Value> = vec![S::fact("Searched", "搜索", &searched_line(kind, req))];
+    show.extend(offer_show("Picked", "推荐", &pick, &format!(" ({rule})")));
     // a flight's departure and arrival times, from the result (travel_kiwi_real 2026-11-01: the reply gave neither the
     // day nor the times of the pick)
     if let Some(when) = (kind == Kind::Flight).then(|| schedule_of(&pick)).flatten() {
-        must.push(format!("{}: {when}", pick.label));
+        show.push(S::fact(&pick.label, &pick.label, &when));
     }
     // the user's preferred airline: its best fare in the results, or that it has none (travel_ask_real 2026-11-01:
     // the cheapest was another airline and ANA went unmentioned)
     if kind == Kind::Flight && !req.airlines.is_empty() && !on_airline(&pick, &req.airlines) {
         let names = req.airlines.join(" or ");
         match offers.iter().find(|o| on_airline(o, &req.airlines)) {
-            Some(p) => must.push(format!(
-                "your preferred airline {names}: {}{}",
-                offer_fact(p),
-                schedule_of(p).map(|w| format!(", {w}")).unwrap_or_default()
+            Some(p) => show.extend(offer_show(
+                &format!("Your preferred airline {names}"),
+                &format!("你偏好的航空公司 {names}"),
+                p,
+                &schedule_of(p).map(|w| format!(", {w}")).unwrap_or_default(),
             )),
-            None => must.push(format!(
-                "no {names} flight in the results for {}",
-                searched_line(kind, req)
+            None => show.push(S::fact(
+                &format!("Your preferred airline {names}"),
+                &format!("你偏好的航空公司 {names}"),
+                &format!("no flight in the results for {}", searched_line(kind, req)),
             )),
         }
     }
@@ -2513,14 +2533,22 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             as_searched
         };
         out["cabin_searched"] = json!(cabin);
-        must.push(format!("searched as {cabin}"));
+        show.push(S::fact("Searched as", "搜索舱位", &cabin));
     }
     if let Some((time, _, _)) = &slot {
         out["pick"]["time"] = json!(time);
-        must.push(format!("{time} available at {}", pick.label));
+        show.push(S::fact(
+            &format!("Table at {}", pick.label),
+            &format!("{} 的空位", pick.label),
+            &format!("{time} available"),
+        ));
     }
     if pick.preferred {
-        must.push(format!("{} is on your preferred airline", pick.label));
+        show.push(S::fact(
+            &pick.label,
+            &pick.label,
+            "on your preferred airline",
+        ));
     }
     if kind == Kind::Flight && pick.id.starts_with("fl_") {
         let got = calls_of(t, "flight_offer")
@@ -2539,12 +2567,13 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
         };
         let s = sellers(&data_of(msg));
         if !s.is_empty() {
-            must.push(format!(
-                "sold by: {}",
-                s.iter()
+            show.push(S::fact(
+                "Sold by",
+                "销售方",
+                &s.iter()
                     .map(|x| get_str(x, "book_with"))
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(", "),
             ));
             out["sellers"] = json!(s);
         }
@@ -2564,7 +2593,12 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             let mut room = option_json(r);
             room["rule"] = json!(why);
             out["pick"]["room"] = room;
-            must.push(format!("room at {}: {} ({why})", pick.label, offer_fact(r)));
+            show.extend(offer_show(
+                &format!("Room at {}", pick.label),
+                &format!("{} 的房型", pick.label),
+                r,
+                &format!(" ({why})"),
+            ));
         }
     }
     // a range of days: ONE search covered them all
@@ -2578,21 +2612,30 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
         .collect();
     if days.len() > 1 {
         out["days_searched"] = json!({"count": days.len(), "from": days[0], "to": days[days.len() - 1], "pick_date": pick.date});
-        must.push(format!(
-            "{} days searched in one call ({} to {}){}",
-            days.len(),
-            days[0],
-            days[days.len() - 1],
-            if pick.date.is_empty() {
-                String::new()
-            } else {
-                format!("; the pick flies on {}", pick.date)
-            }
+        show.push(S::fact(
+            "Days searched",
+            "搜索日期",
+            &format!(
+                "{} days in one search ({} to {}){}",
+                days.len(),
+                days[0],
+                days[days.len() - 1],
+                if pick.date.is_empty() {
+                    String::new()
+                } else {
+                    format!("; the pick flies on {}", pick.date)
+                }
+            ),
         ));
     }
     if !compare.is_empty() {
         out["links"] = json!({"compare_url": compare});
-        must.push(format!("compare prices on Kayak: {compare}"));
+        show.push(S::link(
+            "Compare prices on Kayak",
+            "在 Kayak 比价",
+            "Kayak",
+            &compare,
+        ));
     }
     if !req.next.is_empty() {
         out["next_items"] = next_items;
@@ -2604,8 +2647,10 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             if !m.mail_ready {
                 out["mailed"] =
                     json!({"to": to, "ok": false, "reason": "no mail account is connected"});
-                must.push(format!(
-                    "not sent to {to}: no mail account is connected (connect Gmail in Settings)"
+                show.push(S::fact(
+                    &format!("Not sent to {to}"),
+                    &format!("未发送到 {to}"),
+                    "no mail account is connected (connect Gmail in Settings)",
                 ));
             } else {
                 let Some((_, sent)) = last_after(t, "gmail_send", search_pos) else {
@@ -2622,14 +2667,19 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
                 let ok = !(c.starts_with("ERROR") || denied(sent));
                 out["mailed"] = json!({"to": to, "ok": ok});
                 if ok {
-                    must.push(format!("sent to {to}"));
+                    show.push(S::fact("Sent to", "已发送到", &to));
                 } else {
                     out["mailed"]["error"] = json!(take_chars(&c, 200));
-                    must.push(format!("not sent to {to}: {}", take_chars(&c, 120)));
+                    show.push(S::fact(
+                        &format!("Not sent to {to}"),
+                        &format!("未发送到 {to}"),
+                        take_chars(&c, 120),
+                    ));
                 }
             }
         }
-        out["must_say"] = json!(must);
+        out["show"] = json!(show);
+        out["hints"] = json!(must);
         return Step::Done(out);
     }
     // 4. the item to book
@@ -2649,11 +2699,13 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     };
     if item.url.is_empty() {
         out["booking_link"] = Value::Null;
-        must.push(format!(
-            "{} has no online booking link in the data: book it by phone or on its own site",
-            pick.label
+        show.push(S::fact(
+            &format!("{}: no online booking link", pick.label),
+            &format!("{}：没有在线预订链接", pick.label),
+            "book it by phone or on its own site",
         ));
-        out["must_say"] = json!(must);
+        out["show"] = json!(show);
+        out["hints"] = json!(must);
         return Step::Done(out);
     }
     book(spec, req, t, m, ids, &item)
@@ -2662,15 +2714,17 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
 /// The answer when a search limited to the preferred airlines found none of them: no second search now — the question
 /// whether to search all airlines (and what else came back, when the API searched them all).
 fn no_preferred(req: &Req, searched: &Value, others: &[Offer]) -> Value {
-    let mut must = vec![format!(
-        "there is no {} flight for {}",
-        req.airlines.join(" or "),
-        searched_line(Kind::Flight, req)
+    let mut show = vec![S::fact(
+        &format!("No {} flight", req.airlines.join(" or ")),
+        &format!("没有 {} 的航班", req.airlines.join(" 或 ")),
+        &searched_line(Kind::Flight, req),
     )];
-    must.extend(others.iter().take(4).map(offer_fact));
+    for o in others.iter().take(4) {
+        show.extend(offer_show("Other airline", "其他航空公司", o, ""));
+    }
     json!({"status": "nothing_found", "searched": searched, "preferred_found": 0,
            "options": others.iter().take(4).map(option_json).collect::<Vec<_>>(),
-           "next_question": "search_all_airlines", "must_say": must})
+           "next_question": "search_all_airlines", "show": show, "hints": []})
 }
 
 /// What is booked, as the hand-over and the result name it.
@@ -3028,7 +3082,8 @@ fn book_with(
                 return Step::Done(
                     json!({"status": "not_confirmed", "reason": "purchase_not_approved",
                     "booking": item.to_json(),
-                    "must_say": [format!("nothing was booked: the purchase of {} was not approved", item.name)]}),
+                    "show": [S::fact("Nothing was booked", "没有预订", &format!("the purchase of {} was not approved", item.name))],
+                    "hints": []}),
                 );
             }
             Some((_, msg)) => approved_at = pos(t, msg),
@@ -3046,7 +3101,8 @@ fn book_with(
         // no form function knows this page: the model fills it with the browser-use skill
         return Step::Done(
             json!({"status": "browser_use", "url": page_url, "booking": item.to_json(),
-            "must_say": [format!("the booking page {page_url} is open in the browser")]}),
+            "show": [S::link("Booking page (open in the browser)", "预订页面（已在浏览器中打开）", "", &page_url)],
+            "hints": []}),
         );
     };
     let nav_pos = pos(t, nav_msg);
@@ -3143,7 +3199,8 @@ fn book_with(
             // the user has the page and did not hand it back
             return Step::Done(
                 json!({"status": "handed_over", "url": page_url, "booking": item.to_json(),
-                "must_say": [format!("the filled {} page is with you: press {} yourself", spec.what, spec.button)]}),
+                "show": [S::fact("Your step", "你的步骤", &format!("the filled {} page is with you: press {} yourself", spec.what, spec.button))],
+                "hints": []}),
             );
         }
     };
@@ -3175,23 +3232,33 @@ fn book_with(
     match reference {
         Some(r) => {
             booking["reference"] = json!(r);
-            let mut must = vec![format!("reference {r}"), item.name.clone()];
-            if !amount.is_empty() {
-                must.push(if item.charged {
-                    format!("total {amount}")
+            // the facts the user must read: appended to the reply by code (agent/show.rs)
+            let mut show = vec![
+                S::reference("Booking reference", "预订编号", &r),
+                S::fact("Booked", "已预订", &item.name),
+            ];
+            if let (Some(total), false) = (item.total, amount.is_empty()) {
+                show.push(if item.charged {
+                    S::amount("Total", "总额", total, &item.currency)
                 } else {
-                    format!("total {amount} (nothing charged now)")
+                    S::amount(
+                        "Total (nothing charged now)",
+                        "总额（现在不收费）",
+                        total,
+                        &item.currency,
+                    )
                 });
             }
-            must.extend(item.lines.iter().cloned());
+            show.extend(item.lines.iter().map(|l| S::fact("", "", l)));
             if !email.is_empty() && spec.kind != Kind::Shop {
-                must.push(format!("confirmation to {email}"));
+                show.push(S::fact("Confirmation to", "确认邮件发到", &email));
             }
-            Step::Done(json!({"status": "booked", "booking": booking, "must_say": must}))
+            Step::Done(json!({"status": "booked", "booking": booking, "show": show, "hints": []}))
         }
         None => Step::Done(
             json!({"status": "not_confirmed", "reason": "no_reference", "booking": booking,
-            "must_say": [format!("{} is filled in but NOT confirmed: no reference showed after the hand-back, so it is not booked; the page stays open in the browser tab", item.name)]}),
+            "show": [S::fact("Not confirmed", "未确认", &format!("{} is filled in but no reference showed after the hand-back, so it is not booked; the page stays open in the browser tab", item.name))],
+            "hints": []}),
         ),
     }
 }
@@ -3243,7 +3310,8 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
         let page = landed(&a, msg);
         return Step::Done(
             json!({"status": "browser_use", "url": page, "action": sr.action,
-            "must_say": [format!("the shop's page {page} is open in the browser")]}),
+            "show": [S::link("The shop's page (open in the browser)", "商店页面（已在浏览器中打开）", "", &page)],
+            "hints": []}),
         );
     }
     if lc_path.starts_with("/stride_") {
@@ -3280,7 +3348,9 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             let price_text = price.map(|p| format!("S${}", money(p))).unwrap_or_default();
             return Step::Done(json!({"status": "shown", "shop": "Stride Sports",
                 "options": [{"label": title, "price": price, "currency": "SGD", "price_text": price_text, "url": url}],
-                "must_say": [format!("{title}: {price_text} on Stride Sports ({url})")]}));
+                "show": [S::fact("On Stride Sports", "Stride Sports 上", &format!("{title}: {price_text}")),
+                         S::link(&title, &title, "Stride Sports", &url)],
+                "hints": []}));
         }
         let item = Item {
             name: title,
@@ -3337,7 +3407,9 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
         return Step::Done(
             json!({"status": "nothing_found", "shop": "Kaya Mobile", "compared": listings.len(),
             "criteria": sr.ranking.to_json(),
-            "must_say": [format!("none of the {} listings on Kaya Mobile's page meets the criteria", listings.len())]}),
+            "show": [S::fact("No match on Kaya Mobile", "Kaya Mobile 上没有符合的商品",
+                             &format!("none of the {} listings meets the criteria", listings.len()))],
+            "hints": []}),
         );
     };
     if !shown && chosen.is_none() {
@@ -3359,7 +3431,8 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
         return Step::Done(
             json!({"status": "shown", "shop": "Kaya Mobile", "choose": true,
             "compared": listings.len(), "options": options,
-            "must_say": [format!("the {} best matches out of {} listings are on the cards: press Choose on one", ranked.len(), listings.len())]}),
+            "show": [S::fact("Your choice", "请你选择", &format!("the {} best matches out of {} listings are on the cards: press Choose on one", ranked.len(), listings.len()))],
+            "hints": []}),
         );
     }
     let rule = if chosen.is_some() {
@@ -3368,11 +3441,18 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
         format!("by {}", sr.ranking.by)
     };
     let pick_fact = format!("{} — {} ({})", top.title, top.price_text, top.rating_text);
+    let top_url = if top.url.is_empty() {
+        url.clone()
+    } else {
+        top.url.clone()
+    };
     if !sr.cart() {
         return Step::Done(
             json!({"status": "shown", "shop": "Kaya Mobile", "compared": listings.len(),
             "options": options, "pick": {"label": top.title, "rule": rule}, "url": url,
-            "must_say": [format!("best match on Kaya Mobile: {pick_fact}")]}),
+            "show": [S::fact("Best match on Kaya Mobile", "Kaya Mobile 上最符合的", &format!("{pick_fact}, {rule}")),
+                     S::link(&top.title, &top.title, "Kaya Mobile", &top_url)],
+            "hints": []}),
         );
     }
     // the cart first: an item a previous turn put there is not added twice
@@ -3459,22 +3539,26 @@ fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
         if count == 0 {
             return Step::Done(
                 json!({"status": "error", "reason": "cart_still_empty", "item": top.title,
-                "must_say": [format!("Add to Cart was pressed for {} but the cart still shows 0 items; the browser tab is open to check", top.title)]}),
+                "show": [S::fact("Cart still empty", "购物车仍是空的", &format!("Add to Cart was pressed for {} but the cart shows 0 items; the browser tab is open to check", top.title))],
+                "hints": []}),
             );
         }
         if !sr.buy() {
             return Step::Done(json!({"status": "in_cart", "shop": "Kaya Mobile",
                 "item": {"label": top.title, "colour": colour, "price_text": top.price_text, "rating": top.rating_text, "url": url},
                 "cart": {"count": count, "checked_out": false},
-                "must_say": [format!("{pick_fact}{} is in your Kaya Mobile cart (cart: {count} item{}; not checked out)",
-                    if colour.is_empty() { String::new() } else { format!(", {colour}") }, if count == 1 { "" } else { "s" })]}));
+                "show": [S::fact("In your Kaya Mobile cart", "已加入 Kaya Mobile 购物车", &format!("{pick_fact}{} (cart: {count} item{}; not checked out)",
+                    if colour.is_empty() { String::new() } else { format!(", {colour}") }, if count == 1 { "" } else { "s" })),
+                         S::link(&top.title, &top.title, "Kaya Mobile", &top_url)],
+                "hints": []}));
         }
     } else if !sr.buy() {
         return Step::Done(
             json!({"status": "in_cart", "shop": "Kaya Mobile", "already": true,
             "item": {"label": top.title, "price_text": top.price_text, "url": url},
             "cart": {"checked_out": false},
-            "must_say": [format!("{} — {} is already in your Kaya Mobile cart (not checked out)", top.title, top.price_text)]}),
+            "show": [S::fact("Already in your Kaya Mobile cart", "已在 Kaya Mobile 购物车中", &format!("{} — {} (not checked out)", top.title, top.price_text))],
+            "hints": []}),
         );
     }
     let item = Item {

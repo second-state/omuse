@@ -76,8 +76,8 @@ async def delay(u: U.User) -> None:
                     label="delay", approve=no_send, on_takeover=look, timeout=1200)
     check("delay: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
     check("delay: the Insurance & claims bot answered", "nsurance" in a.bot_link, a.bot_link)
-    check("delay: the new departure time from the airline's status page (17:10) next to the old one (09:25)",
-          re.search(r"17:10|5:10\s?p\.?m", a.text, re.I) and re.search(r"0?9:25", a.text), a.text[:900])
+    check("delay: the block code appends after the answer has the new departure time from the airline's status page (17:10) "
+          "next to the old one (09:25)", a.shows("SQ 638 on", "scheduled departure 09:25", "now estimated 17:10"), (a.block, a.text[:300]))
     check("delay: the insurance benefit (SGD 100) and the delay certificate it needs",
           re.search(r"(SGD|S\$)\s?100\b", a.text) and re.search(r"certificate", a.text, re.I), a.text[:900])
     check("delay: the refund right from the airline's page (a refund to the original form of payment)",
@@ -103,10 +103,10 @@ async def baggage(u: U.User) -> None:
                     label="baggage", approve=no_send, on_takeover=look, timeout=1200)
     check("baggage: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
     check("baggage: the Insurance & claims bot answered", "nsurance" in a.bot_link, a.bot_link)
-    check("baggage: the bag's status from the tracing page (tracing continues, not located yet)",
-          re.search(r"tracing continues|still being traced|not (yet )?(been )?(located|found)|tracing (is )?(still )?(in progress|ongoing)", a.text, re.I),
-          a.text[:900])
-    check("baggage: the 21-day rule", re.search(r"21[ -]days?", a.text), a.text[:900])
+    check("baggage: the block code appends after the answer has the bag's status from the tracing page (tracing continues, not located yet)",
+          a.shows("NRTSQ12345", "Bag status: Tracing continues"), (a.block, a.text[:300]))
+    check("baggage: the block code appends after the answer has the 21-day rule (treated as lost after)",
+          a.shows("Treated as lost after:", "21 days after"), a.block)
     check("baggage: the policy's baggage-delay benefit and what it needs (SGD 150, PIR, receipts)",
           re.search(r"(SGD|S\$)\s?150\b", a.text) and re.search(r"PIR|Property Irregularity", a.text) and re.search(r"receipt", a.text, re.I),
           a.text[:900])

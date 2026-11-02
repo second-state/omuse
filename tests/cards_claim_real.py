@@ -83,10 +83,15 @@ async def main():
         check("claim: answered by the Credit cards or Insurance & claims bot", any(re.search(r"Credit cards|Insurance", x.bot_link) for x in answers),
               [x.bot_link for x in answers])
         check("claim: the answer finished (no time-out)", not any(x.timed_out for x in answers), [x.seconds for x in answers])
-        check("claim: the benefit is Trip Cancellation", bool(re.search(r"trip cancell?ation", text, re.I)), text[:400])
-        check("claim: the amount to claim is paid minus refunded (1,753.60)", C.money_in(text, "1753.60"), text[:900])
-        check("claim: the 20-day notice deadline as a date", C.date_in(text, D20), (D20, text[-1200:]))
-        check("claim: the 90-day documents deadline as a date", C.date_in(text, D90), (D90, text[-1200:]))
+        block = "\n".join(x.block for x in answers)
+        check("claim: the block code appends after the answer names the benefit, Trip Cancellation",
+              "Trip Cancellation claim on the" in block, (block, text[:300]))
+        check("claim: the block code appends after the answer gives the amount to claim, paid minus refunded (1,753.60)",
+              C.money_in(block, "1753.60"), block)
+        check("claim: the block code appends after the answer gives the 20-day notice deadline as a date",
+              "Notify the administrator by:" in block and C.date_in(block, D20), (D20, block))
+        check("claim: the block code appends after the answer gives the 90-day documents deadline as a date",
+              "Documents by:" in block and C.date_in(block, D90), (D90, block))
         portal = [s for s in seen if "eclaimsline.com" in s["url"]]
         check("claim: the user was asked to take over the browser on eClaimsLine's claim form", bool(portal), seen)
         # an empty box has no ink; a short value in a wide box ("Lucas Lu") has under 1% (2026-10-30: 0.0094)

@@ -38,8 +38,8 @@ async def entry(u: U.User) -> None:
     T2.answered("entry", a)
     links = " ".join(a.links) + " " + a.text
     check("entry: the answer is for the user's nationality from the profile (Australian)", re.search(r"Australia", a.text), a.text[:900])
-    check("entry: Thailand — a visa-free stay with its number of days",
-          re.search(r"visa[- ]?(free|exempt)|exemption|without a visa|no visa", a.text, re.I) and re.search(r"\b\d{2,3}[ -]days?\b", a.text), a.text[:1500])
+    check("entry: the block code appends after the answer gives Thailand's visa-free stay with its number of days (official table)",
+          re.search(r"Visa-free stay in Thailand[^\n]*: up to \d{2,3} days", a.block) is not None, (a.block, a.text[:300]))
     check("entry: Thailand — the TDAC (within 3 days before arrival: the window or the filing date) with the official link",
           "TDAC" in a.text and (re.search(r"(3|three)[ -]days?", a.text) or T2.date_in(a.text, ARRIVE - dt.timedelta(days=3)))
           and "tdac.immigration.go.th" in links, (a.links, a.text[:1500]))
@@ -56,9 +56,10 @@ async def narita(u: U.User) -> None:
     a = await u.ask("I land at Narita Terminal 1 tomorrow at about 7 in the morning with two big suitcases. How do I get to Tokyo Station — "
                     "what time are the trains and how much does it cost?", label="narita", new_chat=False)
     T2.answered("narita", a)
-    times = re.findall(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", a.text)
-    check("narita: the Narita Express with at least two departure times", re.search(r"Narita Express|N'?EX", a.text) and len(set(times)) >= 2,
-          (times, a.text[:1200]))
+    line = next((x for x in a.block.splitlines() if re.search(r"Narita Express|N'?EX", x)), "")
+    times = re.findall(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", line.split(":", 1)[-1])
+    check("narita: the block code appends after the answer gives the Narita Express with at least two departure times (JR East's timetable)",
+          len(set(times)) >= 2, (times, a.block))
     check("narita: a yen fare, from the operator (JR East)", re.search(r"(¥|JPY|yen)\s?\d[\d,]{2,}|\d[\d,]{2,}\s?(yen|JPY)", a.text, re.I)
           and re.search(r"JR East|jreast", a.text + " ".join(a.links), re.I), (a.links, a.text[:1200]))
     check("narita: the answer speaks to the two big suitcases", re.search(r"suitcase|luggage|baggage", a.text, re.I), a.text[:1200])
@@ -78,12 +79,13 @@ async def pay(u: U.User) -> None:
           re.search(r"dynamic currency conversion|\bDCC\b|in (the )?local currency|decline (the )?conversion|in yen\b|in yuan\b|in (JPY|CNY|RMB)\b",
                     a.text, re.I), a.text[:1500])
     # today's rates, live: within the real range and named with where they come from (market data, Yahoo, Wise, XE…)
-    nums = T2.numbers(a.text)
-    for pair, cur, word, real in (("SGD → JPY", "JPY", "yen", (95, 135)), ("SGD → CNY", "CNY", "yuan", (4.8, 6.0))):
-        rate = any(real[0] <= v <= real[1] for v in nums) and re.search(rf"{cur}|{word}|RMB", a.text, re.I)
-        check(f"pay: today's {pair} rate (within {real[0]}–{real[1]})", bool(rate), (nums[:20], a.text[:900]))
-    check("pay: the rates say where they come from (market data, Yahoo, Wise, XE …) or when",
-          re.search(r"market data|Yahoo|Wise|XE\b|Reuters|Bloomberg|Google Finance|OANDA|MAS|mid-market|as of|today", a.text, re.I), a.text[:900])
+    # today's rates, computed in code (fx_convert) and appended after the answer with the market data's date
+    for pair, cur, real in (("SGD → JPY", "JPY", (95, 135)), ("SGD → CNY", "CNY", (4.8, 6.0))):
+        line = next((x for x in a.block.splitlines() if f"in {cur}:" in x), "")
+        rate = any(real[0] <= v <= real[1] for v in T2.numbers(line))
+        check(f"pay: the block code appends after the answer gives today's {pair} rate (within {real[0]}–{real[1]})", rate, (line, a.block))
+    check("pay: the block code appends after the answer says where the rates come from and when (market data of …)",
+          "market data of" in a.block, a.block)
 
 
 async def main():

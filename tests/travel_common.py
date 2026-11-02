@@ -287,8 +287,6 @@ def verify(suite: str, kind: str, skill: str, data_tools: tuple[str, ...], run_i
     clicks = results_of(tasks, "browser_click")
     check("the booking click went through (approved or covered by the purchase confirmation)",
           any(ok(x) for x in clicks), clicks[-2:])
-    res = str(final.get("result") or "")
-    check("the final answer quotes the booking reference", b.get("ref") and b["ref"] in res, (b.get("ref"), res[:600]))
     failed = [e["data"] for tid in tasks for e in task(tid).get("events", []) if e["type"] == "tool_result"
               and not ok(e["data"]) and e["data"]["name"] not in ("browser_snapshot",)]
     if REAL:

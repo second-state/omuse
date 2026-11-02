@@ -8,13 +8,14 @@
 //! Saturdays-and-holidays table (Japan's national holidays in a fixed table), opens the page (`browser_navigate`, prefix
 //! `trn_`), reads each departure by its HTML elements (`browser_read_elements`: the timetable's `div.timetable_time`
 //! with its train mark, its minute, its `data-misc` marks and its row's hour cell — docs/json-tools.md, "Reading
-//! pages") and returns the next departures with `must_say`.
+//! pages") and returns the next departures with `hints`.
 
 use chrono::{Datelike, NaiveDate, NaiveTime, Weekday};
 use omuse_common::util::get_str;
 use serde_json::{json, Map, Value};
 
 use super::driver::Step;
+use super::show as S;
 use super::tools::fn_;
 use super::util::{sget, stored_call, tool_calls};
 use super::workflow::{self, Checked};
@@ -119,7 +120,7 @@ pub fn tool_schemas() -> Vec<Value> {
         "The departure times of a train from the operator's own timetable (today: the Narita Express from Narita Airport \
 Terminal 1 Station to Tokyo Station, JR East). Code picks the weekday or the Saturdays-and-holidays table for the date, \
 reads the timetable page and returns the next departures after the time given as JSON. Call it whenever the user asks \
-when this train leaves; write the reply from the result, with every fact in its must_say.",
+when this train leaves; write the reply from the result, using its hints (code appends the facts in show to the reply).",
         json!({
             "line": {"type": "string", "enum": ["narita_express"]},
             "date": {"type": "string", "description": "YYYY-MM-DD, the day of the journey (resolve relative dates from today in the live state)"},
@@ -217,7 +218,7 @@ pub struct Machine {
 /// The next step: read the timetable page, then the departures as the result.
 pub fn next(_tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     let Some(line) = LINES.iter().find(|l| l.id == sget(args, "line")) else {
-        return Step::Done(json!({"status": "error", "reason": "unknown_line", "must_say": []}));
+        return Step::Done(json!({"status": "error", "reason": "unknown_line", "hints": []}));
     };
     let date = NaiveDate::parse_from_str(&sget(args, "date"), "%Y-%m-%d").unwrap_or(m.today);
     let holiday = holiday_table(date);
@@ -273,10 +274,20 @@ pub fn next(_tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     if all.is_empty() {
         let mut v = base;
         v["status"] = json!("not_read");
-        v["must_say"] = json!([format!(
-            "the {} timetable could not be read just now: {} has the {} times for {}",
-            line.operator, url, table, line.station
-        )]);
+        v["show"] = json!([
+            S::fact(
+                "Timetable not read",
+                "时刻表未能读取",
+                &format!("the {} timetable could not be read just now", line.operator)
+            ),
+            S::link(
+                &format!("{} times for {} ({table})", line.name, line.station),
+                &format!("{} {} 时刻表（{table}）", line.station, line.name),
+                "",
+                &url
+            ),
+        ]);
+        v["hints"] = json!([]);
         return Step::Done(v);
     }
     let next: Vec<&Departure> = all
@@ -311,32 +322,50 @@ pub fn next(_tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
         .iter()
         .map(|d| json!({"time": d.time.format("%H:%M").to_string(), "every_day": d.every_day}))
         .collect::<Vec<_>>());
-    v["must_say"] = if times.is_empty() {
-        json!([format!(
-            "no {} leaves {} after {} on {} ({} timetable: {url})",
-            line.name,
-            line.station,
-            after
-                .map(|a| a.format("%H:%M").to_string())
-                .unwrap_or_default(),
-            date.format("%Y-%m-%d"),
-            table
-        )])
+    // the facts the user must read: appended to the reply by code (agent/show.rs)
+    let when = format!(
+        "{} from {} towards {} on {}",
+        line.name,
+        line.station,
+        line.towards,
+        date.format("%Y-%m-%d")
+    );
+    let mut show = vec![if times.is_empty() {
+        S::fact(
+            &when,
+            &when,
+            &format!(
+                "no train after {} ({table} timetable)",
+                after
+                    .map(|a| a.format("%H:%M").to_string())
+                    .unwrap_or_default()
+            ),
+        )
     } else {
-        json!([format!(
-            "{} from {} towards {} on {} ({} timetable{}): {}{marked_note} — {}'s timetable {url}",
-            line.name,
-            line.station,
-            line.towards,
-            date.format("%Y-%m-%d"),
-            table,
-            after
-                .map(|a| format!(", from {}", a.format("%H:%M")))
-                .unwrap_or_default(),
-            times.join(", "),
-            line.operator
-        )])
-    };
+        S::fact(
+            &format!(
+                "{when}{}",
+                after
+                    .map(|a| format!(", from {}", a.format("%H:%M")))
+                    .unwrap_or_default()
+            ),
+            &format!(
+                "{when}{}",
+                after
+                    .map(|a| format!("，{} 起", a.format("%H:%M")))
+                    .unwrap_or_default()
+            ),
+            &format!("{} ({table} timetable{marked_note})", times.join(", ")),
+        )
+    }];
+    show.push(S::link(
+        &format!("{}'s timetable", line.operator),
+        &format!("{} 时刻表", line.operator),
+        "",
+        &url,
+    ));
+    v["show"] = json!(show);
+    v["hints"] = json!([]);
     Step::Done(v)
 }
 
@@ -462,12 +491,14 @@ mod tests {
         };
         assert_eq!(v["status"], "shown");
         assert_eq!(v["timetable"], "Saturdays and holidays");
-        let must = workflow::must_say(&v).join("\n");
+        // the lines code appends to the reply (agent/show.rs)
+        let shown = super::super::show::lines(&v, false).join("\n");
         assert!(
-            must.contains("08:12, 08:49, 09:16, 09:46")
-                && must.contains("on 2026-11-03")
-                && must.contains("1130021.html"),
-            "{must}"
+            shown.contains("on 2026-11-03")
+                && shown.contains(": 08:12, 08:49, 09:16, 09:46")
+                && shown.contains("timetable: [")
+                && shown.contains("1130021.html)"),
+            "{shown}"
         );
     }
 }

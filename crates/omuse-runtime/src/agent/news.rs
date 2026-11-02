@@ -13,7 +13,8 @@
 //! (`schedule_create`, the goal written by code so that the scheduled run calls `news_gather` → `news_publish` again)
 //! and mails the edition to the user's own connected address when asked. `news_mail` mails an edition published earlier
 //! in the chat (its links, which the model copies from the earlier reply). Each run ends with [`Step::Done`]: a JSON
-//! result with `must_say`; the model writes the reply from it. Nothing here reads the user's wording or calls a model.
+//! result with `show` (the editions' links, the schedule, the mail: code appends them to the reply) and `hints`; the
+//! model writes the reply from it. Nothing here reads the user's wording or calls a model.
 //!
 //! As in [`super::booking`], the next step is a function of the validated arguments and the transcript after the tool
 //! call alone, so a run suspended for a takeover carries on where it was.
@@ -26,6 +27,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use super::driver::{json_of, Step};
+use super::show as S;
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
 use super::workflow::{self, Checked};
@@ -69,7 +71,7 @@ so; needs_input: ask the user for the subject.",
         "Publish the edition written from news_gather's articles. Code adds each story's link, publication and date from \
 the gathered articles, lays out the newspaper (masthead, lead, stories, sources) as HTML and PDF under /artifacts/, makes \
 the schedule asked for and emails the edition to the user's own address when asked; the JSON result has the links, the \
-schedule and the mail. Write the reply from it, with every fact in its must_say.",
+schedule and the mail. Write the reply from it, using its hints (code appends the facts in show to the reply).",
         json!({
             "title": {"type": "string", "description": "the paper's name, short (e.g. \"The Tidal Weekly\")"},
             "stories": {"type": "array", "description": "one per article, every article once, the most important first (it is the lead)",
@@ -675,7 +677,9 @@ fn next_gather(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
                 Step::Done(json!({
                     "status": "nothing_found", "subject": subject, "window": window, "period": period_line,
                     "searched": searched,
-                    "must_say": [format!("the browser's news search found no recent articles on {subject}, so no edition was published")]
+                    "show": [S::fact("No edition published", "未发布新一期",
+                        &format!("the news search found no recent articles on {subject}"))],
+                    "hints": []
                 }))
             }
         };
@@ -703,7 +707,7 @@ fn next_gather(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
         .collect();
     Step::Done(json!({
         "status": "gathered", "subject": subject, "window": window, "period": period_line, "articles": list,
-        "next_tool": NEWS_PUBLISH, "must_say": []
+        "next_tool": NEWS_PUBLISH, "hints": []
     }))
 }
 
@@ -785,7 +789,8 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
         let why = take_chars(content_of(rm).trim_start_matches("ERROR:").trim(), 200).to_string();
         return Step::Done(json!({
             "status": "error", "subject": subject, "why": why,
-            "must_say": [format!("the report on {subject} could not be published: {why}")]
+            "show": [S::fact("Not published", "未发布", &format!("the report on {subject}: {why}"))],
+            "hints": []
         }));
     }
     let rep = json_of(rm);
@@ -839,9 +844,10 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
             get_str(lead, "publication")
         ));
     }
-    must.push(format!("the HTML edition: {html}"));
+    // the editions, the schedule and the mail: appended to the reply by code (agent/show.rs)
+    let mut show = vec![S::link("HTML edition", "HTML 版", &title, &html)];
     if !pdf.is_empty() {
-        must.push(format!("the PDF edition: {pdf}"));
+        show.push(S::link("PDF edition", "PDF 版", &title, &pdf));
     }
     let mut out = json!({
         "status": "published", "subject": subject, "title": title, "period": sget(args, "period"),
@@ -855,7 +861,7 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
             let why =
                 take_chars(content_of(sm).trim_start_matches("ERROR:").trim(), 200).to_string();
             out["schedule"] = json!({"error": why});
-            must.push(format!("the schedule could not be made: {why}"));
+            show.push(S::fact("Schedule not made", "定时未建立", &why));
         } else {
             static NEXT: LazyLock<Regex> =
                 LazyLock::new(|| Regex::new(r"next run ([0-9:\- ]+)").unwrap());
@@ -866,11 +872,15 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
             let every = cadence(a);
             out["schedule"] =
                 json!({"every": every, "spec": a.cron(), "next_run": next_run, "email": a.email});
-            must.push(if next_run.is_empty() {
-                format!("a new edition {every}")
-            } else {
-                format!("a new edition {every} — the next one {next_run}")
-            });
+            show.push(S::fact(
+                "New edition",
+                "新一期",
+                &if next_run.is_empty() {
+                    every.clone()
+                } else {
+                    format!("{every} — next: {next_run}")
+                },
+            ));
         }
     }
     if email {
@@ -878,25 +888,32 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
             Some((ma, mm)) if !failed(mm) => {
                 let to = sget(ma, "to");
                 out["mailed"] = json!({"to": to});
-                must.push(format!(
-                    "this edition was emailed to {to} with the PDF attached"
+                show.push(S::fact(
+                    "Emailed to",
+                    "已发送到",
+                    &format!("{to} (PDF attached)"),
                 ));
             }
             Some((_, mm)) => {
                 let why =
                     take_chars(content_of(mm).trim_start_matches("ERROR:").trim(), 200).to_string();
                 out["mail_error"] = json!(why);
-                must.push(format!("the edition could not be emailed: {why}"));
+                show.push(S::fact("Not emailed", "邮件未发送", &why));
             }
             None => {
                 out["mail_error"] = json!("no mailbox is connected");
-                must.push("the edition was not emailed: no mailbox is connected (connect one on the Connections page)".into());
+                show.push(S::fact(
+                    "Not emailed",
+                    "邮件未发送",
+                    "no mailbox is connected (connect one on the Connections page)",
+                ));
             }
         }
     } else if !mailbox.is_empty() && !m.scheduled {
         out["next_question"] = json!(format!("email this edition (PDF attached) to {mailbox}?"));
     }
-    out["must_say"] = json!(must);
+    out["show"] = json!(show);
+    out["hints"] = json!(must);
     Step::Done(out)
 }
 
@@ -929,12 +946,12 @@ fn next_mail(args: &Value, t: &[Value], n: usize) -> Step {
         let why = take_chars(content_of(mm).trim_start_matches("ERROR:").trim(), 200).to_string();
         return Step::Done(
             json!({"status": "error", "to": to, "files": files, "why": why,
-                                 "must_say": [format!("the edition could not be emailed: {why}")]}),
+                   "show": [S::fact("Not emailed", "邮件未发送", &why)], "hints": []}),
         );
     }
     Step::Done(
         json!({"status": "mailed", "to": to, "files": files, "title": title,
-                      "must_say": [format!("the edition was emailed to {to} with the PDF attached")]}),
+               "show": [S::fact("Emailed to", "已发送到", &format!("{to} (PDF attached)"))], "hints": []}),
     )
 }
 

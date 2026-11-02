@@ -70,7 +70,7 @@ fact. `needs_input`: ask once, then call again.
   bank numbers.
 
 ## 3. Answer
-Write it from the tool's JSON result, with every fact in its `must_say`.
+Write it from the tool's JSON result, using its `hints` (code appends the facts in `show` to the reply).
 - Buying: market and insurer (HK: "underwritten by bolttech, sold by FWD"), the plans compared with premiums, the plan
   chosen and the rule that chose it, what was filled, what the user must still do (check and press Pay), the emergency
   number.

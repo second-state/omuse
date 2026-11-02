@@ -1,7 +1,7 @@
 //! `fx_convert{amount, from, to}`: a currency conversion computed in code. The model reads the user's words and calls
 //! the tool with ISO codes; code checks the codes against its table, fetches the pair's market rate (Sentinel's
 //! `/internal/market_data`, the structured result: `symbol`, `last`, `last_time`) and returns the figure as JSON with
-//! the line the reply must carry (`must_say`) — the model's own arithmetic or its doubts about the rate never decide
+//! the line the reply must carry (`hints`) — the model's own arithmetic or its doubts about the rate never decide
 //! the figure (city_guides_real 2026-11-01: the answer gave no amount of dong at all).
 
 use omuse_common::util::get_str;
@@ -146,7 +146,10 @@ pub fn conversion(amount: f64, from: &str, to: &str, rate: f64, date: &str, zh: 
     };
     json!({"status": "ok", "amount": amount, "from": from, "to": to, "rate": rate, "as_of": date,
            "converted": (converted * 10000.0).round() / 10000.0, "source": "market data (Yahoo Finance)",
-           "must_say": [line]})
+           "show": [super::show::fact(&format!("{a} in {to}"), &format!("{a} 折合 {to}"),
+               &if zh { format!("≈ {b} {to}（{from}/{to} {r}，行情数据 {date}）") }
+                else { format!("≈ {b} {to} (at {from}/{to} {r}, market data of {date})") })],
+           "hints": [line]})
 }
 
 #[cfg(test)]
@@ -176,7 +179,7 @@ mod tests {
         let res = [json!({"symbol": "USDVND=X", "last": 39486.5, "last_time": "2026-10-31 16:00"})];
         let (rate, date) = rate_in(&res, "USD", "VND").unwrap();
         let v = conversion(300.0, "USD", "VND", rate, &date, false);
-        let line = v["must_say"][0].as_str().unwrap();
+        let line = v["hints"][0].as_str().unwrap();
         assert!(line.starts_with("US$300 ≈ ₫11,845,950 VND"), "{line}");
         assert!(
             line.contains("USD/VND 39,486.5, market data of 2026-10-31"),
@@ -186,7 +189,7 @@ mod tests {
         let inv = [json!({"symbol": "VNDUSD=X", "last": 0.00004, "last_time": "2026-10-31"})];
         let (rate, _) = rate_in(&inv, "USD", "VND").unwrap();
         assert!(
-            conversion(300.0, "USD", "VND", rate, "x", false)["must_say"][0]
+            conversion(300.0, "USD", "VND", rate, "x", false)["hints"][0]
                 .as_str()
                 .unwrap()
                 .contains("≈ ₫7,500,000")

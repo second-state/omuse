@@ -1437,7 +1437,7 @@ const SRC_FIELDS = {
   'notion.db_changed': [['database_id', T('Notion 数据库 ID 或链接'), 'https://www.notion.so/…']],
   'web.page': [['url', T('要监控的网页'), 'https://…'], ['mode', T('条件：change / text / price_below'), 'price_below'],
     ['text', T('等待出现的文字（mode=text）'), 'In stock'], ['threshold', T('价格低于（mode=price_below）'), '15'],
-    ['keyword', T('只看这个词附近（可选，如商品名）'), 'iPhone 17 Pro Max']],
+    ['item', T('商品名（可选）'), 'iPhone 17 Pro Max']],
 };
 function checkPicker(defKind = 'interval') {
   const kind = h('select', null, h('option', { value: 'interval' }, T('每隔 N 分钟 Interval')), h('option', { value: 'cron' }, T('按时间 Cron')),

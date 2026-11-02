@@ -68,7 +68,7 @@ def quiet(label: str, a: U.Answer) -> None:
 
 
 def links(label: str, a: U.Answer) -> None:
-    check(f"{label}: the answer links a booking page and Kayak to compare", any("kayak" not in x for x in a.links) and any("kayak" in x for x in a.links), a.links)
+    check(f"{label}: the block code appends after the answer links a booking page and Kayak to compare", any("kayak" not in x for x in a.block_links) and any("kayak" in x for x in a.block_links), a.block_links)
 
 
 async def main():

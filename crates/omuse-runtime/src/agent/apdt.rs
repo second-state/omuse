@@ -18,7 +18,8 @@
 //! boxes, the card by `browser_fill_secret` (a card the Vault cannot fill is typed by the user in a takeover), the
 //! reference from the submit page's address. The face recognition is the user's own step on their phone: never opened, never
 //! handed over (`guards::apdt_face_guard`). The machine ends with [`Step::Done`]: a JSON result (status, the
-//! reference, the link, the deadline, the refund, `must_say`); the model writes the reply from it.
+//! reference, the link, the deadline, the refund — as `show`, appended to the reply by code — and `hints`); the model
+//! writes the reply from it.
 
 use std::sync::LazyLock;
 
@@ -29,6 +30,7 @@ use serde_json::{json, Map, Value};
 
 use super::claims::vault_cards;
 use super::driver::{handed_back, json_of, norm_flight, pos, results_of, walk_messages, Step};
+use super::show as S;
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
 use super::workflow::{self, Checked};
@@ -92,8 +94,8 @@ the receipt just read and call again with every field). Code checks the rule (le
 within 28 days, the tax paid), fills every page and uploads every document, the card from the Vault, and stops before \
 the face recognition, which is the user's own step on their phone. The JSON result has the reference and the link \
 (status confirmed) or says why not. status needs_input: ask the user for the missing fields, then call again with \
-every field; invalid: fix the arguments and call again. Write the reply from the result, with every fact in its \
-must_say.",
+every field; invalid: fix the arguments and call again. Write the reply from the result, using its hints \
+(code appends the facts in show to the reply).",
         json!({
             "in_flight": {"type": "string", "description": "the flight INTO Hong Kong: airline code and number (\"SQ 890\")"},
             "in_date": date("the day that flight arrived in Hong Kong"),
@@ -911,7 +913,7 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             .map(|(p, subj)| json!({"path": p, "mail": subj}))
             .chain(user_pdfs.iter().map(|p| json!({"path": p, "mail": ""})))
             .collect();
-        return Step::Done(json!({"status": MAIL_READ, "files": files, "must_say": []}));
+        return Step::Done(json!({"status": MAIL_READ, "files": files, "hints": []}));
     }
     let opened = results_of(t, "browser_navigate")
         .iter()
@@ -921,7 +923,8 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
         if let Some((code, why)) = ineligible(&f, m.today, s.window_days) {
             return Step::Done(
                 json!({"status": "not_eligible", "reason": code, "rule": why,
-                "must_say": [format!("not eligible for the Hong Kong departure tax refund: {why}"), "nothing was submitted"]}),
+                "show": [S::fact("Not eligible for the Hong Kong departure tax refund", "不符合香港离境税退税条件", &why)],
+                "hints": ["nothing was submitted"]}),
             );
         }
         if f.method == Some(Method::Card) && results_of(t, "vault_list").is_empty() {
@@ -962,9 +965,19 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             must.push(format!("the site says: {}", errs.join(" ")));
         }
         must.push("the face recognition was not started; nothing was submitted".into());
+        let mut show = vec![S::fact(
+            "Stopped",
+            "已停止",
+            &format!(
+                "on the platform's {page} page instead of the {wanted} page; nothing was submitted"
+            ),
+        )];
+        if !errs.is_empty() {
+            show.push(S::fact("The site says", "网站提示", &errs.join(" ")));
+        }
         Step::Done(
             json!({"status": "stopped", "page": page, "expected": wanted, "site_errors": errs,
-            "url": url, "must_say": must}),
+            "url": url, "show": show, "hints": must}),
         )
     };
     // a page is checked only until the stage after it ran: the transcript's compression may have shortened an older
@@ -1012,7 +1025,8 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             let file = path.rsplit('/').next().unwrap_or(path);
             let err: String = content_of(msg).chars().take(160).collect();
             return Step::Done(json!({"status": "error", "file": file, "error": err,
-                "must_say": [format!("{file} could not be uploaded to the platform: {err}"), "nothing was submitted"]}));
+                "show": [S::fact(&format!("{file} not uploaded"), &format!("{file} 上传失败"), &format!("{err}; nothing was submitted"))],
+                "hints": []}));
         }
         let Some(r) = upload_page.ref_of(what) else {
             return stuck(&upload_page, "upload");
@@ -1110,8 +1124,8 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
                 Some((_, msg)) if handed_back(msg) => before_next = pos(t, msg),
                 Some(_) => {
                     return Step::Done(json!({"status": "handed_over", "page": "refund",
-                        "must_say": ["the refund page is waiting in the browser tab for your card number and expiry",
-                                     "nothing was submitted"]}))
+                        "show": [S::fact("Your step", "你的步骤", "the refund page is waiting in the browser tab for your card number and expiry; nothing was submitted")],
+                        "hints": []}))
                 }
             }
         }
@@ -1173,36 +1187,55 @@ pub fn result(f: &Facts, reference: Option<&str>, url: &str, card: Option<&Card>
         "refund": refund});
     let Some(code) = reference else {
         let mut v = json!({"status": "not_confirmed", "home": HOME,
-            "must_say": ["the refund application is filled in and confirmed, but no reference number showed on the page",
-                         format!("find it with \"Resume Application\" at {HOME}"),
-                         "the face recognition is yours, on your phone"]});
+            "show": [S::fact("Reference number", "申请编号", "none showed on the page (the application is filled in and confirmed)"),
+                     S::link("Find it with \"Resume Application\"", "用 \"Resume Application\" 找回", "", HOME)],
+            "hints": ["the face recognition is yours, on your phone"]});
         v.as_object_mut()
             .unwrap()
             .extend(common.as_object().cloned().unwrap_or_default());
         return v;
     };
     let link = if url.contains("bizId=") { url } else { HOME };
-    let mut must = vec![
-        format!("reference number {code}"),
-        format!("the face recognition is your step, on your phone: open {link} and press \"Proceed with Facial Recognition\""),
+    let must = vec![
+        "the face recognition is your step, on your phone: press \"Proceed with Facial Recognition\" on the application's page".to_string(),
         format!("if asked to sign in again: \"Resume Application\" at {HOME} with your travel document number and the reference {code}"),
     ];
+    // the facts the user must read: appended to the reply by code (agent/show.rs)
+    let mut show = vec![
+        S::reference("Reference number", "申请编号", code),
+        S::link(
+            "Face recognition (your step, on your phone)",
+            "人脸识别（你的步骤，在手机上）",
+            "",
+            link,
+        ),
+    ];
     if let Some(d) = deadline {
-        must.push(format!(
-            "do the face recognition by {} (28 days after the departure flight)",
-            long(d)
+        show.push(S::fact(
+            "Face recognition deadline",
+            "人脸识别截止日期",
+            &format!("{} (28 days after the departure flight)", long(d)),
+        ));
+    }
+    if let Some(tax) = f.tax {
+        show.push(S::amount(
+            "Departure tax to be refunded",
+            "待退离境税",
+            f64::from(tax),
+            "HKD",
         ));
     }
     if let (Some(Method::Card), Some(c)) = (&f.method, card) {
         if !c.last4.is_empty() {
-            must.push(format!(
-                "refund to your {} card ending {}",
-                c.label, c.last4
+            show.push(S::fact(
+                "Refund to",
+                "退款到",
+                &format!("your {} card ending {}", c.label, c.last4),
             ));
         }
     }
     let mut v = json!({"status": "confirmed", "reference": code, "link": link, "home": HOME,
-        "face_deadline": deadline.map(|d| d.format("%Y-%m-%d").to_string()), "must_say": must});
+        "face_deadline": deadline.map(|d| d.format("%Y-%m-%d").to_string()), "show": show, "hints": must});
     v.as_object_mut()
         .unwrap()
         .extend(common.as_object().cloned().unwrap_or_default());
@@ -1615,14 +1648,17 @@ the photo page of my passport. Refund it to my Visa card.";
         assert_eq!(res["face_deadline"], "2026-11-27");
         assert_eq!(res["trip"]["departure"]["flight"], "CX 500");
         assert_eq!(res["trip"]["tax_hkd"], 120);
-        let must = workflow::must_say(&res).join(" | ");
-        assert!(
-            must.contains("reference number K7P2QD") && must.contains(SUBMIT_URL),
-            "{must}"
-        );
-        assert!(
-            must.contains("Visa Lucas card ending 1111") && must.contains("by 27 November 2026"),
-            "{must}"
+        // the lines code appends to the reply (agent/show.rs)
+        let shown = super::super::show::lines(&res, false);
+        assert_eq!(
+            shown,
+            vec![
+                "- Reference number: **K7P2QD**".to_string(),
+                format!("- Face recognition (your step, on your phone): [{SUBMIT_URL}]({SUBMIT_URL})"),
+                "- Face recognition deadline: 27 November 2026 (28 days after the departure flight)".to_string(),
+                "- Departure tax to be refunded: HKD 120.00".to_string(),
+                "- Refund to: your Visa Lucas card ending 1111".to_string(),
+            ]
         );
         assert!(!res.to_string().contains("E1234567X"));
     }
@@ -1636,9 +1672,8 @@ the photo page of my passport. Refund it to my Visa card.";
         assert_eq!(calls_of(&t, "browser_fill_secret").len(), 3, "{res}");
         assert_eq!(calls_of(&t, "browser_upload").len(), 4, "{res}");
         assert_eq!(res["reference"], "K7P2QD");
-        assert!(workflow::must_say(&res)
-            .join(" ")
-            .contains("Visa Lucas card ending 1111"));
+        assert!(super::super::show::lines(&res, false)
+            .contains(&"- Refund to: your Visa Lucas card ending 1111".to_string()));
     }
 
     #[test]
@@ -1685,9 +1720,8 @@ the photo page of my passport. Refund it to my Visa card.";
             (res["status"].as_str(), res["reason"].as_str()),
             (Some("not_eligible"), Some("stayed_longer"))
         );
-        assert!(workflow::must_say(&res)
-            .join(" ")
-            .contains("nothing was submitted"));
+        assert!(super::super::show::lines(&res, false)[0]
+            .starts_with("- Not eligible for the Hong Kong departure tax refund: "));
         assert!(calls_of(&t2, "browser_navigate").is_empty());
     }
 
@@ -1775,9 +1809,9 @@ the photo page of my passport. Refund it to my Visa card.";
             (Some("stopped"), Some("reference"))
         );
         assert!(
-            workflow::must_say(&res)
+            super::super::show::lines(&res, false)
                 .join(" ")
-                .contains("Departure date has exceeded"),
+                .contains("- The site says: Departure date has exceeded"),
             "{res}"
         );
         assert!(questions_after_navigate(&t).is_empty());

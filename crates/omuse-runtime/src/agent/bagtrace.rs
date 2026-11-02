@@ -4,7 +4,7 @@
 //! user's words or the PIR email), opens the tracing page, fills it by its form function (`crate::forms`, fixed ids:
 //! the reference and the family name), presses Track (a lookup changes nothing) and reads the result page's table by its
 //! HTML elements (`browser_read_elements`: the rows of `#out` with their cells — Status, Last update, Flight —, and its
-//! notes, docs/json-tools.md "Reading pages"); the status goes into the result's `must_say`.
+//! notes, docs/json-tools.md "Reading pages"); the status goes into the result's `hints`.
 
 use std::sync::LazyLock;
 

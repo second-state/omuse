@@ -62,7 +62,7 @@ K.check("the first result has the flights, the pick's sellers and its Google Fli
         t["status"] == "COMPLETED" and "SQ 638" in json.dumps(res.get("options")) and any(x.get("book_with") == "Singapore Airlines" for x in res.get("sellers") or [])
         and "https://www.google.com/travel/flights/booking?" in json.dumps(res.get("options")) and res.get("next_items") == ["hotel"],
         (t["status"], t.get("error"), res))
-K.check("the reply carries every must_say fact and offers the hotel search next", K.says_all(t) and "Shall I search the hotel now?" in (t.get("result") or ""),
+K.check("the block code appends after the answer carries every show item, and the reply offers the hotel search next", K.says_all(t) and "Shall I search the hotel now?" in (t.get("result") or ""),
         (t.get("result") or "")[:600])
 fo = [x["args"] for x in K.calls(t) if x.get("name") == "flight_offer"]
 fs = [x["args"] for x in K.calls(t) if x.get("name") == "flights_search"]
@@ -73,7 +73,7 @@ th = K.run(f"TRAVELHOTEL yes, the hotel please DATE={DATE}", conv=t["_conv"])
 K.trace(th)
 K.check("the next message searches the hotel: hotels, the choice card, the pick's rooms — and the answer gives the room",
         th["status"] == "COMPLETED" and K.work(th) == ["hotels_search", "present_choices", "hotel_rooms"]
-        and "Hotel Ginza Grand" in (th.get("result") or "") and (K.result(th).get("pick") or {}).get("room") and K.says_all(th), (K.names(th), (th.get("result") or "")[:400]))
+        and "- Room at Hotel Ginza Grand: " in K.block(th) and (K.result(th).get("pick") or {}).get("room") and K.says_all(th), (K.names(th), K.block(th)))
 log = c.get(FAKE + "/serpapi/_log").json()
 fl = [q for q in log if q.get("engine") == "google_flights" and not q.get("booking_token")]
 K.check("flights: one Google Flights search, city names resolved to IATA codes, one way, sorted by price, in SGD",

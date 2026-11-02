@@ -189,13 +189,14 @@ K.check("the task completed; the result gives each offer's Kiwi.com booking link
         and any(o.get("booking_url") == "https://kiwi.com/u/abc123" and o.get("book_at") == ["singaporeair.com"] for o in opts.values())
         and any(o.get("booking_url") == "https://kiwi.com/u/def456" and o.get("book_at") == ["cathaypacific.com"] for o in opts.values())
         and res.get("pick", {}).get("label", "").startswith("Cathay Pacific") and res["pick"].get("rule") == "the cheapest", (t["status"], res))
-K.check("the reply was written from the result and carries every must_say fact (the pick, its booking link and airline site)",
-        K.says_all(t) and "https://kiwi.com/u/def456" in (t.get("result") or ""), ((t.get("result") or "")[:600], res.get("must_say")))
+K.check("the block code appends after the answer carries every show item of the result (the pick, its booking link and airline site)",
+        K.says_all(t) and K.shows(K.block(t), "https://kiwi.com/u/def456", "cathaypacific.com"), (K.block(t), res.get("show")))
 fs = [x["args"] for x in K.calls(t) if x.get("name") == "flights_search"]
 K.check("skill, then ONE flights_search sorted by price in the home currency (SGD), the choice card — no web_search beside it, no browser",
         K.work(t) == ["flights_search", "present_choices"] and fs[0].get("sort") == "price" and fs[0].get("currency") == "SGD"
         and fs[0]["origin"] == "SIN" and fs[0]["destination"] == "TYO" and fs[0]["date"] == DATE, (names, fs))
-K.check("Kayak's page for the same search is in the result and the answer", f"{FAKE}/kayak/flights/" in str(res.get("links")) and f"{FAKE}/kayak/flights/" in (t.get("result") or ""), (t.get("result") or "")[-300:])
+K.check("Kayak's page for the same search is in the result and in the block code appends after the answer",
+        f"{FAKE}/kayak/flights/" in str(res.get("links")) and K.shows(K.block(t), "Compare prices on Kayak", f"{FAKE}/kayak/flights/"), K.block(t))
 K.check("an ordinary skill is followed from its sheet: no plan, no planner call, never PLANNING", not any(e["type"] == "plan" for e in t["events"])
         and not (t.get("plan") or {}).get("steps") and "PLANNING" not in t["_seen"], ([e["type"] for e in t["events"]], t["_seen"]))
 # the flight search is code's (no model call); the instructions a model-path travel request gets, from a question
@@ -220,7 +221,8 @@ K.check("business class + direct + Tokyo: ONE flights_search (city code TYO, cab
         K.work(t) == ["flights_search", "present_choices"] and len(fs) == 1 and fs[0]["args"]["cabin"] == "business" and fs[0]["args"]["stops"] == "nonstop"
         and fs[0]["args"]["origin"] == "TYO" and kl[-1]["flyFrom"] == "Tokyo" and kl[-1]["cabinClass"] == "BUSINESS" and not any(e["type"] == "plan" for e in t["events"]),
         (names, [f["args"] for f in fs], kl[-1:]))
-K.check("the result and the answer name the cabin searched", t["status"] == "COMPLETED" and K.result(t).get("cabin_searched") == "business" and "searched as business" in (t.get("result") or ""), (t.get("result") or "")[:300])
+K.check("the result and the block code appends after the answer name the cabin searched",
+        t["status"] == "COMPLETED" and K.result(t).get("cabin_searched") == "business" and "- Searched as: business" in K.block(t), K.block(t))
 K.check("the preferred alliance was passed to the search; SQ (a Star Alliance member) came back flagged and the answer says preferred", fs[0]["args"].get("airlines") == ["Star Alliance"]
         and any(o.get("preferred") for o in K.result(t).get("options") or []) and K.says_all(t), (fs[0]["args"], (t.get("result") or "")[-200:]))
 K.run("BIZPROMPT which airline do I prefer?")
@@ -252,9 +254,9 @@ rp = [e["data"] for e in tp.get("events", []) if e["type"] == "tool_result" and 
 K.check("Emirates flies nothing here: the narrowed search's empty result is the answer (Kiwi.com, preferred_found 0), not a web search",
         rp and "Kiwi.com flights" in str(rp[0].get("preview")) and "web search" not in str(rp[0].get("preview")).lower() and "web_search" not in np_,
         [str(x.get("preview"))[:300] for x in rp])
-K.check("the search found no preferred offer and the answer says so and asks whether to search all airlines",
+K.check("the search found no preferred offer: the block code appends says so, and the answer asks whether to search all airlines",
         tp["status"] == "COMPLETED" and K.result(tp).get("next_question") == "search_all_airlines" and K.says_all(tp)
-        and "no Emirates flight" in (tp.get("result") or "") and "Shall I search all airlines?" in (tp.get("result") or ""),
+        and K.shows(K.block(tp), "- No Emirates flight: ") and "Shall I search all airlines?" in (tp.get("result") or ""),
         (tp["status"], (tp.get("result") or "")[:300]))
 
 # a range of dates from the chat: one flights_search with date + date_to, no plan (no standing airline preference now)
@@ -266,7 +268,7 @@ fsa = [x["args"] for x in K.calls(tf) if x.get("name") == "flights_search"]
 K.check("a date range from the chat is ONE flights_search with date and date_to, no plan, and the answer covers all five days",
         K.work(tf) == ["flights_search", "present_choices"] and len(fsa) == 1 and fsa[0].get("date") == f1 and fsa[0].get("date_to") == f2
         and not any(e["type"] == "plan" for e in tf["events"]) and (K.result(tf).get("days_searched") or {}).get("count") == 5
-        and "5 days searched in one call" in (tf.get("result") or ""), (nf, fsa, (tf.get("result") or "")[:200]))
+        and "- Days searched: 5 days in one search" in K.block(tf), (nf, fsa, K.block(tf)))
 
 # a model that searches four times in one turn and more in the next turns: ONE travel search per request — the first runs,
 # the rest of the turn is skipped, a later one is refused; and in the Travel bot the flight and hotel searches are the
@@ -318,7 +320,7 @@ K.check("the page was filled by its form function (fixed ids): the traveller fro
         and {f.get("field") for f in fills} >= {"number", "expiry", "cvc"} and "4111" not in vals and "browser_type" not in n2, (form, fills))
 K.hand_back()
 t2 = K.wait_end(t2["id"])
-K.check("after the hand-back without paying the task completes: the result is not_confirmed (no reference) and the answer says NOT confirmed",
+K.check("after the hand-back without paying the task completes: the result is not_confirmed (no reference) and the block code appends after the answer says Not confirmed",
         t2["status"] == "COMPLETED" and K.result(t2).get("status") == "not_confirmed" and K.result(t2).get("reason") == "no_reference"
-        and "NOT confirmed" in (t2.get("result") or ""), (t2["status"], K.result(t2), (t2.get("result") or "")[:300]))
+        and "- Not confirmed: " in K.block(t2), (t2["status"], K.result(t2), K.block(t2)))
 K.finish()

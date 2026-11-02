@@ -8,7 +8,7 @@
 //! `mail_read` lists the emails; the model calls the tool again with the facts from them), and runs every step: the
 //! benefit's amount by arithmetic, the deadlines, the form filled by its function (`crate::forms`, fixed ids), the
 //! user's own steps and the final Submit / Pay handed over, the reference read from the confirmation page's fixed
-//! parts, the reminders. The machine's JSON result carries `must_say` (deadlines, amounts, the status, the reference);
+//! parts, the reminders. The machine's JSON result carries `hints` (deadlines, amounts, the status, the reference);
 //! the model writes the reply from it. As in [`super::booking`], the next step is a pure function of the validated
 //! arguments and the transcript after the tool call, so a run suspended for a takeover carries on where it was.
 //!
@@ -25,6 +25,7 @@ use serde_json::{json, Map, Value};
 use super::driver::{
     country_of_city, handed_back, json_of, pos, results_of, stopped, walk_messages, Step,
 };
+use super::show as S;
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
 use super::workflow::{self, Checked};
@@ -247,7 +248,7 @@ refund letters, the policy, the airline's delay letter). Code reads the mail wit
 (status mail_read: the emails are above — call claim_file again with every fact from them), computes the amount and the \
 deadlines, fills the form from the profile and the Vault and hands the final Submit to the user. status needs_input: ask \
 the user for the missing facts, then call again with every field; invalid: fix the arguments and call again. Write the \
-reply from the JSON result, with every fact in its must_say.",
+reply from the JSON result, using its hints (code appends the facts in show to the reply).",
         json!({
             "insurer": {"type": "string", "enum": ["chase_sapphire", "fwd"]},
             "benefit": {"type": "string", "enum": ["trip_cancellation", "trip_interruption", "flight_delay", "other"],
@@ -294,7 +295,7 @@ user's rule, shows them as choice cards and, for buy, fills the application from
 the user's; Hong Kong: the plan page goes to the browser-use skill). Pass the trip from the user's words and their \
 booking emails; code reads the booking mail when the trip is missing (status mail_read: call insurance_buy again with \
 the trip from those emails). needs_input: ask the user, then call again with every field. Write the reply from the \
-JSON result, with every fact in its must_say.",
+JSON result, using its hints (code appends the facts in show to the reply).",
         json!({
             "market": {"type": "string", "enum": ["sg", "hk"], "description": "where the user lives and buys (FWD Singapore or FWD Hong Kong)"},
             "action": {"type": "string", "enum": ["compare", "buy"], "description": "compare: show the plans only; buy: also fill the application"},
@@ -314,8 +315,8 @@ JSON result, with every fact in its must_say.",
         "Look up a delayed bag on WorldTracer by the Property Irregularity Report's file reference: code fills the \
 tracing form and reads the status from the result page (a lookup changes nothing) and, with watch, sets a check twice a \
 day. Pass the file reference from the user's words or the PIR email; code reads the baggage mail when it is missing \
-(status mail_read: call bag_trace again with it). Write the reply from the JSON result, with every fact in its \
-must_say; drafts and advice from the skill follow as usual.",
+(status mail_read: call bag_trace again with it). Write the reply from the JSON result, using its hints \
+(code appends the facts in show to the reply); drafts and advice from the skill follow as usual.",
         json!({
             "file_ref": {"type": "string", "description": "the PIR's file reference (\"NRTSQ12345\")"},
             "family_name": {"type": "string", "description": "the passenger's family name as on the PIR"},
@@ -1521,23 +1522,26 @@ fn finish(step: Step, base: &Value) -> Step {
         return step;
     };
     if let (Some(o), Some(b)) = (v.as_object_mut(), base.as_object()) {
-        let mut must: Vec<Value> = b
-            .get("must_say")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        must.extend(
-            o.get("must_say")
+        // the base's `show` and `hints` first, then the gate's own
+        for list in ["show", "hints"] {
+            let mut all: Vec<Value> = b
+                .get(list)
                 .and_then(Value::as_array)
                 .cloned()
-                .unwrap_or_default(),
-        );
+                .unwrap_or_default();
+            all.extend(
+                o.get(list)
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            o.insert(list.into(), json!(all));
+        }
         for (k, x) in b {
-            if k != "status" && k != "must_say" && !o.contains_key(k) {
+            if k != "status" && k != "hints" && k != "show" && !o.contains_key(k) {
                 o.insert(k.clone(), x.clone());
             }
         }
-        o.insert("must_say".into(), json!(must));
     }
     Step::Done(v)
 }
@@ -1577,7 +1581,8 @@ fn fill_gate(
     if takeovers.iter().any(|(_, m)| pos(run, m) > fill_pos) || own_backs.len() >= 2 {
         return Err(Step::Done(
             json!({"status": "waiting_on_user", "user_step": step,
-            "must_say": [format!("your {name} is waiting on a step only you can do ({step}): finish it in the browser tab, then ask me to continue — nothing has been submitted")]}),
+            "show": [S::fact(&format!("Your {name} is waiting on your step"), &format!("你的{name}在等你完成"), &step)],
+            "hints": ["finish it in the browser tab, then ask me to continue — nothing has been submitted"]}),
         ));
     }
     Err(ids.one(
@@ -1598,7 +1603,8 @@ fn review_gate(run: &[Value], ids: &Ids, after: usize, reason: String) -> Result
         None => Err(ids.one("browser_request_takeover", json!({"reason": reason}))),
         Some((_, m)) if handed_back(m) => Ok(pos(run, m)),
         Some(_) => Err(Step::Done(json!({"status": "not_confirmed",
-            "must_say": ["the form is filled in and waiting in the browser tab — nothing has been submitted or paid"]}))),
+            "show": [S::fact("Status", "状态", "the form is filled in and waiting in the browser tab — nothing has been submitted or paid")],
+            "hints": []}))),
     }
 }
 
@@ -1680,7 +1686,7 @@ pub fn next(tool: &str, args: &Value, transcript: &[Value], from: usize, m: &Mac
         INSURANCE_BUY if read => read_mail(tool, spec(Flow::FwdSgBuy), args, run, &ids),
         INSURANCE_BUY if s_arg(args, "market") == "hk" => Step::Done(
             json!({"status": "browser_use", "url": HK_QUOTE_URL, "insurer": "FWD Hong Kong (underwritten by bolttech)",
-                "must_say": ["FWD Hong Kong's travel plans are underwritten by bolttech; the quote is on FWD Hong Kong's plan page"]}),
+                "hints": ["FWD Hong Kong's travel plans are underwritten by bolttech; the quote is on FWD Hong Kong's plan page"]}),
         ),
         INSURANCE_BUY => next_buy(args, run, &ids),
         _ => {
@@ -1713,7 +1719,8 @@ fn not_supported(s: &ClaimSpec) -> Step {
     };
     Step::Done(
         json!({"status": "not_supported", "insurer": s.decides, "channel": channel,
-        "must_say": [format!("this kind of claim is not filled in by code: it goes to {channel}")]}),
+        "show": [S::fact("Where this claim goes", "这类理赔提交到", &channel)],
+        "hints": ["this kind of claim is not filled in by code"]}),
     )
 }
 
@@ -1794,7 +1801,7 @@ fn next_csr(s: &ClaimSpec, args: &Value, run: &[Value], ids: &Ids, m: &Machine) 
 }
 
 /// The CSR claim's result: the benefit, the two dates, the amount and its arithmetic, the status, the documents, the
-/// reminders, the limits — and `must_say`.
+/// reminders, the limits — and `hints`.
 fn csr_result(
     s: &ClaimSpec,
     t: &TripClaim,
@@ -1804,52 +1811,69 @@ fn csr_result(
     today: NaiveDate,
 ) -> Value {
     let amount = format!("USD {}", money(t.amount));
-    let mut must = vec![format!(
-        "{} claim on the {}: {amount} = {}",
-        t.benefit,
-        t.card_product,
-        t.arithmetic()
-    )];
+    let mut must = vec![format!("{} claim on the {}", t.benefit, t.card_product)];
+    // the facts the user must read: appended to the reply by code (agent/show.rs)
+    let mut show = vec![
+        S::amount(
+            &format!("{} claim on the {}", t.benefit, t.card_product),
+            &format!("{}理赔（{}）", t.benefit, t.card_product),
+            t.amount,
+            "USD",
+        ),
+        S::fact("How it adds up", "计算方式", &t.arithmetic()),
+    ];
     let mut dates = json!({});
     if let Some(loss) = t.loss {
         let d20 = loss + Duration::days(s.notify_days);
         let d90 = loss + Duration::days(s.documents_days);
         let late = today > d20;
-        must.push(format!(
-            "notify the administrator by {} (loss date {} + {} days){}",
-            long(d20),
-            long(loss),
-            s.notify_days,
-            if late {
-                " — that window has closed: file today and say so in the claim"
-            } else {
-                ""
-            }
+        show.push(S::fact(
+            "Notify the administrator by",
+            "通知理赔管理方截止",
+            &format!(
+                "{} (loss date {} + {} days){}",
+                long(d20),
+                long(loss),
+                s.notify_days,
+                if late {
+                    " — that window has closed: file today and say so in the claim"
+                } else {
+                    ""
+                }
+            ),
         ));
-        must.push(format!(
-            "documents by {} (loss date + {} days)",
-            long(d90),
-            s.documents_days
+        show.push(S::fact(
+            "Documents by",
+            "材料截止",
+            &format!("{} (loss date + {} days)", long(d90), s.documents_days),
         ));
         if reminders {
-            must.push(format!(
-                "reminders set: {} (7 days before the documents deadline) and a mail check every 10 days until the claim is paid",
-                long(d90 - Duration::days(7))
+            show.push(S::fact(
+                "Reminders set",
+                "已设提醒",
+                &format!(
+                    "{} (7 days before the documents deadline) and a mail check every 10 days until the claim is paid",
+                    long(d90 - Duration::days(7))
+                ),
             ));
         }
         dates = json!({"loss_date": iso(loss), "notify_by": iso(d20), "documents_by": iso(d90), "notice_window_closed": late});
     }
     match (status, reference) {
-        (_, Some(r)) => must.push(format!(
-            "you pressed Submit yourself on eClaimsLine (the assistant did not submit it): claim number {r}"
+        (_, Some(r)) => {
+            show.push(S::reference("Claim number", "理赔编号", r));
+            must.push(
+                "you pressed Submit yourself on eClaimsLine (the assistant did not submit it)".into(),
+            );
+        }
+        ("handed_over", None) => show.push(S::fact(
+            "Status",
+            "状态",
+            "the claim is filled in on eClaimsLine and waiting for your Submit — nothing has been submitted for you",
         )),
-        ("handed_over", None) => must.push(
-            "the claim is filled in on eClaimsLine and waiting for your Submit — nothing has been submitted for you"
-                .into(),
-        ),
         _ => {}
     }
-    must.push(format!("{} decides the claim", s.decides));
+    show.push(S::fact("Decides the claim", "审核方", s.decides));
     let doctor = if t.has_doctor_letter {
         "your doctor's letter (have — upload it; the administrator's physician statement form may follow)"
     } else {
@@ -1869,7 +1893,8 @@ fn csr_result(
         "decides": s.decides,
         "excluded": "pre-existing conditions (treated in the 60 days before the booking), a change of plans, travel against medical advice, trips longer than 60 days",
         "limits": "USD 10,000 per traveller, 20,000 per trip, 40,000 per 12 months",
-        "must_say": must,
+        "show": show,
+        "hints": must,
     });
     if let (Some(o), Some(d)) = (v.as_object_mut(), dates.as_object()) {
         o.extend(d.clone());
@@ -1882,59 +1907,74 @@ fn csr_result(
 /// The delay claim's result: the channel and the deadline, the delay, the amount by the policy's rule, the status.
 fn delay_result(s: &ClaimSpec, d: &DelayClaim, status: &str, extra: Value) -> Value {
     let cur = s.currency;
-    let mut must = vec![
-        format!(
-            "{}{} on {}: scheduled {}, departed {} — delayed {}",
-            d.flight_no,
-            d.route(),
-            d.incident_date,
-            d.scheduled,
-            d.actual,
-            hours_text(d.minutes)
+    let must: Vec<String> = Vec::new();
+    // the facts the user must read: appended to the reply by code (agent/show.rs)
+    let mut show = vec![
+        S::fact(
+            "Delay",
+            "延误",
+            &format!(
+                "{}{} on {}: scheduled {}, departed {} — delayed {}",
+                d.flight_no,
+                d.route(),
+                d.incident_date,
+                d.scheduled,
+                d.actual,
+                hours_text(d.minutes)
+            ),
         ),
-        format!(
-            "amount: {cur} {} — {}, policy {}",
-            money(d.amount),
-            d.rule(cur),
-            d.policy_no
+        S::amount("Claim amount", "理赔金额", d.amount, cur),
+        S::fact(
+            "Rule",
+            "赔付规则",
+            &format!("{}, policy {}", d.rule(cur), d.policy_no),
         ),
     ];
     match d.deadline() {
-        Some(due) => must.push(format!(
-            "{} by {} (incident + {} days{})",
-            if s.flow == Flow::FwdHkClaim {
-                "claim"
+        Some(due) => {
+            let (en, zh) = if s.flow == Flow::FwdHkClaim {
+                ("Claim by", "理赔截止")
             } else {
-                "tell FWD"
-            },
-            long(due),
-            d.limit_days,
-            if d.limit_from_policy {
-                ", from your policy email"
-            } else {
-                ""
-            }
+                ("Tell FWD by", "通知 FWD 截止")
+            };
+            show.push(S::fact(
+                en,
+                zh,
+                &format!(
+                    "{} (incident + {} days{})",
+                    long(due),
+                    d.limit_days,
+                    if d.limit_from_policy {
+                        ", from your policy email"
+                    } else {
+                        ""
+                    }
+                ),
+            ));
+        }
+        None => show.push(S::fact(
+            "Time limit",
+            "时限",
+            "could not be checked in your mail: file as soon as possible",
         )),
-        None => must.push(
-            "the time limit could not be checked in your mail: file as soon as possible".into(),
-        ),
     }
     if !d.emergency.is_empty() {
-        must.push(format!(
-            "24-hour emergency assistance: {} (from your policy email)",
-            d.emergency
+        show.push(S::fact(
+            "24-hour emergency assistance",
+            "24 小时紧急援助",
+            &format!("{} (from your policy email)", d.emergency),
         ));
     }
     let mut v = json!({
         "status": status, "claim": s.name, "decides": s.decides, "policy_no": d.policy_no, "plan": d.plan,
         "flight": d.flight_no, "incident_date": d.incident_date, "scheduled": d.scheduled, "actual": d.actual,
         "delay": hours_text(d.minutes), "amount": format!("{cur} {}", money(d.amount)), "rule": d.rule(cur),
-        "deadline": d.deadline().map(iso), "emergency_phone": d.emergency, "must_say": must,
+        "deadline": d.deadline().map(iso), "emergency_phone": d.emergency, "show": show, "hints": must,
     });
     if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
         for (k, x) in e {
-            if k == "must_say" {
-                if let (Some(Value::Array(a)), Some(b)) = (o.get_mut("must_say"), x.as_array()) {
+            if k == "hints" || k == "show" {
+                if let (Some(Value::Array(a)), Some(b)) = (o.get_mut(k), x.as_array()) {
                     a.extend(b.iter().cloned());
                 }
             } else {
@@ -1949,8 +1989,9 @@ fn delay_result(s: &ClaimSpec, d: &DelayClaim, status: &str, extra: Value) -> Va
 fn no_benefit(s: &ClaimSpec, d: &DelayClaim) -> Step {
     Step::Done(
         json!({"status": "no_benefit", "claim": s.name, "flight": d.flight_no, "delay": hours_text(d.minutes),
-        "must_say": [format!("{} on {} was delayed {}: under the policy's first {}-hour block ({} {} for every {} hours), so no travel delay benefit is due and nothing was filed",
-            d.flight_no, d.incident_date, hours_text(d.minutes), d.block_hours, s.currency, whole(d.per_block), d.block_hours)]}),
+        "show": [S::fact("No travel delay benefit due", "没有航班延误赔付", &format!("{} on {} was delayed {}: under the policy's first {}-hour block ({} {} for every {} hours); nothing was filed",
+            d.flight_no, d.incident_date, hours_text(d.minutes), d.block_hours, s.currency, whole(d.per_block), d.block_hours))],
+        "hints": []}),
     )
 }
 
@@ -2054,19 +2095,25 @@ fn next_sg_claim(
         return Step::Calls(calls);
     }
     let mut must: Vec<String> = Vec::new();
+    let mut show: Vec<Value> = Vec::new();
     match &reference {
-        Some(r) => must.push(format!(
-            "you pressed Submit yourself on FWD's claim form (the assistant did not submit it): reference {r}"
-        )),
-        None => must.push("the claim is filled in on FWD's online form (policy, your details, the passport from the Vault, the incident, the amount, the delay certificate) and waiting for your Submit — nothing has been submitted for you".into()),
+        Some(r) => {
+            show.push(S::reference("Claim reference", "理赔编号", r));
+            must.push("you pressed Submit yourself on FWD's claim form (the assistant did not submit it)".into());
+        }
+        None => show.push(S::fact("Status", "状态", "the claim is filled in on FWD's online form (policy, your details, the passport from the Vault, the incident, the amount, the delay certificate) and waiting for your Submit — nothing has been submitted for you")),
     }
-    must.push(match deadline_reminder {
-        Some(due) => format!(
-            "reminders set: a weekly mail check for FWD's reply, and one on {} if the claim is not submitted by then",
-            long(due - Duration::days(5))
-        ),
-        None => "reminder set: a weekly mail check for FWD's reply".into(),
-    });
+    show.push(S::fact(
+        "Reminders set",
+        "已设提醒",
+        &match deadline_reminder {
+            Some(due) => format!(
+                "a weekly mail check for FWD's reply, and one on {} if the claim is not submitted by then",
+                long(due - Duration::days(5))
+            ),
+            None => "a weekly mail check for FWD's reply".into(),
+        },
+    ));
     let status = if reference.is_some() {
         "submitted"
     } else {
@@ -2079,7 +2126,7 @@ fn next_sg_claim(
         json!({"reference": reference, "portal": s.start_url, "certificate_attached": uploaded,
                "documents": [if att.is_some() { "the airline's delay certificate (have, from the airline's email)" } else { "the airline's delay certificate (ask the airline for it)" },
                              "the boarding pass or e-ticket if asked"],
-               "must_say": must}),
+               "show": show, "hints": must}),
     ))
 }
 
@@ -2161,7 +2208,7 @@ fn next_hk_claim(
                         s,
                         &d,
                         "error",
-                        json!({"must_say": ["bolttech's Travel Insurance Claim Form (the PDF on FWD Hong Kong's site) could not be opened or downloaded: upload the form to this chat and I will fill it in"]}),
+                        json!({"show": [S::fact("Claim form not opened", "理赔表未能打开", "bolttech's Travel Insurance Claim Form (the PDF on FWD Hong Kong's site) could not be opened or downloaded: upload the form to this chat and I will fill it in")]}),
                     ))
                 }
             }
@@ -2232,13 +2279,15 @@ fn next_hk_claim(
         &d,
         "drafted",
         json!({"form": filled, "draft_to": s.claims_email, "letter_attached": !letter.is_empty(),
-        "must_say": [
-            format!("handled by {}", s.decides),
-            format!("the claim form is filled in and sent to this chat ({filled}) — you still add your HKID card number, the bank account for the payment, your signature and the date"),
-            format!("an email draft to {} is in your Drafts{} — not sent: sign the form, replace it in the draft and send it",
-                    s.claims_email, if letter.is_empty() { " with the form attached".to_string() } else { format!(" with the form and {airline}'s delay letter attached") }),
-            "reminder set: a weekly mail check for the insurer's reply".to_string(),
-        ]}),
+        "show": [
+            S::fact("Handled by", "处理方", s.decides),
+            S::file("Claim form (filled in)", "理赔表（已填）", "", &filled),
+            S::fact("You still add", "你还需填写", "your HKID card number, the bank account for the payment, your signature and the date"),
+            S::fact("Email draft (not sent)", "邮件草稿（未发送）", &format!("to {} in your Drafts{} — sign the form, replace it in the draft and send it",
+                    s.claims_email, if letter.is_empty() { " with the form attached".to_string() } else { format!(" with the form and {airline}'s delay letter attached") })),
+            S::fact("Reminder set", "已设提醒", "a weekly mail check for the insurer's reply"),
+        ],
+        "hints": []}),
     ))
 }
 
@@ -2282,7 +2331,8 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
     let Some((picked, rule)) = pick_plan(&plans, &minimum, &s_arg(args, "plan")) else {
         return Step::Done(
             json!({"status": "nothing_found", "insurer": s.decides, "trip": trip, "quote_page": s.start_url,
-            "must_say": [format!("FWD's quote page listed no plans for {trip}: open the browser tab to see what it says — nothing was bought")]}),
+            "show": [S::fact("No plans listed", "没有可选方案", &format!("FWD's quote page listed no plans for {trip}: open the browser tab to see what it says — nothing was bought"))],
+            "hints": []}),
         );
     };
     let listed: Vec<String> = plans.iter().map(|p| p.summary(s.currency)).collect();
@@ -2293,11 +2343,19 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
         money(picked.premium)
     );
     let mut must = vec![
-        format!(
-            "FWD Singapore travel insurance for {trip}; plans quoted: {}",
-            listed.join("; ")
-        ),
+        format!("FWD Singapore travel insurance for {trip}"),
         pick_line,
+    ];
+    // the facts the user must read: appended to the reply by code (agent/show.rs)
+    let mut show = vec![
+        S::fact("Plans quoted", "报价方案", &listed.join("; ")),
+        S::amount(
+            &format!("Chosen: {}", picked.name),
+            &format!("已选：{}", picked.name),
+            picked.premium,
+            s.currency,
+        ),
+        S::fact("Why", "选择理由", &rule),
     ];
     let mut result = json!({"insurer": s.decides, "trip": trip, "plans": listed, "picked": picked.name,
         "premium": format!("{} {}", s.currency, money(picked.premium)), "rule": rule, "quote_page": s.start_url});
@@ -2319,7 +2377,8 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
     }
     if s_arg(args, "action") == "compare" {
         result["status"] = json!("shown");
-        result["must_say"] = json!(must);
+        result["show"] = json!(show);
+        result["hints"] = json!(must);
         return Step::Done(result);
     }
     // the plan's Select link, then the application
@@ -2331,7 +2390,8 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
     }
     let base = {
         let mut b = result.clone();
-        b["must_say"] = json!(must);
+        b["show"] = json!(show);
+        b["hints"] = json!(must);
         b
     };
     let apply_pos = match fill_gate(run, ids, "apply", json!({"plan": picked.name}), s.name) {
@@ -2363,9 +2423,14 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
         };
         let pc = content_of(pm);
         if pc.starts_with("DENIED") || pc.to_lowercase().contains("\"status\": \"denied\"") {
-            must.push("you declined the payment approval: nothing was bought".into());
+            show.push(S::fact(
+                "Not bought",
+                "未购买",
+                "you declined the payment approval",
+            ));
             result["status"] = json!("not_confirmed");
-            result["must_say"] = json!(must);
+            result["show"] = json!(show);
+            result["hints"] = json!(must);
             return Step::Done(result);
         }
         let ppos = pos(run, pm);
@@ -2429,9 +2494,10 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
     };
     let base = {
         let mut b = result.clone();
-        let mut mm = must.clone();
-        mm.push(card_line.clone());
-        b["must_say"] = json!(mm);
+        let mut ss = show.clone();
+        ss.push(S::fact("Status", "状态", &card_line));
+        b["show"] = json!(ss);
+        b["hints"] = json!(must);
         b
     };
     let back = match review_gate(run, ids, secrets_pos, reason) {
@@ -2444,20 +2510,20 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
     };
     match reference {
         Some(p) => {
-            must.push(format!(
-                "bought — you paid on FWD's page: policy number {p}; the documents come by email"
-            ));
+            show.push(S::reference("Policy number", "保单号", &p));
+            must.push("bought — you paid on FWD's page; the documents come by email".into());
             result["status"] = json!("bought");
             result["policy_no"] = json!(p);
         }
         None => {
-            must.push(card_line);
+            show.push(S::fact("Status", "状态", &card_line));
             result["status"] = json!("handed_over");
         }
     }
     result["card"] = json!(card.map(|c| c.label.clone()));
     result["card_complete"] = json!(card_ok);
-    result["must_say"] = json!(must);
+    result["show"] = json!(show);
+    result["hints"] = json!(must);
     Step::Done(result)
 }
 
@@ -2469,7 +2535,9 @@ fn next_bag(args: &Value, run: &[Value], ids: &Ids) -> Step {
     let fail = |why: &str| {
         Step::Done(
             json!({"status": "error", "file_ref": file_ref, "tracing_page": bagtrace::TRACE_URL,
-            "must_say": [format!("WorldTracer could not be checked for file {file_ref} ({why}): track it at {} or in the airline's app", bagtrace::TRACE_URL)]}),
+            "show": [S::fact(&format!("WorldTracer not checked for file {file_ref}"), &format!("未能在 WorldTracer 查询文件 {file_ref}"), why),
+                     S::link("Track it yourself", "自己查询", "WorldTracer", bagtrace::TRACE_URL)],
+            "hints": ["or track it in the airline's app"]}),
         )
     };
     let Some((_, nav)) = results_of(run, "browser_navigate").into_iter().next() else {
@@ -2510,32 +2578,47 @@ fn next_bag(args: &Value, run: &[Value], ids: &Ids) -> Step {
     let Some(t) = trace else {
         return fail("the result page showed no status");
     };
-    let mut must = vec![format!(
-        "your bag (WorldTracer, file {file_ref}): {}{}",
-        t.status.trim_end_matches('.'),
-        if t.last_update.is_empty() {
-            String::new()
-        } else {
-            format!(" — last update {}", t.last_update)
-        }
-    )];
+    let must: Vec<String> = Vec::new();
+    // the facts the user must read: appended to the reply by code (agent/show.rs)
+    let mut show = vec![
+        S::reference("WorldTracer file", "WorldTracer 文件号", &file_ref),
+        S::fact(
+            "Bag status",
+            "行李状态",
+            &format!(
+                "{}{}",
+                t.status.trim_end_matches('.'),
+                if t.last_update.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — last update {}", t.last_update)
+                }
+            ),
+        ),
+    ];
     if let Some(d) = flight_date {
-        must.push(format!(
-            "a bag not found by {} (21 days after {}) is treated as lost and the lost-bag claim starts",
-            long(d + Duration::days(21)),
-            long(d)
+        show.push(S::fact(
+            "Treated as lost after",
+            "视为遗失的日期",
+            &format!(
+                "{} (21 days after {}): the lost-bag claim starts then",
+                long(d + Duration::days(21)),
+                long(d)
+            ),
         ));
     }
     if watch {
-        must.push(
-            "a check on the bag runs twice a day; you are told when its status changes".into(),
-        );
+        show.push(S::fact(
+            "Bag check",
+            "行李查询",
+            "twice a day; you are told when its status changes",
+        ));
     }
     let status = if t.found { "traced" } else { "no_file" };
     Step::Done(
         json!({"status": status, "file_ref": file_ref, "bag_status": t.status, "last_update": t.last_update,
         "lost_after": flight_date.map(|d| iso(d + Duration::days(21))), "watch": watch,
-        "tracing_page": bagtrace::TRACE_URL, "must_say": must}),
+        "tracing_page": bagtrace::TRACE_URL, "show": show, "hints": must}),
     )
 }
 

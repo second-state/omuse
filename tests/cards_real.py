@@ -41,7 +41,8 @@ def no_number(text: str) -> bool:
 def by_cards(a: U.Answer, step: str) -> None:
     check(f"{step}: answered by the Credit cards bot (its link in the answer)", "Credit cards" in a.bot_link, a.bot_link)
     check(f"{step}: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.seconds)
-    check(f"{step}: the answer says the card terms are from the catalog as of August 2026", bool(C.CATALOG_DATE.search(a.text)), a.text[-900:])
+    check(f"{step}: the block code appends after the answer says the card terms are from the catalog as of August 2026",
+          "Card terms from the catalog as of" in a.block and bool(C.CATALOG_DATE.search(a.block)), (a.block, a.text[-300:]))
     check(f"{step}: no card number in the answer", no_number(a.text), a.text[:300])
 
 
@@ -70,9 +71,8 @@ async def main():
         a = await u.ask("I also have a Bread Cashback American Express card. Would it beat my other cards for a US$500 TV at Best Buy?",
                         label="missing", timeout=1200)
         check("missing: answered by the Credit cards bot", "Credit cards" in a.bot_link, a.bot_link)
-        check("missing: the answer says the Bread Cashback is not in the card catalog",
-              bool(re.search(r"(not|isn't|isn’t|no row|no entry|missing)[^.\n]{0,60}catalog|catalog[^.\n]{0,60}(doesn't|doesn’t|does not|no row|no entry|not (list|includ|cover))",
-                             a.text, re.I)), a.text[:900])
+        check("missing: the block code appends after the answer says the Bread Cashback is not in the card catalog",
+              bool(re.search(r"Bread Cashback[^\n]*is not in the card catalog", a.block)), (a.block, a.text[:300]))
         check("missing: it gives what the issuer's page says with a date, or says the terms cannot be verified",
               bool(re.search(r"(Oct(ober)?\.?|2026-10|10/\d{1,2}/2026)[^\n]{0,12}2026|2026-10-\d\d|could(n't| not) (be )?verif|unverified|not (been )?verified|can(not|'t) verify",
                              a.text, re.I)), a.text[-900:])

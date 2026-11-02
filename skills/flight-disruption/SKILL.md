@@ -14,7 +14,7 @@ connecting flights, whether the ticket is one booking or separate tickets (matte
 - A connected data tool wins: the built-in `flights_search` (ONE call: Google Flights with the key, else Kiwi.com — for
   alternatives; rebook on the airline's own site), or an MCP connector's `flight_status`.
 - `flight_status{flight, date}` for an airline OMuse reads (Singapore Airlines today): code reads the airline's status
-  page and returns the scheduled and estimated times as JSON with must_say.
+  page and returns the scheduled and estimated times as JSON with show.
 - Else (`not_known`) browser_read (no clicking) the airline's own flight status page, or FlightAware / Flightradar24 for the flight
   number, and the airport's departures page. Quote the new time, gate, and the airline's wording ("delayed",
   "cancelled"); never estimate a new departure time yourself.

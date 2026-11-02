@@ -197,6 +197,9 @@ pub fn event_spec(spec: &Value) -> std::result::Result<Value, ValueError> {
             if t.trim().parse::<f64>().is_err() {
                 return verr("mode=price_below 需要数字 threshold，例如 15");
             }
+            // how its price is read (a known site's element, the model's selector, or the model) is decided here, when
+            // the watch is made, and stored with it
+            crate::watch_price::decide_read(&mut params);
         }
         params.insert("mode".to_string(), Value::String(mode));
     }
@@ -805,6 +808,12 @@ impl Scheduler {
             Ok(r) => r,
             Err(e) => json!({"error": e.to_string(), "events": [], "cursor": cursor}), // sentinel down etc.
         };
+        // a model-read price watch: Sentinel handed back the page, the model extracts the price into JSON
+        let res = if get_str(&spec, "source") == "web.page" {
+            crate::watch_price::complete_read(&*self.rt, &spec["params"], &cursor, res).await
+        } else {
+            res
+        };
         let every = as_f64(&spec["every"]).unwrap_or(3.0);
         if get_truthy(&res, "error") {
             let err = truncate(&py_str(&res["error"]), 300);
@@ -946,18 +955,22 @@ impl Scheduler {
                     .map(|a| a.iter().map(py_str).collect())
                     .unwrap_or_default();
                 let joined = added.join("; ");
-                if !joined.is_empty() {
+                if !joined.is_empty() || e.get("price").is_none() {
                     joined
                 } else {
-                    e.get("prices_seen")
-                        .and_then(|a| a.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .map(|p| fmt_g(as_f64(p).unwrap_or(0.0)))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .unwrap_or_default()
+                    // a price watch's event is structured: the price as read, and the item
+                    let item = get_str(e, "item");
+                    let seen = get_str(e, "seen");
+                    let seen = if seen.is_empty() {
+                        fmt_g(as_f64(&e["price"]).unwrap_or(0.0))
+                    } else {
+                        seen
+                    };
+                    if item.is_empty() {
+                        seen
+                    } else {
+                        format!("{seen} · {item}")
+                    }
                 }
             };
             lines.push(format!(
@@ -1174,6 +1187,14 @@ mod tests {
         assert_eq!(d["action"], "notify");
         assert_eq!(as_f64(&d["every"]), Some(60.0));
         assert_eq!(d["params"]["threshold"], "15");
+        // how the price is read is decided with the spec: no known element on this page, so the model reads it
+        assert_eq!(d["params"]["read"], "model");
+        let d = event_spec(&json!({"source": "web.page", "params": {"url": "http://shop.test:8099/kaya_aurora.html",
+                                   "mode": "price_below", "threshold": 20, "keyword": "Aurora"}}))
+        .unwrap();
+        assert_eq!(d["params"]["read"], "element");
+        assert_eq!(d["params"]["price_sel"], ".a-price .a-offscreen");
+        assert_eq!(d["params"]["item"], "Aurora");
         for bad in [
             json!({"url": ""}),
             json!({"url": "https://x", "mode": "text"}),

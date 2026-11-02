@@ -10,7 +10,7 @@ number from a web search snippet as an emergency line.
 
 **First, in ONE turn, before any web search**: `emergency_contacts` (country, city, the emergency: illness_or_injury or
 lost_or_stolen_documents — the official medical line, or the consular line and the embassy, from checked tables; its
-must_say goes in the answer), profile_get (nationality — it decides which embassy) and gmail_search
+code appends its show facts to the answer), profile_get (nationality — it decides which embassy) and gmail_search
 `insurance (policy OR certificate OR assistance OR travel)` (the 24-hour assistance line and what the policy pays). Then
 find the official page of **that country's** embassy in the city (web_search "<nationality> embassy <city> lost passport"
 or "<nationality> embassy <city> medical") and browser_read it. Never answer "contact your embassy" without naming it:

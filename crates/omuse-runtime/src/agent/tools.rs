@@ -168,7 +168,7 @@ pub const FINISH_TOOLS: [&str; 33] = [
     "calendar_create_event",
 ];
 
-/// The small code tools the model calls with JSON (agent/facts.rs, agent/fx.rs): their results carry `must_say`, the
+/// The small code tools the model calls with JSON (agent/facts.rs, agent/fx.rs): their results carry `hints`, the
 /// facts the reply must carry, from structured data only.
 pub fn fact_tool_schemas() -> Vec<Value> {
     let s = json!({"type": "string"});
@@ -176,7 +176,7 @@ pub fn fact_tool_schemas() -> Vec<Value> {
         fn_("emergency_contacts", "The official emergency lines for a traveller, from OMuse's checked tables: an illness or \
 injury → the place's official medical information line (English-speaking clinics and hospitals); lost or stolen \
 documents (a passport) → the nationality's 24-hour consular emergency line and its embassy there, in international form. \
-Call it in any emergency abroad; the JSON result has the lines and must_say — write the reply from it.",
+Call it in any emergency abroad; write the reply from the JSON result (code appends its show lines to the reply).",
             json!({"country": {"type": "string", "description": "the country the user is in"},
                    "city": {"type": "string", "description": "the city the user is in"},
                    "emergency": {"type": "string", "enum": ["illness_or_injury", "lost_or_stolen_documents", "other"]},
@@ -184,20 +184,20 @@ Call it in any emergency abroad; the JSON result has the lines and must_say — 
             &["country", "emergency"]),
         fn_("visa_rules", "Entry rules for destinations from the official sources OMuse keeps: each destination's official \
 visa page and, where the official table has the nationality, the visa-free stay in days with its date and source; for a \
-Schengen country, ETIAS's status. Call it for any visa / entry question (ETIAS included); the JSON result has must_say — write the reply from it (read the official page for \
+Schengen country, ETIAS's status. Call it for any visa / entry question (ETIAS included); write the reply from the JSON result (code appends its show facts to the reply) (read the official page for \
 what it does not give).",
             json!({"destinations": {"type": "array", "items": s.clone(), "description": "countries or cities, in the order the user named them"},
                    "nationality": {"type": "string", "description": "the passport's nationality when the user said; empty = the profile's"}}),
             &["destinations"]),
         fn_("fx_convert", "Convert an amount between currencies at today's market rate (computed in code, with the rate's \
 date). Call it whenever the user asks what an amount is in another currency or for an exchange rate (amount 1). The JSON \
-result has must_say — write the reply from it.",
+result is what the reply is written from (code appends its show facts).",
             json!({"amount": {"type": "number", "description": "the amount (1 for a rate)"},
                    "from": {"type": "string", "description": "ISO code, e.g. USD"},
                    "to": {"type": "string", "description": "ISO code, e.g. VND"}}),
             &["from", "to"]),
         fn_("loan_payment", "The monthly payment of a loan or mortgage with equal instalments (computed in code). Call it \
-whenever the user asks for a monthly payment; the JSON result has must_say — write the reply from it.",
+whenever the user asks for a monthly payment; write the reply from the JSON result (code appends its show facts to the reply).",
             json!({"principal": {"type": "number"}, "annual_rate_pct": {"type": "number", "description": "4% is 4"},
                    "years": {"type": "number"}}),
             &["principal", "annual_rate_pct", "years"]),
@@ -616,16 +616,22 @@ the new items are handed to that run as data. every = poll minutes (default 3)."
             json!({"name": s, "goal": s, "source": {"type": "string", "enum": ["gmail.new_email", "slack.new_message", "notion.db_changed"]},
              "params": {"type": "object"}, "every": {"type": "number"}, "until": {"type": "string", "description": "when the user wants the checking to stop once something happens (\"until my landlord replies\", \"tell me when X, then stop\"): that condition in a few words — it then becomes a goal that ends when met; omit for a plain recurring job"}}), &["name", "goal", "source"]),
         fn_("watch_create", "监控一个网页：内容变化、出现某段文字（如“有货 In stock”），或价格低于阈值时提醒用户。只在状态“新变成满足”时提醒一次，\
-不会重复打扰；检查失败会自动拉长间隔，连续失败会自动停用并告知。默认只发通知（不运行 Agent、不耗模型）；给了 then 才会在触发时运行那个任务。\
+不会重复打扰；检查失败会自动拉长间隔，连续失败会自动停用并告知。默认只发通知（不运行 Agent）；给了 then 才会在触发时运行那个任务。\
  Watch a public web page and alert the user when it changes, when some text appears, or when a price drops below a \
-threshold. Alerts fire once per new change (deduplicated); failures back off. By default it only notifies (no agent \
-run); give `then` to run a task with the change as data instead.",
+threshold (the item's price is read by its element on a known shop or with your selector, else by the model from the \
+page). Alerts fire once per new change (deduplicated); failures back off. By default it only notifies (no agent run); \
+give `then` to run a task with the change as data instead.",
             json!({"name": s, "url": s, "mode": {"type": "string", "enum": ["change", "text", "price_below"]},
              "text": {"type": "string", "description": "mode=text: the words to wait for, e.g. 'In stock'"},
-             "threshold": {"type": "number", "description": "mode=price_below: alert when a price on the page is below this"},
-             "keyword": {"type": "string", "description": "optional: only prices/text near this word (e.g. the product name)"},
-             "current_price": {"type": "number", "description": "mode=price_below: the item's price as you saw it on the page now \
-(e.g. 31.43). The watch reads the page itself and refuses to start if it reads a different price."},
+             "threshold": {"type": "number", "description": "mode=price_below: alert when the item's price is below this"},
+             "item": {"type": "string", "description": "mode=price_below: the item whose price is watched, as the page names it"},
+             "currency": {"type": "string", "description": "mode=price_below: the price's currency as the page shows it, e.g. S$, US$, €, SGD"},
+             "current_price": {"type": "number", "description": "mode=price_below: the item's price as you read it on the page now \
+(e.g. 31.43). A known shop's price element is read by the watch itself, which refuses to start if it reads a different \
+price; on any other page this is the baseline (required there)."},
+             "selector": {"type": "string", "description": "optional, mode=price_below: the CSS selector of the item's price element, \
+only when you know it (e.g. from the page's HTML)"},
+             "selector_attr": {"type": "string", "description": "optional: the attribute of that element holding the price (e.g. content)"},
              "every_minutes": {"type": "number", "description": "check interval, default 60, minimum 15"},
              "then": {"type": "string", "description": "optional standalone instruction to run when it fires"}}),
             &["name", "url", "mode"]),

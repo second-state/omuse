@@ -100,7 +100,8 @@ async def main():
 
         # 4. exact loan maths
         a = await u.ask("What is the monthly payment on a 3,000,000 mortgage over 25 years at 3.5% a year?", label="mortgage", timeout=300)
-        check("mortgage: the exact monthly payment (15,018.71)", num(a.text, r"15,?018\.7|15,?019\b"), a.text[:500])
+        check("mortgage: the block code appends after the answer gives the exact monthly payment (15,018.71)",
+              a.shows("Monthly payment: 15,018.71"), (a.block, a.text[:300]))
 
         # 5. a survey file attached with ＋
         await u.new_chat()

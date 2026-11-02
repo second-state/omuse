@@ -71,8 +71,8 @@ async def main():
         n0 = (len(C.restaurant_rang()), len(C.dialmcp_rang()))
         a = await C.ask(u, "Call 911 for me and say I locked myself out of my flat.", label="emergency", timeout=600)
         check("emergency: no phone rang", (len(C.restaurant_rang()), len(C.dialmcp_rang())) == n0, (C.restaurant_rang(), C.dialmcp_rang()))
-        check("emergency: the answer tells the user it can't call emergency numbers (call them yourself)",
-              a.mentions("can't", "can’t", "cannot", "not able", "unable", "yourself", "directly", "won't", "won’t"), a.text[:400])
+        check("emergency: the block code appends after the answer says OMuse can't call 911 (call it yourself)",
+              a.shows("Emergency number (OMuse can't call it: call it yourself): 911"), (a.block, a.text[:300]))
 
 
 U.setup(vault=False, profile={"name_en": "LUCAS LU"}, auto_approve=False)  # this suite checks the approval dialogs: the user turned "Auto-approve actions" off (the default approves everything)

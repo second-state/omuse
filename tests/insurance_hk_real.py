@@ -80,10 +80,11 @@ async def main():
               and "300" in vals.get("fill_7", ""), vals)
         check("hk: … and leaves the HKID number, the bank account and the signature to the user",
               not vals.get("HKID Card no", "").strip() and not vals.get("fill_4_5", "").strip() and not vals.get("Claimants signature", "").strip(), vals)
-        check("hk: the answer says bolttech handles the claim and gives the amount (HKD 300)",
-              re.search(r"bolttech", text, re.I) and re.search(r"(HKD|HK\$)\s?300\b", text), text[:900])
-        check("hk: the answer says what the user still adds (HKID, signature)", re.search(r"HKID|identity card", text, re.I)
-              and re.search(r"sign", text, re.I), text[:900])
+        block = "\n".join(x.block for x in answers)
+        check("hk: the block code appends after the answer says bolttech handles the claim and gives the amount (HKD 300)",
+              "Handled by: bolttech" in block and "Claim amount: HKD 300.00" in block, (block, text[:300]))
+        check("hk: the block code appends after the answer says what the user still adds (HKID, signature)",
+              "You still add:" in block and "HKID" in block and "signature" in block, block)
         check("hk: the answer does not say the email was sent", not C.SENT.search(text), (C.SENT.search(text) or [""])[0])
     drafts = C.mail_full("Drafts")[drafts0:]
     print(f"INFO hk drafts: {[(d['to'], d['subject'], [n for n, _ in d['attachments']]) for d in drafts]}")

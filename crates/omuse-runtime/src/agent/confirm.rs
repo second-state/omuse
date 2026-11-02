@@ -10,7 +10,7 @@
 //!   `mail_results_to`), the hand-back was not a code machine's — and records it as model-read.
 //!
 //! [`confirmed`] is the run's newest confirmed reference with its source, for the outcome check and the ledger;
-//! [`fact`] is the model-read one the reply must carry (`must_say`).
+//! [`fact`] is the model-read one the reply must carry (`hints`).
 
 use omuse_common::util::get_str;
 use serde_json::{json, Value};
@@ -35,7 +35,7 @@ pub fn schema() -> Value {
         "Record the confirmation reference of a page you filled with the browser-use skill (a site with no form \
 function), after the user pressed Submit / Pay and handed the browser back: read the confirmation page \
 (browser_snapshot) and pass the order / booking / application number exactly as the page shows it, with the label the \
-page puts before it. Not for a known site's workflow (its JSON result has the reference). The JSON result has must_say.",
+page puts before it. Not for a known site's workflow (its JSON result has the reference). Code appends the reference (its show) to the reply.",
         json!({"reference": {"type": "string", "description": "the reference exactly as the confirmation page shows it, e.g. AB-123456"},
                "label": {"type": "string", "description": "the page's label before it, e.g. \"Order number\" or \"Booking reference\""}}),
         &["reference"],
@@ -154,7 +154,7 @@ fn clean(s: &str) -> String {
         .to_string()
 }
 
-/// `confirm_reference{reference, label}`: the model's JSON checked in code. `recorded` with `must_say`, or `invalid`
+/// `confirm_reference{reference, label}`: the model's JSON checked in code. `recorded` with the reference to `show`, or `invalid`
 /// with the problems the model can fix.
 pub fn record(transcript: &[Value], args: &Value) -> Value {
     let reference = clean(&sget(args, "reference"));
@@ -182,8 +182,9 @@ pub fn record(transcript: &[Value], args: &Value) -> Value {
     if !shown {
         return invalid("the reference is not on any page read after the hand-back: read the confirmation page (browser_snapshot) and pass the reference exactly as it shows");
     }
+    // the label is the page's own (no translation); code appends the reference to the reply (agent/show.rs)
     json!({"status": "recorded", "reference": reference, "label": label, "source": MODEL_READ,
-           "must_say": [format!("{label}: {reference}")]})
+           "show": [super::show::reference(&label, "", &reference)], "hints": []})
 }
 
 /// The reference in a code machine's JSON result: read at a known site's fixed label (`reference`, a booking's
@@ -287,7 +288,10 @@ mod tests {
         );
         assert_eq!(r["status"], json!("recorded"));
         assert_eq!(r["source"], json!(MODEL_READ));
-        assert_eq!(r["must_say"], json!(["Your order: AB-778812"]));
+        assert_eq!(
+            super::super::show::lines(&r, false),
+            vec!["- Your order: **AB-778812**"]
+        );
         t.push(call(
             "c3",
             CONFIRM_REFERENCE,

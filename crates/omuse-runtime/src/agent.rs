@@ -53,6 +53,7 @@ pub mod market_text;
 pub mod news;
 pub mod places_fill;
 pub mod runtime;
+pub mod show;
 pub mod tools;
 pub mod trains;
 pub(crate) mod util;

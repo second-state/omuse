@@ -28,7 +28,7 @@ tools' JSON into the edition and the reply.
 
 ## 3. The reply
 - `published`: the title, the lead, the HTML and PDF links, the schedule (its cadence and next run), the mail. Every
-  fact in `must_say` goes into the reply; `next_question` (email this edition?) may close it.
+  fact in `show` is appended to the reply by code; `next_question` (email this edition?) may close it.
 - `error`: say the edition could not be published and why.
 
 ## 4. "Email it" later in the chat

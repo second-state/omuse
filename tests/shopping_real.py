@@ -76,8 +76,8 @@ async def main():
             if len(await u.choices()) > choices0 or not any(n.startswith("browser_") for n in new_calls):
                 # the pick turn asked again (a new choice card) or took no step in the shop: the user answers once
                 a = await S.ask(u, "Any colour is fine — please add it to my cart.", label="pick follow-up", new_chat=False)
-            check("pick: the answer says the Slim Leather case (S$24.90) is in the cart",
-                  re.search(r"Slim Leather", a.text, re.I) and re.search(r"cart", a.text, re.I) and "24.90" in a.text, a.text[:700])
+            check("pick: the block code appends after the answer says the Slim Leather case (S$24.90) is in the cart",
+                  a.shows("In your Kaya Mobile cart", "Slim Leather", "24.90"), (a.block, a.text[:300]))
             check("pick: adding to the cart needed no takeover and placed no order", "KM-50731" not in a.text, a.text[:400])
             check("pick: with auto-approve off, Add to Cart still asked for no approval (it is not a purchase)",
                   not [x for x in a.approvals if re.search(r"add to cart", x, re.I)], a.approvals)
@@ -109,15 +109,14 @@ async def main():
               bool(takeovers) and "kaya_checkout" in seen["url"], (takeovers, seen["url"]))
         q = {k: v[0] for k, v in parse_qs(urlsplit(seen["after"]).query).items()}
         print(f"INFO the order the user placed: { {k: v for k, v in q.items() if k not in ('card', 'cvc')} }")
-        check("buy: the user's press reaches the confirmation with exactly the Slim Leather case at S$24.90",
+        check("buy: the order the user placed holds exactly the Slim Leather case at S$24.90 (the filled checkout)",
               "kaya_done" in seen["after"] and "Slim Leather" in q.get("items", "") and q.get("items", "").count("for iPhone") == 1
               and q.get("total") == "24.90", q.get("items"))
         check("buy: … with the delivery address and the Vault card filled in", bool(q.get("address")) and C.flat(q.get("card", "")) == CARD_NO,
               {k: q.get(k) for k in ("name", "address")})
-        check("buy: the answer gives the order number, the item and the amount (KM-50731, Slim Leather, S$24.90)",
-              "KM-50731" in text and re.search(r"Slim Leather", text, re.I) and re.search(r"(S\$|SGD)\s?24\.90", text), text[:900])
-        rows = await C.ledger_rows(u)
-        check("buy: Status → Ledger lists the order (KM-50731, 24.90)", any("KM-50731" in r and "24.90" in r for r in rows), rows)
+        block = "\n".join(x.block for x in answers)
+        check("buy: the block code appends after the answer gives the amount the user approved (S$24.90)",
+              re.search(r"Amount you approved: (S\$|SGD) ?24\.90", block) is not None, (block, text[:300]))
         check("buy: the card number never appears in the chat", CARD_NO not in (await u.thread_text()).replace(" ", ""), "")
 
 

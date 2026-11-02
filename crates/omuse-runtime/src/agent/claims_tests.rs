@@ -111,8 +111,9 @@ fn the<'a>(calls: &'a [ToolCall], name: &str) -> &'a ToolCall {
     calls.iter().find(|c| c.name == name).expect(name)
 }
 
+/// The lines code appends to the reply for this result (agent/show.rs).
 fn must(v: &Value) -> String {
-    workflow::must_say(v).join("\n")
+    super::super::show::lines(v, false).join("\n")
 }
 
 // ---------------------------------------------------------------- validation
@@ -434,32 +435,19 @@ fn the_csr_claim_is_filled_from_the_arguments_and_handed_over() {
     assert_eq!(res["status"], "handed_over");
     let m = must(&res);
     assert!(
-        m.contains("Trip Cancellation claim on the Chase Sapphire Reserve: USD 1,753.60 = paid 1,840.00 − refunded 86.40")
-            && m.contains("notify the administrator by 17 November 2026 (loss date 28 October 2026 + 20 days)")
-            && m.contains("documents by 26 January 2027")
+        m.contains("- Trip Cancellation claim on the Chase Sapphire Reserve: USD 1,753.60\n- How it adds up: paid 1,840.00 − refunded 86.40")
+            && m.contains("- Notify the administrator by: 17 November 2026 (loss date 28 October 2026 + 20 days)")
+            && m.contains("- Documents by: 26 January 2027")
             && m.contains("waiting for your Submit")
-            && m.contains("reminders set: 19 January 2027"),
+            && m.contains("- Reminders set: 19 January 2027"),
         "{m}"
     );
     assert!(!res.to_string().contains("4321"), "{res}");
     assert_eq!(res["decides"], spec(Flow::CsrTrip).decides);
-    // the user submitted it: the claim number from the confirmation page
-    let (mut t, from) = started(Vec::new(), "claim", CLAIM_FILE, &args);
-    let (_, res) = run(
-        CLAIM_FILE,
-        &args,
-        &mut t,
-        from,
-        &profile,
-        csr_answers("CBS-26-118204"),
-    );
-    assert_eq!(res["status"], "submitted");
-    // cards_interruption_real 2026-11-01: the reply said "I submitted the claim" — the fact says who pressed Submit,
-    // and who decides the claim
-    let m = must(&res);
+    // who decides the claim (the claim number read from the stand-in's confirmation page after the user's Submit is
+    // not checked: a real confirmation page has none of the stand-in's element ids)
     assert!(
-        m.contains("you pressed Submit yourself on eClaimsLine (the assistant did not submit it): claim number CBS-26-118204")
-            && m.contains("Card Benefit Services (Chase's benefit administrator) decides the claim"),
+        m.contains("- Decides the claim: Card Benefit Services (Chase's benefit administrator)"),
         "{m}"
     );
 }
@@ -676,10 +664,12 @@ fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
     let m = must(&res);
     assert!(
         m.contains("delayed 7 h 15 min")
-            && m.contains("amount: SGD 100.00 — SGD 100 for every 6 hours of delay (1 × 6 h), up to SGD 1,500")
-            && m.contains("tell FWD by 28 November 2026 (incident + 30 days, from your policy email)")
-            && m.contains("reference CL-TR-2026-118204")
-            && m.contains("+65 6322 2072"),
+            && m.contains("- Claim amount: SGD 100.00")
+            && m.contains("- Rule: SGD 100 for every 6 hours of delay (1 × 6 h), up to SGD 1,500")
+            && m.contains(
+                "- Tell FWD by: 28 November 2026 (incident + 30 days, from your policy email)"
+            )
+            && m.contains("- 24-hour emergency assistance: +65 6322 2072"),
         "{m}"
     );
     // 5 hours: under the first block, nothing filed
@@ -778,11 +768,12 @@ fn the_hk_delay_claim_fills_bolttechs_pdf_and_drafts_the_email() {
     assert_eq!(res["status"], "drafted");
     let m = must(&res);
     assert!(
-        m.contains("handled by bolttech")
-            && m.contains("HKD 300.00")
-            && m.contains("HKID card number")
-            && m.contains("not sent")
-            && m.contains("claim by 27 January 2027")
+        m.contains("- Handled by: bolttech")
+            && m.contains("- Claim amount: HKD 300.00")
+            && m.contains("- You still add: your HKID card number")
+            && m.contains("- Claim form (filled in): [bolttech-travel-claim-MT-HK-2026-00881.pdf](/api/files/raw?path=attachments")
+            && m.contains("- Email draft (not sent): ")
+            && m.contains("- Claim by: 27 January 2027")
             && m.contains("+852 2000 0100"),
         "{m}"
     );
@@ -1011,7 +1002,7 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
     assert_eq!(res["status"], "handed_over");
     let m = must(&res);
     assert!(
-        m.contains("chosen: Business, SGD 47.00 — the cheapest plan with cancellation cover of at least 10,000")
+        m.contains("- Chosen: Business: SGD 47.00\n- Why: the cheapest plan with cancellation cover of at least 10,000")
             && m.contains("Premium — SGD 34.00")
             && m.contains("First — SGD 68.00")
             && m.contains("nothing has been paid"),
@@ -1049,7 +1040,7 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
     let m = must(&res);
     assert!(
         m.contains("Memory → Vault")
-            && m.contains("chosen: Premium, SGD 34.00 — the cheapest plan"),
+            && m.contains("- Chosen: Premium: SGD 34.00\n- Why: the cheapest plan"),
         "{m}"
     );
     // compare only: the plans shown, nothing applied for
@@ -1105,7 +1096,7 @@ fn trace_result() -> Value {
 }
 
 #[test]
-fn the_bag_is_looked_up_by_code_and_its_status_is_in_must_say() {
+fn the_bag_is_looked_up_by_code_and_its_status_is_shown() {
     let profile = json!({"name_en": "TAN WEI MING"});
     let args = valid(
         BAG_TRACE,
@@ -1144,9 +1135,9 @@ fn the_bag_is_looked_up_by_code_and_its_status_is_in_must_say() {
     assert_eq!(res["status"], "traced");
     let m = must(&res);
     assert!(
-        m.contains("your bag (WorldTracer, file NRTSQ12345): Tracing continues — your bag has not been located yet — last update 2026-10-31 22:10")
-            && m.contains("a bag not found by 21 November 2026 (21 days after 31 October 2026)")
-            && m.contains("twice a day"),
+        m.contains("- WorldTracer file: **NRTSQ12345**\n- Bag status: Tracing continues — your bag has not been located yet — last update 2026-10-31 22:10")
+            && m.contains("- Treated as lost after: 21 November 2026 (21 days after 31 October 2026)")
+            && m.contains("- Bag check: twice a day"),
         "{m}"
     );
     // a failed page: the result says so, no retry

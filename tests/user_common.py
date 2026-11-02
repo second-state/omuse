@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from playwright.async_api import Page, async_playwright  # noqa: E402
 
 from tests import skills_common as K  # noqa: E402
+from tests.show_common import shows  # noqa: E402
 from tests import travel_common as T  # noqa: E402
 
 B, H, c = T.B, T.H, T.c
@@ -90,6 +91,8 @@ class Answer:
     text: str = ""
     links: list[str] = field(default_factory=list)
     files: list[dict] = field(default_factory=list)        # {"name", "href"} of each file card
+    block: str = ""                                        # the facts code appended after the reply (after its last rule)
+    block_links: list[str] = field(default_factory=list)   # the links in that block, absolute
     approvals: list[str] = field(default_factory=list)     # each approval dialog's text, as the user read it
     takeovers: list[str] = field(default_factory=list)     # each "take over the browser" request
     bot_link: str = ""                                     # "Continue in ✈️ Travel →" when a bot answered
@@ -108,6 +111,11 @@ class Answer:
         """Links in the answer that lead nowhere for the user: an old stand-in address (https://link.omuse.local/…) that
         reached the page (earlier versions handed links to the model as stand-ins; none should ever show)."""
         return [x for x in self.links + re.findall(r"https?://link\.omuse\.local/\S*", self.text) if "link.omuse.local" in x]
+
+    def shows(self, *needles: str) -> bool:
+        """Every needle (a reference, an amount, a date, a link or its path) is in the block code appended after the
+        reply (tests/show_common.py): what the user reads under the rule, never the model's own words."""
+        return shows(self.block, *needles, links=self.block_links)
 
     def mentions(self, *words: str) -> bool:
         low = self.text.lower()
@@ -243,7 +251,14 @@ class User:
         last = pg.locator(".msg.assistant:not(.live) .bubble:not(.filecard):not(.choices)").last
         if await last.count():
             a.text = await last.inner_text()
-            a.links = await last.evaluate("b => [...b.querySelectorAll('a[href^=\"http\"]')].map(x => x.href)")
+            # every link the user can click, a link into the app (/artifacts/…, /api/files/raw?…) resolved too
+            a.links = await last.evaluate("b => [...b.querySelectorAll('a[href]')].map(x => x.href).filter(h => /^https?:/.test(h))")
+            # the facts code appended after the reply: the text and links after the bubble's last rule
+            blk = await last.evaluate("""b => { const hr = [...b.querySelectorAll('hr')].pop(); if (!hr) return {text: '', links: []};
+                const text = [], links = []; for (let n = hr.nextElementSibling; n; n = n.nextElementSibling) {
+                  text.push(n.innerText); n.querySelectorAll('a[href]').forEach(x => links.push(x.href)); }
+                return {text: text.join('\\n'), links}; }""")
+            a.block, a.block_links = blk.get("text", ""), blk.get("links", [])
             a.bot_link = await last.evaluate("b => { const l = b.closest('.msg').querySelector('.handoff-link'); return l ? l.textContent : ''; }")
         a.files = await pg.evaluate("() => [...document.querySelectorAll('.bubble.filecard')].map(c => ({name: c.innerText.split('\\n').map(l => l.trim()).find(l => /[A-Za-z0-9]/.test(l)) || '', "
                                     "href: (c.querySelector('a[href]') || {}).href || ''}))")
@@ -251,6 +266,7 @@ class User:
         print(f"TIMING {SUITE}/{name} {a.seconds:.0f} s")
         print(f"INFO {name} answer: {' '.join(a.text.split())[:900]}")
         print(f"INFO {name} links: {a.links[:8]}  files: {a.files[:4]}  approvals: {[x[:120] for x in a.approvals]}  takeovers: {a.takeovers}")
+        print(f"INFO {name} appended block: {' | '.join(a.block.splitlines())[:600]}  links: {a.block_links[:6]}")
         return a
 
     async def download(self, href: str) -> bytes:
@@ -287,7 +303,14 @@ class User:
         last = pg.locator(".msg.assistant:not(.live) .bubble:not(.filecard):not(.choices)").last
         if await last.count():
             a.text = await last.inner_text()
-            a.links = await last.evaluate("b => [...b.querySelectorAll('a[href^=\"http\"]')].map(x => x.href)")
+            # every link the user can click, a link into the app (/artifacts/…, /api/files/raw?…) resolved too
+            a.links = await last.evaluate("b => [...b.querySelectorAll('a[href]')].map(x => x.href).filter(h => /^https?:/.test(h))")
+            # the facts code appended after the reply: the text and links after the bubble's last rule
+            blk = await last.evaluate("""b => { const hr = [...b.querySelectorAll('hr')].pop(); if (!hr) return {text: '', links: []};
+                const text = [], links = []; for (let n = hr.nextElementSibling; n; n = n.nextElementSibling) {
+                  text.push(n.innerText); n.querySelectorAll('a[href]').forEach(x => links.push(x.href)); }
+                return {text: text.join('\\n'), links}; }""")
+            a.block, a.block_links = blk.get("text", ""), blk.get("links", [])
         name = label or text[:30]
         print(f"TIMING {SUITE}/{name} {a.seconds:.0f} s")
         print(f"INFO {name} answer: {' '.join(a.text.split())[:900]}")

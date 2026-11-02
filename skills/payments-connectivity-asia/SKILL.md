@@ -37,7 +37,7 @@ page when a rule or a fee must be current (say the date checked). No browsing fo
 
 ## 2. Exchange rates and budgets
 fx_convert for each pair from the user's home currency (amount 1 for a rate; the amount for "how much is this in
-SGD") — its must_say (the figure, the rate and its date) goes in the answer. For budgets, give per-day ranges with the assumptions.
+SGD") — code appends its show facts (the figure, the rate and its date) to the answer. For budgets, give per-day ranges with the assumptions.
 
 ## 3. Problems on the road
 Card declined → try another network / insert instead of tap / tell the issuer via its app; ATM ate the card → the

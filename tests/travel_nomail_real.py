@@ -53,14 +53,14 @@ async def main():
         common("hotel", a)
         check("hotel: the Travel bot answered (the link to continue in Travel)", "Travel" in a.bot_link, a.bot_link)
         check("hotel: the answer names hotels near Shinjuku", bool(re.search(r"[Hh]otel|Inn|Hostel", a.text)) and a.mentions("Shinjuku"), a.text[:500])
-        check("hotel: the answer links a hotel page and Kayak to compare", any("kayak" not in x for x in a.links) and any("kayak" in x for x in a.links), a.links)
+        check("hotel: the block code appends after the answer links a hotel page and Kayak to compare", any("kayak" not in x for x in a.block_links) and any("kayak" in x for x in a.block_links), a.block_links)
         check("hotel: the answer says nothing about the earlier booking in the mail", not EARLIER.search(a.text), a.text[:600])
 
         a = await u.ask(f"What is the cheapest flight from Singapore to Tokyo on {day(D1)}?", label="flight")
         common("flight", a)
         check("flight: the Travel bot answered (the link to continue in Travel)", "Travel" in a.bot_link, a.bot_link)
         check("flight: the answer gives flights (airline or flight number) with prices", a.has_prices() and bool(FLIGHT_NO.search(a.text) or AIRLINE.search(a.text)), a.text[:500])
-        check("flight: the answer links a booking page and Kayak to compare", any("kayak" not in x for x in a.links) and any("kayak" in x for x in a.links), a.links)
+        check("flight: the block code appends after the answer links a booking page and Kayak to compare", any("kayak" not in x for x in a.block_links) and any("kayak" in x for x in a.block_links), a.block_links)
         check("flight: the answer says nothing about the hotel booked in the mail", not EARLIER.search(a.text) and not a.mentions("Gracery"), a.text[:600])
 
         a = await u.ask("Which hotel did I book for my Tokyo trip, and for which dates?", label="booked")

@@ -22,7 +22,7 @@ what the policy pays for a delayed or lost bag and what it needs (section 4), or
   keep an eye on the bag. Code opens WorldTracer's tracing page, fills it (the form function) and reads the status from
   the result page; with watch it sets a check twice a day. No reference and the mailbox connected: code reads the
   baggage mail (result `mail_read`) — read it and call bag_trace again with the reference. `needs_input`: ask the user
-  for the reference. Quote the result's status and last update and the 21-day date (its `must_say`); never fill the
+  for the reference. Quote the result's status and last update and the 21-day date (its `show`); never fill the
   tracing page yourself.
 - Delayed bags are usually found within a few days. If nothing after 5 days the airline asks for a detailed
   inventory (contents, values, purchase dates) — help the user write it (make_xlsx if long).
@@ -56,7 +56,7 @@ goes through claim_file (`benefit: "other"` says where an FWD baggage claim goes
 
 ## 6. Answer
 What to do now (numbered), the references found, the tracking status with date (every fact of bag_trace's
-`must_say`), what the airline and the policy owe
+`show`), what the airline and the policy owe
 (quoted, with sources), the receipts to keep, the watch you set up, and the drafts ready to send. No guesses on
 amounts: "not found on the policy" is an answer.
 

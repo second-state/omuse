@@ -33,7 +33,7 @@ with every field; `invalid`: fix the arguments and call again. Never fill, click
 
 ## Answer
 Word the reply from the tool's JSON result: its status (submitted, scheduled, needs_choice, waiting_on_user,
-not_confirmed, handed_over), every fact in its `must_say` (the reference, the day the window opens, the step left to
+not_confirmed, handed_over), its `show` facts (the reference, the day the window opens, the step left to
 the user), what was assumed, and — when submitted — that the passport is what to show at the checkpoint. Never the
 passport number.
 

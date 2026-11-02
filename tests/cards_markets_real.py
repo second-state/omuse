@@ -50,9 +50,10 @@ async def main():
         check("cards: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.seconds)
         check("cards: the pick is one of the cards the user named", a.mentions("Altitude", "UOB One", "HSBC Red"), a.text[:600])
         check("cards: the value per card in Singapore dollars", bool(SG.search(a.text)), a.text[:900])
-        check("cards: the catalog's date (August 2026)", bool(C.CATALOG_DATE.search(a.text)), a.text[-900:])
-        check("cards: the Singapore rows are said to be unverified (or were verified on the issuer's page, with the date)",
-              bool(re.search(r"unverified|not (been )?verified|seed|verify (them|it|these|the)|verified on|issuer'?s (page|site)", a.text, re.I)), a.text[-900:])
+        check("cards: the block code appends after the answer gives the catalog's date (August 2026)",
+              "Card terms from the catalog as of" in a.block and bool(C.CATALOG_DATE.search(a.block)), a.block)
+        check("cards: the block code appends after the answer says the Singapore rows are unverified seeds",
+              "are unverified seeds" in a.block, a.block)
         check("cards: the question is not asked again (no second choice card, no takeover, no approval)",
               len(await u.choices()) == len(asked0) and not a.takeovers and not a.approvals, (len(asked0), a.takeovers, a.approvals))
         check("cards: no card number in the answer", not C.CARD_NO.search(a.text), a.text[:300])
@@ -83,9 +84,10 @@ async def main():
         others = [n for n in ("Altitude", "UOB One", "HSBC Red") if a.mentions(n)]
         check("hk: the answer compares the Travel+ with at least one more of the user's cards", bool(others), a.text[:900])
         check("hk: the values in Hong Kong dollars", bool(HK.search(a.text)), a.text[:900])
-        check("hk: the foreign transaction fee on the Singapore cards", bool(re.search(r"3\.25\s?%|foreign[- ](transaction|currency|exchange)[- ]fees?|foreign fees?|FX fees?", a.text, re.I)),
-              a.text[:900])
-        check("hk: the catalog's date (August 2026)", bool(C.CATALOG_DATE.search(a.text)), a.text[-900:])
+        check("hk: the block code appends after the answer gives the foreign transaction fee of the Singapore cards (catalog)",
+              "foreign transaction fee" in a.block, a.block)
+        check("hk: the block code appends after the answer gives the catalog's date (August 2026)",
+              "Card terms from the catalog as of" in a.block and bool(C.CATALOG_DATE.search(a.block)), a.block)
         check("hk: no card number in the answer", not C.CARD_NO.search(a.text), a.text[:300])
 
         # 5. a card named in the chat (and one named again)
@@ -93,7 +95,9 @@ async def main():
                         "S$1,500 Singapore Airlines flight booked on singaporeair.com?", label="named")
         check("named: answered by the Credit cards bot", "Credit cards" in a.bot_link, a.bot_link)
         check("named: the answer covers the Citi PremierMiles", a.mentions("PremierMiles", "Premier Miles"), a.text[:900])
-        check("named: the values in Singapore dollars and the catalog's date", bool(SG.search(a.text)) and bool(C.CATALOG_DATE.search(a.text)), a.text[-900:])
+        check("named: the values in Singapore dollars", bool(SG.search(a.text)), a.text[-900:])
+        check("named: the block code appends after the answer gives the catalog's date (August 2026)",
+              "Card terms from the catalog as of" in a.block and bool(C.CATALOG_DATE.search(a.block)), a.block)
         check("named: no card number in the answer", not C.CARD_NO.search(a.text), a.text[:300])
         cards = await C.vault_cards(u)
         pm = C.find(cards, "premiermiles") or C.find(cards, "premier", "miles")

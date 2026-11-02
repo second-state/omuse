@@ -239,7 +239,7 @@ fn arrival_country(skill: &str) -> &'static [&'static str] {
 /// carry ("<label>: <code>", `agent/facts.rs`): the model read it on the page and passed it as JSON
 /// (`confirm_reference`, checked in `agent/confirm.rs`). A known site's reference is in its machine's result; no
 /// page's text is scanned for one (arrival_cards2_real 2026-10-30: Visit Japan Web's Registration ID left out of the
-/// reply — now the arrival-card machine's `must_say`).
+/// reply — now the arrival-card machine's `hints`).
 pub fn confirmation_ref_fact(transcript: &[Value]) -> Option<String> {
     super::confirm::fact(transcript)
 }

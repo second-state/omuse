@@ -831,7 +831,8 @@ pub async fn watch(State(ctx): State<App>, body: Bytes) -> JsonResult {
         Some(p) if p.is_object() => p.clone(),
         _ => json!({}),
     };
-    let res = match deps::watch_poll(&ctx, &src, &params, &cursor).await {
+    let observed = b.get("observed").filter(|o| o.is_object());
+    let res = match deps::watch_poll(&ctx, &src, &params, &cursor, observed).await {
         Ok(r) => r,
         Err(e) => return Ok(Json(json!({"error": e, "events": [], "cursor": cursor}))),
     };

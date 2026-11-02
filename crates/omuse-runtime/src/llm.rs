@@ -1311,7 +1311,7 @@ fn round2(x: f64) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use parking_lot::Mutex;
 
@@ -1428,9 +1428,9 @@ mod tests {
     }
 
     /// Serves scripted responses (or transport errors) in order and records the request bodies.
-    struct Scripted {
+    pub(crate) struct Scripted {
         responses: Mutex<Vec<Result<HttpResponse, String>>>,
-        requests: Mutex<Vec<HttpRequest>>,
+        pub(crate) requests: Mutex<Vec<HttpRequest>>,
     }
 
     impl LlmTransport for Scripted {
@@ -1441,7 +1441,11 @@ mod tests {
         }
     }
 
-    fn resp(status: u16, body: Value, retry_after: Option<&str>) -> Result<HttpResponse, String> {
+    pub(crate) fn resp(
+        status: u16,
+        body: Value,
+        retry_after: Option<&str>,
+    ) -> Result<HttpResponse, String> {
         Ok(HttpResponse {
             status,
             retry_after: retry_after.map(str::to_string),
@@ -1454,7 +1458,7 @@ mod tests {
     }
 
     #[allow(clippy::type_complexity)]
-    fn scripted_llm(
+    pub(crate) fn scripted_llm(
         responses: Vec<Result<HttpResponse, String>>,
     ) -> (
         Llm,

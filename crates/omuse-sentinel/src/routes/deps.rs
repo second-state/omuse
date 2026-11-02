@@ -195,16 +195,18 @@ pub fn watch_sources() -> Value {
     crate::watchers::SOURCES.clone()
 }
 
-/// `watchers.poll(store, src, params, cursor)`, or `watchers.poll_web(...)` for `web.page`. `Err` is a `WatchError`.
+/// `watchers.poll(store, src, params, cursor)`, or `watchers.poll_web(...)` for `web.page` (`observed`: a price
+/// watch's price the runtime had the model extract). `Err` is a `WatchError`.
 pub async fn watch_poll(
     ctx: &Ctx,
     src: &str,
     params: &Value,
     cursor: &Value,
+    observed: Option<&Value>,
 ) -> Result<Value, String> {
     let cur = if cursor.is_null() { None } else { Some(cursor) };
     let r = if src == "web.page" {
-        crate::watchers::poll_web(ctx, params, cur).await
+        crate::watchers::poll_web(ctx, params, cur, observed).await
     } else {
         crate::watchers::poll(ctx, src, params, cur).await
     };

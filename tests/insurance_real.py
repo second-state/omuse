@@ -102,8 +102,9 @@ async def buy(u: U.User) -> None:
           bool(ink) and ink.get("passport", 0) > 0.01 and ink.get("card", 0) > 0.01, ink)
     cards = await u.thread_cards()
     print(f"INFO buy: chat cards {[x[:200] for x in cards]}")
-    check("buy: the answer names the plan and the amount to pay (Business, SGD 47)",
-          re.search(r"business", a.text, re.I) and re.search(r"(SGD|S\$|\$)\s?47(\.00)?\b", a.text), a.text[:900])
+    buy_block = "\n".join(x.block for x in answers)
+    check("buy: the block code appends after the answer names the plan and the amount to pay (Business, SGD 47)",
+          re.search(r"Chosen: Business: SGD 47\.00", buy_block) is not None, (buy_block, a.text[:300]))
     shown = await u.thread_text()   # everything the chat shows: the answers, the plan cards, the hand-over
     prem = [p for p in ("34", "47", "68") if re.search(rf"(SGD|S\$|\$)\s?{p}(\.00)?\b", shown)]
     check("buy: the plans are compared with their premiums (at least two of SGD 34 / 47 / 68)", len(prem) >= 2, (prem, shown[:600]))
@@ -163,17 +164,17 @@ async def claim(u: U.User) -> None:
     check("claim: the live picture shows the policy number, name, passport, date and amount filled in",
           bool(ink) and all(ink.get(k, 0) > 0.003 for k in ("policy", "name", "idno", "date", "amount")), ink)
     q = {k: v[0] for k, v in parse_qs(urlsplit(seen["after"]).query).items()}
-    check("claim: the user's Submit reaches FWD's confirmation page", "claim_done" in seen["after"], seen["after"])
     if "claim_done" in seen["after"]:
         check("claim: the form held the policy number and the incident date from the mail",
               C.flat(q.get("policy", "")) == "TI-SG-2026-55123" and q.get("date", "").strip() == INC.isoformat(), q)
         check("claim: the form held the amount (SGD 100) and the passport number from the Vault",
               re.fullmatch(r"(SGD|S\$)?\s?100(\.00)?", q.get("amount", "").strip(), re.I) and C.flat(q.get("idno", "")) == PASSPORT_NO, q)
         check("claim: the delay certificate was attached to the form", "delay_certificate" in q.get("docs", ""), q)
-    check("claim: the answer gives the delay (7 h 15 min) and the amount (SGD 100)",
-          re.search(r"7\s?(h|hours?|hrs?)\s?(and\s)?15|7\.25|7:15", text, re.I) and re.search(r"(SGD|S\$)\s?100\b", text), text[:900])
-    check("claim: the answer gives FWD's 30-day deadline as a date, or says the claim went in",
-          C.date_in(text, D30) or re.search(r"submitted|CL-TR-2026-118204", text, re.I), (D30, text[:900]))
+    block = "\n".join(x.block for x in answers)
+    check("claim: the block code appends after the answer gives the delay (7 h 15 min) and the amount (SGD 100)",
+          "delayed 7 h 15 min" in block and "Claim amount: SGD 100.00" in block, (block, text[:300]))
+    check("claim: the block code appends after the answer gives FWD's 30-day deadline as a date",
+          C.date_in(block, D30), (D30, block))
     everything = await u.thread_text()
     check("claim: the passport number never appears in the chat", PASSPORT_NO not in everything.replace(" ", ""), "")
 

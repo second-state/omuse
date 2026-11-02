@@ -53,8 +53,8 @@ async def main():
         check("range: the answer names the cheapest day and its price — or says the search found nothing and offers a broader one",
               (a.has_prices() and any(mentions_day(a.text, D1 + dt.timedelta(days=i)) for i in range(5))) or bool(nothing), a.text[:400])
         if not nothing:
-            bk = [x for x in a.links if "kiwi.com" in x or "google.com/travel" in x]
-            check("range: the answer has a booking link, and it opens", bool(bk) and opens(bk[0])[0], a.links)
+            bk = [x for x in a.block_links if "kiwi.com" in x or "google.com/travel" in x]
+            check("range: the block code appends after the answer has a booking link, and it opens", bool(bk) and opens(bk[0])[0], a.block_links)
 
         # 3. a flight, with an airline preference
         a = await u.ask(f"Find me the cheapest flight from San Francisco to Chengdu on {day(D1)}. I prefer United.", label="flight")
@@ -63,9 +63,9 @@ async def main():
               and (re.search(r"\b(UA|CA|MU|CZ|3U|HU|NH|JL|CX|BR|CI)\s?\d{2,4}\b", a.text)
                    or (re.search(r"United|Air China|China Eastern|Sichuan", a.text) and re.search(r"\b\d{1,2}:\d\d\b", a.text))), a.text[:600])
         check("flight: the answer covers the preferred airline (United)", "United" in a.text, a.text[:400])
-        g = [x for x in a.links if "google.com/travel/flights" in x]
-        k = [x for x in a.links if "kayak.com/flights" in x]
-        check("flight: the answer links a flight's booking page and Kayak to compare", g and k, a.links)
+        g = [x for x in a.block_links if "google.com/travel/flights" in x]
+        k = [x for x in a.block_links if "kayak.com/flights" in x]
+        check("flight: the block code appends after the answer links a flight's booking page and Kayak to compare", g and k, a.block_links)
         if g:
             page = await u.ctx.new_page()
             await page.goto(g[0], wait_until="domcontentloaded", timeout=60000)
@@ -82,9 +82,9 @@ async def main():
         a = await u.ask(f"Find a 4-star hotel near Ginza, Tokyo from {day(D1)} to {day(D3)} for 2 people.", label="hotel")
         check("hotel: every link in the answer leads somewhere (no undecoded stand-in)", not a.broken_links(), a.broken_links())
         check("hotel: the answer lists hotels with prices", a.has_prices(2) and re.search(r"[Hh]otel|Inn|Ginza", a.text), a.text[:400])
-        gh = [x for x in a.links if "google.com/travel/hotels" in x]
-        kh = [x for x in a.links if "kayak.com/hotels" in x]
-        check("hotel: the answer links a hotel's booking page and Kayak to compare", gh and kh, a.links)
+        gh = [x for x in a.block_links if "google.com/travel/hotels" in x]
+        kh = [x for x in a.block_links if "kayak.com/hotels" in x]
+        check("hotel: the block code appends after the answer links a hotel's booking page and Kayak to compare", gh and kh, a.block_links)
         if gh:
             page = await u.ctx.new_page()
             await page.goto(gh[0], wait_until="domcontentloaded", timeout=60000)

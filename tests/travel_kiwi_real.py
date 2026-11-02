@@ -52,8 +52,8 @@ async def main():
         check("flight: every link in the answer leads somewhere (no undecoded stand-in)", not a.broken_links(), a.broken_links())
         check("flight: the answer gives real flights — the airline, departure and arrival times and the price", flights_shown(a), a.text[:600])
         check("flight: the answer is for the day asked", mentions_day(a.text, D1), a.text[:400])
-        bk = [x for x in a.links if "kiwi.com" in x]
-        check("flight: the answer has a Kiwi.com booking link for a flight", bool(bk), a.links)
+        bk = [x for x in a.block_links if "kiwi.com" in x]
+        check("flight: the block code appends after the answer has a Kiwi.com booking link for a flight", bool(bk), a.block_links)
         if bk:
             ok, why = opens(bk[0])
             check("flight: the booking link opens", ok, why)
@@ -65,8 +65,8 @@ async def main():
         check("range: the answer names the cheapest day in the range, with the airline and the price",
               a.has_prices() and any(mentions_day(a.text, D1 + dt.timedelta(days=i)) for i in range(5))
               and bool(re.search(AIRLINES, a.text) or re.search(FLIGHT_NO, a.text)), a.text[:600])
-        bk = [x for x in a.links if "kiwi.com" in x]
-        check("range: the answer has a Kiwi.com booking link, and it opens", bool(bk) and opens(bk[0])[0], a.links)
+        bk = [x for x in a.block_links if "kiwi.com" in x]
+        check("range: the block code appends after the answer has a Kiwi.com booking link, and it opens", bool(bk) and opens(bk[0])[0], a.block_links)
 
 
 U.setup(vault=False)

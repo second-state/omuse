@@ -17,7 +17,7 @@ Call `shop_order` once with the user's words as arguments — never open, read o
 - The result: `shown` (the listings ranked, the pick — or `choose: true`: the cards are on screen, the user picks),
   `in_cart` (in the cart, not checked out), `booked` (the order number), `not_confirmed`, `nothing_found`, `error`,
   `browser_use` (a shop code has no form for: its page is open and the browser-use skill is loaded — continue there).
-  Every fact in `must_say` goes into the reply. `needs_input` / `invalid`: ask the user / fix the arguments.
+  The facts in `show` are appended to the reply by code. `needs_input` / `invalid`: ask the user / fix the arguments.
 
 ## No link: searching shops yourself
 1. **Search with a direct URL** (fast, no typing):
@@ -91,10 +91,10 @@ Call `shop_order` once with the user's words as arguments — never open, read o
   ("best-rated under S$25 with 200+ ratings"): pass ranking with those criteria and every listing of the page as an option
   with its price, stars and ratings as numbers (price_text as the page writes it) — OMuse picks and orders them. The pick arrives as "I choose: <label>": carry on
   with what the user asked for it (e.g. add it to the cart).
-- "Tell me when it's cheaper / back in stock": watch_create(url=product page, mode="price_below", threshold=…, keyword=
-  a word from the product's own title, current_price=the price you saw) or mode="text", text="In stock". It notifies once
-  per new drop; no need for a schedule. The watch reads the page itself and says what it read — report THAT value to the
-  user; if it refuses (it read a different price), fix the keyword or say the page can't be watched reliably.
+- "Tell me when it's cheaper / back in stock": watch_create(url=product page, mode="price_below", threshold=…, item=the
+  product's name, currency=as the page shows it, current_price=the price you read; selector=the price element's CSS
+  selector only if you know it) or mode="text", text="In stock". It notifies once per new drop; no need for a schedule.
+  The watch says what it read — report THAT value to the user; if it refuses (it read a different price), say so.
 
 ## After the order / cancelling or returning
 - The order lands in the ledger (Trust page → Ledger) with the order number from the confirmation page — always report

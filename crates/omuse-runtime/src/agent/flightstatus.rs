@@ -7,7 +7,7 @@
 //! The model passes the flight number and the date as JSON; code opens the airline's status page for them
 //! (`browser_navigate`, prefix `fst_`), reads the table's rows (`browser_read_elements` with `cells`), takes the
 //! departure and arrival column of the rows labelled "Scheduled", "Estimated" and "Status", and returns the times with
-//! `must_say`. An airline with no known status page: `not_known` (the model reads the airline's page itself; its times
+//! `hints`. An airline with no known status page: `not_known` (the model reads the airline's page itself; its times
 //! are then the model's).
 
 use chrono::{NaiveDate, NaiveTime};
@@ -15,6 +15,7 @@ use omuse_common::util::get_str;
 use serde_json::{json, Map, Value};
 
 use super::driver::Step;
+use super::show as S;
 use super::tools::fn_;
 use super::util::{sget, stored_call, tool_calls};
 use super::workflow::{self, Checked};
@@ -57,7 +58,7 @@ pub fn tool_schemas() -> Vec<Value> {
         "A flight's live status from the airline's own status page (today: Singapore Airlines, SQ flights): code opens the \
 page for the flight and the date and reads the scheduled and estimated departure and arrival times and the status from \
 its table, as JSON. Call it whenever the user asks whether a flight is delayed or when it leaves; write the reply from \
-the result, with every fact in its must_say. A result not_known means OMuse has no reader for that airline's page: read \
+the result, using its hints (code appends the facts in show to the reply). A result not_known means OMuse has no reader for that airline's page: read \
 the airline's status page yourself.",
         json!({
             "flight": {"type": "string", "description": "the flight number, e.g. SQ 638"},
@@ -163,7 +164,7 @@ pub fn next(_tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     );
     let Some(airline) = AIRLINES.iter().find(|a| flight.starts_with(a.code)) else {
         return Step::Done(json!({"status": "not_known", "flight": shown, "date": date,
-            "reason": "OMuse has no reader for this airline's status page", "must_say": []}));
+            "reason": "OMuse has no reader for this airline's status page", "hints": []}));
     };
     let url = (airline.page)(&flight, &date);
     let n = m.first
@@ -198,10 +199,20 @@ pub fn next(_tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     let Some((dep, _)) = leg(sched, 0) else {
         let mut v = base;
         v["status"] = json!("not_read");
-        v["must_say"] = json!([format!(
-            "{}'s status page did not show {shown} on {date} just now: check {url}",
-            airline.name
-        )]);
+        v["show"] = json!([
+            S::fact(
+                &format!("{shown} on {date}"),
+                &format!("{shown}（{date}）"),
+                &format!("{}'s status page did not show it just now", airline.name)
+            ),
+            S::link(
+                &format!("{}'s status page", airline.name),
+                &format!("{} 航班状态页", airline.name),
+                "",
+                &url
+            ),
+        ]);
+        v["hints"] = json!([]);
         return Step::Done(v);
     };
     let arr = leg(sched, 1);
@@ -229,19 +240,29 @@ pub fn next(_tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     };
     let line = match &est_dep {
         Some((new, _)) if *new != dep => format!(
-            "{shown} on {date}: scheduled departure {dep}, now estimated {new}{}{detail} — {}'s status page",
+            "scheduled departure {dep}, now estimated {new}{}{detail}",
             est_arr
                 .as_ref()
                 .map(|_| format!(", arrival {}", both(&est_arr)))
                 .unwrap_or_default(),
-            airline.name
         ),
-        _ => format!(
-            "{shown} on {date}: departure {dep} as scheduled{detail} — {}'s status page",
-            airline.name
-        ),
+        _ => format!("departure {dep} as scheduled{detail}"),
     };
-    v["must_say"] = json!([line, format!("source: {url}")]);
+    // the facts the user must read: appended to the reply by code (agent/show.rs)
+    v["show"] = json!([
+        S::fact(
+            &format!("{shown} on {date}"),
+            &format!("{shown}（{date}）"),
+            &line
+        ),
+        S::link(
+            &format!("{}'s status page", airline.name),
+            &format!("{} 航班状态页", airline.name),
+            "",
+            &url
+        ),
+    ]);
+    v["hints"] = json!([]);
     Step::Done(v)
 }
 
@@ -295,12 +316,19 @@ mod tests {
         assert_eq!(v["scheduled"]["departure"], json!("09:25"));
         assert_eq!(v["estimated"]["departure"], json!("17:10"));
         assert_eq!(v["estimated"]["arrival"], json!("01:00 (+1 day)"));
-        let must = v["must_say"][0].as_str().unwrap();
+        // the lines code appends to the reply (agent/show.rs)
+        let shown = super::super::show::lines(&v, false);
         assert!(
-            must.contains("scheduled departure 09:25, now estimated 17:10"),
-            "{must}"
+            shown[0].starts_with(
+                "- SQ 638 on 2026-11-01: scheduled departure 09:25, now estimated 17:10"
+            ),
+            "{shown:?}"
         );
-        assert!(must.contains("Delayed 7 h 45 min"), "{must}");
+        assert!(shown[0].contains("Delayed 7 h 45 min"), "{shown:?}");
+        assert!(
+            shown[1].starts_with("- Singapore Airlines's status page: ["),
+            "{shown:?}"
+        );
     }
 
     #[test]

@@ -52,7 +52,7 @@ recognition.
 
 ## 3. Answer
 Word the reply from the tool's JSON result: its status (confirmed, not_eligible, stopped, not_confirmed,
-handed_over), every fact in its `must_say` — the reference number exactly as the result gives it, the application's
+handed_over), the facts in its `show` are appended by code — the reference number exactly as the result gives it, the application's
 link, the last day for the face recognition, the refund (card as "Visa ending 1111") — what was uploaded, and the face
 recognition as the user's own step on their phone: open the link (or "Resume Application" at
 https://app.apdtrefund.hk/hkTaxMobile/?lang=en with the travel document number and the reference), press "Proceed with

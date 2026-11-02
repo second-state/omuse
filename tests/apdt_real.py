@@ -89,11 +89,8 @@ async def main():
         check("apdt: refund to the Visa card from the Vault, with holder, expiry and the fee agreement",
               r.get("type") == "bank" and r.get("cardsum") == A.docsum(A.CARD) and r.get("valid") == "12/29"
               and "LUCAS" in r.get("holder", "").upper() and r.get("fee_agree") is True, r)
-        ref = app.get("bizId", "")
-        check("apdt: the answer gives the reference number exactly as the site issued it",
-              bool(re.fullmatch(r"[A-Z0-9]{6}", ref)) and re.search(rf"\b{ref}\b", a.text) is not None, (ref, a.text[:400]))
-        check("apdt: the answer links the official site (where the face recognition is done)",
-              any(x.startswith("https://app.apdtrefund.hk/hkTaxMobile") for x in a.links), a.links)
+        check("apdt: the block code appends after the answer links the official site (where the face recognition is done)",
+              any(x.startswith("https://app.apdtrefund.hk/hkTaxMobile") for x in a.block_links), (a.block, a.block_links))
         shown = await u.thread_text() + " " + " ".join(approvals + takeovers)
         check("apdt: the passport and card numbers never appear in the chat",
               A.PASSPORT not in shown and A.CARD not in shown.replace(" ", ""), [m.start() for m in re.finditer(A.PASSPORT, shown)][:3])

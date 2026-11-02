@@ -13,7 +13,7 @@ reply.
   given, `party`, `min_rating` when the user set one (code keeps 4.3+ otherwise), `named` for a restaurant the user
   named. Code runs ONE places search and picks the best-rated; the cards are on screen.
 - A MICHELIN-starred or Bib Gourmand request → the michelin-dining skill (`kind: "michelin"`).
-- Reply from the result: the restaurants with rating, price, address and link; every fact in `must_say`.
+- Reply from the result: the restaurants with rating, price, address and link; the facts in `show` are appended by code.
 
 ## 2. Book — travel_book
 - `travel_book` with the same arguments, `pick` = the restaurant the user chose, `requests` = dietary needs and the

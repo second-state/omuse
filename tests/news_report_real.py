@@ -54,9 +54,13 @@ async def main():
         report_chat = C.c.get(U.B + "/api/conversations", params={"kind": "chat", "bot": "main"}).json()["conversations"][0]["id"]
         print(f"INFO report links: {links}")
         check("report: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
-        html = next((x for x in links if "/artifacts/" in x and x.endswith(".html")), "")
-        pdf = next((x for x in links if "/artifacts/" in x and x.endswith(".pdf")), "")
-        check("report: the answer links the HTML and the PDF under /artifacts/", bool(html and pdf), links)
+        # the editions' links are in the block code appends after the answer (gate 40: the model's prose left them out)
+        html = next((x for x in a.block_links if "/artifacts/" in x and x.endswith(".html")), "")
+        pdf = next((x for x in a.block_links if "/artifacts/" in x and x.endswith(".pdf")), "")
+        check("report: the block code appends after the answer links the HTML and the PDF under /artifacts/",
+              bool(html and pdf) and "HTML edition" in a.block and "PDF edition" in a.block, (a.block, a.block_links))
+        check("report: the block code appends after the answer names the next weekly edition",
+              a.shows("New edition: every"), a.block)
         if html:
             st, ct, body = await opens(u, html)
             page = body.decode("utf-8", "replace")

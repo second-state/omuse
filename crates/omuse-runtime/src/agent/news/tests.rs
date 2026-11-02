@@ -282,7 +282,10 @@ fn no_news_ends_with_nothing_found_after_one_wider_search() {
         ("Lumora news", Some(30))
     );
     assert_eq!(res["status"], "nothing_found");
-    assert!(workflow::must_say(&res)[0].contains("no recent articles on Lumora"));
+    assert_eq!(
+        super::super::show::lines(&res, false),
+        vec!["- No edition published: the news search found no recent articles on Lumora"]
+    );
 }
 
 /// Links, publications and dates come from the gathered articles, never from the model: a story naming an article
@@ -408,16 +411,18 @@ fn publish_lays_out_schedules_and_mails_the_edition_and_says_so() {
         ])
     );
     assert_eq!(res["status"], "published");
-    let must = workflow::must_say(&res);
-    for want in [
-        "the lead: Orkney array goes live (Reuters)",
-        "/artifacts/news/lumora-tidal-power/2026-11-01-0800.html",
-        "/artifacts/news/lumora-tidal-power/2026-11-01-0800.pdf",
-        "a new edition every Monday at 08:00 — the next one 2026-11-02 08:00",
-        "emailed to me@example.com",
-    ] {
-        assert!(must.iter().any(|m| m.contains(want)), "{want}: {must:?}");
-    }
+    // the lines code appends to the reply (gate 40 news_report_real: the editions' links left out of the prose)
+    let shown = super::super::show::lines(&res, false);
+    let title = res["title"].as_str().unwrap().to_string();
+    assert_eq!(
+        shown,
+        vec![
+            format!("- HTML edition: [{title}](/artifacts/news/lumora-tidal-power/2026-11-01-0800.html)"),
+            format!("- PDF edition: [{title}](/artifacts/news/lumora-tidal-power/2026-11-01-0800.pdf)"),
+            "- New edition: every Monday at 08:00 — next: 2026-11-02 08:00".to_string(),
+            "- Emailed to: me@example.com (PDF attached)".to_string(),
+        ]
+    );
     assert!(res.get("next_question").is_none());
 }
 
@@ -469,9 +474,9 @@ fn a_scheduled_run_makes_no_new_schedule_and_a_one_off_offers_the_mail() {
         tools,
     );
     assert!(calls_of(&t, "gmail_send").is_empty());
-    assert!(workflow::must_say(&res)
+    assert!(super::super::show::lines(&res, false)
         .iter()
-        .any(|m| m.contains("no mailbox is connected")));
+        .any(|m| m.starts_with("- Not emailed: no mailbox is connected")));
 }
 
 #[test]
@@ -497,7 +502,7 @@ fn a_failed_layout_ends_with_the_error() {
         },
     );
     assert_eq!(res["status"], "error");
-    assert!(workflow::must_say(&res)[0].contains("the template is missing"));
+    assert!(super::super::show::lines(&res, false)[0].contains("the template is missing"));
 }
 
 #[test]
@@ -569,7 +574,10 @@ fn email_it_mails_the_edition_the_model_names_to_the_users_own_address() {
         (Some("me@example.com"), Some("The Tidal Current"))
     );
     assert_eq!(res["status"], "mailed");
-    assert!(workflow::must_say(&res)[0].contains("me@example.com"));
+    assert_eq!(
+        super::super::show::lines(&res, false),
+        vec!["- Emailed to: me@example.com (PDF attached)"]
+    );
     // a link that is no edition: invalid; no mailbox: the user connects one
     assert!(matches!(
         check(NEWS_MAIL, &json!({"files": ["/etc/passwd"]}), &cx),

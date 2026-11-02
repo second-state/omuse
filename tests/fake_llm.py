@@ -213,12 +213,9 @@ async def _chat(req: Request, b: dict):
     if sys.startswith("## Route"):   # the main bot's router (agent/bots.rs `route`): main, unless bots_e2e asks
         return route_reply(str(msgs[-1]["content"]))
     if sys.startswith("You check an assistant's final reply"):   # agent/runtime.rs `review_answer`: the reply holds together
-        # the facts the reply must carry (agent/facts.rs `must_say`): the fake model finds each one the reply does not
-        # state word for word (a real model reads the meaning)
+        # (the facts the user must read are not the review's: code appends them after it, agent/show.rs)
         body = str(msgs[-1]["content"])
-        answer = body.split("The reply:\n", 1)[-1].split("\n\nThe facts the reply must carry", 1)[0]
-        m = re.search(r"The facts the reply must carry \(must_say[^\n]*\n(\[.*\])\s*$", body, re.S)
-        must = json.loads(m.group(1)) if m else []
+        answer = body.split("The reply:\n", 1)[-1]
         # the language rule (the review gets the setting): a reply mostly in Chinese while the rule asks for English is
         # against it, unless the request asked for Chinese text to use as written (ZHPOEM stands in for the model
         # understanding the request; a real model reads it)
@@ -227,13 +224,10 @@ async def _chat(req: Request, b: dict):
         lat_n = len(re.findall(r"[A-Za-z]", answer))
         zh_reply = cjk_n > 0 and cjk_n / (cjk_n + lat_n / 4) > 0.5
         lang_ok = not ("not written in English" in sys and zh_reply and "ZHPOEM" not in request)
-        return reply(json.dumps({"ok": True, "problem": "", "language_ok": lang_ok, "missing": [f for f in must if f not in answer]}))
-    if sys.startswith(("You rewrite a reply to the user from a tool's JSON result", "你根据工具的 JSON")):   # `reply_with_facts`: the facts added
+        return reply(json.dumps({"ok": True, "problem": "", "language_ok": lang_ok}))
+    if sys.startswith(("You rewrite a reply to the user from a tool's JSON result", "你根据工具的 JSON")):   # `reply_fixed`: the problem fixed
         body = str(msgs[-1]["content"])
-        answer = body.split("\n\nThe reply:\n", 1)[-1].split("\n\nMissing facts: ", 1)[0]
-        m = re.search(r"\n\nMissing facts: (\[.*?\])\nProblem: ", body, re.S)
-        missing = json.loads(m.group(1)) if m else []
-        return reply(answer.rstrip() + ("\n\n" + "\n".join(missing) if missing else ""))
+        return reply(body.split("\n\nThe reply:\n", 1)[-1].split("\n\nProblem: ", 1)[0].rstrip())
     if sys.startswith("Rewrite the reply to the user in English"):   # `reply_in_language`: the review found it against the rule
         text = str(msgs[-1]["content"]).split("\n\nThe reply:\n", 1)[-1]
         for zh, en in TRANSLATIONS:
@@ -276,6 +270,15 @@ async def _chat(req: Request, b: dict):
         # Settings → Reply language = match (agent/lang.rs `request_lang`): the model reads the request's language
         ctx = str(msgs[-1]["content"]).split("Context:\n", 1)[-1].rsplit("\n\nChoices: ", 1)[0]
         return reply(json.dumps({"choice": _fake_lang(ctx) or "other"}))
+    if sys.startswith("You read one price from a web page"):   # watch_price.rs `extract_price`: the page's price into JSON
+        q = json.loads(msgs[-1]["content"])
+        if "Zebra" in q.get("item", ""):   # an item the page does not sell: no price for it
+            return reply(json.dumps({"price": None, "currency": "", "item": ""}))
+        # the fake model "reads" the price after "Price:" (drawn in pieces: S$ 18 . 00); a real model reads the page
+        m = re.search(r"Price:\s*(S\$)\s*(\d+)\s*\.?\s*(\d{2})", q["page"]["text"])
+        if not m:
+            return reply(json.dumps({"price": None, "currency": "", "item": ""}))
+        return reply(json.dumps({"price": float(f"{m.group(2)}.{m.group(3)}"), "currency": m.group(1), "item": q.get("item", "")}))
     if sys.startswith("You read an identity document"):   # /api/profile/ocr (profile_onboarding_ui.py)
         return reply(json.dumps({"document_type": "passport", "number": "E1234567X", "surname": "LU", "given_names": "LUCAS", "name": "LU LUCAS",
                                  "sex": "M", "date_of_birth": "1985-04-12", "nationality": "Australia", "expiry": "2031-05-01", "country": "AUS"}))
@@ -507,17 +510,24 @@ async def _chat(req: Request, b: dict):
             return reply("CALL DONE: " + last_tool[:1500])
         return reply("", [tc("phone_call_status", {"call_id": ids[0], "wait_seconds": 30})])
     if "WATCHPRICE" in goal:
-        if n == 0:   # a keyword that isn't on the page: the watch must refuse to be created, and say what it saw
+        if n == 0:   # a selector that matches nothing on a page with no known price element and no price given: refused
             return reply("", [tc("watch_create", {"name": "Aurora case price", "url": "http://shop.test:8099/watch.html",
-                                                  "mode": "price_below", "threshold": 20, "keyword": "Zebra"})])
-        if n == 1:   # the model thinks the price is 30: the watch reads 25 itself and refuses to watch "the wrong price"
+                                                  "mode": "price_below", "threshold": 20, "item": "Aurora Glitter Case",
+                                                  "selector": ".no-such-price"})])
+        if n == 1:   # the model thinks the price is 30: the price element says 25, so the watch refuses "the wrong price"
             return reply("", [tc("watch_create", {"name": "Aurora case price", "url": "http://shop.test:8099/watch.html",
-                                                  "mode": "price_below", "threshold": 20, "keyword": "Aurora",
-                                                  "current_price": 30})])
+                                                  "mode": "price_below", "threshold": 20, "item": "Aurora Glitter Case",
+                                                  "selector": ".a-price .a-offscreen", "current_price": 30})])
         if n == 2:
             return reply("", [tc("watch_create", {"name": "Aurora case price", "url": "http://shop.test:8099/watch.html",
-                                                  "mode": "price_below", "threshold": 20, "keyword": "Aurora",
-                                                  "current_price": 25})])
+                                                  "mode": "price_below", "threshold": 20, "item": "Aurora Glitter Case",
+                                                  "selector": ".a-price .a-offscreen", "current_price": 25})])
+        return reply("WATCH DONE: " + last_tool[:300])
+    if "WATCHMODEL" in goal:   # no selector, no known element: each check has the model read the price
+        if n == 0:
+            return reply("", [tc("watch_create", {"name": "Aurora model watch", "url": "http://shop.test:8099/watch.html",
+                                                  "mode": "price_below", "threshold": 20, "item": "Aurora Glitter Case",
+                                                  "currency": "S$", "current_price": 25})])
         return reply("WATCH DONE: " + last_tool[:300])
     if "PDFFORM" in goal:
         if n == 0:
@@ -1423,12 +1433,13 @@ def workflow_call(goal, msgs):
 
 
 def workflow_reply(content, head=""):
-    """The reply written from a machine's JSON result: its status, every must_say fact, the next search offered."""
+    """The reply written from a machine's JSON result: its status, its hints (the wording help; the `show` facts are
+    appended by code after the reply), the next search offered."""
     try:
         res = json.loads(content)
     except ValueError:
         return reply("RESULT unreadable: " + str(content)[:200])
-    lines = [f"RESULT {res.get('status')}"] + [str(x) for x in res.get("must_say") or []]
+    lines = [f"RESULT {res.get('status')}"] + [str(x) for x in res.get("hints") or []]
     for item in res.get("next_items") or []:
         lines.append(f"Shall I search the {'rental car' if item == 'car' else item} now?")
     if res.get("next_question") == "search_all_airlines":

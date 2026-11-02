@@ -74,18 +74,18 @@ async def main():
         check("trip: every link in the answer leads somewhere (no undecoded stand-in)", not a.broken_links(), a.broken_links())
         check("trip: the first answer gives real flights — the airline, the times and the price",
               a.has_prices() and bool(re.search(AIRLINES, a.text) or re.search(FLIGHT_NO, a.text)) and len(re.findall(r"\b\d{1,2}:\d\d\b", a.text)) >= 2, a.text[:600])
-        bk = [x for x in a.links if "kiwi.com" in x]
-        check("trip: the flight has a Kiwi.com booking link, and it opens", bool(bk) and opens(bk[0])[0], a.links)
+        bk = [x for x in a.block_links if "kiwi.com" in x]
+        check("trip: the block code appends after the answer has the flight's Kiwi.com booking link, and it opens", bool(bk) and opens(bk[0])[0], a.block_links)
 
         # 3. the hotel
         a = await u.ask("Yes, please search the hotel now.", label="hotel", new_chat=False)
         check("hotel: every link in the answer leads somewhere (no undecoded stand-in)", not a.broken_links(), a.broken_links())
         check("hotel: the answer names hotels near Ginza with prices", a.has_prices() and bool(re.search(r"[Hh]otel|Inn|Ginza", a.text)), a.text[:600])
-        hotel_links = [x for x in a.links if "kayak.com" not in x]
-        kh = [x for x in a.links if "kayak.com/hotels" in x]
+        hotel_links = [x for x in a.block_links if "kayak.com" not in x]
+        kh = [x for x in a.block_links if "kayak.com/hotels" in x]
         ok_link, why = first_opening(hotel_links)
-        check("hotel: the answer links a hotel's or a booking site's page, and it opens", bool(ok_link), (a.links, why))
-        check("hotel: the answer links Kayak's hotels for Ginza and the dates to compare", bool(kh) and D1.isoformat() in kh[0], a.links)
+        check("hotel: the block code appends after the answer links a hotel's or a booking site's page, and it opens", bool(ok_link), (a.block_links, why))
+        check("hotel: the block code appends after the answer links Kayak's hotels for Ginza and the dates to compare", bool(kh) and D1.isoformat() in kh[0], a.block_links)
         if kh:
             ok, why = opens(kh[0])
             check("hotel: the Kayak link opens", ok, why)

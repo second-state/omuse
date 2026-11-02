@@ -642,62 +642,44 @@ impl Runtime {
 
     /// One reading of the final answer by the model, as the user would read it: `Some(review)` when it does not hold
     /// together (it contradicts itself, stops mid-way, answers another question, or claims the opposite of what it
-    /// reports) or leaves out one of the facts it must carry (`must`: agent/facts.rs — a machine's `must_say`, a fact
-    /// tool's, the run's structured facts); `None` when it is fine. JSON only, no judgement of style.
+    /// reports) or breaks the language rule; `None` when it is fine. JSON only, no judgement of style. The facts the
+    /// user must read are not the review's: code appends them after it (agent/show.rs).
     async fn review_answer(
         &self,
         task_id: &str,
         request: &str,
         answer: &str,
-        must: &[String],
         lg: &str,
     ) -> Option<Review> {
-        if answer.chars().count() < 40 && must.is_empty() {
+        if answer.chars().count() < 40 {
             return None;
         }
         let o = ChatOpts {
-            // the missing facts are copied back whole (a card table is one fact): room for them
-            max_tokens: Some(if must.is_empty() { 120 } else { 1500 }),
+            max_tokens: Some(120),
             temperature: Some(0.0),
             no_think: true,
             ..opts("classify", task_id)
         };
-        let mut body = format!(
+        let body = format!(
             "The user's request:\n{}\n\nThe reply:\n{}",
             take_chars(request, 2000),
             take_chars(answer, 6000)
         );
-        if !must.is_empty() {
-            body.push_str(&format!(
-                "\n\nThe facts the reply must carry (must_say, from the tool's JSON result):\n{}",
-                serde_json::to_string_pretty(must).unwrap_or_default()
-            ));
-        }
         let msgs = [
-            json!({"role": "system", "content": prompts::review_system(!must.is_empty(), lg)}),
+            json!({"role": "system", "content": prompts::review_system(lg)}),
             user_msg(body),
         ];
         let r = self.llm.chat(&msgs, None, &o).await.ok()?;
         let v = crate::llm::extract_json(&r.content)?;
-        let missing: Vec<String> = v
-            .get("missing")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .filter(|m| !m.trim().is_empty())
-            .collect();
         let ok = v.get("ok").and_then(Value::as_bool).unwrap_or(true);
         let problem = take_chars(get_str(&v, "problem").trim(), 300).to_string();
         // the language rule (Settings → Language), judged by the model: only an explicit false counts
         let language = v.get("language_ok").and_then(Value::as_bool) == Some(false);
-        if (ok || problem.is_empty()) && missing.is_empty() && !language {
+        if (ok || problem.is_empty()) && !language {
             return None;
         }
         Some(Review {
             problem: if ok { String::new() } else { problem },
-            missing,
             language,
         })
     }
@@ -737,9 +719,9 @@ message to use as written) stays in that language. Output only the rewritten rep
         }
     }
 
-    /// The reply again, carrying the facts of the machine's result the review found missing (the model writes it; the
-    /// result's JSON is the only source).
-    async fn reply_with_facts(
+    /// The reply again, with the problem the review named fixed (the model writes it; the machine's result JSON is the
+    /// only source).
+    async fn reply_fixed(
         &self,
         task_id: &str,
         request: &str,
@@ -749,15 +731,14 @@ message to use as written) stays in that language. Output only the rewritten rep
         lg: &str,
     ) -> String {
         let sysmsg = prompts::l(lg,
-            "你根据工具的 JSON 结果改写给用户的回复。不能调用工具。保留原回复的内容和语言，补上列出的缺失事实（数字、编号、链接原样照抄），改正指出的问题。只输出改写后的回复。",
-            "You rewrite a reply to the user from a tool's JSON result. No tools. Keep the reply's content and language, add the missing facts listed (numbers, references and links copied exactly from the result) and fix the problem named. Output only the rewritten reply.");
+            "你根据工具的 JSON 结果改写给用户的回复。不能调用工具。保留原回复的内容和语言，改正指出的问题（数字、编号、链接原样照抄）。只输出改写后的回复。",
+            "You rewrite a reply to the user from a tool's JSON result. No tools. Keep the reply's content and language and fix the problem named (numbers, references and links copied exactly from the result). Output only the rewritten reply.");
         let body = format!(
-            "The user's request:\n{}\n\nThe tool's result (JSON):\n{}\n\nThe reply:\n{}\n\nMissing facts: {}\nProblem: {}",
+            "The user's request:\n{}\n\nThe tool's result (JSON):\n{}\n\nThe reply:\n{}\n\nProblem: {}",
             take_chars(request, 2000),
             take_chars(&result.to_string(), 8000),
             take_chars(reply, 6000),
-            serde_json::to_string(&review.missing).unwrap_or_default(),
-            if review.problem.is_empty() { "none" } else { &review.problem }
+            review.problem
         );
         match self
             .llm
@@ -3035,8 +3016,8 @@ yourself; ask_bot is not available for it."
                 };
             }
             // the reply to a workflow machine's result (its `T_result` in this request): the machine did the work, so
-            // no runtime step acts on the reply; the final review checks it carries the result's `must_say` (a page
-            // handed to browser-use is the model's from there on)
+            // no runtime step acts on the reply; code appends the result's `show` facts to it (a page handed to
+            // browser-use is the model's from there on)
             let workflow_reply = super::workflow::latest_result(&transcript)
                 .filter(|r| get_str(r, "status") != "browser_use");
             let driven_run = super::workflow::active(&transcript, &super::driver::TOOLS).is_some()
@@ -3082,51 +3063,28 @@ yourself; ask_bot is not available for it."
             }
             let judged =
                 !final_.is_empty() && asked.is_none() && !driven_run && !force_final && !timed_out;
-            // the facts the reply must carry (agent/facts.rs): the trusted code tools' `must_say` (a machine's result,
-            // emergency_contacts, visa_rules, fx_convert, loan_payment …) and the run's structured facts — never read
-            // from the reply's prose
-            // a Vault card without its catalog id: the model picks the row as a JSON choice, the facts read it
-            let mut fact_view = transcript.clone();
-            fact_view.extend(self.attach_card_ids(task_id, &transcript).await);
-            let must = super::facts::run_facts(
-                &fact_view,
-                super::facts::Ctx {
-                    zh: lg != "en",
-                    scheduled: get_str(&t, "source") == "schedule",
-                    workflow: workflow_reply.is_some(),
-                },
-            );
-            // the answer read once by the model as the user would (JSON out), with the facts it must carry: what it
-            // left out is added by the model from the facts' JSON (`reply_with_facts`); an answer that does not hold
-            // together is written again from the run's facts (`rescue_final`), once — no message to the model
+            // the answer read once by the model as the user would (JSON out): an answer that does not hold together
+            // is written again from the machine's result (`reply_fixed`) or the run's facts (`rescue_final`), once —
+            // no message to the model. The facts the user must read are appended by code afterwards (agent/show.rs).
             if !final_.is_empty()
                 && asked.is_none()
                 && !answer_reviewed
                 && (!driven_run || workflow_reply.is_some())
-                && ((!force_final && !timed_out) || !must.is_empty())
+                && !force_final
+                && !timed_out
             {
                 answer_reviewed = true;
-                if let Some(review) = self
-                    .review_answer(task_id, &goal_text, &final_, &must, lg)
-                    .await
-                {
+                if let Some(review) = self.review_answer(task_id, &goal_text, &final_, lg).await {
                     self.event(
                         task_id,
                         "answer_review",
-                        json!({"problem": review.problem, "missing": review.missing, "language": review.language}),
+                        json!({"problem": review.problem, "language": review.language}),
                     )
                     .await;
-                    let content_fix = !review.problem.is_empty() || !review.missing.is_empty();
                     let again = match &workflow_reply {
-                        _ if !content_fix => String::new(),
-                        // the facts the reply left out, added by the model from the JSON they came from
+                        _ if review.problem.is_empty() => String::new(),
                         Some(res) => {
-                            self.reply_with_facts(task_id, &goal_text, &final_, res, &review, lg)
-                                .await
-                        }
-                        None if !review.missing.is_empty() => {
-                            let src = json!({"must_say": must});
-                            self.reply_with_facts(task_id, &goal_text, &final_, &src, &review, lg)
+                            self.reply_fixed(task_id, &goal_text, &final_, res, &review, lg)
                                 .await
                         }
                         None => {
@@ -3215,6 +3173,27 @@ yourself; ask_bot is not available for it."
             final_ = super::guards::with_masked_cards(&final_);
             // the answer's links, repaired against the links the run's results showed (crate::links)
             final_ = crate::links::repair_answer(&final_, &crate::links::seen(&transcript));
+            // the facts the user must read (agent/facts.rs, agent/show.rs): the trusted code tools' `show` items (a
+            // machine's result, emergency_contacts, visa_rules, fx_convert, loan_payment, confirm_reference …) and the
+            // run's structured facts, appended by code after the reply — never read from or written into its prose
+            // (a Vault card without its catalog id: the model picks the row as a JSON choice, the facts read it)
+            if !final_.is_empty() && asked.is_none() {
+                let mut fact_view = transcript.clone();
+                fact_view.extend(self.attach_card_ids(task_id, &transcript).await);
+                let items = super::facts::show_items(
+                    &fact_view,
+                    super::facts::Ctx {
+                        zh: lg != "en",
+                        scheduled: get_str(&t, "source") == "schedule",
+                        workflow: workflow_reply.is_some(),
+                    },
+                );
+                if !items.is_empty() {
+                    self.event(task_id, "answer_show", json!({"items": items.len()}))
+                        .await;
+                }
+                final_ = super::show::append(&final_, &items, lg != "en");
+            }
             // the run's confirmed reference: a known site's machine result, or the model's `confirm_reference`
             let confirmed = super::confirm::confirmed(&transcript);
             let oc = crate::outcome::assess(&self.store.events(task_id, 0)?, confirmed.as_ref());
@@ -4059,11 +4038,10 @@ fn own_mailbox(catalog: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// What the final review found: a problem with the reply, and the `must_say` facts of a machine's result it lacks.
+/// What the final review found: a problem with the reply (it does not hold together) or the language rule broken.
 #[derive(Debug, Clone, Default)]
 struct Review {
     problem: String,
-    missing: Vec<String>,
     /// the reply is not in the language the rule asks for (the model's `language_ok: false`)
     language: bool,
 }

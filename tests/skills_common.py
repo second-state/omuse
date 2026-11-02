@@ -15,6 +15,11 @@ import time
 import httpx
 import os
 
+try:
+    from show_common import appended_block, shows, shows_items  # noqa: F401  (shows: for the suites)
+except ImportError:  # imported as tests.skills_common
+    from tests.show_common import appended_block, shows, shows_items  # noqa: F401
+
 B = "http://127.0.0.1:8080"
 S = B + "/sentinel/api"
 TRAVEL = "http://127.0.0.1:8097"
@@ -196,9 +201,14 @@ def result(t: dict) -> dict:
 
 
 def says_all(t: dict) -> bool:
-    """The reply carries every fact of the machine result's must_say."""
-    reply = t.get("result") or ""
-    return all(m in reply for m in result(t).get("must_say") or [])
+    """The answer's block that code appends after the reply (tests/show_common.py) carries every `show` item of the
+    machine's result — the facts the user must read; the model's own words are not checked."""
+    return shows_items(t.get("result") or "", result(t).get("show") or [])
+
+
+def block(t: dict) -> str:
+    """The block code appended after the reply (the "- Label: value" lines), "" when there is none."""
+    return appended_block(t.get("result") or "")
 
 
 def results(t: dict, name: str) -> list[dict]:

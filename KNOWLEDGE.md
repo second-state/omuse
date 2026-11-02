@@ -130,7 +130,7 @@ weaker fallback.
 **The preferred airline is always covered.** When a run searched flights and the user has a preferred airline in the
 profile, an answer that names neither it (an alliance: nor a member; any name it goes by in `loyalty::AIRLINE_CODES`)
 nor one of its flight numbers gets a line from the results — the cheapest preferred offer with its price, or that
-none was found and an offer to look (now the booking machine's `must_say`, "… is on your preferred airline"; the
+none was found and an offer to look (now the booking machine's `show`, "… is on your preferred airline"; the
 Travel bot's flight searches are the machine's, `guards::MACHINE_ONLY`).
 
 No mail before a travel search: the booking machine never reads mail for a search (its own mail is the results the
@@ -143,7 +143,7 @@ and the final answer — each link is repaired against the links the run's tool 
 `links::repair`): a link cut short (the same host and path, query parameters missing — a hotel page's `&ts=…`) or with
 its path one or two characters off (a letter dropped) becomes the shown link; another page or other query values
 (dates the model chose) stay as written. The rest of OMuse only ever sees whole, real links. Stand-ins left in older
-conversations are still decoded (`links::decode`). The booking and Kayak compare links are the booking machine's `must_say` (the reply carries them through the review). A travel MCP
+conversations are still decoded (`links::decode`). The booking and Kayak compare links are the booking machine's `show` items (appended to the answer by code). A travel MCP
 connector's flight or hotel results get `compare_url` too, inside their JSON. When a bot answers for Main, the files it
 handed over (PDF, picture, video) are shown in Main's chat above its answer (`bots::finish_handoff`), and the router
 gives the bot the user's local date and time (Settings → Timezone), never UTC's.
@@ -505,7 +505,7 @@ Filling in an arrival card or travel authorisation with a form function (`agent/
 TW, TH, CN, JP, KH, PH, UK ETA) is ONE `arrival_card_fill` call; the Hong Kong departure tax refund is ONE
 `apdt_refund` call (`agent/apdt.rs`). Both are Travel-bot tools (`bots/travel.md`). The model reads the user's words —
 and the bookings the machine fetched — and passes the facts as JSON arguments; code validates them and runs every
-step; the reply is written from the machine's JSON result (`must_say`). No regex or keyword reads the user's words or a
+step; the reply is written from the machine's JSON result (`show`). No regex or keyword reads the user's words or a
 mail's or a document's text in these machines (the old `driver::extract`, `user_asks` / `asks_to_act`, `dates_in`,
 `method_in`, the document classifier and `EXTRACT_SYSTEM` are gone).
 
@@ -534,7 +534,7 @@ mail's or a document's text in these machines (the old `driver::extract`, `user_
   days, `tax_hkd` 0 → `not_eligible`), the Vault card (the one the user named, else the first complete one), the
   platform's pages by their form functions, the uploads by the page's box labels, `browser_fill_secret` (or the user's
   takeover for a card saved by name), stop before the face step → `confirmed` with the reference, the link and the
-  face-recognition deadline in `must_say` (`stopped` with the site's own error lines, `not_eligible`, …).
+  face-recognition deadline in `show` (`stopped` with the site's own error lines, `not_eligible`, …).
 
 Calls are `drv_<n>` / `apd_<n>`; the machines' tool calls and fetched mail are kept by the compression
 (`compress_transcript`). Tests: `driver::tests`, `apdt::tests` (arguments in, steps, Done JSON),
@@ -590,13 +590,15 @@ the reply the user reads; everything else is data or a code action:
   `exec::official_site`: one web search, the first result on another domain), the arrival defaults typed by code
   (`departure_fix`, `next_city_fix`, `departure_default` → `set_departure`, `default_no`), the APDT ticks
   (`apdt_fixed_ticks`).
-- **The reply carries its facts through the review, never through appended text** (phase 2d, docs/json-tools.md
-  "Facts the reply must carry"): `facts::run_facts` collects the trusted tools' `must_say` (a machine's result,
-  `emergency_contacts`, `visa_rules`, `fx_convert`, `loan_payment`, an emergency `phone_call` refused in code) and the
-  run's structured facts (`guards::*_fact(s)`: the model-read hand-back reference (`confirm_reference`), approval edits, ETIAS, the card
-  catalog's date / unverified rows / FX fees / uncatalogued cards / the user's cards, the approved amount, an injection
-  notice, notifications, a model-made comparison's options); `review_answer` gets them as `must_say` and
-  `reply_with_facts` (the model) adds what the reply left out. Still code on the reply: `with_masked_cards` (secrets), the
+- **The facts the user must read are appended to the answer by code** (2026-11-02, docs/json-tools.md "What the
+  answer shows"; it replaces phase 2d's review-enforced `show`): `facts::show_items` collects the `show` items of
+  this request's trusted tools (a machine's result, `emergency_contacts`, `visa_rules`, `fx_convert`, `loan_payment`, an
+  emergency `phone_call` refused in code, a recorded `confirm_reference`) and the run's structured facts
+  (`guards::*_fact(s)`: approval edits, ETIAS, the card catalog's date / unverified rows / FX fees / uncatalogued cards /
+  the user's cards, the approved amount, an injection notice, notifications, a model-made comparison's options), and
+  `show::append` puts them after the reply, after a `---` rule, one "- Label: value" line each (gate 40: the news
+  editions' links and the TDAC reference had been left out of the prose). `hints` are optional wording help;
+  `review_answer` checks only coherence and the language rule. Still code on the reply: `with_masked_cards` (secrets), the
   link repair (`links::repair_answer`), `merge_stranded_answer` / `with_handover_answer` (the model's own earlier text).
   Removed: the travel appenders (the Travel bot's flight and hotel searches are the booking machine's,
   `guards::MACHINE_ONLY`), the grounding of figures / codes / phone numbers in the reply (`number_check`), the loan,
@@ -619,6 +621,23 @@ Gone with the rule (2026-11-02): `answer_traits` / `AnswerTraits` and every hint
 status-note / cut-off / plain-text / number / outcome / replan "(System)" messages, `outcome::nudge` and its claim
 regexes, the page hints (`deep_link_hint`, `product_page_hint`, `refusal_hint`, `parked_domain_hint`), and the
 "(System note)" tool-result notes. Four of the judgements they covered are back as decisions (below).
+
+### Price watches (2026-11-01)
+
+A price watch reads its price by an element or by the model, decided when it is made — never by a regex over the
+page's text (`watchers::price_hits`, its keyword / heading windows and the price regexes are gone). The watch's
+parameters carry `read` (`element` | `model`), `price_sel` / `price_attr`, `item`, `currency` and `threshold`
+(`scheduler::event_spec` → `watch_price::decide_read`; an old watch's `keyword` becomes its `item`). A known site
+(`watch_price::KNOWN`) or the model's `selector` → Sentinel reads the element (`read_elements`) and
+`watchers::parse_amount` checks the value is one price. Any other page → Sentinel returns the page text
+(`{"extract": …}`), the scheduler's `watch_price::complete_read` has the model extract `{price, currency, item}` into
+JSON (`json_in`, one retry, `null` = no price → a failed check that backs off) and calls Sentinel again with
+`observed`; `watchers::evaluate_price` compares it (first read = baseline; alert when newly below the threshold or
+lower than the last alert). `watch_create` (a code tool) does not call the model: on a model-read page the model's
+`current_price` is the baseline (required), and a price element that shows nothing switches the watch to the model
+with a note. Notifications are built from the event's fields (`seen · item`). Fake suite: `tests/e2e_0212.py`
+(`WATCHPRICE` element path, `WATCHMODEL` model path; `tests/fake_llm.py` plays the extraction); real:
+`tests/watch_real.py` (Kaya Mobile, the element path).
 
 ### Decisions: `Runtime::decide` (`agent/decide.rs`, 2026-11-02)
 
@@ -680,7 +699,7 @@ Main's `news-research` skill turns "research the news on X" into a newspaper-sty
   `news_publish`, with `email: true` when the editions are mailed); no new schedule in a schedule's own run. `email:
   true` → `gmail_send` to the user's own connected address with the PDF and HTML. "Email it" later in the chat →
   `news_mail{files}` (the edition's links the model copies from the earlier reply; code accepts only
-  `artifacts/news/….pdf|.html`). The result's `must_say` carries the lead, the two links, the schedule and the mail;
+  `artifacts/news/….pdf|.html`). The result's `show` carries the two links, the schedule and the mail (appended by code);
   `next_question` offers the mail. The old regex guards (`news_report_action`, `news_schedule_goal`,
   `report_followup_call`, `with_report_links`) are removed.
 - Tests: `tests/news_report_real.py` (a made-up subject, Lumora, in `tests/fake_apps.py NEWS`, so every fact comes from

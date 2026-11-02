@@ -40,7 +40,7 @@ K.check("a flight, a hotel and a car in one message: ONE travel search — the f
         t["status"] == "COMPLETED" and K.work(t) == ["flights_search", "present_choices"] and K.result(t).get("source") == "Kiwi.com"
         and "SQ638" in json.dumps(K.result(t).get("options")) and K.result(t).get("next_items") == ["hotel", "car"]
         and "Shall I search the hotel now?" in (t.get("result") or ""), (names, K.result(t), (t.get("result") or "")[:400]))
-K.check("the result gives the offer's Kiwi.com booking link and the airline's own site (book_at); the reply carries every must_say fact",
+K.check("the result gives the offer's Kiwi.com booking link and the airline's own site (book_at); the block code appends after the answer carries every show item",
         any(o.get("booking_url") == "https://kiwi.com/u/abc123" and o.get("book_at") == ["singaporeair.com"] for o in K.result(t).get("options") or [])
         and K.says_all(t), (t.get("result") or "")[-400:])
 th = K.run(f"BRAVEHOTEL yes, the hotel DATE={D1}", conv=t["_conv"])
@@ -50,7 +50,7 @@ K.trace(tc)
 K.check("the next two messages search the hotel, then the car — one travel search each", K.work(th) == ["hotels_search"] and K.names(tc) == ["cars_search"]
         and "SEARCHED VIA ['brave']" in (tc.get("result") or ""), (K.names(th), K.names(tc), th.get("result"), tc.get("result")))
 K.check("the hotel answer gives the web pages the search found (\"from\" prices), Kayak's page for the stay, and offers the car next",
-        K.result(th).get("source") == "web" and "Brave snippet" in json.dumps(K.result(th).get("web_pages")) and "/kayak/hotels/" in (th.get("result") or "")
+        K.result(th).get("source") == "web" and "Brave snippet" in json.dumps(K.result(th).get("web_pages")) and K.shows(K.block(th), "/kayak/hotels/")
         and K.says_all(th) and "Shall I search the rental car now?" in (th.get("result") or ""), (th.get("result") or "")[:600])
 log = c.get(FAKE + "/search/_log").json()
 K.check("Brave received the hotel fallback and the car query, never a flight query", [x["q"] for x in log if x["provider"] == "brave"][-2:]

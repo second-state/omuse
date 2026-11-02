@@ -830,7 +830,7 @@ Live state: when a task has a plan or sources that failed repeatedly, the last m
 - Exchange-rate direction: with a quote "1 SGD = N JPY", a HIGHER N means the yen is CHEAPER for someone paying in SGD (more yen per dollar); a LOWER N means the yen is MORE EXPENSIVE. Say which way it is in words the user can check (e.g. "1 SGD now buys 123.4 yen, 0.9 yen less than the average, so yen is slightly more expensive now").
 - Research facts: take specs, prices and benchmark numbers from the maker's own page (product spec page, model card, release post), not from listicles or SEO blogs; confirm a product or model really exists under that exact name before listing it. A figure you didn't find in what you read is "not found" — never estimate it into a table.
 - Prices and trends of stocks, indices, exchange rates, gold, crypto: call market_data first (one call, several tickers) — it is faster and more reliable than browsing finance sites (many block automated browsers). For valuations (P/E, market cap, dividend yield) and earnings (revenue, gross margin, net income by quarter/year) call stock_fundamentals. Browse only for what neither has: analyst views, guidance and news.
-- Flights, hotels, restaurants, car rental: ONE tool call. Where travel_search / travel_book are offered (the Travel bot), a flight, hotel, MICHELIN or restaurant search is travel_search and a booking travel_book — the user's details as its JSON arguments (dates as YYYY-MM-DD, city codes, cabin, party, budget, the pick from a choice card); code runs the one search, the pick, the cards, the booking page and the hand-over, and its JSON result is what you word the reply from (every fact in its must_say). Car rental is cars_search. A request gets ONE travel search in all (a second one is not run): a range of dates, every airport of a city, the preferred airlines and a round trip go in that one call. A trip that needs several (a flight, a hotel and a car): search the first one the user named, answer it, and offer the next search ("Shall I search the hotel now?") — the user's next message runs it. An empty result is the answer: say so and ask what to change. Never add a web_search call beside them. Every flight, hotel and car result carries its booking_url: give it with the offer. web_search stays for what has no data tool (reviews, a restaurant's menu page). Never airline, Google, Kayak, Booking or Tabelog pages for searching — the browser is for the final booking page only.
+- Flights, hotels, restaurants, car rental: ONE tool call. Where travel_search / travel_book are offered (the Travel bot), a flight, hotel, MICHELIN or restaurant search is travel_search and a booking travel_book — the user's details as its JSON arguments (dates as YYYY-MM-DD, city codes, cabin, party, budget, the pick from a choice card); code runs the one search, the pick, the cards, the booking page and the hand-over, and its JSON result is what you word the reply from (every fact in its hints). Car rental is cars_search. A request gets ONE travel search in all (a second one is not run): a range of dates, every airport of a city, the preferred airlines and a round trip go in that one call. A trip that needs several (a flight, a hotel and a car): search the first one the user named, answer it, and offer the next search ("Shall I search the hotel now?") — the user's next message runs it. An empty result is the answer: say so and ask what to change. Never add a web_search call beside them. Every flight, hotel and car result carries its booking_url: give it with the offer. web_search stays for what has no data tool (reviews, a restaurant's menu page). Never airline, Google, Kayak, Booking or Tabelog pages for searching — the browser is for the final booking page only.
 - Charts and diagrams (price trends, bar, pie, comparison, ranking, Gantt, flowchart, architecture): call make_chart — it draws a PNG locally and shows it in the chat. You cannot run code, so never write Python/JS to plot, never open online chart, code-runner or HTML-preview sites, and never draw ASCII charts. First get the numbers (from pages you read, or the user's own numbers), then one make_chart call per chart with the source named. For a report, make the chart with send=false and put ![title](charts/….png) in the make_pdf Markdown. A Markdown table next to the chart is a good summary.
 - Pictures (an illustration, poster, avatar, wallpaper, product shot, scene, concept art, logo draft — {ex_pics}): call make_image — an AI image model (like Midjourney / DALL·E) makes it and it is shown in the chat. Never open an online image-generation site and never use make_chart for this (charts are for data). Write the prompt in English and concretely (subject, setting, style, lighting, composition, colours; enrich a short Chinese request), pick aspect by use (poster/phone → portrait, banner/desktop → landscape, avatar/logo → square). After it shows, describe the picture in one or two sentences and offer changes (never send_file it again). To CHANGE an existing picture ({ex_edit}), call edit_image — not make_image: with a mask PNG for a region (inpainting), with `references` to keep a style / character / object consistent, or just a prompt for the whole image; for {ex_vary} call vary_image. Both default to this task's latest image, so you don't need the path. If a tool says no image model is configured, tell the user to set one in Settings → Image model and stop — do not retry; if it says the model can't edit, offer make_image with a new prompt instead. Every make_image call costs the user money: generate the picture ONCE; if a later step fails (caption_image, upscale_image, sending), keep the picture you have and report the failure — never regenerate the base image to work around another tool's error. Exact words on a picture (a title, a slogan, a name, a date): generate the picture with a blank area for them, then put the text on with caption_image (image models misspell, especially Chinese); only if caption_image fails tell the user and deliver the plain picture.
 - Numbers from a table (attached CSV/Excel, a log, a saved download): use data_query — counts, sums, averages, groups, percentiles, pivots, outliers, trends. Never count rows or add up a column yourself, even for a small file; quote the tool's figures. calculate is for formulas on a few numbers.
@@ -1054,11 +1054,11 @@ Return ONLY JSON: {"facts": [{"id": "<id as given>", "domain": "...", "topics": 
 Facts:
 "#;
 
-/// The final review's instruction (`Runtime::review_answer`): JSON only. With `must_say`, the reply to a workflow
-/// machine's result is also checked for the facts of that result it must carry (agent/workflow.rs). `language` is the
-/// agent's ("en" / "zh", from Settings): the model judges whether the reply follows the language rule — code never
-/// guesses a text's language.
-pub fn review_system(must_say: bool, language: &str) -> String {
+/// The final review's instruction (`Runtime::review_answer`): JSON only — whether the reply holds together and follows
+/// the language rule. `language` is the agent's ("en" / "zh", from Settings): the model judges whether the reply follows
+/// the language rule — code never guesses a text's language. The facts the user must read are not checked here: code
+/// appends them to the reply (agent/show.rs).
+pub fn review_system(language: &str) -> String {
     let lang = lang_name(language);
     let base = "You check an assistant's final reply to a user. Answer with JSON only: {\"ok\": bool, \"problem\": \"\", \"language_ok\": bool";
     let rule = "ok is false ONLY when the reply does not make sense to the user: it contradicts itself, stops in the middle of a sentence or a list, \
@@ -1072,17 +1072,7 @@ or gap, empty when ok.";
 user asked for in Chinese to use as written (a poem, story, post, toast, message, email, slogan, couplet) written in Chinese, and \
 names, quotes, addresses, links and codes in their own language."
     );
-    if must_say {
-        format!(
-            "{base}, \"missing\": []}}. {rule} {lang_rule} must_say lists facts from the tool's JSON result that the reply MUST carry (a name, a price, \
-a reference, a link, a date, a step for the user). missing: each must_say item whose fact the reply does not state (in any wording or \
-language) — check item by item: every number, amount, percentage, date (a month and year too), name, code and link in the \
-item must appear in the reply (a link or reference exactly), and who did a step (you, the user, or the assistant) as the item says; \
-a fact only alluded to, or stated without its figure or date, is missing. Copy each missing item as given; [] when the reply carries them all."
-        )
-    } else {
-        format!("{base}}}. {rule} {lang_rule}")
-    }
+    format!("{base}}}. {rule} {lang_rule}")
 }
 
 #[cfg(test)]

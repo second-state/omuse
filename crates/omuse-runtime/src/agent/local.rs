@@ -1830,18 +1830,63 @@ these are listings from a results page, and a comparison of them takes `ranking`
         ))
     }
 
+    /// The first read of a `web.page` watch through Sentinel (`cursor` null: the baseline), `observed` for a
+    /// model-read price watch's price.
+    async fn watch_read(&self, params: &Value, observed: Option<Value>) -> Value {
+        let mut body = json!({"source": "web.page", "params": params, "cursor": null});
+        if let Some(o) = observed {
+            body["observed"] = o;
+        }
+        match self
+            .sentinel("POST", "/internal/watch", Some(body), 120.0)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => json!({"error": e.to_string()}),
+        }
+    }
+
     async fn watch_create(&self, t: &Value, a: &Value) -> R {
         let tid = get_str(t, "id");
-        let mut params = json!({"url": sget(a, "url"), "mode": if truthy(a.get("mode").unwrap_or(&Value::Null)) { sget(a, "mode") } else { "change".into() }});
-        for k in ["text", "keyword"] {
-            if truthy(a.get(k).unwrap_or(&Value::Null)) {
-                params[k] = json!(py_str(&a[k]));
-            }
+        let mode = if truthy(a.get("mode").unwrap_or(&Value::Null)) {
+            sget(a, "mode").trim().to_lowercase()
+        } else {
+            "change".into()
+        };
+        let price_mode = mode == "price_below";
+        let mut params = json!({"url": sget(a, "url"), "mode": mode});
+        if truthy(a.get("text").unwrap_or(&Value::Null)) {
+            params["text"] = json!(py_str(&a["text"]));
         }
-        if a.get("threshold")
-            .is_some_and(|v| !v.is_null() && v != &json!(""))
-        {
-            params["threshold"] = json!(py_str(&a["threshold"]));
+        let mut notes: Vec<String> = Vec::new();
+        if price_mode {
+            for k in ["item", "currency"] {
+                if truthy(a.get(k).unwrap_or(&Value::Null)) {
+                    params[k] = json!(py_str(&a[k]).trim());
+                }
+            }
+            if a.get("threshold")
+                .is_some_and(|v| !v.is_null() && v != &json!(""))
+            {
+                params["threshold"] = json!(py_str(&a["threshold"]));
+            }
+            // the model's selector is a value: kept when it is one, else dropped (and the watch reads another way)
+            let sel = sget(a, "selector");
+            if !sel.trim().is_empty() {
+                match crate::watch_price::clean_selector(&sel) {
+                    Some(sel) => {
+                        params["price_sel"] = json!(sel);
+                        if let Some(at) = crate::watch_price::clean_attr(&sget(a, "selector_attr"))
+                        {
+                            params["price_attr"] = json!(at);
+                        }
+                    }
+                    None => notes.push(format!(
+                        "the selector {:?} is not a CSS selector and was not used",
+                        truncate(&sel, 80)
+                    )),
+                }
+            }
         }
         let every = a
             .get("every_minutes")
@@ -1850,47 +1895,76 @@ these are listings from a results page, and a comparison of them takes `ranking`
             .unwrap_or(60.0)
             .max(15.0);
         let then = sget(a, "then").trim().to_string();
-        let spec = json!({"source": "web.page", "params": params, "every": every, "action": if then.is_empty() { "notify" } else { "run" }});
+        let action = if then.is_empty() { "notify" } else { "run" };
         let goal = if then.is_empty() {
             format!("(notify only) {}", sget(a, "name"))
         } else {
             then.clone()
         };
-        if let Err(e) = crate::scheduler::event_spec(&json!(pyjson::dumps(&spec))) {
-            return Ok(format!("ERROR: {}", e.0));
-        }
-        // read the page once right now: the baseline, and proof that the watch can actually see what it watches
-        let base = match self
-            .sentinel(
-                "POST",
-                "/internal/watch",
-                Some(json!({"source": "web.page", "params": params, "cursor": null})),
-                120.0,
+        // the spec decides how a price is read (a known site's element, the selector given, or the model)
+        let normalized = |params: &Value| {
+            crate::scheduler::event_spec(
+                &json!({"source": "web.page", "params": params, "every": every, "action": action}),
             )
-            .await
-        {
-            Ok(b) => b,
-            Err(e) => json!({"error": e.to_string()}),
         };
-        if truthy(base.get("error").unwrap_or(&Value::Null)) {
-            return Ok(format!("ERROR: [watch_read_failed] 监控没有建立 — 第一次读取页面就失败了 the watch was NOT created, the first read of the page failed: {}", truncate(&sget(&base, "error"), 400)));
-        }
-        let cur = base
-            .get("cursor")
-            .filter(|c| c.is_object())
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+        let mut spec = match normalized(&params) {
+            Ok(s) => s,
+            Err(e) => return Ok(format!("ERROR: {}", e.0)),
+        };
         let want = match a.get("current_price") {
             Some(v) if !v.is_null() && v != &json!("") => py_str(v)
                 .replace(',', "")
                 .trim_start_matches(|c: char| "S$US$€£¥ ".contains(c))
                 .parse::<f64>()
-                .ok(),
+                .ok()
+                .filter(|w| w.is_finite() && *w > 0.0),
             _ => None,
         };
+        // read the page once right now: the baseline, and proof that the watch can actually see what it watches
+        let mut base = self.watch_read(&spec["params"], None).await;
+        if price_mode
+            && get_str(&spec["params"], "read") == "element"
+            && truthy(base.get("error").unwrap_or(&Value::Null))
+        {
+            // the price element showed no price: the price is read by the model instead (the input fixed, noted)
+            notes.push(format!("the price element `{}` showed no price ({}), so each check has the model read the price from the page",
+                get_str(&spec["params"], "price_sel"), truncate(&sget(&base, "error"), 160)));
+            params["read"] = json!("model");
+            spec = match normalized(&params) {
+                Ok(s) => s,
+                Err(e) => return Ok(format!("ERROR: {}", e.0)),
+            };
+            base = self.watch_read(&spec["params"], None).await;
+        }
+        if truthy(base.get("error").unwrap_or(&Value::Null)) {
+            return Ok(format!("ERROR: [watch_read_failed] 监控没有建立 — 第一次读取页面就失败了 the watch was NOT created, the first read of the page failed: {}", truncate(&sget(&base, "error"), 400)));
+        }
+        if let Some(page) = base.get("extract").filter(|p| p.is_object()).cloned() {
+            // a model-read price watch: the baseline is the price the model read on the page (no model call here)
+            let Some(w) = want else {
+                return Ok(format!("ERROR: [watch_needs_price] 监控没有建立 — 这个页面的价格由模型读取，需要 current_price (the watch was NOT created: this page has no known price element, so give current_price — the item's price as the page shows it now — and, if you know it, the price element's CSS selector as selector).{}",
+                    if notes.is_empty() { String::new() } else { format!(" Notes: {}", notes.join("; ")) }));
+            };
+            let obs = json!({"price": w, "currency": get_str(&spec["params"], "currency"),
+                "item": get_str(&spec["params"], "item"), "title": get_str(&page, "title"), "url": get_str(&page, "url"),
+                "read": "model"});
+            base = self.watch_read(&spec["params"], Some(obs)).await;
+            if truthy(base.get("error").unwrap_or(&Value::Null)) {
+                return Ok(format!(
+                    "ERROR: [watch_read_failed] 监控没有建立 the watch was NOT created: {}",
+                    truncate(&sget(&base, "error"), 400)
+                ));
+            }
+        }
+        let params = spec["params"].clone();
+        let cur = base
+            .get("cursor")
+            .filter(|c| c.is_object())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let low = cur.get("low").and_then(omuse_common::util::as_f64);
-        if get_str(&params, "mode") == "price_below" {
-            if let (Some(w), Some(l)) = (want.filter(|w| *w != 0.0), low) {
+        if price_mode {
+            if let (Some(w), Some(l)) = (want, low) {
                 if (l - w).abs() > 0.01f64.max(w * 0.01) {
                     let seen = if truthy(cur.get("seen").unwrap_or(&Value::Null)) {
                         sget(&cur, "seen")
@@ -1944,12 +2018,24 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
         } else {
             ""
         };
-        Ok(format!("已创建网页监控 watch created: id={}，每 {} 分钟检查一次。{}之后只有新变化才提醒 (only new changes alert). {}{}",
+        let read = if !price_mode {
+            String::new()
+        } else if get_str(&params, "read") == "element" {
+            format!(
+                " 价格按元素读取 price read by its element `{}`.",
+                get_str(&params, "price_sel")
+            )
+        } else {
+            " 每次检查由模型从页面读出价格 each check has the model read the price from the page."
+                .to_string()
+        };
+        Ok(format!("已创建网页监控 watch created: id={}，每 {} 分钟检查一次。{}之后只有新变化才提醒 (only new changes alert). {}{}{}{}",
             get_str(&sch, "id"), fmt_g(every),
             if seen.is_empty() { "已记录当前页面作为基准 baseline saved. ".to_string() } else {
-                format!("刚才读到 just read: 「{}」。请核对这是不是用户要盯的那个值 — check it is the value the user means (if not, tell the user and fix the keyword). ", seen)
+                format!("刚才读到 just read: 「{}」。请核对这是不是用户要盯的那个值 — check it is the value the user means (if not, tell the user and fix the selector). ", seen)
             },
-            if then.is_empty() { "触发时只发通知 notifies only." } else { "触发时会运行任务 runs a task when it fires." }, met_now))
+            if then.is_empty() { "触发时只发通知 notifies only." } else { "触发时会运行任务 runs a task when it fires." }, read, met_now,
+            if notes.is_empty() { String::new() } else { format!(" Notes: {}", notes.join("; ")) }))
     }
 
     pub(crate) fn data_query(&self, a: &Value) -> R {

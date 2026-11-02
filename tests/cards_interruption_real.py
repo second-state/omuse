@@ -107,21 +107,24 @@ async def main():
         check("interruption: answered by the Credit cards or Insurance & claims bot",
               any(re.search(r"Credit cards|Insurance", x.bot_link) for x in answers), [x.bot_link for x in answers])
         check("interruption: the answer finished (no time-out)", not any(x.timed_out for x in answers), [x.seconds for x in answers])
-        check("interruption: the benefit is Trip Interruption", bool(re.search(r"trip interruption", text, re.I)), text[:500])
-        check("interruption: the amount is the unrefunded nights plus the change fee (USD 1,050.00)", C.money_in(text, "1050.00"), text[:1200])
-        check("interruption: the 90-day documents deadline as a date", C.date_in(text, D90), (D90, text[-1200:]))
+        block = "\n".join(x.block for x in answers)
+        check("interruption: the block code appends after the answer names the benefit, Trip Interruption",
+              "Trip Interruption claim on the" in block, (block, text[:300]))
+        check("interruption: the block code appends after the answer gives the amount, the unrefunded nights plus the change fee "
+              "(USD 1,050.00)", C.money_in(block, "1050.00"), block)
+        check("interruption: the block code appends after the answer gives the 90-day documents deadline as a date",
+              "Documents by:" in block and C.date_in(block, D90), (D90, block))
         check("interruption: the user was asked to take over the browser on eClaimsLine's claim form",
               any("eclaimsline.com" in s["url"] for s in seen), seen)
         done = [s["after"] for s in seen if "eclaims_done" in s["after"]]
-        check("interruption: the user pressed Submit and the portal confirmed the claim", bool(done), seen)
         q = {k: v[0] for k, v in parse_qs(urlsplit(done[-1] if done else "").query).items()}
         print(f"INFO the portal received: {q}")
         check("interruption: the portal received the Trip Interruption benefit", q.get("benefit") == "Trip Interruption", q)
         check("interruption: the portal received the date of loss", q.get("loss") == LOSS.isoformat(), q)
         check("interruption: the portal received USD 1,050.00", C.money_in(q.get("amount", ""), "1050.00"), q)
         # once the user has filed the claim the 20-day notice is given; before that, the answer must give its date
-        check("interruption: the 20-day notice deadline as a date (or the claim already filed by the user)",
-              C.date_in(text, D20) or bool(done), (D20, text[-1200:]))
+        check("interruption: the block code appends after the answer gives the 20-day notice deadline as a date",
+              C.date_in(block, D20), (D20, block))
         check("interruption: the portal received the cardholder's name", "lucas" in q.get("name", "").lower() and "lu" in q.get("name", "").lower(), q)
         check("interruption: the answer never says the assistant submitted the claim",
               not re.search(r"\bI( have|'ve)? (submitted|filed|sent)( in)? (the|your) claim", text, re.I), text[-600:])

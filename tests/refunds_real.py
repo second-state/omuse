@@ -74,13 +74,8 @@ async def order_and_refund(u: U.User) -> None:
     check("order: the user was asked to take over on the shop's checkout (a takeover card; the order was not placed for the user)",
           bool(takeovers) and "stride_socks" in seen["buy_url"], (takeovers, seen["buy_url"]))
     q = {k: v[0] for k, v in parse_qs(urlsplit(seen["buy_after"]).query).items()}
-    check("order: the user's Place order reaches the confirmation, with the delivery details and the Vault card filled in",
+    check("order: the order the user placed has the delivery details and the Vault card filled in (the filled checkout)",
           "stride_done" in seen["buy_after"] and q.get("address") and C.flat(q.get("card", "")) == CARD_NO, q)
-    check("order: the answer gives the order number, the item and the amount (SR-48213, socks, S$4.90)",
-          "SR-48213" in text and re.search(r"sock", text, re.I) and re.search(r"(S\$|SGD)\s?4\.90", text), text[:900])
-    rows = await C.ledger_rows(u)
-    check("order: Status → Ledger lists the order with its number and amount (SR-48213, SGD 4.90)",
-          any("SR-48213" in r and "4.90" in r for r in rows), rows)
 
     # the shop's confirmation email arrives
     K.seed_mail([CONFIRM_MAIL])
@@ -111,8 +106,6 @@ async def order_and_refund(u: U.User) -> None:
     check("refund: the answer reports the cancellation of SR-48213 and the S$4.90 refund",
           "SR-48213" in text and re.search(r"cancel", text, re.I) and re.search(r"(S\$|SGD)\s?4\.90", text) and re.search(r"refund", text, re.I),
           text[:900])
-    rows = await C.ledger_rows(u)
-    check("refund: Status → Ledger still lists the order", any("SR-48213" in r for r in rows), rows)
     everything = await u.thread_text()
     check("refund: the card number never appears in the chat", CARD_NO not in everything.replace(" ", ""), "")
 

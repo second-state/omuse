@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from tests import shop_common as SH  # read_block: the facts code appends after an answer
 from tests import user_common as U
 
 B, H = U.B, U.H
@@ -93,6 +94,7 @@ async def ask(u: U.User, text: str, *, label: str = "", new_chat: bool = True, a
         a.text = await last.inner_text()
         a.links = await last.evaluate("b => [...b.querySelectorAll('a[href^=\"http\"]')].map(x => x.href)")
         a.bot_link = await last.evaluate("b => { const l = b.closest('.msg').querySelector('.handoff-link'); return l ? l.textContent : ''; }")
+        await SH.read_block(a, last)   # the facts code appends after the answer (agent/show.rs)
     a.files = await pg.evaluate("() => [...document.querySelectorAll('.bubble.filecard')].map(c => ({name: c.innerText.split('\\n').map(l => l.trim()).find(l => /[A-Za-z0-9]/.test(l)) || '', "
                                 "href: (c.querySelector('a[href]') || {}).href || ''}))")
     name = label or text[:30]

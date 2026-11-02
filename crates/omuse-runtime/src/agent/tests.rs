@@ -3386,18 +3386,19 @@ fn events_of(evs: &[Value], ty: &str) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn a_workflow_call_runs_its_machine_then_the_model_words_the_result_and_the_review_checks_must_say(
+async fn a_workflow_call_runs_its_machine_then_the_model_words_the_result_and_code_appends_its_show(
 ) {
     let (rt, _d, seen) = scripted_rt(
         |body| {
             let sys = system_of(body);
             if sys.starts_with("You check an assistant") {
-                // the review of the reply to a machine's result gets its must_say and finds a fact missing
-                assert!(last_of(body).contains("must_say"), "{}", last_of(body));
-                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"missing\": [\"the item: on Stride Sports\"]}"});
+                // the review reads the reply alone: no facts to enforce, only whether it holds together
+                assert!(!last_of(body).contains("must carry"), "{}", last_of(body));
+                assert!(!sys.contains("missing"), "{sys}");
+                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
             }
             if sys.starts_with("You rewrite a reply") {
-                return json!({"role": "assistant", "content": format!("The socks are on Stride Sports: {STRIDE}")});
+                panic!("nothing to rewrite: the facts are appended by code");
             }
             if let Some(r) = helper_reply(body) {
                 return r;
@@ -3446,13 +3447,14 @@ async fn a_workflow_call_runs_its_machine_then_the_model_words_the_result_and_th
     assert!(!offered(&ex[1])
         .iter()
         .any(|n| crate::agent::booking::TOOLS.contains(&n.as_str())));
-    // the review found the result's fact missing: the reply carries it now
-    assert_eq!(events_of(&evs, "answer_review").len(), 1);
-    assert!(
-        get_str(&t, "result").contains("Stride Sports"),
-        "{}",
-        get_str(&t, "result")
-    );
+    // the reply left the shop and the link out: code appends the result's `show` after it, after a rule
+    assert!(events_of(&evs, "answer_review").is_empty());
+    assert_eq!(events_of(&evs, "answer_show").len(), 1);
+    let answer = get_str(&t, "result");
+    let (prose, block) = answer.rsplit_once("\n---\n").expect("the appended block");
+    assert_eq!(prose.trim(), "Here are the socks.");
+    assert!(block.contains("- On Stride Sports: "), "{answer}");
+    assert!(block.contains(&format!("]({STRIDE})")), "{answer}");
 }
 
 #[tokio::test]
@@ -3542,12 +3544,10 @@ async fn news_gather_returns_the_articles_then_the_model_publishes_them_as_json(
         |body| {
             let sys = system_of(body);
             if sys.starts_with("You check an assistant") {
-                // the review of the reply to the published edition gets its must_say: the links
-                assert!(last_of(body).contains("/artifacts/news/lumora/"), "{}", last_of(body));
-                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"missing\": [\"the HTML edition\"]}"});
+                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
             }
             if sys.starts_with("You rewrite a reply") {
-                return json!({"role": "assistant", "content": "The Tidal Current: /artifacts/news/lumora/edition.html"});
+                panic!("nothing to rewrite: the links are appended by code");
             }
             if let Some(r) = helper_reply(body) {
                 return r;
@@ -3660,18 +3660,19 @@ async fn news_gather_returns_the_articles_then_the_model_publishes_them_as_json(
     assert!(!offered(&ex[2])
         .iter()
         .any(|n| crate::agent::news::TOOLS.contains(&n.as_str())));
-    // the review found a must_say fact missing: the reply carries it now
-    assert_eq!(events_of(&evs, "answer_review").len(), 1);
+    // gate 40 news_report_real: the reply left the editions out; code appends their links after it, after a rule
+    let answer = get_str(&t, "result");
+    let (prose, block) = answer.rsplit_once("\n---\n").expect("the appended block");
+    assert_eq!(prose.trim(), "Here is your edition, The Tidal Current.");
     assert!(
-        get_str(&t, "result").contains("/artifacts/news/lumora/"),
-        "{}",
-        get_str(&t, "result")
+        block.contains("- HTML edition: [The Tidal Current](/artifacts/news/lumora/"),
+        "{answer}"
     );
 }
 
-// ---------------------------------------------------------------- facts the reply must carry (agent/facts.rs)
-// Each one comes out of structured data as a `must_say` string; the final review makes the reply carry it. None of
-// them reads the reply.
+// ---------------------------------------------------------------- facts the answer shows (agent/facts.rs)
+// Each one comes out of structured data as a string; code appends it to the answer (agent/show.rs). None of them
+// reads the reply.
 
 #[test]
 fn facts_the_confirmation_pages_reference_after_a_hand_back() {
@@ -3954,8 +3955,7 @@ async fn bag_trace_runs_its_machine_in_the_insurance_bot_and_the_reply_turn_has_
     let (rt, _d, seen) = scripted_rt(
         |body| {
             if system_of(body).starts_with("You check an assistant") {
-                assert!(last_of(body).contains("must_say"), "{}", last_of(body));
-                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"missing\": []}"});
+                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
             }
             if let Some(r) = helper_reply(body) {
                 return r;
@@ -3996,6 +3996,14 @@ async fn bag_trace_runs_its_machine_in_the_insurance_bot_and_the_reply_turn_has_
     assert!(!offered(ex.last().unwrap())
         .iter()
         .any(|n| crate::agent::claims::TOOLS.contains(&n.as_str())));
+    // the lookup failed: code appends where the user tracks it themselves
+    let answer = get_str(&t, "result");
+    let block = answer.rsplit_once("\n---\n").map(|x| x.1).unwrap_or("");
+    assert!(
+        block.contains("- WorldTracer not checked for file NRTSQ12345: ")
+            && block.contains("- Track it yourself: [WorldTracer]("),
+        "{answer}"
+    );
 }
 
 #[tokio::test]
@@ -4028,21 +4036,18 @@ async fn a_claim_without_its_facts_and_without_mail_asks_before_any_page_opens()
 }
 
 #[tokio::test]
-async fn a_fact_tools_must_say_goes_to_the_review_and_a_missing_fact_is_added_by_the_model() {
+async fn a_fact_tools_show_items_are_appended_to_the_reply_by_code() {
     // travel_info_real 2026-11-01 on the JSON tools: the model calls visa_rules with the destinations it read from the
-    // request; the result's must_say (the official table's days) goes to the review, and the reply that left it out
-    // gets it from the model — no code reads the request or the reply
+    // request; the result's `show` (the official table's days, the official page) is appended to the reply that left
+    // it out — by code, after the review; no code reads the request or the reply, and no model call adds it
     let (rt, _d, _seen) = scripted_rt(
         |body| {
             let sys = system_of(body);
             if sys.starts_with("You check an assistant") {
-                let last = last_of(body);
-                assert!(last.contains("must_say") && last.contains("up to 30 days"), "{last}");
-                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"missing\": [\"Thailand: up to 30 days\"]}"});
+                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
             }
             if sys.starts_with("You rewrite a reply") {
-                assert!(last_of(body).contains("up to 30 days"));
-                return json!({"role": "assistant", "content": "Thailand: visa-free for up to 30 days with your Australia passport; file the TDAC."});
+                panic!("nothing to rewrite: the facts are appended by code");
             }
             if let Some(r) = helper_reply(body) {
                 return r;
@@ -4068,14 +4073,20 @@ async fn a_fact_tools_must_say_goes_to_the_review_and_a_missing_fact_is_added_by
         .map(|m| get_str(m, "content"))
         .unwrap();
     assert!(
-        res.contains("\"must_say\"") && res.contains("up to 30 days"),
+        res.contains("\"show\"") && res.contains("up to 30 days"),
         "{res}"
     );
-    assert_eq!(events_of(&evs, "answer_review").len(), 1);
+    assert!(events_of(&evs, "answer_review").is_empty());
+    let answer = get_str(&t, "result");
+    let (prose, block) = answer.rsplit_once("\n---\n").expect("the appended block");
+    assert_eq!(
+        prose.trim(),
+        "For Thailand, file the TDAC within 3 days before you arrive."
+    );
     assert!(
-        get_str(&t, "result").contains("up to 30 days"),
-        "{}",
-        get_str(&t, "result")
+        block.contains("- Visa-free stay in Thailand (Australia passport): up to 30 days")
+            && block.contains("- Official source (Thailand): ["),
+        "{answer}"
     );
 }
 

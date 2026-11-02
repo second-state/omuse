@@ -14,7 +14,7 @@ that needs several ("a flight, a hotel and a car"): search the first part the us
 - **Flights, hotels, restaurants:** `travel_search` with `kind` = flight / hotel / michelin / restaurant and the user's
   details as arguments (dates as YYYY-MM-DD, city codes, cabin, party, budget, `next` = the other searches the
   request asks for). Code runs the ONE search, picks by rule and shows the cards; write the answer from its JSON
-  result (every fact in `must_say`, each offer's `booking_url`). Never call flights_search / hotels_search /
+  result (the facts in `show` are appended by code, each offer's `booking_url`). Never call flights_search / hotels_search /
   places_search yourself. The flight-booking, hotel-booking and michelin-dining skills have the arguments in detail.
 - **Cars:** `cars_search` only — ONE search per call: the pickup airport, dates, times,
   car class and the preferred companies. It returns web results (companies and "from" prices) and the `booking_url`:

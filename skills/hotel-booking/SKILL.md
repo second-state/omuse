@@ -23,7 +23,7 @@ Code does the work; you turn the user's words into the tool's arguments and the 
   again; `running` → code works; the JSON result follows as `travel_search_result` / `travel_book_result`.
 
 ## 3. Write the reply from the result
-- Every fact in `must_say` goes into the reply, as given.
+- The facts in `show` are appended to the reply by code.
 - `shown`: the hotels (area, rating, price per night and total, cancellation, each `booking_url`), the pick and its
   rule, the room picked for it (`pick.room`: the cheapest with free cancellation unless any terms were fine),
   the Kayak `links.compare_url` once. `source: "web"` → these are web pages with "from" prices, not quotes.

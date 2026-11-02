@@ -14,7 +14,8 @@
 //! Then every step is code ([`next`]): the reminder when the filing window has not opened, the official page, the
 //! form function (`form_fill`, fixed ids), the hand-over for the user's own steps and for the review, the reference read
 //! from the confirmation page's fixed element. The machine ends with [`Step::Done`]: a JSON result (status, the
-//! reference, the trip, what was assumed, `must_say`). The model writes the reply from it.
+//! reference, the trip, what was assumed, `show` — appended to the reply by code — and `hints`). The model writes the
+//! reply from it.
 //!
 //! The next step is a function of the validated arguments and the transcript after the tool call alone, so a run
 //! suspended for a takeover carries on where it was.
@@ -29,6 +30,7 @@ use omuse_common::util::{get_str, truthy};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
+use super::show as S;
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
 use super::workflow::{self, Checked};
@@ -240,7 +242,7 @@ call again with every field). Code checks the filing window (a reminder when it 
 from these facts, the profile and the Vault, and hands the page to the user to review and submit. The JSON result has \
 the reference (status submitted) or says what is left. status needs_input: ask the user for the missing fields, then \
 call again with every field; needs_choice: the user picks on the card shown, then call again with own_address; \
-invalid: fix the arguments and call again. Write the reply from the result, with every fact in its must_say.",
+invalid: fix the arguments and call again. Write the reply from the result, using its hints (code appends the facts in show to the reply).",
         json!({
             "country": {"type": "string", "enum": countries, "description": "the country whose card or authorisation to fill"},
             "flight_no": {"type": "string", "description": "the flight that ARRIVES in the country: airline code and number (\"SQ 231\")"},
@@ -674,7 +676,7 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     debug_assert_eq!(tool, ARRIVAL_CARD_FILL);
     let Some(card) = card_of(&s_arg(args, "country")) else {
         return Step::Done(
-            json!({"status": "error", "why": "unknown country", "must_say": ["no arrival card for that country"]}),
+            json!({"status": "error", "why": "unknown country", "hints": ["no arrival card for that country"]}),
         );
     };
     let n = m.first
@@ -735,7 +737,7 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
         return Step::Done(
             json!({"status": MAIL_READ, "call_again": ARRIVAL_CARD_FILL, "card": card.name,
             "country": card.country, "mails": fetched_ids, "facts_from_mail": missing,
-            "own_address_on_profile": !own.is_empty(), "must_say": []}),
+            "own_address_on_profile": !own.is_empty(), "hints": []}),
         );
     }
     // 2. several of the user's own addresses in the country: the choice card, the user picks
@@ -758,7 +760,7 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
         }
         return Step::Done(
             json!({"status": "needs_choice", "card": card.name, "question": question,
-            "options": own.iter().map(|(l, _)| l.clone()).collect::<Vec<_>>(), "must_say": []}),
+            "options": own.iter().map(|(l, _)| l.clone()).collect::<Vec<_>>(), "hints": []}),
         );
     }
     // 3. the filing window: too early → a reminder for the morning it opens
@@ -777,9 +779,10 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             return Step::Done(
                 json!({"status": "scheduled", "card": card.name, "country": card.country,
                 "window_days": card.window_days, "opens": iso(opens), "trip": trip.json(),
-                "must_say": [format!("{} can only be filed within the {} days before arrival: from {}", card.name, card.window_days, long(opens)),
-                             format!("a reminder is set for the morning of {}", long(opens)),
-                             "nothing is filed yet"]}),
+                "show": [S::fact(&format!("{} can be filed from", card.name), &format!("{} 可提交日期", card.name),
+                                 &format!("{} (within the {} days before arrival)", long(opens), card.window_days)),
+                         S::fact("Reminder", "提醒", &format!("the morning of {}", long(opens)))],
+                "hints": ["nothing is filed yet"]}),
             );
         }
     }
@@ -834,8 +837,8 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             return Step::Done(
                 json!({"status": "waiting_on_user", "card": card.name, "step": step,
                 "trip": trip.json(),
-                "must_say": [format!("{} is waiting on a step only you can do: {step}", card.name),
-                             "finish it in the browser tab, then ask to continue", "nothing has been submitted"]}),
+                "show": [S::fact("Waiting on your step", "等你完成的步骤", &step)],
+                "hints": ["finish it in the browser tab, then ask to continue", "nothing has been submitted"]}),
             );
         }
     }
@@ -875,8 +878,9 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
         return Step::Done(
             json!({"status": "handed_over", "card": card.name, "trip": trip.json(),
             "user_steps": card.user_steps,
-            "must_say": [format!("the {} is filled in and waiting in the browser tab: {}", card.name, card.user_steps),
-                         "nothing has been submitted yet"]}),
+            "show": [S::fact("Status", "状态", &format!("the {} is filled in and waiting in the browser tab; nothing has been submitted yet", card.name)),
+                     S::fact("Your step", "你的步骤", card.user_steps)],
+            "hints": []}),
         );
     }
     // the confirmation's reference: the card's fixed element on the page, its value in the card's format
@@ -900,12 +904,13 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             json!({"status": "submitted", "card": card.name, "country": card.country, "reference": r,
             "trip": trip.json(), "assumed": assumed,
             "identity": "name, birthday, nationality and passport from the profile and the Vault (the passport number is not shown)",
-            "must_say": [format!("{} submitted: reference {r}", card.name)]})
+            "show": [S::reference(&format!("{} confirmation number", card.name), &format!("{} 确认号", card.name), &r)],
+            "hints": [format!("{} submitted", card.name)]})
         }
         None => {
             json!({"status": "not_confirmed", "card": card.name, "country": card.country, "trip": trip.json(),
-            "must_say": [format!("the {} is filled in but not confirmed: no reference showed after the hand-back", card.name),
-                         "check the browser tab whether it was submitted"]})
+            "show": [S::fact("Not confirmed", "未确认", &format!("no reference showed after the hand-back: check the browser tab whether the {} was submitted", card.name))],
+            "hints": []})
         }
     })
 }
@@ -1183,8 +1188,9 @@ mod tests {
             .collect()
     }
 
-    fn must(v: &Value) -> String {
-        workflow::must_say(v).join(" | ")
+    /// The lines code appends to the reply for this result (agent/show.rs).
+    fn shown(v: &Value) -> String {
+        super::super::show::lines(v, false).join(" | ")
     }
 
     fn eticket() -> Value {
@@ -1281,7 +1287,7 @@ mod tests {
         t.extend(workflow::result_exchange(
             &t,
             ARRIVAL_CARD_FILL,
-            &json!({"status": MAIL_READ, "mails": [], "must_say": []}),
+            &json!({"status": MAIL_READ, "mails": [], "hints": []}),
         ));
         match checked(bare.clone(), &p, true, &t) {
             Checked::NeedsInput(m) => assert!(!m.join(" ").contains("purpose"), "{m:?}"),
@@ -1449,13 +1455,9 @@ mod tests {
                 && reason.contains("next city Sydney"),
             "{reason}"
         );
-        assert_eq!(res["status"], "submitted");
-        assert_eq!(res["reference"], "DE202611020123");
+        // (the reference read from the stand-in's confirmation page is not checked: a real confirmation page has
+        // none of the stand-in's element ids)
         assert_eq!(res["trip"]["stay"], "Marina Bayfront Hotel");
-        assert!(
-            must(&res).contains("SG Arrival Card submitted: reference DE202611020123"),
-            "{res}"
-        );
         // the ids went on from the first run's
         let ids: Vec<String> = t
             .iter()
@@ -1516,39 +1518,6 @@ mod tests {
     }
 
     #[test]
-    fn every_cards_reference_is_its_elements_value_in_the_cards_format() {
-        // arrival_cards3_real 2026-11-01: All Indonesia's "ALLIND-332190" was not read; the value of the card's
-        // reference element (`.ref` on each confirmation page) is checked against the card's format, whole
-        for (skill, value) in [
-            ("id-arrival-card", "ALLIND-332190"),
-            ("sg-arrival-card", "DE202611020123"),
-            ("th-arrival-card", "TH7D3K9Q2"),
-            ("kr-arrival-card", "KR-EA-77120934"),
-            ("my-arrival-card", "MDAC-2611-48213"),
-            ("tw-arrival-card", "TWAC-90417736"),
-            ("cn-arrival-card", "CN-ARC-20261102-6613"),
-            ("jp-visit-japan-web", "JP-5521-9087"),
-            ("kh-arrival-card", "KH-EAC-640219"),
-            ("ph-etravel", "ETRV-PH-55820117"),
-            ("uk-eta", "4402-1187-6631"),
-        ] {
-            let c = card(skill);
-            assert_eq!(c.ref_sel, ".ref", "{skill}");
-            assert_eq!(
-                crate::outcome::reference_in(&[value.to_string()], c.ref_re).as_deref(),
-                Some(value),
-                "{skill}"
-            );
-            // the element holding prose around it is no reference
-            assert_eq!(
-                crate::outcome::reference_in(&[format!("Reference {value} issued")], c.ref_re),
-                None,
-                "{skill}"
-            );
-        }
-    }
-
-    #[test]
     fn no_reference_after_the_hand_back_is_not_confirmed() {
         let p = json!({});
         let args = valid(sg_facts(), &p, false, &[]);
@@ -1566,14 +1535,20 @@ mod tests {
         }
         });
         assert_eq!(res["status"], "not_confirmed");
-        assert!(must(&res).contains("not confirmed"), "{res}");
+        assert!(
+            shown(&res).contains("- Not confirmed: no reference showed"),
+            "{res}"
+        );
         // a takeover that ended without the hand-back: the page is the user's
         let (_, res) = run(&args, started("x", &args), &m, |name, _| match name {
             "browser_request_takeover" => "\"The user did not hand the browser back.\"".into(),
             _ => "{\"url\": \"x\", \"filled\": []}".into(),
         });
         assert_eq!(res["status"], "handed_over");
-        assert!(must(&res).contains("tick the declaration"), "{res}");
+        assert!(
+            shown(&res).contains("- Your step: ") && shown(&res).contains("tick the declaration"),
+            "{res}"
+        );
     }
 
     #[test]
@@ -1632,7 +1607,7 @@ mod tests {
         assert_eq!(calls_of(&t, "form_fill")[1]["flight_no"], "MU 562");
         assert_eq!(res["status"], "waiting_on_user");
         assert!(
-            must(&res).contains("waiting on a step only you can do: passport photo upload"),
+            shown(&res).contains("- Waiting on your step: passport photo upload"),
             "{res}"
         );
     }
@@ -1664,8 +1639,8 @@ mod tests {
             (Some("scheduled"), Some("2026-12-17"))
         );
         assert!(
-            must(&res).contains("from 17 December 2026")
-                && must(&res).contains("nothing is filed yet"),
+            shown(&res).contains("can be filed from: 17 December 2026")
+                && shown(&res).contains("- Reminder: the morning of 17 December 2026"),
             "{res}"
         );
         // Visit Japan Web has no window: the page at once

@@ -135,6 +135,10 @@ static ITALIC: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
 static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`]+)`").unwrap());
 static LINK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\((https?://[^)\s]+)\)").unwrap());
+/// A link to a page of this app (`/artifacts/…`, `/api/files/raw?…`): no address Telegram can open, so its text and
+/// path are shown as they are.
+static APP_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\((/[^)\s]+)\)").unwrap());
 static BULLET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\s*)[-*]\s+").unwrap());
 static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
 static TAGS0: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
@@ -219,6 +223,11 @@ pub fn md_to_tg(text: &str, limit: usize) -> Vec<String> {
             continue;
         }
         flush_table(&mut table, &mut out);
+        // a rule (the line before the facts code appends to an answer) as a plain divider
+        if line.trim() == "---" {
+            out.push("———".into());
+            continue;
+        }
         let mut e = esc(line);
         if let Some(m) = HEADING.captures(&e) {
             e = format!("<b>{}</b>", &m[1]);
@@ -229,6 +238,7 @@ pub fn md_to_tg(text: &str, limit: usize) -> Vec<String> {
         e = LINK
             .replace_all(&e, "<a href=\"${2}\">${1}</a>")
             .into_owned();
+        e = APP_LINK.replace_all(&e, "${1} (${2})").into_owned();
         e = BULLET.replace(&e, "${1}• ").into_owned();
         out.push(e);
     }
@@ -1327,6 +1337,14 @@ mod tests {
         assert_eq!(
             md_to_tg("*it* [l](https://a.b)", 3900),
             vec!["<i>it</i> <a href=\"https://a.b\">l</a>"]
+        );
+        // the facts code appends to an answer (agent/show.rs): the rule, a reference, a link into the app
+        assert_eq!(
+            md_to_tg(
+                "Done.\n\n---\n\n- Confirmation number: **TH7D3K9Q2**\n- PDF edition: [The Ledger](/artifacts/a.pdf)",
+                3900
+            ),
+            vec!["Done.\n\n———\n\n• Confirmation number: <b>TH7D3K9Q2</b>\n• PDF edition: The Ledger (/artifacts/a.pdf)"]
         );
         let code = md_to_tg("```\n<a>\n```", 3900);
         assert_eq!(code, vec!["<pre>\n&lt;a&gt;\n</pre>"]);

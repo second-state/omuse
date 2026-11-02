@@ -82,6 +82,19 @@ class SchoolMail:
 
 
 # ---------------------------------------------------------------------------------------------------- the app, as the user uses it
+# the facts code appends after an answer (agent/show.rs): the text and links after the bubble's last rule
+BLOCK_JS = """b => { const hr = [...b.querySelectorAll('hr')].pop(); if (!hr) return {text: '', links: []};
+    const text = [], links = []; for (let n = hr.nextElementSibling; n; n = n.nextElementSibling) {
+      text.push(n.innerText); n.querySelectorAll('a[href]').forEach(x => links.push(x.href)); }
+    return {text: text.join('\\n'), links}; }"""
+
+
+async def read_block(a, last) -> None:
+    """Fill `a.block` / `a.block_links` from the answer bubble `last` (tests/show_common.py)."""
+    blk = await last.evaluate(BLOCK_JS)
+    a.block, a.block_links = blk.get("text", ""), blk.get("links", [])
+
+
 async def watch_toasts(u: U.User) -> None:
     """From now on every toast the app shows is remembered (they disappear after a few seconds); `toasts` reads them."""
     await u.page.evaluate("""() => { window.__toasts = window.__toasts || [];
@@ -235,6 +248,7 @@ async def ask(u: U.User, text: str, *, label: str = "", new_chat: bool = True, o
     if await last.count():
         a.text = await last.inner_text()
         a.links = await last.evaluate("b => [...b.querySelectorAll('a[href^=\"http\"]')].map(x => x.href)")
+        await read_block(a, last)
     a.files = await pg.evaluate("() => [...document.querySelectorAll('.bubble.filecard')].map(c => ({name: c.innerText.split('\\n').map(l => l.trim()).find(l => /[A-Za-z0-9]/.test(l)) || '', "
                                 "href: (c.querySelector('a[href]') || {}).href || ''}))")
     name = label or text[:30]
@@ -335,6 +349,8 @@ async def ask_takeover(u: U.User, text: str, *, on_takeover, label: str = "", ti
     last = pg.locator(".msg.assistant:not(.live) .bubble").last
     b.text = await last.inner_text() if await last.count() else ""
     b.links = await last.evaluate("b => [...b.querySelectorAll('a[href^=\"http\"]')].map(x => x.href)") if await last.count() else []
+    if await last.count():
+        await read_block(b, last)
     print(f"TIMING {U.SUITE}/{label or text[:30]} after the hand-back {b.seconds:.0f} s")
     print(f"INFO {label} answer after the hand-back: {' '.join(b.text.split())[:900]}")
     return b
