@@ -1,18 +1,18 @@
-"""SG Arrival Card, and an arrival card whose trip the user did not give, with a real model, from the user's point of
-view (the install, the user's part and the checks: tests/arrival_common.py; the rule: tests/user_common.py).
-SKELETON awaiting the real official sites (TODO lines below); nothing is ever submitted.
+"""SG Arrival Card, and an arrival card whose trip the user did not give, on the REAL official sites with a real model, from
+the user's point of view (the install, the user's part and the checks: tests/arrival_common.py; the rule:
+tests/user_common.py). Nothing is ever submitted.
 
-1. SG Arrival Card on ICA's site: the user asks Main's chat to fill it in (flight and hotel in the request); the Travel
-   bot fills everything from the request, the profile and the Vault with no approval dialog and asks the user to take
-   over at their own step; the handed-over form holds the right values (passport expiry, health and declarations No,
-   next city Sydney, departure = arrival + 7); the passport number never shows in the chat.
-2. No trip details: asked to fill in the Thailand TDAC without the flight or the stay, the agent asks ONCE for them, the
-   user answers in the chat, and the form is filled with those answers and handed over as above — no second question.
+1. SG Arrival Card on ICA's site (https://eservices.ica.gov.sg/sgarrivalcard/ → Fill in Manually as a visitor): the
+   user asks Main's chat to fill it in (flight and hotel in the request); the Travel bot fills everything from the
+   request, the profile and the Vault with no approval dialog and asks the user to take over for their review and
+   Submit; the page handed over holds the right values (passport and expiry from the Vault, health and declarations No,
+   last city Sydney, departure = arrival + 7); the passport number never shows in the chat.
+2. No trip details: asked to fill in the Thailand TDAC (https://tdac.immigration.go.th/) without the flight or the stay,
+   the agent asks ONCE for them, the user answers in the chat, and the card goes to the official site — handed over at
+   the home page's Cloudflare check, the user's step (never solved or got around) — no second question.
 
-Not in run_in_docker.sh's default list (it needs a real model, billed):
+In REAL_SITES (run_in_docker.sh `realsites`, one suite at a time; a real model, billed):
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh arrival_real"""
-# TODO real URL: https://eservices.ica.gov.sg/sgarrivalcard/
-# TODO real URL: https://tdac.immigration.go.th/arrival-card/
 import os
 import sys
 

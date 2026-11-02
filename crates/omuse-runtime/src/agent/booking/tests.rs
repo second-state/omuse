@@ -402,7 +402,7 @@ fn a_flight_comparison_picks_by_rule_and_books_nothing() {
 }
 
 #[test]
-fn a_refused_purchase_books_nothing_and_opens_no_page() {
+fn a_refused_purchase_books_nothing_and_hands_nothing_over() {
     let p = profile();
     let a = valid(
         TRAVEL_BOOK,
@@ -426,7 +426,55 @@ fn a_refused_purchase_books_nothing_and_opens_no_page() {
         (res["status"].as_str(), res["reason"].as_str()),
         (Some("not_confirmed"), Some("purchase_not_approved"))
     );
-    assert!(!names(&t).iter().any(|n| n == "browser_navigate"));
+    // the page opened before the approval (so the approval names its site), but nothing is filled or handed to
+    // browser-use after a refusal
+    let seq = names(&t);
+    let nav = seq.iter().position(|n| n == "browser_navigate");
+    let confirm = seq.iter().position(|n| n == "purchase_confirm");
+    assert!(nav.is_some() && nav < confirm, "{seq:?}");
+    assert!(
+        !seq.iter()
+            .any(|n| n.starts_with("browser_") && n != "browser_navigate"),
+        "{seq:?}"
+    );
+}
+
+#[test]
+fn the_purchase_is_approved_on_the_booking_page_the_link_landed_on() {
+    // travel_book_real 2026-11-02: the hotel's approval was asked before its page opened — it named the Google
+    // redirect's host, and Sentinel bound it to the flight's page still open (kiwi.com)
+    let p = profile();
+    let a = valid(
+        TRAVEL_BOOK,
+        json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03"}),
+        "book",
+        &p,
+    );
+    let (t, res) = run(
+        TRAVEL_BOOK,
+        &a,
+        started(TRAVEL_BOOK, &a, "book"),
+        &Env::of(&p),
+        |name, _, _| match name {
+            "flights_search" => flight_result(),
+            "vault_list" => VAULT.into(),
+            "purchase_confirm" => "{\"status\": \"approved\"}".into(),
+            "browser_navigate" => snap(
+                "https://www.airline.example/booking/passengers",
+                "[e10] textbox \"Full name\"",
+            ),
+            _ => "{}".into(),
+        },
+    );
+    let seq = names(&t);
+    let nav = seq.iter().position(|n| n == "browser_navigate");
+    let confirm = seq.iter().position(|n| n == "purchase_confirm");
+    assert!(nav.is_some() && nav < confirm, "{seq:?}");
+    assert_eq!(
+        args_of(&t, "purchase_confirm")[0]["site"],
+        "www.airline.example"
+    );
+    assert_eq!(res["status"], "browser_use");
 }
 
 #[test]
@@ -947,6 +995,54 @@ fn a_hotel_room_is_picked_by_rule_and_a_pay_at_hotel_rate_needs_no_card() {
         (res["status"].as_str(), res["booking"]["charged"].as_bool()),
         (Some("browser_use"), Some(false))
     );
+    // the hand-over's block: the booking page, what is booked and its price from the search (nothing approved, so
+    // no "Amount you approved" line carries it; travel_book_real 2026-11-02: the block had the link only)
+    let block = must(&res);
+    assert!(
+        block.contains(&format!("{TT}/book/hotel/H-TYO-1-R2")),
+        "{block}"
+    );
+    assert!(
+        block.contains("- To book: Hotel Ginza Grand – Superior Twin"),
+        "{block}"
+    );
+    assert!(
+        block.contains("Price in the search") && block.contains("SGD 420.00"),
+        "{block}"
+    );
+}
+
+#[test]
+fn a_charged_booking_handed_over_shows_no_second_amount() {
+    let p = profile();
+    let ask = "Book it.";
+    let a = valid(
+        TRAVEL_BOOK,
+        json!({"kind": "flight", "origin": "SIN", "destination": "TYO", "date": "2026-12-03"}),
+        ask,
+        &p,
+    );
+    let (_, res) = run(
+        TRAVEL_BOOK,
+        &a,
+        started(TRAVEL_BOOK, &a, ask),
+        &Env::of(&p),
+        |name, args, _| match name {
+            "flights_search" => flight_result(),
+            "vault_list" => "Vault items: none".into(),
+            "purchase_confirm" => "{\"status\": \"approved\"}".into(),
+            "browser_navigate" => snap(&sget(args, "url"), "[e10] textbox \"Full name\""),
+            _ => "{}".into(),
+        },
+    );
+    let block = must(&res);
+    assert_eq!(res["status"], "browser_use");
+    assert!(
+        block.contains("Booking page") && block.contains("- To book: "),
+        "{block}"
+    );
+    // the amount is the approved purchase's line (guards::purchase_total_facts), not repeated here
+    assert!(!block.contains("Price in the search"), "{block}");
 }
 
 #[test]
@@ -1508,6 +1604,23 @@ fn ask_user_before_the_workflow_call_of_a_booking_skill_is_refused() {
         json!({"name": "load_skill", "args": {"name": "online-shopping"}}),
     )];
     assert_eq!(ask_before_tool(&shop).unwrap()["tool"], "shop_order");
+}
+
+#[test]
+fn ask_user_while_a_handed_page_is_filled_is_refused() {
+    // travel_book_real 2026-11-02: at Kiwi.com's contact step the model asked whether to use the profile's email and
+    // phone; the run ended on the question with no hand-over
+    let ev = |ty: &str, data: Value| json!({"type": ty, "data": data});
+    let workflow = vec![ev("workflow_call", json!({"tool": "travel_book"}))];
+    assert!(ask_in_browser_use(&workflow).is_none());
+    let mut handed = workflow.clone();
+    handed.push(ev(
+        "browser_use_handoff",
+        json!({"url": "https://www.kiwi.com/en/booking/"}),
+    ));
+    let r = ask_in_browser_use(&handed).expect("refused");
+    assert_eq!(r["refused"], "fill_then_hand_over");
+    assert!(sget(&r, "why").contains("browser_request_takeover"), "{r}");
 }
 
 #[test]

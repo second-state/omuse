@@ -1,5 +1,6 @@
-"""Chase Sapphire Reserve trip cancellation claim, with a real model and from the user's point of view
-(tests/user_common.py). SKELETON awaiting eClaimsLine's real site (TODO line below); nothing is submitted. The user's
+"""Chase Sapphire Reserve trip cancellation claim, with a real model on the REAL claims portal and from the user's point
+of view (tests/user_common.py); nothing is filed. www.eclaimsline.com now redirects to Card Claim Center
+(https://cardclaimcenter.com/internal/log-in): the whole claim lies behind the account's sign-in, which is the user's. The user's
 Vault holds the Sapphire Reserve by its name only (USA; number, expiry and CVC UNKNOWN). No mailbox: the user gives the
 United booking (UA 837 SFO → NRT, confirmation ABC123, USD 1,840.00 Basic Economy, non-refundable, paid with the card;
 USD 86.40 taxes and fees refunded) in the request, says food poisoning kept them from the flight three days ago (the
@@ -7,15 +8,13 @@ doctor's letter given up front) and asks for the card's trip cancellation claim.
 * the Credit cards (or Insurance & claims) bot answers (its link); the block code appends names the benefit, Trip
   Cancellation, the amount to claim (paid minus refunded, USD 1,753.60), the 20-day notice and 90-day documents
   deadlines as dates;
-* the agent asks the user to take over the browser on eClaimsLine (their sign-in or Submit); when the page handed over
-  is the claim form, it holds the name, the date of loss and the amount; the user hands it back without pressing
-  anything;
+* the agent asks the user to take over the browser on Card Claim Center's sign-in; the user hands it back without signing in, and the block says the sign-in is theirs and nothing was filed;
 * the user is never asked to approve pressing Submit, and afterwards the browser view is still on the portal;
 * no card number in any answer.
-If the bot stops for a question, the user answers once in the same chat. One TIMING line per request.
+If the bot stops for a question, the user answers once in the same chat. One TIMING line per request. In
+run_in_docker.sh's REAL_SITES (one at a time).
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh cards_claim_real"""
-# TODO real URL: https://www.eclaimsline.com/
 import datetime as dt
 import os
 import re
@@ -30,6 +29,7 @@ LOSS = dt.date.today() - dt.timedelta(days=3)
 BOOKED = (dt.date.today() - dt.timedelta(days=40)).isoformat()
 D20, D90 = LOSS + dt.timedelta(days=20), LOSS + dt.timedelta(days=90)
 OUT = "/repo-out" if os.path.isdir("/repo-out") else ""
+PORTAL = "cardclaimcenter.com"
 
 
 def no_submit(dialog: str) -> bool:
@@ -46,7 +46,7 @@ async def main():
         seen = []
 
         async def look_then_hand_back(pg, request: str) -> None:
-            # the user reads the request, looks at the claim form in the browser view and hands it back unsent
+            # the user reads the request, looks at the sign-in page in the browser view and hands it back without signing in
             url = await u.view_url()
             form = await u.view_form()
             await u.view_picture(os.path.join(OUT, f"cards_claim_takeover{len(seen)}.png") if OUT else None)
@@ -78,14 +78,10 @@ async def main():
               "Notify the administrator by:" in block and C.date_in(block, D20), (D20, block))
         check("claim: the block code appends after the answer gives the 90-day documents deadline as a date",
               "Documents by:" in block and C.date_in(block, D90), (D90, block))
-        portal = [s for s in seen if "eclaimsline.com" in s["url"]]
-        check("claim: the user was asked to take over the browser on eClaimsLine", bool(portal), [x["url"] for x in seen])
-        forms = [s["form"] for s in portal if any(f["value"] for f in s["form"])]
-        if forms:   # the claim form itself (not the sign-in): the name, the date of loss and the amount filled in
-            form = forms[-1]
-            check("claim: the handed-over claim form holds the name, the date of loss and the amount",
-                  "LU" in U.field(form, r"name").upper() and bool(U.field(form, r"date|loss")) and bool(U.field(form, r"amount")),
-                  [(f["label"][:30], f["value"][:20]) for f in form][:30])
+        portal = [s for s in seen if PORTAL in s["url"]]
+        check("claim: the user was asked to take over the browser on Card Claim Center's sign-in", bool(portal), [x["url"] for x in seen])
+        check("claim: the block says the sign-in is the user's and nothing was filed",
+              "sign in or create your account" in block and "nothing has been filed" in block, block)
         check("claim: the user was never asked to approve pressing Submit", not [d for d in dialogs if re.search(r"submit", d, re.I)], dialogs)
         check("claim: no card number in the answers", not C.CARD_NO.search(text), text[:300])
         # afterwards the user opens the browser view: the portal shows no claim confirmation (Submit never pressed)
@@ -94,7 +90,7 @@ async def main():
         await u.page.wait_for_timeout(2500)
         now = await u.view_url() if await u.page.locator(".bview .bbar input.url").count() else ""
         print(f"INFO browser view afterwards: url {now!r}")
-        check("claim: the browser view is still on the portal afterwards (Submit was left to the user)", "eclaimsline.com" in now, now)
+        check("claim: the browser view is still on the portal afterwards (Submit was left to the user)", PORTAL in now, now)
         print(f"INFO claim: takeover requests {[t for x in answers for t in x.takeovers]}; files {answers[-1].files}")
 
 

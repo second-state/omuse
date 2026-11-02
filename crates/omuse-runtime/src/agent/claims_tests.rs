@@ -107,10 +107,6 @@ fn names(calls: &[ToolCall]) -> Vec<&str> {
     calls.iter().map(|c| c.name.as_str()).collect()
 }
 
-fn the<'a>(calls: &'a [ToolCall], name: &str) -> &'a ToolCall {
-    calls.iter().find(|c| c.name == name).expect(name)
-}
-
 /// The lines code appends to the reply for this result (agent/show.rs).
 fn must(v: &Value) -> String {
     super::super::show::lines(v, false).join("\n")
@@ -373,83 +369,75 @@ fn csr_cancellation() -> Value {
     )
 }
 
-fn csr_answers(confirmation: &'static str) -> impl Fn(&str, &Value) -> String {
+const CCC: &str = "https://cardclaimcenter.com/internal/log-in";
+
+/// Card Claim Center after the hand-back: the sign-in page (its password box) still there, or not.
+fn csr_answers(signed_in: bool) -> impl Fn(&str, &Value) -> String {
     move |name, _| {
         match name {
-        "browser_navigate" => page("https://www.eclaimsline.com/", "[e1] textbox \"Cardholder name\""),
-        "form_fill" => "{\"url\": \"https://www.eclaimsline.com/\", \"filled\": [{\"op\": \"text\", \"field\": \"name\", \"ok\": true}]}".into(),
+        "browser_navigate" => page(CCC, "[e1] textbox \"Email Address\"\n[e2] textbox \"Password\""),
+        "form_fill" => format!("{{\"url\": \"{CCC}\", \"filled\": [{{\"op\": \"text\", \"field\": \"email\", \"ok\": true}}]}}"),
         "browser_request_takeover" => BACK.into(),
-        "browser_read_elements" => elements(
-            "https://www.eclaimsline.com/",
-            json!({"reference": if confirmation.is_empty() { vec![] } else { vec![confirmation] }}),
-        ),
-        "schedule_create" => "created".into(),
+        "browser_read_elements" if signed_in => elements("https://cardclaimcenter.com/internal/claims/new", json!({"password": []})),
+        "browser_read_elements" => elements(CCC, json!({"password": ["password"]})),
         other => panic!("{other}"),
     }
     }
 }
 
 #[test]
-fn the_csr_claim_is_filled_from_the_arguments_and_handed_over() {
-    let profile = json!({"name_en": "LUCAS LU"});
+fn the_csr_claim_reaches_the_sign_in_and_hands_it_over_with_the_facts() {
+    // www.eclaimsline.com redirects to Card Claim Center's sign-in (2026-11-02): the account is the user's
+    let profile = json!({"name_en": "LUCAS LU", "email_personal": "lucas@example.com"});
     let args = csr_cancellation();
     let (mut t, from) = started(Vec::new(), "I couldn't take my United flight — claim the trip cancellation insurance on my Sapphire Reserve. I'll press Submit myself.", CLAIM_FILE, &args);
-    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, csr_answers(""));
+    let (calls, res) = run(
+        CLAIM_FILE,
+        &args,
+        &mut t,
+        from,
+        &profile,
+        csr_answers(false),
+    );
     assert_eq!(
         names(&calls),
         [
             "browser_navigate",
             "form_fill",
             "browser_request_takeover",
-            "browser_read_elements",
-            "schedule_create",
-            "schedule_create"
+            "browser_read_elements"
         ]
     );
-    let fill = &the(&calls, "form_fill").args;
-    assert_eq!(
-        (
-            sget(fill, "benefit").as_str(),
-            sget(fill, "loss_date").as_str(),
-            sget(fill, "amount").as_str(),
-            sget(fill, "reason").as_str(),
-            sget(fill, "booking").as_str(),
-            sget(fill, "last4").as_str()
-        ),
-        (
-            "Trip Cancellation",
-            "2026-10-28",
-            "1753.60",
-            "sickness of the cardholder",
-            "United Airlines ABC123",
-            "4321"
-        )
-    );
-    let reason = sget(&the(&calls, "browser_request_takeover").args, "reason");
+    assert_eq!(sget(&calls[0].args, "url"), CCC);
+    let reason = sget(&calls[2].args, "reason");
     assert!(
-        reason.contains("paid 1,840.00 − refunded 86.40") && reason.contains("press Submit claim"),
+        reason.starts_with(OWN_STEP)
+            && reason.contains("sign in to Card Claim Center")
+            && reason.contains("paid 1,840.00 − refunded 86.40"),
         "{reason}"
     );
-    assert_eq!(sget(&calls[4].args, "spec"), "0 8 19 1 *"); // 2027-01-26 − 7
-    assert_eq!(sget(&calls[5].args, "spec"), "14400");
-    assert_eq!(res["status"], "handed_over");
+    assert_eq!(calls[3].args["read"][0]["sel"], CCC_PASSWORD);
+    assert_eq!(res["status"], "waiting_on_user");
     let m = must(&res);
     assert!(
         m.contains("- Trip Cancellation claim on the Chase Sapphire Reserve: USD 1,753.60\n- How it adds up: paid 1,840.00 − refunded 86.40")
             && m.contains("- Notify the administrator by: 17 November 2026 (loss date 28 October 2026 + 20 days)")
             && m.contains("- Documents by: 26 January 2027")
-            && m.contains("waiting for your Submit")
-            && m.contains("- Reminders set: 19 January 2027"),
+            && m.contains("sign in or create your account")
+            && m.contains("nothing has been filed")
+            && m.contains("- Decides the claim: Card Benefit Services (Chase's benefit administrator)"),
         "{m}"
     );
     assert!(!res.to_string().contains("4321"), "{res}");
-    assert_eq!(res["decides"], spec(Flow::CsrTrip).decides);
-    // who decides the claim (the claim number read from the stand-in's confirmation page after the user's Submit is
-    // not checked: a real confirmation page has none of the stand-in's element ids)
-    assert!(
-        m.contains("- Decides the claim: Card Benefit Services (Chase's benefit administrator)"),
-        "{m}"
+    // signed in: the claim pages have no form function — the browser-use skill fills them with the facts
+    let (mut t, from) = started(Vec::new(), "claim", CLAIM_FILE, &args);
+    let (_, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, csr_answers(true));
+    assert_eq!(res["status"], "browser_use");
+    assert_eq!(
+        res["url"],
+        "https://cardclaimcenter.com/internal/claims/new"
     );
+    assert!(must(&res).contains("USD 1,753.60"));
 }
 
 #[test]
@@ -472,10 +460,6 @@ fn the_interruption_claims_the_unrefunded_nights_and_the_change_fee() {
         t.arithmetic(),
         "750.00 stated as non-refundable by the supplier + change fee 300.00 to fly home early"
     );
-    assert_eq!(
-        t.booking(),
-        "United Airlines QX7P2L; Park Hyatt Tokyo HY-55821"
-    );
     // the caps are data
     let big = TripClaim {
         benefit: "Trip Cancellation".into(),
@@ -494,24 +478,17 @@ fn the_interruption_claims_the_unrefunded_nights_and_the_change_fee() {
         loss: NaiveDate::from_ymd_opt(2026, 10, 1),
         ..t
     };
-    let v = csr_result(
-        spec(Flow::CsrTrip),
-        &late,
-        "handed_over",
-        None,
-        true,
-        today(),
-    );
+    let v = csr_result(spec(Flow::CsrTrip), &late, "waiting_on_user", today());
     assert!(must(&v).contains("that window has closed"), "{v}");
     assert_eq!(v["notice_window_closed"], true);
 }
 
 #[test]
-fn a_takeover_the_user_did_not_hand_back_ends_with_the_facts_and_nothing_submitted() {
+fn a_sign_in_the_user_did_not_hand_back_ends_with_the_facts_and_nothing_filed() {
     let profile = json!({});
     let args = csr_cancellation();
     let (mut t, from) = started(Vec::new(), "claim", CLAIM_FILE, &args);
-    let (_, res) = run(
+    let (calls, res) = run(
         CLAIM_FILE,
         &args,
         &mut t,
@@ -525,46 +502,13 @@ fn a_takeover_the_user_did_not_hand_back_ends_with_the_facts_and_nothing_submitt
             _ => "ok".into(),
         },
     );
-    assert_eq!(res["status"], "not_confirmed");
+    assert_eq!(names(&calls).last(), Some(&"browser_request_takeover"));
+    assert_eq!(res["status"], "waiting_on_user");
     let m = must(&res);
     assert!(
-        m.contains("USD 1,753.60") && m.contains("nothing has been submitted"),
+        m.contains("USD 1,753.60") && m.contains("nothing has been filed"),
         "{m}"
     );
-    // a sign-in the form stopped at: handed over as the user's own step, then the fill again
-    let (mut t, from) = started(Vec::new(), "claim", CLAIM_FILE, &args);
-    let fills = std::cell::Cell::new(0);
-    let (calls, _) = run(
-        CLAIM_FILE,
-        &args,
-        &mut t,
-        from,
-        &profile,
-        |name, _| match name {
-            "form_fill" => {
-                fills.set(fills.get() + 1);
-                if fills.get() == 1 {
-                    "{\"url\": \"x\", \"filled\": [{\"op\": \"require\", \"field\": \"claim_form\", \"ok\": false, \"stop\": true, \"why\": \"the sign-in is the user's: hand the page over for it\"}]}".into()
-                } else {
-                    "{\"url\": \"x\", \"filled\": []}".into()
-                }
-            }
-            "browser_request_takeover" => BACK.into(),
-            "browser_snapshot" => page("https://www.eclaimsline.com/", "File a claim"),
-            _ => "ok".into(),
-        },
-    );
-    assert_eq!(
-        names(&calls)[..5],
-        [
-            "browser_navigate",
-            "form_fill",
-            "browser_request_takeover",
-            "form_fill",
-            "browser_request_takeover"
-        ]
-    );
-    assert!(sget(&calls[2].args, "reason").starts_with(OWN_STEP));
 }
 
 // ---------------------------------------------------------------- the FWD delay claims
@@ -580,11 +524,11 @@ fn mail_before(cert_from: &str, cert_id: &str, file: &str) -> Vec<Value> {
 }
 
 #[test]
-fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
+fn the_sg_delay_claim_counts_the_hours_fills_step_one_and_hands_the_rest_over() {
     let profile = json!({"name_en": "TAN WEI MING"});
     let args = valid(
         CLAIM_FILE,
-        json!({"insurer": "fwd", "market": "sg", "policy_no": "TI-SG-2026-55123", "plan": "Business",
+        json!({"insurer": "fwd", "market": "sg", "policy_no": "PNTR20123456", "plan": "Business",
                "incident_date": "2026-10-29", "flight_no": "SQ 636", "from": "Singapore", "to": "Tokyo Haneda",
                "airline": "Singapore Airlines", "scheduled_departure": "10:30", "actual_departure": "17:45",
                "delay_reason": "the late arrival of the inbound aircraft", "benefit_per_block": 100, "block_hours": 6,
@@ -599,68 +543,44 @@ fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
         "delay_certificate_SQ636.pdf",
     );
     let (mut t, from) = started(before, "Please go ahead.", CLAIM_FILE, &args);
-    let snaps = std::cell::Cell::new(0);
-    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, |name, args| {
+    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, |name, _| {
         match name {
         "gmail_save_attachment" => "attachment saved: attachments/delay_certificate_SQ636.pdf (12 KB, application/pdf).".into(),
-        "browser_navigate" => page("https://www.fwd.com.sg/claim-online/travel.html", "{}"),
-        "form_fill" => "{\"url\": \"https://www.fwd.com.sg/claim-online/travel.html\", \"filled\": []}".into(),
-        "browser_snapshot" => {
-            snaps.set(snaps.get() + 1);
-            "[e3] textbox \"Policy number\"\n[e9] filechooser \"Supporting documents\" (file upload)\n[e10] button \"Submit claim\"".into()
-        }
-        // the file input's ref by its id (#docs) after the snapshot; after the hand-back the confirmation's reference
-        "browser_read_elements" if args["read"][0]["name"] == "docs" => elements(
-            "https://www.fwd.com.sg/claim-online/travel.html",
-            json!({"docs": ["e9"]}),
-        ),
-        "browser_read_elements" => elements(
-            "https://www.fwd.com.sg/fwd_sg_claim_done.html",
-            json!({"reference": ["CL-TR-2026-118204"]}),
-        ),
-        "browser_upload" => "uploaded".into(),
+        "browser_navigate" => page("https://www.fwd.com.sg/claim-online/travel-insurance/quickQuestions", "{}"),
+        "form_fill" => "{\"url\": \"https://www.fwd.com.sg/claim-online/travel-insurance/quickQuestions\", \"filled\": []}".into(),
         "browser_request_takeover" => BACK.into(),
         "schedule_create" => "created".into(),
         other => panic!("{other}"),
     }
     });
+    // no upload (step 3 is not mapped) and no confirmation read (a real confirmation page is not known)
     assert_eq!(
         names(&calls),
         [
             "gmail_save_attachment",
             "browser_navigate",
             "form_fill",
-            "browser_snapshot",
-            "browser_read_elements",
-            "browser_upload",
             "browser_request_takeover",
-            "browser_read_elements",
+            "schedule_create",
             "schedule_create"
         ]
-    );
-    assert_eq!(
-        sget(&calls[0].args, "filename"),
-        "delay_certificate_SQ636.pdf"
     );
     let fill = &calls[2].args;
     assert_eq!(
         (
             sget(fill, "policy_no").as_str(),
-            sget(fill, "incident_date").as_str(),
-            sget(fill, "amount").as_str(),
-            sget(fill, "claim_type").as_str()
+            sget(fill, "stage").as_str()
         ),
-        ("TI-SG-2026-55123", "2026-10-29", "100.00", "Travel delay")
+        ("PNTR20123456", "claim")
     );
-    assert!(sget(fill, "what").contains("delayed 7 h 15 min"));
-    assert_eq!(
-        (
-            sget(&calls[5].args, "ref").as_str(),
-            sget(&calls[5].args, "path").as_str()
-        ),
-        ("e9", "attachments/delay_certificate_SQ636.pdf")
+    let reason = sget(&calls[3].args, "reason");
+    assert!(
+        reason.contains("delayed 7 h 15 min")
+            && reason.contains("attachments/delay_certificate_SQ636.pdf")
+            && reason.contains("press next"),
+        "{reason}"
     );
-    assert_eq!(res["status"], "submitted");
+    assert_eq!(res["status"], "handed_over");
     let m = must(&res);
     assert!(
         m.contains("delayed 7 h 15 min")
@@ -669,7 +589,8 @@ fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
             && m.contains(
                 "- Tell FWD by: 28 November 2026 (incident + 30 days, from your policy email)"
             )
-            && m.contains("- 24-hour emergency assistance: +65 6322 2072"),
+            && m.contains("- 24-hour emergency assistance: +65 6322 2072")
+            && m.contains("step 1 of FWD's online claim is filled in"),
         "{m}"
     );
     // 5 hours: under the first block, nothing filed
@@ -686,14 +607,24 @@ fn the_sg_delay_claim_counts_the_hours_and_hands_the_form_over() {
     });
     assert!(calls.is_empty());
     assert_eq!(res["status"], "no_benefit");
-    assert!(must(&res).contains("delayed 5 h 00 min"));
+    assert!(must(&res).contains("delayed 5 h 00 min")); // a cap given as 0 (the user named none) is no cap: the market's rule stands, 7 h 15 min is one block
+    let zero = valid(
+        CLAIM_FILE,
+        json!({"insurer": "fwd", "market": "sg", "policy_no": "P1", "incident_date": "2026-10-29", "flight_no": "SQ 636",
+               "scheduled_departure": "10:30", "actual_departure": "17:45", "benefit_per_block": 100, "block_hours": 6,
+               "benefit_cap": 0}),
+        false,
+        &[],
+    );
+    assert!(zero.get("benefit_cap").is_none());
+    assert_eq!(
+        DelayClaim::from_args(spec(Flow::FwdSgClaim), &zero).amount,
+        100.0
+    );
 }
 
-#[test]
-fn the_hk_delay_claim_fills_bolttechs_pdf_and_drafts_the_email() {
-    let profile = json!({"name_en": "CHAN TAI MAN", "email_personal": "taiman@example.com",
-                         "address_home": "Flat 12B, 88 Robinson Road, Mid-Levels, Hong Kong", "home_country": "HK"});
-    let args = valid(
+fn hk_args() -> Value {
+    valid(
         CLAIM_FILE,
         json!({"insurer": "fwd", "market": "hk", "policy_no": "MT-HK-2026-00881", "plan": "Premium Plan", "incident_date": "2026-10-29",
                "flight_no": "CX 543", "from": "Hong Kong", "to": "Tokyo Narita", "airline": "Cathay Pacific",
@@ -702,8 +633,25 @@ fn the_hk_delay_claim_fills_bolttechs_pdf_and_drafts_the_email() {
                "emergency_phone": "+852 2000 0100"}),
         false,
         &[],
-    );
-    // the letter found by its structured sender (no message id passed)
+    )
+}
+
+fn hk_answers(name: &str, _: &Value) -> String {
+    match name {
+        "gmail_save_attachment" => "attachment saved: attachments/delay_letter_CX543.pdf (9 KB, application/pdf).".into(),
+        "browser_navigate" => "{\"url\": \"https://www.fwd.com.hk/files/x.pdf\", \"pdf\": {\"path\": \"downloads/travel-insurance-clm-form-fillable.pdf\"}}".into(),
+        "pdf_form_fill" => "{\"output\": \"attachments/bolttech-travel-claim-MT-HK-2026-00881.pdf\", \"filled\": 14, \"problems\": []}".into(),
+        "send_file" | "gmail_create_draft" | "schedule_create" => "ok".into(),
+        other => panic!("{other}"),
+    }
+}
+
+#[test]
+fn the_hk_delay_claim_opens_bolttechs_pdf_directly_fills_it_and_drafts_the_email() {
+    let profile = json!({"name_en": "CHAN TAI MAN", "email_personal": "taiman@example.com",
+                         "address_home": "Flat 12B, 88 Robinson Road, Mid-Levels, Hong Kong", "home_country": "HK",
+                         "mailbox": "taiman@example.com"});
+    let args = hk_args();
     assert_eq!(args["market"], "hk");
     let before = mail_before(
         "Cathay Pacific <noreply@cathaypacific.example>",
@@ -716,15 +664,8 @@ fn the_hk_delay_claim_fills_bolttechs_pdf_and_drafts_the_email() {
         CLAIM_FILE,
         &args,
     );
-    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, |name, _| {
-        match name {
-        "gmail_save_attachment" => "attachment saved: attachments/delay_letter_CX543.pdf (9 KB, application/pdf).".into(),
-        "browser_navigate" => "{\"url\": \"https://www.fwd.com.hk/files/x.pdf\", \"pdf\": {\"path\": \"downloads/travel-insurance-clm-form-fillable.pdf\"}}".into(),
-        "pdf_form_fill" => "{\"output\": \"attachments/bolttech-travel-claim-MT-HK-2026-00881.pdf\", \"filled\": 14, \"problems\": []}".into(),
-        "send_file" | "gmail_create_draft" | "schedule_create" => "ok".into(),
-        other => panic!("{other}"),
-    }
-    });
+    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, hk_answers);
+    // the PDF's own address, no home page, no link to find and click
     assert_eq!(
         names(&calls),
         [
@@ -736,6 +677,7 @@ fn the_hk_delay_claim_fills_bolttechs_pdf_and_drafts_the_email() {
             "schedule_create"
         ]
     );
+    assert!(sget(&calls[1].args, "url").ends_with("travel-insurance-clm-form-fillable.pdf"));
     let v = &calls[2].args["values"];
     assert_eq!(
         (
@@ -777,44 +719,75 @@ fn the_hk_delay_claim_fills_bolttechs_pdf_and_drafts_the_email() {
             && m.contains("+852 2000 0100"),
         "{m}"
     );
+    // no mailbox: no draft and no mail check — the result says where to send the signed form
+    let no_mail = json!({"name_en": "CHAN TAI MAN"});
+    let (mut t, from) = started(Vec::new(), "Prepare the claim.", CLAIM_FILE, &args);
+    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &no_mail, hk_answers);
+    assert_eq!(
+        names(&calls),
+        ["browser_navigate", "pdf_form_fill", "send_file"]
+    );
+    assert_eq!(res["status"], "form_filled");
+    let m = must(&res);
+    assert!(
+        m.contains("- Send it to: claims.hk@bolttechinsurance.com — no mailbox is connected")
+            && !m.contains("Email draft")
+            && !m.contains("Reminder set"),
+        "{m}"
+    );
+    // the navigation's result without the PDF: the browser's downloads, then an error that says what to do
+    let (mut t, from) = started(Vec::new(), "Prepare the claim.", CLAIM_FILE, &args);
+    let (calls, res) = run(
+        CLAIM_FILE,
+        &args,
+        &mut t,
+        from,
+        &no_mail,
+        |name, a| match name {
+            "browser_navigate" => "{\"url\": \"https://www.fwd.com.hk/\"}".into(),
+            "browser_downloads" => "no downloads".into(),
+            _ => hk_answers(name, a),
+        },
+    );
+    assert_eq!(names(&calls), ["browser_navigate", "browser_downloads"]);
+    assert_eq!(res["status"], "error");
 }
 
 // ---------------------------------------------------------------- the FWD Singapore purchase
 
-/// The quote page's plan table as `browser_read_elements` reads it (`#plans tr`, cells and links).
-fn quote_rows() -> Value {
-    let row = |cells: &[&str], link: &str| json!({"cells": cells, "links": if link.is_empty() { vec![] } else { vec![link] }});
-    json!({"plans": [
-        row(&["Plan", "Premium", "Overseas medical", "Trip cancellation", "Travel delay", "Baggage", ""], ""),
-        row(&["Premium", "SGD 34.00", "SGD 200,000", "SGD 5,000", "SGD 100 every 6 hours, up to SGD 1,000", "SGD 3,000", "Select Premium"],
-            "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Premium&premium=34.00"),
-        row(&["Business", "SGD 47.00", "SGD 1,000,000", "SGD 10,000", "SGD 100 every 6 hours, up to SGD 1,500", "SGD 5,000", "Select Business"],
-            "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business&premium=47.00"),
-        row(&["First", "SGD 68.00", "SGD 1,500,000", "SGD 15,000", "SGD 100 every 6 hours, up to SGD 2,000", "SGD 7,500", "Select First"],
-            "https://www.fwd.com.sg/fwd_sg_apply.html?plan=First&premium=68.00"),
-    ]})
+/// FWD's quote summary as `browser_read_elements` reads it (the real page, 2026-11-02: a single trip to Asia for one,
+/// 25 Nov – 2 Dec): the plans' buttons, the prices, the benefit lines.
+fn summary() -> Value {
+    let line = |l: &str, a: &str, b: &str, c: &str| json!({"label": l, "p1": a, "p2": b, "p3": c});
+    json!({
+        "buy": ["TI_QuoteSummarypage_Premium_Buy", "TI_QuoteSummarypage_Business_Buy", "TI_QuoteSummarypage_First_Buy"],
+        "price": ["S$42.52", "S$66.08", "S$84.81"],
+        "lines": [
+            line("Overseas medical expenses (per adult below 70 years old)", "S$200,000", "S$500,000", "S$1,000,000"),
+            line("Theft of or damage to your personal belongings Note: sub-limit of S$300 per single item for Premium plan", "S$3,000", "S$5,000", "S$7,500"),
+            line("Baggage delay (S$150 for every six hours of delay overseas and S$150 after six hours of delay in Singapore)", "S$150", "S$600", "S$900"),
+            line("Travel delay (S$100 for every six hours of delay overseas and S$100 after six hours of delay in Singapore)", "S$300", "S$800", "S$1,500"),
+            line("Trip cancelled before you leave Singapore", "S$7,500", "S$10,000", "S$15,000"),
+            line("Trip cancelled before you leave Singapore for Family Plans", "S$18,750", "S$25,000", "S$37,500"),
+        ]
+    })
 }
-const APPLY_SNAPSHOT: &str = "[e11] textbox \"Card number\" value=[hidden]\n[e12] textbox \"Expiry\" placeholder=\"MM/YY\" value=[hidden]\n[e13] textbox \"CVC\" value=[hidden]\n[e14] textbox \"Name on card\" value=\"\"\n[e15] checkbox \"I have read the policy wording and the declarations.\" [unchecked]\n[e16] button \"Pay now\"";
 
 #[test]
-fn the_plans_are_read_from_the_page_and_picked_by_rule() {
-    let url = "https://www.fwd.com.sg/travel-insurance/online-quote/";
-    let m = json!({"role": "tool", "content": elements(url, quote_rows())});
-    let plans = plans_in(&super::super::confirm::element_rows(&m, "plans"));
+fn the_plans_are_read_from_the_summary_and_picked_by_rule() {
+    let url = "https://www.fwd.com.sg/travel-insurance/online-quote/summary";
+    let m = json!({"role": "tool", "content": elements(url, summary())});
+    let plans = plans_of(&m);
     assert_eq!(
         plans.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
         ["Premium", "Business", "First"]
     );
-    assert_eq!(
-        (plans[1].link.as_str(), plans[1].premium),
-        (
-            "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business&premium=47.00",
-            47.0
-        )
-    );
-    assert_eq!(plans[1].cover_of("delay"), Some(1_500.0));
+    assert_eq!(plans[1].premium, 66.08);
+    assert_eq!(plans[1].cover_of("medical"), Some(500_000.0));
+    assert_eq!(plans[1].cover_of("delay"), Some(800.0));
+    assert_eq!(plans[1].cover_of("baggage"), Some(600.0));
+    // the single traveller's line, not the family plans'
     assert_eq!(plans[1].cover_of("cancellation"), Some(10_000.0));
-    assert_eq!(plans[1].cover_of("baggage"), Some(5_000.0));
     let (p, rule) = pick_plan(&plans, &Some(("cancellation".into(), 10_000.0)), "").unwrap();
     assert_eq!(
         (p.name.as_str(), rule.as_str()),
@@ -823,7 +796,7 @@ fn the_plans_are_read_from_the_page_and_picked_by_rule() {
             "the cheapest plan with cancellation cover of at least 10,000"
         )
     );
-    let (p, _) = pick_plan(&plans, &Some(("medical".into(), 1_200_000.0)), "").unwrap();
+    let (p, _) = pick_plan(&plans, &Some(("medical".into(), 800_000.0)), "").unwrap();
     assert_eq!(p.name, "First");
     let (p, rule) = pick_plan(&plans, &None, "").unwrap();
     assert_eq!(
@@ -843,11 +816,13 @@ fn the_plans_are_read_from_the_page_and_picked_by_rule() {
         pick_plan(&plans, &None, "I choose: First").unwrap().1,
         "the plan you chose"
     );
-    // the Vault's cards, and the one named in the argument
+    // a button that is not a plan's is not a plan
+    let odd = json!({"role": "tool", "content": elements(url, json!({"buy": ["TI_QuoteSummarypage_x\"]_Buy", "other"], "price": ["S$1", "S$2"], "lines": []}))});
+    assert!(plans_of(&odd).is_empty());
+    // the Vault's cards, and the one named in the argument (the APDT and CSR flows' shared helpers)
     let listing = "- id=v1 · DBS Altitude Visa Signature · issued in Singapore · card · card_id=sg-dbs-altitude-visa-signature · •••• UNKNOWN · fields: number, expiry, cvc, holder · number, expiry, cvc UNKNOWN (name only)\n- id=v2 · Visa Wei Ming · card · •••• 1111 · fields: number, expiry, cvc, holder · only on: fwd.com.sg\n- id=v3 · Passport Wei Ming · id_document · •••• 567Z · fields: number, expiry";
     let cards = vault_cards(listing);
     assert_eq!(cards.len(), 2);
-    // by its Vault id, its catalog id or its whole label — never by a word of the label
     for named in [
         "v1",
         "sg-dbs-altitude-visa-signature",
@@ -863,69 +838,32 @@ fn the_plans_are_read_from_the_page_and_picked_by_rule() {
         pick_card(&cards, &["DBS Altitude".into()]).map(|c| c.id.as_str()),
         Some("v2")
     );
-    assert_eq!(
-        pick_card(&cards, &[String::new()]).map(|c| c.id.as_str()),
-        Some("v2")
-    );
 }
 
-fn buy_answers(vault: &'static str) -> impl Fn(&str, &Value) -> String {
-    let snaps = std::cell::Cell::new(0);
-    move |name, args| match name {
+fn buy_answers(name: &str, args: &Value) -> String {
+    match name {
         "browser_navigate" => page(
-            "https://www.fwd.com.sg/travel-insurance/online-quote/",
+            "https://www.fwd.com.sg/travel-insurance/online-quote/quickQuestions",
             "{}",
         ),
-        "form_fill" => "{\"url\": \"https://www.fwd.com.sg/x\", \"filled\": []}".into(),
-        // the plan table after the quote; after the hand-back the policy number's element (none: not paid)
-        "browser_read_elements" => match args["read"][0]["name"].as_str() {
-            Some("plans") => elements(
-                "https://www.fwd.com.sg/travel-insurance/online-quote/",
-                quote_rows(),
-            ),
-            // the card fields' refs by their ids, as the snapshot gave them
-            Some("card_number") => elements(
-                "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business",
-                json!({"card_number": ["e11"], "card_expiry": ["e12"], "card_cvc": ["e13"], "card_holder": ["e14"]}),
-            ),
-            _ => elements(
-                "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business",
-                json!({"reference": []}),
-            ),
-        },
-        "browser_snapshot" => {
-            snaps.set(snaps.get() + 1);
-            match snaps.get() {
-                1 => page(
-                    "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business",
-                    APPLY_SNAPSHOT,
-                ),
-                _ => page(
-                    "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business",
-                    "Your details. Pay now",
-                ),
-            }
-        }
+        "form_fill" => "{\"url\": \"https://www.fwd.com.sg/travel-insurance/online-quote/summary\", \"filled\": []}".into(),
+        "browser_read_elements" if args["read"][0]["name"] == "buy" => elements(
+            "https://www.fwd.com.sg/travel-insurance/online-quote/summary",
+            summary(),
+        ),
         "present_choices" => "Shown to the user as 3 cards".into(),
-        "browser_click" => page(
-            "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business",
-            "{}",
-        ),
-        "vault_list" => vault.into(),
-        "purchase_confirm" => "{\"status\": \"ok\", \"purchase_id\": \"p1\"}".into(),
-        "browser_fill_secret" => "{\"filled\": \"ok\"}".into(),
         "browser_request_takeover" => BACK.into(),
         other => panic!("{other}"),
     }
 }
 
 #[test]
-fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
+fn the_purchase_quotes_picks_by_rule_and_hands_the_declaration_over() {
     let profile = json!({"name_en": "TAN WEI MING", "birthday": "1985-04-12"});
     let args = valid(
         INSURANCE_BUY,
-        json!({"market": "sg", "action": "buy", "destination": "Tokyo", "depart": "2026-11-24", "return": "2026-12-01",
-               "travellers": 1, "cover": "cancellation", "cover_at_least": 10000}),
+        json!({"market": "sg", "action": "buy", "destination": "Tokyo", "depart": "2026-11-25", "return": "2026-12-02",
+               "travellers": 1, "cover": "cancellation", "cover_at_least": 10000, "card": "Visa Wei Ming"}),
         false,
         &[],
     );
@@ -936,14 +874,8 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
         INSURANCE_BUY,
         &args,
     );
-    let (calls, res) = run(
-        INSURANCE_BUY,
-        &args,
-        &mut t,
-        from,
-        &profile,
-        buy_answers("- id=v2 · Visa Wei Ming · card · •••• 1111 · fields: number, expiry, cvc, holder · only on: fwd.com.sg"),
-    );
+    let (calls, res) = run(INSURANCE_BUY, &args, &mut t, from, &profile, buy_answers);
+    // no card fill, no payment approval: the payment page lies behind FWD's eligibility statements, the user's
     assert_eq!(
         names(&calls),
         [
@@ -951,102 +883,49 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
             "form_fill",
             "browser_read_elements",
             "present_choices",
-            "browser_navigate",
             "form_fill",
-            "vault_list",
-            "purchase_confirm",
-            "browser_snapshot",
-            "browser_read_elements",
-            "browser_fill_secret",
-            "browser_fill_secret",
-            "browser_fill_secret",
-            "browser_fill_secret",
-            "browser_request_takeover",
-            "browser_read_elements"
+            "browser_request_takeover"
         ]
     );
-    assert_eq!(calls[9].args["read"][0]["sel"], "#card");
     let quote = &calls[1].args;
     assert_eq!(
         (
             sget(quote, "destination").as_str(),
             sget(quote, "depart").as_str(),
             sget(quote, "return").as_str(),
-            sget(quote, "travellers").as_str()
+            sget(quote, "travellers").as_str(),
+            sget(quote, "today").as_str()
         ),
-        ("Japan", "2026-11-24", "2026-12-01", "1")
+        ("Japan", "2026-11-25", "2026-12-02", "1", "2026-10-31")
     );
     assert_eq!(sget(&calls[3].args, "picked"), "Business");
-    assert_eq!(calls[3].args["options"][1]["details"][0], "SGD 47");
     assert_eq!(
-        sget(&calls[4].args, "url"),
-        "https://www.fwd.com.sg/fwd_sg_apply.html?plan=Business&premium=47.00"
+        (
+            sget(&calls[4].args, "stage").as_str(),
+            sget(&calls[4].args, "plan").as_str()
+        ),
+        ("pick", "Business")
     );
-    let pc = &calls[7].args;
-    assert_eq!(
-        (sget(pc, "card_item_id").as_str(), pc["total"].as_f64()),
-        ("v2", Some(47.0))
-    );
-    assert_eq!(
-        calls[10..14]
-            .iter()
-            .map(|c| (sget(&c.args, "field"), sget(&c.args, "ref")))
-            .collect::<Vec<_>>(),
-        [
-            ("number".to_string(), "e11".to_string()),
-            ("expiry".into(), "e12".into()),
-            ("cvc".into(), "e13".into()),
-            ("holder".into(), "e14".into())
-        ]
+    let reason = sget(&calls[5].args, "reason");
+    assert!(
+        !reason.starts_with(OWN_STEP)
+            && reason.contains("eligibility statements")
+            && reason.contains("press Pay"),
+        "{reason}"
     );
     assert_eq!(res["status"], "handed_over");
     let m = must(&res);
     assert!(
-        m.contains("- Chosen: Business: SGD 47.00\n- Why: the cheapest plan with cancellation cover of at least 10,000")
-            && m.contains("Premium — SGD 34.00")
-            && m.contains("First — SGD 68.00")
+        m.contains("- Chosen: Business: SGD 66.08\n- Why: the cheapest plan with cancellation cover of at least 10,000")
+            && m.contains("Premium — SGD 42.52")
+            && m.contains("First — SGD 84.81")
             && m.contains("nothing has been paid"),
         "{m}"
     );
-    // a card by its name only: no purchase approval, nothing typed for the card; the result says what to do
-    let args2 = valid(
-        INSURANCE_BUY,
-        json!({"destination": "Japan", "depart": "2026-11-24", "return": "2026-12-01", "card": "DBS Altitude"}),
-        false,
-        &[],
-    );
-    let (mut t, from) = started(
-        Vec::new(),
-        "Buy the cheapest and pay with my DBS Altitude.",
-        INSURANCE_BUY,
-        &args2,
-    );
-    let (calls, res) = run(
-        INSURANCE_BUY,
-        &args2,
-        &mut t,
-        from,
-        &profile,
-        buy_answers("- id=v1 · DBS Altitude Visa Signature · issued in Singapore · card · •••• UNKNOWN · fields: number, expiry, cvc, holder · number, expiry, cvc UNKNOWN (name only)"),
-    );
-    assert!(
-        !names(&calls).contains(&"purchase_confirm")
-            && !names(&calls).contains(&"browser_fill_secret")
-    );
-    assert!(
-        sget(&the(&calls, "browser_request_takeover").args, "reason")
-            .contains("DBS Altitude Visa Signature in the Vault has no number, expiry or CVC")
-    );
-    let m = must(&res);
-    assert!(
-        m.contains("Memory → Vault")
-            && m.contains("- Chosen: Premium: SGD 34.00\n- Why: the cheapest plan"),
-        "{m}"
-    );
-    // compare only: the plans shown, nothing applied for
+    // compare only: the plans shown, nothing picked on the page
     let args3 = valid(
         INSURANCE_BUY,
-        json!({"action": "compare", "destination": "Japan", "depart": "2026-11-24", "return": "2026-12-01"}),
+        json!({"action": "compare", "destination": "Japan", "depart": "2026-11-25", "return": "2026-12-02"}),
         false,
         &[],
     );
@@ -1056,14 +935,7 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
         INSURANCE_BUY,
         &args3,
     );
-    let (calls, res) = run(
-        INSURANCE_BUY,
-        &args3,
-        &mut t,
-        from,
-        &profile,
-        buy_answers(""),
-    );
+    let (calls, res) = run(INSURANCE_BUY, &args3, &mut t, from, &profile, buy_answers);
     assert_eq!(
         names(&calls),
         [
@@ -1085,37 +957,32 @@ fn the_purchase_quotes_picks_by_rule_and_hands_pay_over() {
 
 // ---------------------------------------------------------------- the WorldTracer lookup
 
-const TRACE_FORM: &str = "# Track your delayed baggage\n[e1] textbox \"File reference\" value=\"\"\n[e2] textbox \"Family name\" value=\"\"\n[e3] button \"Track\"";
-/// The tracing result page's elements (`#out tr` with cells, `#out p`).
-fn trace_result() -> Value {
-    let row = |l: &str, v: &str| json!({"cells": [l, v], "links": []});
-    json!({"rows": [row("Status", "Tracing continues — your bag has not been located yet"),
-                    row("Flight", "SQ 638 Singapore (SIN) – Tokyo Narita (NRT), 2026-10-31"),
-                    row("Last update", "2026-10-31 22:10 local time — trace sent to Singapore (SIN)")],
-           "notes": ["Bags are usually found within a few days."]})
-}
+const MANAGE: &str = "https://mybag.aero/baggage/#/pax/ana/en-gb/delayed/manage-bag";
 
 #[test]
-fn the_bag_is_looked_up_by_code_and_its_status_is_shown() {
-    let profile = json!({"name_en": "TAN WEI MING"});
+fn the_bag_is_looked_up_on_the_airlines_worldtracer_page_and_its_answer_shown() {
+    let profile = json!({"name_en": "Wei Ming Tan"});
     let args = valid(
         BAG_TRACE,
-        json!({"file_ref": "NRT SQ 12345", "watch": true}),
+        json!({"file_ref": "NRT NH 12345", "flight_date": "2026-10-30", "watch": true}),
         false,
         &[],
     );
-    assert_eq!(args["file_ref"], "NRTSQ12345");
+    assert_eq!(args["file_ref"], "NRTNH12345");
     let (mut t, from) = started(
         Vec::new(),
-        "Check where my bag is (file NRTSQ12345) and keep an eye on it.",
+        "Check where my bag is (file NRTNH12345) and keep an eye on it.",
         BAG_TRACE,
         &args,
     );
     let (calls, res) = run(BAG_TRACE, &args, &mut t, from, &profile, |name, _| {
         match name {
-        "browser_navigate" => page(super::super::bagtrace::TRACE_URL, TRACE_FORM),
-        "form_fill" => "{\"url\": \"x\", \"filled\": [{\"op\": \"button\", \"field\": \"track\", \"ok\": true}]}".into(),
-        "browser_read_elements" => elements(super::super::bagtrace::TRACE_URL, trace_result()),
+        "browser_navigate" => page(MANAGE, "Manage your delayed baggage report"),
+        "form_fill" => "{\"url\": \"x\", \"filled\": [{\"op\": \"click\", \"field\": \"log_in\", \"ok\": true}]}".into(),
+        // the real page's error box for a reference it does not know
+        "browser_read_elements" => elements(MANAGE, json!({"error_head": ["There was a problem in finding your details"],
+            "error_text": ["No record was found with that reference number and family name combination. Check the values entered and try again or"],
+            "login": ["mngRptRefNoLTxt"]})),
         "schedule_create" => "created".into(),
         other => panic!("{other}"),
     }
@@ -1129,31 +996,25 @@ fn the_bag_is_looked_up_by_code_and_its_status_is_shown() {
             "schedule_create"
         ]
     );
-    assert_eq!(calls[1].args, json!({"file_ref": "NRTSQ12345"}));
+    assert_eq!(sget(&calls[0].args, "url"), MANAGE);
+    assert_eq!(calls[1].args, json!({"file_ref": "NRTNH12345"}));
     assert_eq!(sget(&calls[3].args, "spec"), "720");
     assert!(calls.iter().all(super::super::guards::code_call));
-    assert_eq!(res["status"], "traced");
+    assert_eq!(res["status"], "no_file");
     let m = must(&res);
     assert!(
-        m.contains("- WorldTracer file: **NRTSQ12345**\n- Bag status: Tracing continues — your bag has not been located yet — last update 2026-10-31 22:10")
-            && m.contains("- Treated as lost after: 21 November 2026 (21 days after 31 October 2026)")
+        m.contains("- WorldTracer file: **NRTNH12345**\n- Bag status: WorldTracer says: No record was found with that reference number and family name combination")
+            && m.contains("- Treated as lost after: 20 November 2026 (21 days after 30 October 2026)")
             && m.contains("- Bag check: twice a day"),
         "{m}"
     );
-    // a failed page: the result says so, no retry
+    // the report opened (the sign-in form gone)
     let args = valid(
         BAG_TRACE,
-        json!({"file_ref": "NRTSQ12345", "family_name": "tan"}),
+        json!({"file_ref": "NRTNH12345", "family_name": "tan"}),
         false,
         &[],
     );
-    let (mut t, from) = started(Vec::new(), "where is my bag", BAG_TRACE, &args);
-    let (calls, res) = run(BAG_TRACE, &args, &mut t, from, &profile, |_, _| {
-        "ERROR: navigation failed: net::ERR_NAME_NOT_RESOLVED".into()
-    });
-    assert_eq!(names(&calls), ["browser_navigate"]);
-    assert_eq!(res["status"], "error");
-    // an unknown reference
     let (mut t, from) = started(Vec::new(), "where is my bag", BAG_TRACE, &args);
     let (calls, res) = run(
         BAG_TRACE,
@@ -1163,15 +1024,30 @@ fn the_bag_is_looked_up_by_code_and_its_status_is_shown() {
         &profile,
         |name, _| match name {
             "browser_read_elements" => elements(
-                super::super::bagtrace::TRACE_URL,
-                json!({"rows": [], "notes": ["No file found for this reference."]}),
+                MANAGE,
+                json!({"error_head": [], "error_text": [], "login": []}),
             ),
             "form_fill" => "{\"url\": \"x\", \"filled\": []}".into(),
-            _ => page(super::super::bagtrace::TRACE_URL, TRACE_FORM),
+            _ => page(MANAGE, "Manage your delayed baggage report"),
         },
     );
     assert_eq!(calls[1].args["family_name"], "TAN");
-    assert_eq!(res["status"], "no_file");
+    assert_eq!(res["status"], "traced");
+    assert!(must(&res).contains("WorldTracer has the report"));
+    // a failed page: the result says so, no retry
+    let (mut t, from) = started(Vec::new(), "where is my bag", BAG_TRACE, &args);
+    let (calls, res) = run(BAG_TRACE, &args, &mut t, from, &profile, |_, _| {
+        "ERROR: navigation failed: net::ERR_NAME_NOT_RESOLVED".into()
+    });
+    assert_eq!(names(&calls), ["browser_navigate"]);
+    assert_eq!(res["status"], "error");
+    // an airline that does not use mybag.aero: said so, nothing opened
+    let sq = valid(BAG_TRACE, json!({"file_ref": "NRTSQ12345"}), false, &[]);
+    let (mut t, from) = started(Vec::new(), "where is my bag", BAG_TRACE, &sq);
+    let (calls, res) = run(BAG_TRACE, &sq, &mut t, from, &profile, |_, _| "ok".into());
+    assert!(calls.is_empty());
+    assert_eq!(res["status"], "not_on_worldtracer");
+    assert!(must(&res).contains("the airline SQ does not track bags on WorldTracer"));
 }
 
 // ---------------------------------------------------------------- the protocol around the machine

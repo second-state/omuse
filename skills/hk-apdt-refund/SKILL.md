@@ -1,19 +1,15 @@
 ---
 name: hk-apdt-refund
-description: 申请退还香港机场离境税（APDT）：在官方网站填好所有资料、上传登机牌和付款证明等文件，给用户参考编号和链接，由用户自己打开完成人脸识别 Hong Kong air passenger departure tax (APDT) refund on the official site: every field filled and every document uploaded, then the reference code and a link for the user to open themselves for the face-recognition step.
+description: 申请退还香港机场离境税（APDT）：核对资格和期限，在官方平台走到上传证件那一步，上传证件照片、选择退款方式和人脸识别由用户在自己手机上完成 Hong Kong air passenger departure tax (APDT) refund: the rule and the deadline checked, the official platform opened up to its document upload; the documents' photos, the refund method and the face recognition are the user's, on their own phone.
 form: on
 ---
 # Hong Kong departure tax refund (APDT) / 香港机场离境税退款
 
 Official site only: https://app.apdtrefund.hk/hkTaxMobile/?lang=en (the Airport Authority's Refund Application
-Platform; free — any other site, or one that charges, is a scam). Code fills every field and uploads every document;
-the application ends with a **face-recognition step that only the user can do, with their own phone's camera** — you never
-start it, never ask to take over for it and never click "Proceed with Facial Recognition".
-
-**Refund to a card**: code fills the card into the refund page from the Vault (number, expiry, holder) — this page
-receives money, so no purchase_confirm (never call it here). Only when the Vault has no complete card (none, or one
-saved by name with its number UNKNOWN) does the user type it, in a takeover. Never stop or end the task because of the
-card.
+Platform; free — any other site, or one that charges, is a scam). Code checks the rule and goes through the platform's
+notes and entry mode to its document upload; the documents' photos (the travel document, the boarding passes, the
+receipt), the refund method and the **face-recognition step** are the user's, on their own phone — you never upload,
+never ask to take over and never click "Proceed with Facial Recognition".
 
 ## 1. Who qualifies (code checks it on the tool's arguments; this is for questions)
 - Arrived in Hong Kong and **left by air from HKIA on the same or the next calendar day** (Hong Kong time), and the
@@ -31,33 +27,30 @@ Not eligible (stayed longer, more than 28 days ago, tax not on the receipt): the
 ## 2. How it runs (code)
 Applying is ONE `apdt_refund` call — only when the user asks to apply (a question about the refund is answered from
 this page, with no call). Arguments: what the user gave — `refund_method` (card, cash, alipay, wechat, alipayHK,
-wechatHK), `wallet_account` for an e-wallet, `card` when they named a Vault card, `passport_file` (the passport photo
-they attached, its `uploads/…` path) — and what the documents show: `in_flight` / `in_date` (the flight into Hong
-Kong), `out_flight` / `out_date` (the flight out), `in_pass_file`, `out_pass_file`, `receipt_file` (their paths) and
-`tax_hkd` (the departure tax on the receipt: 120 or 200, 0 when it shows none).
+wechatHK), `wallet_account` for an e-wallet — and the trip, from their words or the documents: `in_flight` / `in_date`
+(the flight into Hong Kong), `out_flight` / `out_date` (the flight out) and `tax_hkd` (the departure tax on the receipt:
+120 or 200, 0 when it shows none). Never ask for the documents before calling: no document is needed for the call — the
+user uploads them on the platform, on their phone.
 Code does everything else:
-- the documents: with a mailbox connected and the documents not given, code runs the fixed mail search, saves the
+- the documents: with a mailbox connected and the trip not given, code runs the fixed mail search, saves the
   boarding passes and the receipt (`attachments/…`) and reads them, with the PDFs the user attached. The result
   `mail_read` lists the files: read the flights, the dates and the tax in them and call `apdt_refund` again with every
   field;
 - the rule above (not eligible: the result says why, nothing is opened);
-- the platform's pages, filled by their form functions (fixed ids), every upload in its box, the passport number and
-  the card from the Vault (a card the Vault cannot fill is typed by the user in a takeover), stopping before the face
-  recognition.
+- the platform (its form function): the anti-scam notice, the two statements, Start, New Application, entry by air and
+  Confirm — then it stops at the travel document's upload.
 
-The result `needs_input` lists what only the user can give (the passport photo, a document, the refund method): ask
+The result `needs_input` lists what only the user can give (the trip, the refund method): ask
 for exactly that, in one message, then call again with every field; `invalid`: fix the arguments and call again. Never
 fill, tick, upload or click on the platform yourself, never call purchase_confirm here, and never start the face
 recognition.
 
 ## 3. Answer
-Word the reply from the tool's JSON result: its status (confirmed, not_eligible, stopped, not_confirmed,
-handed_over), the facts in its `show` are appended by code — the reference number exactly as the result gives it, the application's
-link, the last day for the face recognition, the refund (card as "Visa ending 1111") — what was uploaded, and the face
-recognition as the user's own step on their phone: open the link (or "Resume Application" at
-https://app.apdtrefund.hk/hkTaxMobile/?lang=en with the travel document number and the reference), press "Proceed with
-Facial Recognition" and follow the actions; approval and the refund usually follow within about three weeks. Never the
-passport or card number; never "I completed the face check". Offer a reminder (schedule_create) a few days before the
+Word the reply from the tool's JSON result: its status (ready, not_eligible, stopped); the facts in its `show` are
+appended by code — the rule's verdict, the tax to be refunded, the last day to apply, the steps left and the platform's
+link. The user opens the link on their phone, uploads the travel document, the boarding passes and the receipt, chooses
+the refund and does the face recognition; approval and the refund usually follow within about three weeks. Never the
+passport or card number; never "I applied" or "I completed the face check". Offer a reminder (schedule_create) a few days before the
 deadline.
 
 ## Remember what you learn (for next time)

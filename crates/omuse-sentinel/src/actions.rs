@@ -357,6 +357,33 @@ fn all_clients(st: &AppState) -> ActResult<Vec<Gmail>> {
     Ok(out)
 }
 
+/// The email verification step's mail (`/internal/mail_code`): the newest message matching `query` in any connected
+/// mailbox dated `since` (epoch seconds) or later, its body not redacted — the runtime hands it to one extraction call
+/// and types the code; it never reaches the agent's transcript. `{"found": false}` while none has come;
+/// `{"mailbox": false}` with no mailbox connected.
+pub async fn code_mail(st: &AppState, query: &str, since: f64) -> ActResult<Value> {
+    let mut clients = all_clients(st)?;
+    if clients.is_empty() {
+        return Ok(json!({"mailbox": false, "found": false}));
+    }
+    let mut best: Option<Value> = None;
+    for g in clients.iter_mut() {
+        if let Some(m) = g.code_mail(query, since).await? {
+            let newer = best.as_ref().is_none_or(|b| {
+                omuse_mail::mime::date_key(&fstr(&m, "date"))
+                    > omuse_mail::mime::date_key(&fstr(b, "date"))
+            });
+            if newer {
+                best = Some(m);
+            }
+        }
+    }
+    Ok(match best {
+        Some(m) => json!({"mailbox": true, "found": true, "mail": m}),
+        None => json!({"mailbox": true, "found": false}),
+    })
+}
+
 pub const MAX_SEARCH: i64 = 100;
 pub const MAX_SEARCH_TOTAL: usize = 150;
 

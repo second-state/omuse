@@ -116,6 +116,20 @@ any sign-up later):
 3. **No mailbox, no mail before the timeout, or no valid code**: code fills the email, does not press Send, and hands
    over at that step.
 
+Built as `agent/email_code.rs`: a machine whose card has an `email_code` spec (`driver::CardSpec`: the email box, the
+Send button's text, the code box, the verify button, the sender's domain — Taiwan `immigration.gov.tw`, the UK ETA
+`gov.uk`) emits the code call `email_code` after the fill that stopped at the email step, once per run; the runtime runs
+it (`Runtime::email_code_step`): the fills go to Sentinel as `browser_fill_form` (the code as a secret), the mail comes
+from Sentinel's `/internal/mail_code` (the fixed query `from:<domain> newer_than:1d`, dated after the press less a
+minute, polled every 10 s for 150 s; its body unredacted only on this internal route — the agent's own mail reads stay
+redacted), the model reads `{"code"}` (`read_code`: the default model, then the planner once), code checks 4–10 letters
+or digits. The JSON result (`typed` · `no_mailbox` · `timeout` · `no_code` · `no_send_button` · …) never carries the
+code; `typed` → the fill goes on, anything else → the hand-over at the step (the reason says whether the email is in and
+the code was requested). With no mailbox the Send button is not pressed. A run that ends at the email step because
+the code could not be read ends with the status `email_code_not_read` and its reason (`no_mailbox`, `timeout`,
+`no_code`, …; the `email_code` event records it too), shown as the line "Email code: I could not read the verification
+code (…) — enter the code from the email on the page" — the user's own step, and a successful hand-over.
+
 ## Reading pages
 
 Order of preference for any data on a page (a reference, a price, a status, a timetable, a result row):
@@ -131,8 +145,9 @@ The element rules go through `browser_read_elements{read: [{name, sel, attr?, ce
 `/agent/read_elements`; withdrawn from the model like `browser_fill_form`): each selector's visible matches as text, an
 attribute, or with `cells` each row's cells and links, wrapped as untrusted page content. Every known site's confirmation
 reference is read this way — `ref_sel` (the element) and `ref_re` (the format, checked over the whole value) in
-`claims::SPECS`, `driver::CARDS`; APDT's is the `bizId` of the submit page's address — and a page
-without it is `not_confirmed`, never a generic fallback. The FWD quote's plans are its table's cells (`#plans tr`). The
+`driver::CARDS` (the claims' real confirmation pages are not known: `claims::SPECS` has none, and their results stay
+`handed_over`) — and a page without it is `not_confirmed`, never a generic fallback. FWD Singapore's plans are its
+quote summary's elements (`#plan-table`: the plan buttons' ids, the prices, the benefit lines' fields). The
 outcome check and the ledger take the reference from structured JSON only (`confirm::confirmed`: a machine's result →
 `known_page`, `confirm_reference` → `model_read`; the source is kept in the evidence).
 
@@ -145,11 +160,10 @@ way:
 
 - JR East's station timetable (`table.result_03 tr[id^='time_'] div.timetable_time`: `.train`, `.minute`,
   `data-misc` ◆, the row's hour cell) for `train_times`.
-- WorldTracer's result (`#out tr` cells: Status, Last update, Flight; `#out p` for "No file found").
-- APDT: the error boxes (`.err`), the saved reference (`#refShown`), the upload boxes (`#file_doc`, `#file_inboard`,
-  `#file_outboard`, `#file_paydoc`) and card fields (`#card_number`, `#card_valid`, `#card_holder`) by their refs.
-- FWD Singapore's application (`claims::CARD_FIELDS`)
-  and claim upload (`#docs`), FWD Hong Kong's claim-form link.
+- WorldTracer's answer on mybag.aero after LOG IN (`#error-body-head` / `#error-body-text`, or the sign-in's
+  `#mngRptRefNoLTxt` gone: the report opened).
+- Card Claim Center's sign-in still there after the hand-back (`input[type=password]`).
+- (APDT reads no element: its form function stops at the travel document's upload, `require` on "Click here to upload".)
 - News: the engines' rows carry `date` (DuckDuckGo's timestamp) and `source` (Bing News' author); `browser_read`'s page
   has `lead` (the first paragraph under `<article>` / main), `site_name` (`og:site_name`) and `published`
   (`article:published_time` / `<time datetime>`).
@@ -173,6 +187,24 @@ buttons by ref (`judgements::snapshot_buttons`). Providers' terms are their flag
 Michelin restaurant's `stars` / `bib_gourmand` / `closed_days` (the texts are shown, not searched).
 3. **Regex** — only to check a value that is already structured (an ISO date, a reference's format), never to find
    data in a page's text.
+
+**Where a card is handed over (declared, checked by code).** Every arrival card declares in `driver::CARDS` its final
+page's Submit (`final_page`: a fixed selector and text taken from the real page — the user's click, never code's) and
+the markers of the user's own steps that come before the form (`user_step_at`: a Cloudflare check's response field,
+the sign-in's password box, the passport upload, the email / code boxes). Before the hand-over the machine reads them
+(`browser_read_elements`, `page_check_args`); a filled form whose final Submit is not on the page stopped early — the
+hand-over says so and the result is `stopped_early` with the page it stopped on (nothing submitted), never "ready to
+submit". The e2e suites read the same table (`tests/arrival_common.py` `declared`).
+
+**Form functions' page scripts (code-only).** A control a framework builds (an Angular Material `mat-select`, a
+custom dropdown, a date picker) is set by a named script instead of a chain of simulated clicks: the plan op
+`{"op": "js", "script", "src", "sel", "nth", "value"}` (`forms::js` / `forms::js_vault`; the value may be a Vault
+value Sentinel puts in) runs `src` — an `async (sel, nth, args) => {ok, value, why}` function from the fixed table
+of constants in `forms.rs` (`forms::Script`, e.g. `MAT_SELECT`: open the select, click the option, check what it shows)
+— on the page through the browser service's CDP evaluate, and the fill report carries the value the control now shows
+(`shown`, never for a secret). The script text never comes from a tool's arguments: only form functions build such
+ops, and the runtime refuses a `js` op in any `browser_fill_form` call the model wrote (`guards::model_script_guard`).
+Used for Cambodia's date, gender and other `mat-select`s.
 
 ## Pictures, places and cards as data
 

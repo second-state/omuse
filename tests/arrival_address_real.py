@@ -8,10 +8,9 @@ hotel; the profile has the home address in Sydney and addresses in Singapore.
 Two Singapore addresses (asked which one): tests/arrival_address2_real.py, on an install of its own (a second card for
 the same trip in one install is not a user story — the Travel bot already knows it was filed).
 
-SKELETON awaiting the real official site (TODO line below).
+On the REAL official site (https://eservices.ica.gov.sg/sgarrivalcard/); nothing is ever submitted.
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh arrival_address_real"""
-# TODO real URL: https://eservices.ica.gov.sg/sgarrivalcard/
 import os
 import sys
 
@@ -21,7 +20,7 @@ from tests import user_common as U  # noqa: E402
 from tests.user_common import check  # noqa: E402
 
 SG = A.CARDS["sg"]
-FLAT = "10 Bayfront Avenue, Singapore 018956"
+FLAT = "10 Bayfront Avenue, #12-05, Singapore 018956"
 ASK = "Please fill in my SG Arrival Card for my trip to Singapore — it's a holiday. " + SG.flight_text()
 
 
@@ -33,7 +32,7 @@ def address(label: str, value: str) -> None:
 async def main():
     async with U.User(viewport=(1440, 1500)) as u:
         address("Singapore flat", FLAT)
-        answers = await A.fill_card(u, SG, label="own", ask=ASK, hotel="Bayfront")
+        answers = await A.fill_card(u, SG, label="own", ask=ASK)
         check("own: nothing was asked — the one Singapore address in the profile is the accommodation", len(answers) == 1,
               answers[0].text[:400])
 

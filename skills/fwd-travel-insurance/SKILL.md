@@ -29,12 +29,11 @@ Buy before departure; it never covers something that already happened.
   (`cover` + `cover_at_least`, e.g. cancellation 10000), `plan` when the user picked one from the comparison cards, and
   `card` when they named the Vault card to pay with. Trip missing and the mailbox connected: code reads the booking
   mail (result `mail_read`) — read those emails and call again with the trip. `needs_input`: ask once, then call again.
-- **Singapore** — code fills FWD's quote (the form function), reads the plans from the page, picks one by the rule (the
-  plan the user chose, else the cheapest with the cover asked for, else the cheapest), shows the comparison as cards,
-  and for `buy` opens the plan's application, fills it from the profile and the Vault (names, date of birth, contact,
-  the passport number), asks the payment approval and fills the card from the Vault, then hands the page over: the
-  health and declaration answers and **Pay now** are the user's. A card saved by its name only has no number: the
-  result says the user types it or adds it in Memory → Vault.
+- **Singapore** — code fills FWD's quote (the form function: single trip, who, the region from the destination, the
+  dates), reads the plans from the summary, picks one by the rule (the plan the user chose, else the cheapest with the
+  cover asked for, else the cheapest), shows the comparison as cards, and for `buy` presses the plan's button and hands
+  the page over: FWD's eligibility statements (Singapore resident with an NRIC / FIN, never refused travel insurance,
+  nothing withheld), the add-ons, the details, the card and **Pay** are the user's — nothing is paid for them.
 - **Hong Kong** — the plan pages (**MyTravel** `https://www.fwd.com.hk/online-insurance/mytravel-insurance/en/`,
   `…/travelcare-plus-insurance/en/`, `…/gba-easy-travel-insurance/en`) have no form function: the result is
   `browser_use` and the plan page goes to the browser-use skill. Eligibility: **HKID card holder, in Hong Kong when
@@ -54,10 +53,10 @@ mailbox connected: code reads the policy and delay emails (result `mail_read`) �
 fact. `needs_input`: ask once, then call again.
 - Code counts the hours (actual − scheduled), the benefit by the policy's rule (per full block of hours, up to the
   cap) and the deadline, and:
-  - **Singapore**: saves the airline's certificate, fills FWD's online claim form (the form function: policy, claimant,
-    contact, the NRIC / passport from the Vault, the incident, the amount), uploads the certificate and hands the page
-    over — **Submit claim is the user's**. Then a weekly mail check and, before submission, a reminder 5 days before the
-    30-day date.
+  - **Singapore**: saves the airline's certificate, fills step 1 of FWD's online claim (the form function: claimant,
+    the NRIC / FIN from the Vault, mobile, email, policy number; no sign-in) and hands the page over — **next** (FWD
+    checks the policy), the bank account, the incident with the certificate and **Submit** are the user's. Then a
+    weekly mail check and, before submission, a reminder 5 days before the 30-day date.
   - **Hong Kong**: fills **bolttech's Travel Insurance Claim Form** (the fillable PDF; HKID, bank account, signature and
     date left for the user), sends it to the chat and puts an email draft to **claims.hk@bolttechinsurance.com** with
     the form and the airline's letter attached — not sent. bolttech claims enquiries: **+852 3123 3344**.

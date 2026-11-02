@@ -373,15 +373,36 @@ impl Broker {
                     let fail = |e: String| json!({"ok": false, "why": e});
                     // a field the rest of the plan needs: absent = the user's step comes first (a sign-in, an emailed
                     // code); the plan stops here and says why
-                    if op == "require" {
+                    // `await`: the same wait as `require`, but the plan goes on either way (a page that may be slow)
+                    if op == "require" || op == "await" {
                         let at =
                             json!({"op": "exists", "sel": f.get("sel"), "text": f.get("text")});
-                        let here = page
-                            .eval(None, FILL_ONE_JS, vec![at])
-                            .await
-                            .ok()
-                            .and_then(|v| v.get("ok").and_then(Value::as_bool))
-                            .unwrap_or(false);
+                        // `wait_ms`: a page that renders late (a single-page app's route) is given that long
+                        let patience = f
+                            .get("wait_ms")
+                            .and_then(as_i64)
+                            .unwrap_or(0)
+                            .clamp(0, 20_000);
+                        let start = std::time::Instant::now();
+                        let mut here;
+                        loop {
+                            here = page
+                                .eval(None, FILL_ONE_JS, vec![at.clone()])
+                                .await
+                                .ok()
+                                .and_then(|v| v.get("ok").and_then(Value::as_bool))
+                                .unwrap_or(false);
+                            if here || start.elapsed().as_millis() as i64 >= patience {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        if op == "await" {
+                            out.push(
+                                json!({"op": "await", "field": get_str(f, "field"), "ok": here}),
+                            );
+                            continue;
+                        }
                         if !here {
                             out.push(json!({"op": "require", "field": get_str(f, "field"), "ok": false, "stop": true,
                                             "why": get_str(f, "why")}));
@@ -427,17 +448,121 @@ impl Broker {
                                 }
                             }
                         }
+                        // a calendar's month: real clicks on its → arrow (`sel`, match `next`) until the element
+                        // `until` ({sel, text}: the header showing the month) is there, then on ← (`prev`) — at most
+                        // `max` clicks each way; the plan never needs to know which month the calendar opened on
+                        "seek" => {
+                            let until = json!({"op": "exists", "sel": f["until"].get("sel"),
+                                               "text": f["until"].get("text")});
+                            let max = f.get("max").and_then(as_i64).unwrap_or(24).clamp(0, 60);
+                            let mut found = false;
+                            'dirs: for key in ["next", "prev"] {
+                                for _ in 0..=max {
+                                    let here = page
+                                        .eval(None, FILL_ONE_JS, vec![until.clone()])
+                                        .await
+                                        .ok()
+                                        .and_then(|v| v.get("ok").and_then(Value::as_bool))
+                                        .unwrap_or(false);
+                                    if here {
+                                        found = true;
+                                        break 'dirs;
+                                    }
+                                    let at = json!({"op": "rect", "sel": f.get("sel"), "nth": f.get(key)});
+                                    let r = page
+                                        .eval(None, FILL_ONE_JS, vec![at])
+                                        .await
+                                        .unwrap_or(Value::Null);
+                                    match (r.get("x").and_then(as_f64), r.get("y").and_then(as_f64))
+                                    {
+                                        (Some(x), Some(y)) => {
+                                            if page.click_at(x, y, false).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        _ => break,
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                                }
+                            }
+                            if found {
+                                json!({"ok": true})
+                            } else {
+                                fail("the month was not reached".into())
+                            }
+                        }
+                        // a real mouse click at the element's centre: components that ignore a script's click
+                        // (a Vuetify date picker closes its menu on one)
+                        // a form function's named script (`op: js`): `src` is a function `(sel, nth, args) =>
+                        // {ok, value?, why?}` from the fixed table of the form function's file (omuse_runtime::forms —
+                        // never from the model: the runtime refuses a `js` op in any call the model wrote); it works a
+                        // framework's control directly (Angular Material's mat-select: open it, click the option,
+                        // check what it shows) and reports the value it now shows, for the fill report's check
+                        "js" => {
+                            let src = get_str(f, "src");
+                            if get_str(f, "script").is_empty()
+                                || !src.trim_start().starts_with("async (sel, nth, args)")
+                            {
+                                fail("not a form script".into())
+                            } else {
+                                let mut args = f.get("args").cloned().unwrap_or_else(|| json!({}));
+                                if let (Some(o), Some(v)) = (args.as_object_mut(), f.get("value")) {
+                                    o.insert("value".into(), v.clone());
+                                }
+                                let sel = f.get("sel").cloned().unwrap_or(Value::Null);
+                                let nth = f.get("nth").cloned().unwrap_or(json!(0));
+                                let mut r = page
+                                    .eval(None, &src, vec![sel, nth, args])
+                                    .await
+                                    .unwrap_or_else(|e| fail(crate::pages::err_text(&e)));
+                                // the value it shows goes back only for a value that is no secret
+                                if get_truthy(f, "secret") {
+                                    if let Some(o) = r.as_object_mut() {
+                                        o.remove("value");
+                                    }
+                                }
+                                r
+                            }
+                        }
+                        "tap" => {
+                            let mut at = f.clone();
+                            at["op"] = json!("rect");
+                            let r = page
+                                .eval(None, FILL_ONE_JS, vec![at])
+                                .await
+                                .unwrap_or_else(|e| fail(crate::pages::err_text(&e)));
+                            match (
+                                r.get("ok").and_then(Value::as_bool),
+                                r.get("x").and_then(as_f64),
+                                r.get("y").and_then(as_f64),
+                            ) {
+                                (Some(true), Some(x), Some(y)) => {
+                                    match page.click_at(x, y, false).await {
+                                        Ok(()) => json!({"ok": true}),
+                                        Err(e) => fail(e.to_string()),
+                                    }
+                                }
+                                _ => r,
+                            }
+                        }
                         _ => page
                             .eval(None, FILL_ONE_JS, vec![f.clone()])
                             .await
                             .unwrap_or_else(|e| fail(crate::pages::err_text(&e))),
                     };
-                    if matches!(op.as_str(), "click" | "button") {
+                    if matches!(op.as_str(), "click" | "button" | "tap") {
                         tokio::time::sleep(std::time::Duration::from_millis(900)).await;
                     }
-                    out.push(json!({"op": get_str(f, "op"), "sel": get_str(f, "sel"), "field": get_str(f, "field"),
+                    let mut done = json!({"op": get_str(f, "op"), "sel": get_str(f, "sel"), "field": get_str(f, "field"),
                                     "ok": r.get("ok").cloned().unwrap_or(json!(false)),
-                                    "why": r.get("why").cloned().unwrap_or(Value::Null)}));
+                                    "why": r.get("why").cloned().unwrap_or(Value::Null)});
+                    if op == "js" {
+                        done["script"] = json!(get_str(f, "script"));
+                        if let Some(v) = r.get("value") {
+                            done["shown"] = v.clone();
+                        }
+                    }
+                    out.push(done);
                 }
                 return Ok(json!({"url": page.url(), "filled": out}));
             }
@@ -1044,7 +1169,8 @@ const DEFAULT_NO_JS: &str = r#"() => {
 /// What: `text` sets an input's value through the native setter (input, change, blur events); `select` picks the option
 /// whose value or visible text is `value`; `radio` checks group `sel`'s radio whose value or label is `value`; `check`
 /// ticks a checkbox; `click` / `button` click; `date` sets a read-only date-picker box (the page's own datepicker when
-/// it has one); `focus` focuses (with `clear`, empties) the field before keys are typed;
+/// it has one); `focus` focuses (with `clear`, empties) the field before keys are typed; `rect` gives the element's centre
+/// (`{ok, x, y}`, for the broker's `tap`: a real mouse click there);
 /// `option` clicks the visible list option (`option_sel`, default mat-option / [role=option]) whose text is `value`,
 /// else starts with it, else contains it. Returns `{ok, why}`. (`keys`, `pick` and `wait` run in the broker.)
 const FILL_ONE_JS: &str = r#"(f) => {
@@ -1104,6 +1230,10 @@ const FILL_ONE_JS: &str = r#"(f) => {
   if (f.op === 'exists') return {ok: !!el && vis(el)};   // a required field counts only when the user can see it
   if (!el) return {ok: false, why: 'not on the page'};
   el.scrollIntoView({block: 'center'});
+  if (f.op === 'rect') {
+    const r = el.getBoundingClientRect();
+    return {ok: r.width > 0 && r.height > 0, x: r.left + r.width / 2, y: r.top + r.height / 2};
+  }
   if (f.op === 'click' || f.op === 'button') {
     const t = el.matches('input') ? el : (el.querySelector('input[type=radio], input[type=checkbox]') || el);
     t.click(); return {ok: true};

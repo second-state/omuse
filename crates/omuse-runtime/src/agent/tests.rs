@@ -2149,6 +2149,10 @@ fn an_approved_purchase_that_ends_without_a_hand_over_is_handed_over() {
     assert!(needs_handover(&t));
     let why = super::guards::handover_reason(&t, "generic");
     assert!(why.contains("place the order yourself"), "{why}");
+    // nothing says the page is filled: the run may hand over anywhere from the booking link to the payment step
+    // (travel_book_real 2026-11-02: "The checkout is filled in" over a hotel's listings page, nothing typed)
+    assert!(!why.contains("checkout is filled in"), "{why}");
+    assert!(why.contains("complete anything still empty"), "{why}");
     assert_eq!(super::guards::handover_reason(&[], "generic"), "generic");
     // a refused purchase, or one already handed over: nothing to do
     // no page open (bots_e2e: an approved purchase with no browser step): nothing to hand over
@@ -3974,9 +3978,9 @@ async fn bag_trace_runs_its_machine_in_the_insurance_bot_and_the_reply_turn_has_
                 return r;
             }
             match tool_msgs(body).last() {
-                None => call_msg("c1", "bag_trace", &json!({"file_ref": "NRT SQ 12345"}).to_string()),
+                None => call_msg("c1", "bag_trace", &json!({"file_ref": "NRT NH 12345"}).to_string()),
                 Some(m) if get_str(m, "tool_call_id").starts_with("res_") => {
-                    json!({"role": "assistant", "content": "WorldTracer could not be checked for file NRTSQ12345: track it in the airline's app."})
+                    json!({"role": "assistant", "content": "WorldTracer could not be checked for file NRTNH12345: track it in the airline's app."})
                 }
                 Some(m) => panic!("the model was called while the machine ran: {m}"),
             }
@@ -3984,7 +3988,7 @@ async fn bag_trace_runs_its_machine_in_the_insurance_bot_and_the_reply_turn_has_
         json!({"language": "en"}),
     )
     .await;
-    let (t, evs) = run_in_bot(&rt, "insurance", "Where is my bag? File NRTSQ12345.").await;
+    let (t, evs) = run_in_bot(&rt, "insurance", "Where is my bag? File NRTNH12345.").await;
     assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
     let tr = t["transcript"].as_array().unwrap();
     let running = tr
@@ -3992,7 +3996,7 @@ async fn bag_trace_runs_its_machine_in_the_insurance_bot_and_the_reply_turn_has_
         .find(|m| get_str(m, "tool_call_id") == "c1")
         .unwrap();
     assert!(
-        get_str(running, "content").contains("NRTSQ12345")
+        get_str(running, "content").contains("NRTNH12345")
             && get_str(running, "content").contains("\"running\""),
         "{running}"
     );
@@ -4013,7 +4017,7 @@ async fn bag_trace_runs_its_machine_in_the_insurance_bot_and_the_reply_turn_has_
     let answer = get_str(&t, "result");
     let block = answer.rsplit_once("\n---\n").map(|x| x.1).unwrap_or("");
     assert!(
-        block.contains("- WorldTracer not checked for file NRTSQ12345: ")
+        block.contains("- WorldTracer not checked for file NRTNH12345: ")
             && block.contains("- Track it yourself: [WorldTracer]("),
         "{answer}"
     );

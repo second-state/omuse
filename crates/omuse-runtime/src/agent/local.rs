@@ -237,6 +237,7 @@ request — keep it short and leave out what the request does not need. The skil
                 let events = self.store.events(&tid, 0).unwrap_or_default();
                 if let Some(refusal) = super::guards::ask_before_listing(&events)
                     .or_else(|| super::booking::ask_before_tool(&events))
+                    .or_else(|| super::booking::ask_in_browser_use(&events))
                     .or_else(|| super::news::ask_before_tool(&events))
                     .or_else(|| super::claims::ask_before_tool(&events))
                     .or_else(|| super::driver::ask_before_tool(&events))

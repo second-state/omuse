@@ -352,7 +352,8 @@ impl Runtime {
             // must carry (agent/facts.rs); a flight or hotel search is the booking machine's (`travel_search`), never the
             // model's own call
             let zh = super::lang::agent_lang(&self.settings()) != "en";
-            let repeated = super::facts::emergency_call_refusal(name, &args, zh)
+            let repeated = super::guards::model_script_guard(call)
+                .or_else(|| super::facts::emergency_call_refusal(name, &args, zh))
                 .or_else(|| {
                     machine_only_guard(call, crate::bots::has_tool(self.bot_of(t), "travel_search"))
                 })
@@ -532,6 +533,23 @@ times and is not made again.");
                         content = e;
                         ok = false;
                     }
+                }
+            } else if name == super::email_code::EMAIL_CODE {
+                // a machine's email verification step (agent/email_code.rs): the email, the press, the mail, the model's
+                // JSON read of the code, the code typed — run here in the runtime; its JSON result never holds the code
+                if super::guards::code_call(call) {
+                    let mail_ready = truthy(&catalog["connections"]["gmail"]["ready"]);
+                    let r = self
+                        .email_code_step(&task_id, mode.lane, &call.id, &args, mail_ready)
+                        .await;
+                    ok = get_str(&r, "status") == "typed";
+                    content = r.to_string();
+                } else {
+                    content = format!(
+                        "ERROR: {} is a step of the code machines, not a tool.",
+                        name
+                    );
+                    ok = false;
                 }
             } else if name == super::confirm::CONFIRM_REFERENCE {
                 // an unknown site's confirmation reference: the model's JSON, checked against the pages read after
@@ -1635,6 +1653,75 @@ pub(crate) fn exc_msg(e: &anyhow::Error) -> String {
 }
 
 impl Runtime {
+    /// A machine's email verification step (`email_code`, agent/email_code.rs): the fills go to Sentinel as
+    /// `browser_fill_form` on the task's page, the mail comes from `/internal/mail_code`, the model reads the code.
+    pub(crate) async fn email_code_step(
+        &self,
+        task_id: &str,
+        lane: &str,
+        call_id: &str,
+        args: &Value,
+        mail_ready: bool,
+    ) -> Value {
+        use super::email_code as E;
+        let n = std::sync::atomic::AtomicUsize::new(0);
+        let site = sget(args, "from");
+        let planner = sget(&self.settings(), "planner_model");
+        let fill = |fills: Value| {
+            let k = n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut act = json!({"task_id": task_id, "call_id": format!("{call_id}-{k}"), "tool": "browser_fill_form",
+                                 "args": {"form": E::EMAIL_CODE, "fills": fills}, "no_ask": true});
+            if !lane.is_empty() {
+                act["lane"] = json!(lane);
+            }
+            async move {
+                let r = self
+                    .sentinel("POST", "/internal/act", Some(act), 120.0)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if sget(&r, "status") == "ok" {
+                    Ok(r.get("result").cloned().unwrap_or(r))
+                } else {
+                    Err(take_chars(&r.to_string(), 300).to_string())
+                }
+            }
+        };
+        let mail = |query: String, since: f64| async move {
+            self.sentinel(
+                "POST",
+                "/internal/mail_code",
+                Some(json!({"query": query, "since": since})),
+                90.0,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        };
+        let read = |m: Value| {
+            let (site, planner) = (site.clone(), planner.clone());
+            async move {
+                E::read_code(
+                    &self.llm,
+                    &site,
+                    &m,
+                    task_id,
+                    (!planner.is_empty()).then_some(planner),
+                )
+                .await
+            }
+        };
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0)
+        };
+        // the wait for the mail ends at once when the user cancels the task
+        let pause = |d: std::time::Duration| self.sleep_or_cancel(task_id, d);
+        let r = E::run(args, mail_ready, E::TIMING, now, pause, fill, mail, read).await;
+        self.event(task_id, "email_code", r.clone()).await;
+        r
+    }
+
     /// The plan for the form the task has open (`form_fill`): the page's URL from the browser, its function
     /// (`forms::form_for`), the facts from the call and the profile → `{"form", "fills"}` for `browser_fill_form`.
     /// `Err` is the generic path's message: no page open, or no function for this page.

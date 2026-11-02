@@ -178,11 +178,37 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
   - `REAL_APP_SUITES` (the app with the real model and media provider, nothing outside faked): `assistant_real`,
     `automations_real`, `memory_real`, `chat_real`, `docs_real`, `chart_real`, `media_real`, `attach_media_real`,
     `travel_receipts_real`.
-  - `REAL_PENDING_SUITES` — skeletons being rebuilt on the official sites (each has a `TODO real URL:` line; not in
-    `real` until done): the arrival cards (`arrival_real`, `arrival_cards_real` … `arrival_cards4_real`,
-    `arrival_address_real`, `arrival_address2_real`; the fill values are read from the form handed over, never after
-    Submit), insurance (`insurance_real`, `insurance_hk_real`), claims (`claims_real`, `cards_claim_real`,
-    `cards_interruption_real`) and `cards_pay_real`.
+  - `REAL_SITES` — bookings and orders on the real booking sites and shops, run one at a time:
+    `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh realsites` (forces `-j 1`; not in
+    `real`). Code searches the real data, picks by rule, opens the REAL booking page (the offer's booking link, the
+    hotel seller's page, the shop's product page) and hands it to browser-use, which fills it with the profile's clearly
+    fake data (`tests/handover_common.py` `FAKE`) and hands over at the first step that is the user's (sign-in, CAPTCHA,
+    Pay / Place order); the suite hands back without pressing anything. No card in the Vault (`U.setup(vault=False)`):
+    not even a test card goes into a real payment form. Checked: the choice card, the hand-over on the real site, no
+    card number or secret in the page, the appended block (booking link, amount), nothing booked. A site that blocks
+    automation is handed over at the block — never get around bot protection. `travel_book_real` (a Kiwi.com flight
+    without a key, then a Google Hotels hotel with the SerpApi key), `shop_real` (Allbirds' Shopify store: compare a
+    collection ranked by code, then buy a size up to the checkout).
+    The arrival cards are in `REAL_SITES` too (`arrival_real`, `arrival_cards_real` … `arrival_cards4_real`,
+    `arrival_address_real`, `arrival_address2_real`): each opens the official government site, the card's form function
+    (`forms.rs`, mapped from the live sites 2026-11-02) fills what it can reach and the hand-over is at the first user
+    step — TDAC: the Cloudflare check on its home page; Visit Japan Web and eTravel: the sign-in to the user's account
+    (the email put in); China: the passport photo of step 1; Taiwan and the UK ETA: the emailed code (`email_code`,
+    agent/email_code.rs — with the test inbox connected from `OMUSE_E2E_IMAP_*` code sends the code, the model reads it
+    from the mail and code types it; without one a SKIP line and the hand-over at the email step); SG, MDAC, Korea,
+    Indonesia, Cambodia: the filled form for the user's review and Submit. Fake traveller data (`tests/arrival_common.py`
+    `PROFILE`, a fake passport in the Vault; the email is the test inbox). Success (user's decision 2026-11-02, the same
+    for any multi-page form suite): the run reached the form's final page — the one with the user's Submit, found by its
+    element — and handed it over, nothing submitted; or, where the site stops earlier at a user step, the hand-over at
+    that step. No per-field value checks on the handed-over page.
+    Insurance, claims, baggage and the departure tax are in `REAL_SITES` too, each on the real site (`forms_claims.rs`,
+    mapped 2026-11-02) and stopped at the first user step: `insurance_real` (FWD Singapore: the quote → the plan's
+    button → handed over at FWD's eligibility statements; the claim's step 1 filled by input names → handed over (no per-field value checks), since
+    "next" checks the policy on FWD's server), `insurance_hk_real` (bolttech's fillable PDF opened directly and filled),
+    `cards_claim_real` / `cards_interruption_real` (eClaimsLine redirects to Card Claim Center: the hand-over at the
+    sign-in is checked — the claim lies behind the account), `claims_real` (Singapore Airlines' status page;
+    WorldTracer's mybag.aero for an airline on it, ANA: a fake reference gets WorldTracer's own "No record" answer) and
+    `apdt_real` (the APDT platform up to its travel-document upload; never a made-up document, never handed over).
 - Market and README images (`deploy/market/assets`): `OMUSE_E2E_OUT=<dir> bash tests/run_in_docker.sh marketing_shots`
   photographs the current UI (showcase scenarios `SHOW_*` in `tests/fake_llm.py`) and frames it; copy
   `<dir>/market/*.webp` and `overview.png` into `deploy/market/assets`. Rebuild the test image first.

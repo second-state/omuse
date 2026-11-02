@@ -19,10 +19,12 @@ what the policy pays for a delayed or lost bag and what it needs (section 4), or
 ## 2. Track and chase
 - Call **bag_trace** with the PIR's `file_ref` (from the user's words or the PIR email), the passenger's `family_name`
   when the PIR gives it, `flight_date` (the day the bag should have arrived) and `watch: true` when the user asks you to
-  keep an eye on the bag. Code opens WorldTracer's tracing page, fills it (the form function) and reads the status from
-  the result page; with watch it sets a check twice a day. No reference and the mailbox connected: code reads the
+  keep an eye on the bag. Code opens the airline's "Manage your delayed baggage report" page on WorldTracer's passenger
+  site (mybag.aero; an airline not on it — Singapore Airlines, Cathay Pacific, United — is said so), fills the
+  reference and the family name (the form function), presses LOG IN and reads WorldTracer's answer; with watch it sets
+  a check twice a day. No reference and the mailbox connected: code reads the
   baggage mail (result `mail_read`) — read it and call bag_trace again with the reference. `needs_input`: ask the user
-  for the reference. Quote the result's status and last update and the 21-day date (its `show`); never fill the
+  for the reference. Its `show` (WorldTracer's answer and the 21-day date) is appended by code; never fill the
   tracing page yourself.
 - Delayed bags are usually found within a few days. If nothing after 5 days the airline asks for a detailed
   inventory (contents, values, purchase dates) — help the user write it (make_xlsx if long).

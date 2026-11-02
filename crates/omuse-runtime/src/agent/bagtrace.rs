@@ -1,14 +1,14 @@
-//! The delayed-bag lookup's known page: WorldTracer's public tracing page (claims_real 2026-11-01, twice: "WorldTracer's
-//! tracking form was available, but I couldn't submit the reference and surname from this bot"). The `bag_trace`
-//! workflow tool (`super::claims`) takes the PIR's file reference as its JSON argument (the model reads it in the
-//! user's words or the PIR email), opens the tracing page, fills it by its form function (`crate::forms`, fixed ids:
-//! the reference and the family name), presses Track (a lookup changes nothing) and reads the result page's table by its
-//! HTML elements (`browser_read_elements`: the rows of `#out` with their cells — Status, Last update, Flight —, and its
-//! notes, docs/json-tools.md "Reading pages"); the status goes into the result's `hints`.
+//! The delayed-bag lookup's known page: WorldTracer's passenger site, mybag.aero (the old public tracing page,
+//! wtrweb.worldtracer.aero/WorldTracerWeb/bagtrace.html, answers 404 since 2026). The `bag_trace` workflow tool
+//! (`super::claims`) takes the PIR's file reference as its JSON argument (the model reads it in the user's words or the
+//! PIR email); code opens the airline's "Manage your delayed baggage report" page (the airline from the reference's
+//! letters 4–5, its slug from [`AIRLINES`]), fills it by its form function (`crate::forms`, fixed ids: the reference
+//! and the family name), presses "LOG IN" (a lookup changes nothing) and reads the answer by its HTML elements
+//! (`browser_read_elements`: the error box `#error-body-head` / `#error-body-text`, or the sign-in form gone —
+//! docs/json-tools.md "Reading pages"). An airline that does not use mybag.aero is said so, with no page opened.
 
 use std::sync::LazyLock;
 
-use chrono::NaiveDate;
 use regex::Regex;
 use serde_json::Value;
 
@@ -16,20 +16,120 @@ use super::util::content_of;
 
 /// The skill whose runs call `bag_trace`.
 pub const SKILL: &str = "baggage-delayed-lost";
-/// WorldTracer's public tracing page (the airlines' "track your bag" links).
-pub const TRACE_URL: &str = "https://wtrweb.worldtracer.aero/WorldTracerWeb/bagtrace.html";
-pub const TRACE_HOST: &str = "wtrweb.worldtracer.aero";
+/// WorldTracer's passenger site (its landing page: reporting and tracking, for the airlines that use it).
+pub const TRACE_URL: &str = "https://mybag.aero/baggage/#/pax";
+pub const TRACE_HOST: &str = "mybag.aero";
 
-/// The shape of a WorldTracer file reference: the station (3 letters), the airline (2), five digits — "NRTSQ12345".
+/// The airlines on mybag.aero: (IATA code, the site's slug), from the site's own configuration
+/// (https://mybag.aero/baggage/assets/static/airline-configuration.json, `AIRLINE_CODE_TO_NAME_MAP`, 2026-11-02).
+/// Singapore Airlines, Cathay Pacific and United are not on it: their bags are traced on their own sites.
+pub const AIRLINES: &[(&str, &str)] = &[
+    ("3M", "silver"),
+    ("4Y", "ewdiscover"),
+    ("6B", "tui6b"),
+    ("AD", "voeazul"),
+    ("AY", "finnair"),
+    ("AZ", "itaairways"),
+    ("BA", "britishairways"),
+    ("BT", "airbaltic"),
+    ("BY", "tuiby"),
+    ("CM", "copaair"),
+    ("DE", "condor"),
+    ("DI", "marabu"),
+    ("DY", "norwegian"),
+    ("E2", "airhaifa"),
+    ("EI", "aerlingus"),
+    ("EN", "airdolomiti"),
+    ("ET", "ethiopianairlines"),
+    ("EW", "eurowings"),
+    ("FI", "icelandair"),
+    ("FJ", "fijiairways"),
+    ("FR", "ryanair"),
+    ("FZ", "flydubai"),
+    ("G3", "gol"),
+    ("GR", "aurigny"),
+    ("HV", "transaviaairlines"),
+    ("JL", "jal"),
+    ("KM", "malta"),
+    ("KX", "caymanairways"),
+    ("LA", "latam"),
+    ("LH", "lufthansa"),
+    ("LL", "level"),
+    ("LM", "loganair"),
+    ("LO", "lot"),
+    ("LS", "jet2com"),
+    ("LX", "swiss"),
+    ("LY", "elal"),
+    ("ME", "mea"),
+    ("MH", "mab"),
+    ("N0", "flynorse"),
+    ("NH", "ana"),
+    ("NZ", "airnz"),
+    ("OR", "tuior"),
+    ("OS", "austrian"),
+    ("PC", "pegasusairlines"),
+    ("PD", "porter"),
+    ("PR", "philippineairlines"),
+    ("QF", "qantas"),
+    ("QS", "smartwingsgroup"),
+    ("RC", "atlanticairways"),
+    ("RJ", "rj"),
+    ("SB", "aircalin"),
+    ("SK", "sas"),
+    ("SN", "brusselsairlines"),
+    ("SP", "sata"),
+    ("SS", "corsairairlines"),
+    ("SV", "saudia"),
+    ("TB", "tuitb"),
+    ("TG", "thai"),
+    ("TK", "turkishairlines"),
+    ("TO", "transaviafrance"),
+    ("TP", "tapairportugal"),
+    ("TS", "airtransat"),
+    ("U2", "easyjet"),
+    ("UO", "hkexpress"),
+    ("UX", "aireuropa"),
+    ("V7", "volotea"),
+    ("VB", "viva"),
+    ("VJ", "vietjet"),
+    ("VL", "lufthansacity"),
+    ("VN", "vna"),
+    ("VS", "virginatlantic"),
+    ("VY", "vueling"),
+    ("W6", "wizzair"),
+    ("WF", "wideroe"),
+    ("WK", "edelweiss"),
+    ("WS", "westjet"),
+    ("X3", "tuifly"),
+    ("XQ", "sunexpress"),
+    ("Y4", "volaris"),
+];
+
+/// The shape of a WorldTracer file reference: the station (3 letters), the airline (2), five digits — "NRTNH12345".
 static FILE_REF: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^([A-Z]{3})[ -]?([A-Z][A-Z0-9]|[0-9][A-Z])[ -]?(\d{5})$").unwrap()
 });
 
-/// A file reference argument, normalised without spaces ("nrt sq 12345" → "NRTSQ12345"); `None` when it is not one.
+/// A file reference argument, normalised without spaces ("nrt nh 12345" → "NRTNH12345"); `None` when it is not one.
 pub fn file_ref_of(value: &str) -> Option<String> {
     FILE_REF
         .captures(&value.trim().to_uppercase())
         .map(|c| format!("{}{}{}", &c[1], &c[2], &c[3]))
+}
+
+/// The airline of a (normalised) file reference: its letters 4–5 ("NRTNH12345" → "NH").
+pub fn airline_of(file_ref: &str) -> String {
+    file_ref.chars().skip(3).take(2).collect()
+}
+
+/// The airline's "Manage your delayed baggage report" page on mybag.aero; `None` when the airline is not on the site.
+pub fn manage_url(airline: &str) -> Option<String> {
+    AIRLINES
+        .iter()
+        .find(|(code, _)| code.eq_ignore_ascii_case(airline))
+        .map(|(_, slug)| {
+            format!("https://mybag.aero/baggage/#/pax/{slug}/en-gb/delayed/manage-bag")
+        })
 }
 
 /// A tool result that failed (the step is not retried; the result says the lookup could not be done).
@@ -43,58 +143,49 @@ pub fn failed(m: &Value) -> bool {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Trace {
     pub file_ref: String,
+    /// the site's own words: its error message, or empty when the report opened
     pub status: String,
-    pub last_update: String,
-    /// the file's flight date (its Flight row)
-    pub flight_date: Option<NaiveDate>,
-    /// WorldTracer knows the file (false: "No file found")
+    /// WorldTracer opened the report (false: it found no record for the reference and the name)
     pub found: bool,
 }
 
-/// The element reads of the result page: its table's rows (label cell, value cell) and its notes.
-const ROWS: &str = "rows";
-const NOTES: &str = "notes";
+/// The element reads of the page after "LOG IN": the error box's heading and text, and the sign-in form's reference box.
+const ERROR_HEAD: &str = "error_head";
+const ERROR_TEXT: &str = "error_text";
+const LOGIN: &str = "login";
 
-/// The arguments of `browser_read_elements` for the result page.
-pub fn read_args() -> serde_json::Value {
-    serde_json::json!({"read": [{"name": ROWS, "sel": "#out tr", "cells": true},
-                                {"name": NOTES, "sel": "#out p"}]})
+/// The arguments of `browser_read_elements` for the page after "LOG IN".
+pub fn read_args() -> Value {
+    serde_json::json!({"read": [{"name": ERROR_HEAD, "sel": "#error-body-head"},
+                                {"name": ERROR_TEXT, "sel": "#error-body-text"},
+                                {"name": LOGIN, "sel": "#mngRptRefNoLTxt", "attr": "id"}]})
 }
 
-/// The status on the tracing result page, from its elements read (`read`, a `browser_read_elements` result): the value
-/// cells of the rows labelled Status, Last update and Flight (its date, the cell's last part); with no Status row, the
-/// page's first note ("No file found for this reference.") as a file WorldTracer does not know. `None` when the page
-/// shows neither.
+/// WorldTracer's answer from the elements read (`read`, a `browser_read_elements` result): the error box ("There was
+/// a problem in finding your details" — "No record was found with that reference number and family name
+/// combination…") as a file it does not know; the sign-in form gone as the report opened. `None` when the page shows
+/// neither (no answer yet, or a check such as a CAPTCHA).
 pub fn trace_of(read: &Value, file_ref: &str) -> Option<Trace> {
-    let rows = super::confirm::element_rows(read, ROWS);
-    let cell = |label: &str| {
-        rows.iter()
-            .find(|(c, _)| c.first().is_some_and(|l| l.trim() == label))
-            .and_then(|(c, _)| c.get(1))
-            .map(|v| v.trim().to_string())
+    let first = |name: &str| {
+        super::confirm::element_values(read, name)
+            .into_iter()
+            .find(|v| !v.trim().is_empty())
     };
-    let (status, found) = match cell("Status").filter(|s| !s.is_empty()) {
-        Some(s) => (s, true),
-        None => {
-            let note = super::confirm::element_values(read, NOTES)
-                .into_iter()
-                .find(|n| !n.trim().is_empty())?;
-            // the note's first sentence
-            let first = note.split('.').next().unwrap_or(&note).trim().to_string();
-            (first, false)
-        }
-    };
-    let flight_date = cell("Flight").and_then(|f| {
-        let last = f.rsplit(',').next().unwrap_or("").trim().to_string();
-        NaiveDate::parse_from_str(&last, "%Y-%m-%d").ok()
-    });
-    Some(Trace {
-        file_ref: file_ref.to_string(),
-        status,
-        last_update: cell("Last update").unwrap_or_default(),
-        flight_date,
-        found,
-    })
+    if let Some(text) = first(ERROR_TEXT).or_else(|| first(ERROR_HEAD)) {
+        return Some(Trace {
+            file_ref: file_ref.to_string(),
+            status: text.trim().trim_end_matches(" or").to_string(),
+            found: false,
+        });
+    }
+    if first(LOGIN).is_none() {
+        return Some(Trace {
+            file_ref: file_ref.to_string(),
+            status: String::new(),
+            found: true,
+        });
+    }
+    None
 }
 
 #[cfg(test)]
@@ -110,50 +201,50 @@ mod tests {
                "content": format!("<untrusted_content source=\"web page\">\n{env}\n</untrusted_content>")})
     }
 
-    fn result_rows() -> Value {
-        let row = |l: &str, v: &str| json!({"cells": [l, v], "links": []});
-        json!([
-            row(
-                "Status",
-                "Tracing continues — your bag has not been located yet"
-            ),
-            row("Bag", "Black hard-shell suitcase, tag SQ 123456"),
-            row(
-                "Flight",
-                "SQ 638 Singapore (SIN) – Tokyo Narita (NRT), 2026-10-31"
-            ),
-            row(
-                "Last update",
-                "2026-10-31 22:10 local time — trace sent to Singapore (SIN)"
-            )
-        ])
+    #[test]
+    fn the_answer_is_read_by_its_elements() {
+        // the real page's error box for a reference WorldTracer does not know (mybag.aero, 2026-11-02)
+        let none = trace_of(&read(json!({"error_head": ["There was a problem in finding your details"],
+            "error_text": ["No record was found with that reference number and family name combination. Check the values entered and try again or"],
+            "login": ["mngRptRefNoLTxt"]})), "NRTNH12345").unwrap();
+        assert!(!none.found);
+        assert_eq!(
+            none.status,
+            "No record was found with that reference number and family name combination. Check the values entered and try again"
+        );
+        // the sign-in form gone: the report opened
+        let open = trace_of(
+            &read(json!({"error_head": [], "error_text": [], "login": []})),
+            "NRTNH12345",
+        )
+        .unwrap();
+        assert!(open.found);
+        // still on the sign-in form, no error: no answer
+        assert!(trace_of(
+            &read(json!({"error_head": [], "error_text": [], "login": ["mngRptRefNoLTxt"]})),
+            "NRTNH12345"
+        )
+        .is_none());
     }
 
     #[test]
-    fn the_result_pages_rows_are_read_by_their_cells() {
-        let page = read(json!({"rows": result_rows(),
-            "notes": ["Bags are usually found within a few days."]}));
+    fn the_airline_comes_from_the_reference_and_its_page_from_the_table() {
+        assert_eq!(airline_of("NRTNH12345"), "NH");
         assert_eq!(
-            trace_of(&page, "NRTSQ12345"),
-            Some(Trace {
-                file_ref: "NRTSQ12345".into(),
-                status: "Tracing continues — your bag has not been located yet".into(),
-                last_update: "2026-10-31 22:10 local time — trace sent to Singapore (SIN)".into(),
-                flight_date: NaiveDate::from_ymd_opt(2026, 10, 31),
-                found: true,
-            })
+            manage_url("NH").as_deref(),
+            Some("https://mybag.aero/baggage/#/pax/ana/en-gb/delayed/manage-bag")
         );
-        let none = trace_of(&read(json!({"rows": [], "notes": ["No file found for this reference. Check the reference on your Property Irregularity Report."]})), "NRTSQ99999").unwrap();
         assert_eq!(
-            (none.status.as_str(), none.found),
-            ("No file found for this reference", false)
+            manage_url("jl").as_deref(),
+            Some("https://mybag.aero/baggage/#/pax/jal/en-gb/delayed/manage-bag")
         );
-        assert!(trace_of(&read(json!({"rows": [], "notes": []})), "NRTSQ12345").is_none());
+        // Singapore Airlines is not on mybag.aero
+        assert!(manage_url("SQ").is_none());
     }
 
     #[test]
     fn a_file_reference_argument_is_checked_by_its_shape() {
-        assert_eq!(file_ref_of("NRT SQ 12345").as_deref(), Some("NRTSQ12345"));
+        assert_eq!(file_ref_of("NRT NH 12345").as_deref(), Some("NRTNH12345"));
         assert_eq!(file_ref_of("nrtsq12345").as_deref(), Some("NRTSQ12345"));
         assert_eq!(file_ref_of("SIN-3K-00123").as_deref(), Some("SIN3K00123"));
         assert!(file_ref_of("7HK2LM").is_none());

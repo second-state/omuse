@@ -480,6 +480,7 @@ pub fn router(ctx: App) -> Router {
             post(internal::ledger_reconcile),
         )
         .route("/internal/mail_check", get(internal::mail_check))
+        .route("/internal/mail_code", post(internal::mail_code))
         .route("/internal/browser_state", get(internal::browser_state))
         .route("/internal/act", post(act::act))
         .route("/internal/user_request", post(internal::user_request))

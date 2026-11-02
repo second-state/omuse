@@ -11,10 +11,10 @@
 //! Then every step is code ([`next`]): ONE search call (on the user's travel connector when the arguments say so, the
 //! connector once more when the native search had nothing priced), the pick by rule from the structured result (the
 //! cheapest, or the criteria in the arguments, or the user's pick), the choice card with the pick shown, and — for
-//! `travel_book` — `purchase_confirm` when money is charged and the booking link. No booking or checkout site has a
-//! form function: the page is opened and handed to the `browser-use` skill (`status: browser_use`), which fills it and
-//! hands the final Pay / Confirm / Place order to the user. `shop_order` opens the shop's page and hands it over the
-//! same way, with the ranking criteria.
+//! `travel_book` — the booking link opened, then `purchase_confirm` on that page when money is charged. No booking or
+//! checkout site has a form function: the page is handed to the `browser-use` skill (`status: browser_use`), which
+//! fills it and hands the final Pay / Confirm / Place order to the user. `shop_order` opens the shop's page and hands
+//! it over the same way, with the ranking criteria.
 //!
 //! The machine ends with [`Step::Done`]: a JSON result (status, options, the pick and its rule, the booking, links,
 //! the mail sent, `hints` — the facts the reply must carry). The model writes the reply from it; no answer text is
@@ -245,6 +245,24 @@ pub fn ask_before_tool(events: &[Value]) -> Option<Value> {
     };
     Some(json!({"refused": "call_the_tool_first", "tool": tool,
                 "why": format!("the {} skill asks through {tool}: call it with what the user gave; its needs_input lists what only the user can give, and code fills the defaults", skill.skill)}))
+}
+
+/// `ask_user` while a page code handed to `browser-use` is being filled (the runtime's `browser_use_handoff` event in
+/// this task): refused, as data. A form workflow starts with every value known; the page is filled from the run's data
+/// (the profile, the request, the search result), a field without a value is left blank and the page is handed over
+/// — nothing is asked in the middle of the form (travel_book_real 2026-11-02: at Kiwi.com's contact step the model
+/// asked whether to use the profile's email and phone; the run ended on the question, no hand-over). `events` are the
+/// task's.
+pub fn ask_in_browser_use(events: &[Value]) -> Option<Value> {
+    events
+        .iter()
+        .any(|e| get_str(e, "type") == "browser_use_handoff")
+        .then(|| {
+            json!({"refused": "fill_then_hand_over",
+                   "why": "this page is filled from what the run has (the profile, the request, the search result) without asking: \
+use the profile's values, leave a field with no value blank, then call browser_request_takeover naming what is left \
+for the user"})
+        })
 }
 
 // ---------------------------------------------------------------- validation (code, on the JSON)
@@ -2712,8 +2730,12 @@ fn contact_email(profile: &Value, contact: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// The booking stage, after the pick: the Vault's list and `purchase_confirm` when money is charged, the booking link
-/// opened, then the page handed to `browser-use` (`status: browser_use`) — no booking site has a form function.
+/// The booking stage, after the pick: the Vault's list, the booking link opened, then — when money is charged —
+/// `purchase_confirm` on that page, and the page handed to `browser-use` (`status: browser_use`) — no booking site has
+/// a form function. The approval comes after the page is open so it names the site the booking lands on: Sentinel
+/// binds it to the open page's host and checks the total that page shows (travel_book_real 2026-11-02: approved
+/// before the hotel's page opened, the approval named kiwi.com — the flight's page still open — and the Google
+/// redirect's host).
 fn book(spec: &BookingSpec, req: &Req, t: &[Value], ids: &Ids, item: &Item) -> Step {
     let card_needed = item.charged;
     let vault = calls_of(t, "vault_list")
@@ -2726,10 +2748,18 @@ fn book(spec: &BookingSpec, req: &Req, t: &[Value], ids: &Ids, item: &Item) -> S
     // the card the user named (the `card` argument), else the first with its details
     let card = pick_card(&cards, std::slice::from_ref(&req.card));
     let card_ok = card.is_some_and(|c| !c.name_only);
+    // the booking link (once)
+    let nav = calls_of(t, "browser_navigate")
+        .into_iter()
+        .rfind(|(a, _)| sget(a, "url") == item.url);
+    let Some((nav_args, nav_msg)) = nav else {
+        return ids.calls("browser_navigate", json!({"url": item.url}));
+    };
+    let page_url = landed(&nav_args, nav_msg);
     if card_needed {
         match calls_of(t, "purchase_confirm").last() {
             None => {
-                let mut a = json!({"site": host_of(&item.url), "items": [{"name": item.name, "qty": 1, "price": item.total.unwrap_or(0.0)}],
+                let mut a = json!({"site": host_of(&page_url), "items": [{"name": item.name, "qty": 1, "price": item.total.unwrap_or(0.0)}],
                                    "shipping": 0, "total": item.total.unwrap_or(0.0), "currency": item.currency,
                                    "delivery": item.delivery, "note": item.note});
                 if let (Some(c), true) = (card, card_ok) {
@@ -2748,23 +2778,39 @@ fn book(spec: &BookingSpec, req: &Req, t: &[Value], ids: &Ids, item: &Item) -> S
             Some(_) => {}
         }
     }
-    // the booking link (once), then the page is the browser-use skill's
-    let nav = calls_of(t, "browser_navigate")
-        .into_iter()
-        .rfind(|(a, _)| sget(a, "url") == item.url);
-    let Some((nav_args, nav_msg)) = nav else {
-        return ids.calls("browser_navigate", json!({"url": item.url}));
-    };
-    let page_url = landed(&nav_args, nav_msg);
+    // the page is the browser-use skill's from here
     let mut booking = item.to_json();
     if let (Some(c), true, true) = (card, card_ok, card_needed) {
         booking["card"] = json!(c.label);
     }
     Step::Done(
         json!({"status": "browser_use", "url": page_url, "booking": booking,
-        "show": [S::link("Booking page (open in the browser)", "预订页面（已在浏览器中打开）", "", &page_url)],
-        "hints": []}),
+        "show": handover_show(item, &page_url), "hints": []}),
     )
+}
+
+/// The facts the user reads under the reply when a booking page is handed to `browser-use`: the booking page, what is
+/// being booked and its price from the search. A charged item's amount is the approved `purchase_confirm`'s ("Amount you
+/// approved", `guards::purchase_total_facts`), so it is not repeated here.
+fn handover_show(item: &Item, page_url: &str) -> Vec<Value> {
+    let mut show = vec![S::link(
+        "Booking page (open in the browser)",
+        "预订页面（已在浏览器中打开）",
+        "",
+        page_url,
+    )];
+    if !item.name.is_empty() {
+        show.push(S::fact("To book", "预订", &item.name));
+    }
+    if let (Some(total), false) = (item.total.filter(|t| *t > 0.0), item.charged) {
+        show.push(S::amount(
+            "Price in the search",
+            "搜索中的价格",
+            total,
+            &item.currency,
+        ));
+    }
+    show
 }
 
 // ---------------------------------------------------------------- shopping

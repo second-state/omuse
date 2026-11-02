@@ -115,15 +115,16 @@ pub const SPECS: &[ClaimSpec] = &[
         flow: Flow::CsrTrip,
         name: "Chase Sapphire trip claim",
         decides: "Card Benefit Services (Chase's benefit administrator)",
-        start_url: "https://www.eclaimsline.com/",
-        host: "www.eclaimsline.com",
+        // www.eclaimsline.com redirects here since 2026 (the old portal's claim page is gone)
+        start_url: "https://cardclaimcenter.com/internal/log-in",
+        host: "cardclaimcenter.com",
         searches: CSR_SEARCHES,
         hits: 5,
         notify_days: 20,
         documents_days: 90,
-        user_steps: "press Submit claim",
-        ref_sel: "#claimno",
-        ref_re: r"\bCBS-\d{2}-\d{6,}\b",
+        user_steps: "sign in to Card Claim Center (or create your account), file the claim and press Submit",
+        ref_sel: "",
+        ref_re: "",
         currency: "USD",
         delay: (0.0, 0, 0.0),
         caps: &[
@@ -144,9 +145,9 @@ pub const SPECS: &[ClaimSpec] = &[
         hits: 3,
         notify_days: 30,
         documents_days: 0,
-        user_steps: "press Submit claim",
-        ref_sel: "main p b",
-        ref_re: r"\bCL-[A-Z]{2}-\d{4}-\d{4,}\b",
+        user_steps: "press next (FWD checks the policy on its server), give the bank account for the payment, then the incident with the delay certificate, and press Submit",
+        ref_sel: "",
+        ref_re: "",
         currency: "SGD",
         delay: (100.0, 6, 1_500.0),
         caps: &[],
@@ -163,9 +164,9 @@ pub const SPECS: &[ClaimSpec] = &[
         hits: 3,
         notify_days: 0,
         documents_days: 0,
-        user_steps: "read the policy wording and the declarations, tick the box if you agree, and press Pay now",
-        ref_sel: "main p b",
-        ref_re: r"\bTI-[A-Z]{2}-\d{4}-\d{4,}\b",
+        user_steps: "answer FWD's eligibility statements (\"Yes, continue\" only if they are all true for you), choose any add-on, check your details, read the policy wording and press Pay",
+        ref_sel: "",
+        ref_re: "",
         currency: "SGD",
         delay: (0.0, 0, 0.0),
         caps: &[],
@@ -211,22 +212,12 @@ pub const SPECS: &[ClaimSpec] = &[
     },
 ];
 
-/// The link to bolttech's Travel Insurance Claim Form (the fillable PDF) on FWD Hong Kong's site.
-const HK_CLAIM_FORM_SEL: &str = "a[href$='travel-insurance-clm-form-fillable.pdf']";
-
 /// FWD Hong Kong's MyTravel plan page (no form function: its quote goes to the `browser-use` skill).
 const HK_QUOTE_URL: &str = "https://www.fwd.com.hk/online-insurance/mytravel-insurance/en/";
 
-/// The card fields of FWD Singapore's application, filled from the Vault after `purchase_confirm`: (Vault field, the
-/// input's fixed selector).
-const CARD_FIELDS: &[(&str, &str)] = &[
-    ("number", "#card"),
-    ("expiry", "#exp"),
-    ("cvc", "#cvc"),
-    ("holder", "#holder"),
-];
-/// The claim form's file input for the supporting documents (FWD Singapore's online claim page).
-const CLAIM_DOCS_SEL: &str = "#docs";
+/// Card Claim Center's sign-in page by its password box (a fixed part of the page): still there after the hand-back =
+/// the user did not sign in.
+const CCC_PASSWORD: &str = "input[type=password]";
 
 fn spec(flow: Flow) -> &'static ClaimSpec {
     SPECS.iter().find(|s| s.flow == flow).unwrap()
@@ -710,8 +701,12 @@ fn check_claim(a: &Value, cx: &Ctx) -> Checks {
             None => problems.push(format!("{k}: \"{v}\" is not a time: give HH:MM")),
         }
     }
+    // a delay rule's amount of 0 is no rule (insurance_real 2026-11-02: the cap passed as 0 when the user gave none,
+    // and a 7 h delay came out as nothing to claim): dropped, the market's rule stands
     for k in ["benefit_per_block", "benefit_cap"] {
-        money_arg(a, k, &mut out, &mut problems);
+        if n_arg(a, k).is_some_and(|x| x > 0.0) {
+            money_arg(a, k, &mut out, &mut problems);
+        }
     }
     for k in ["block_hours", "claim_within_days"] {
         if let Some(n) = i_arg(a, k) {
@@ -1129,13 +1124,6 @@ impl TripClaim {
         t.amount = claim_amount(&t, spec(Flow::CsrTrip));
         t
     }
-    fn booking(&self) -> String {
-        self.suppliers
-            .iter()
-            .map(|(s, r)| format!("{s} {r}"))
-            .collect::<Vec<_>>()
-            .join("; ")
-    }
     /// How the amount was computed: paid − refunded when that is the figure (a cancellation), else what the supplier
     /// stated as not refunded; plus the change fee for an interruption.
     fn arithmetic(&self) -> String {
@@ -1160,14 +1148,6 @@ impl TripClaim {
         } else {
             base
         }
-    }
-    /// The eClaimsLine form function's values.
-    fn form_args(&self) -> Value {
-        json!({
-            "benefit": self.benefit, "loss_date": self.loss.map(iso).unwrap_or_default(),
-            "amount": if self.amount > 0.0 { format!("{:.2}", self.amount) } else { String::new() },
-            "reason": self.reason, "booking": self.booking(), "card_product": self.card_product, "last4": self.last4,
-        })
     }
 }
 
@@ -1375,28 +1355,73 @@ impl Plan {
     }
 }
 
-/// The FWD quote page's plan table: its rows (a CSS selector, read with their cells and links by
-/// `browser_read_elements`), and its fixed columns after the plan's name.
-const PLAN_ROWS: &str = "#plans tr";
-const PLAN_COLS: [&str; 5] = ["premium", "medical", "cancellation", "delay", "baggage"];
+/// The covers the plans are compared on, by the benefit line's label on FWD's summary (the page's fixed labels; the
+/// first line that matches): medical, trip cancellation (the single-traveller line), travel delay, baggage delay.
+const PLAN_COVERS: [(&str, &str, bool); 4] = [
+    ("medical", "Overseas medical expenses", false),
+    (
+        "cancellation",
+        "Trip cancelled before you leave Singapore",
+        true,
+    ),
+    ("delay", "Travel delay", false),
+    ("baggage", "Baggage delay", false),
+];
+/// The id prefix and suffix of a plan's button on the summary (`#TI_QuoteSummarypage_Business_Buy`).
+const PLAN_BUTTON: (&str, &str) = ("TI_QuoteSummarypage_", "_Buy");
 
-/// The plans on the quote page (a known page), from its table's cells: each row with a "Select" link is a plan —
-/// the name, then the premium, medical, cancellation, delay and baggage cells in the page's fixed order. A cell's
-/// amount is the last money value in it (the delay cell "SGD 100 every 6 hours, up to SGD 1,500" → its cap).
-pub fn plans_in(rows: &[(Vec<String>, Vec<String>)]) -> Vec<Plan> {
-    rows.iter()
-        .filter_map(|(cells, links)| {
-            let link = links.first()?.clone();
-            let name = cells.first()?.trim().to_string();
-            let cover: Vec<(String, f64)> = PLAN_COLS
+/// The arguments of `browser_read_elements` for FWD's quote summary (`/travel-insurance/online-quote/summary`, mapped
+/// 2026-11-02): the plans' buttons by their ids, the prices above them, and every benefit line (its label and the
+/// three plans' values, folded sections too).
+fn plans_read_args() -> Value {
+    let col = |n: usize| format!(".cp-col-benefit > .cp-col:nth-child({n})");
+    json!({"read": [
+        {"name": "buy", "sel": format!("#plan-table .coverage-plan__subheader button[id^='{}']", PLAN_BUTTON.0), "attr": "id"},
+        {"name": "price", "sel": "#plan-table .coverage-plan__subheader .cp-col h5"},
+        {"name": "lines", "sel": "#plan-table section.benefit-line", "hidden": true, "max": 80,
+         "fields": {"label": ".cp-col-policy", "p1": col(1), "p2": col(2), "p3": col(3)}}
+    ]})
+}
+
+/// The plans on FWD's quote summary (a known page), from its elements: each plan button's id gives the plan's name
+/// ("Business"), the price above it the premium, and the benefit lines its covers ([`PLAN_COVERS`]; a value's amount
+/// is the last money value in it).
+pub fn plans_of(read: &Value) -> Vec<Plan> {
+    let buttons = super::confirm::element_values(read, "buy");
+    let prices = super::confirm::element_values(read, "price");
+    let lines = super::confirm::element_fields(read, "lines");
+    buttons
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| {
+            let name = id
+                .strip_prefix(PLAN_BUTTON.0)?
+                .strip_suffix(PLAN_BUTTON.1)?
+                .to_string();
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphabetic()) {
+                return None;
+            }
+            let premium = *amounts_in(prices.get(i)?).first()?;
+            let col = format!("p{}", i + 1);
+            let cover = PLAN_COVERS
                 .iter()
-                .zip(cells.iter().skip(1))
-                .filter_map(|(c, cell)| amounts_in(cell).last().map(|v| (c.to_string(), *v)))
+                .filter_map(|(key, label, exact)| {
+                    let line = lines.iter().find(|l| {
+                        let t = l.get("label").map(|x| x.trim()).unwrap_or("");
+                        if *exact {
+                            t == *label
+                        } else {
+                            t.starts_with(label)
+                        }
+                    })?;
+                    amounts_in(line.get(&col)?)
+                        .last()
+                        .map(|v| (key.to_string(), *v))
+                })
                 .collect();
-            let premium = cover.iter().find(|(c, _)| c == "premium")?.1;
-            (!name.is_empty()).then_some(Plan {
+            Some(Plan {
+                link: id.clone(),
                 name,
-                link,
                 premium,
                 cover,
             })
@@ -1688,7 +1713,7 @@ pub fn next(tool: &str, args: &Value, transcript: &[Value], from: usize, m: &Mac
             json!({"status": "browser_use", "url": HK_QUOTE_URL, "insurer": "FWD Hong Kong (underwritten by bolttech)",
                 "hints": ["FWD Hong Kong's travel plans are underwritten by bolttech; the quote is on FWD Hong Kong's plan page"]}),
         ),
-        INSURANCE_BUY => next_buy(args, run, &ids),
+        INSURANCE_BUY => next_buy(args, run, &ids, m),
         _ => {
             let s = if s_arg(args, "insurer") == "chase_sapphire" {
                 spec(Flow::CsrTrip)
@@ -1728,16 +1753,17 @@ fn not_supported(s: &ClaimSpec) -> Step {
 
 fn next_csr(s: &ClaimSpec, args: &Value, run: &[Value], ids: &Ids, m: &Machine) -> Step {
     let t = TripClaim::from_args(args);
-    let base = csr_result(s, &t, "", None, false, m.today);
     if !opened(run, s.host, "/") {
         return ids.one("browser_navigate", json!({"url": s.start_url}));
     }
-    let fill_pos = match fill_gate(run, ids, "claim", t.form_args(), s.name) {
-        Ok(p) => p,
-        Err(st) => return finish(st, &base),
+    // the sign-in page: the account's email from the profile (its form function); the password and the sign-in are
+    // the user's, and the claim pages behind them are not mapped
+    let Some((_, fill)) = results_of(run, "form_fill").into_iter().next_back() else {
+        return ids.one("form_fill", json!({"stage": "login"}));
     };
+    let fill_pos = pos(run, fill);
     let reason = format!(
-        "The {} claim is filled in on eClaimsLine from your bookings, the refund emails, your profile and the card's charge: date of loss {}, amount USD {} ({}), reason \"{}\". Review it, then {} yourself; hand the browser back when the confirmation shows (or without submitting).",
+        "{OWN_STEP}: sign in to Card Claim Center (where eClaimsLine moved; your email is filled in) or create your account. Then the {} claim: date of loss {}, amount USD {} ({}), reason \"{}\" — {} yourself. Hand the browser back after signing in and I will go on with the claim form.",
         t.benefit,
         t.loss.map(iso).unwrap_or_else(|| "to fill in".into()),
         money(t.amount),
@@ -1745,71 +1771,38 @@ fn next_csr(s: &ClaimSpec, args: &Value, run: &[Value], ids: &Ids, m: &Machine) 
         t.reason,
         s.user_steps
     );
-    let back = match review_gate(run, ids, fill_pos, reason) {
-        Ok(p) => p,
-        Err(st) => return finish(st, &base),
+    let takeovers = results_of(run, "browser_request_takeover");
+    let back = match takeovers.iter().rfind(|(_, x)| pos(run, x) > fill_pos) {
+        None => return ids.one("browser_request_takeover", json!({"reason": reason})),
+        Some((_, x)) if handed_back(x) => pos(run, x),
+        Some(_) => return Step::Done(csr_result(s, &t, "waiting_on_user", m.today)),
     };
-    let reference = match reference_after(run, ids, back, s) {
-        Ok(r) => r,
-        Err(st) => return st,
+    // after the hand-back: the sign-in page still there (its password box) = not signed in
+    let read = results_of(run, "browser_read_elements")
+        .into_iter()
+        .find(|(_, x)| pos(run, x) > back);
+    let Some((_, read)) = read else {
+        return ids.one(
+            "browser_read_elements",
+            json!({"read": [{"name": "password", "sel": CCC_PASSWORD, "attr": "type"}]}),
+        );
     };
-    // the reminders: 7 days before the documents deadline, and a mail check every 10 days
-    let Some(loss) = t.loss else {
-        return Step::Done(csr_result(
-            s,
-            &t,
-            "handed_over",
-            reference.as_deref(),
-            false,
-            m.today,
-        ));
-    };
-    if results_of(run, "schedule_create").is_empty() {
-        let docs = loss + Duration::days(s.documents_days);
-        let claim_no = reference.clone().unwrap_or_else(|| "number pending".into());
-        let mut calls = vec![ids.call(
-            0,
-            "schedule_create",
-            json!({"name": format!("{} documents due {}", t.benefit, iso(docs)),
-                   "goal": format!("Remind me that the documents for my Chase Sapphire {} claim (loss date {}, claim {claim_no}) are due on eClaimsLine by {}: the physician statement, the itinerary, the card statement showing the charge and the supplier's refund statement. Check whether they were uploaded and notify me.", t.benefit, iso(loss), long(docs)),
-                   "kind": "cron", "spec": cron_at(docs - Duration::days(7))}),
-        )];
-        if m.today <= docs {
-            calls.push(ids.call(
-                1,
-                "schedule_create",
-                json!({"name": format!("{} claim check", t.benefit),
-                       "goal": format!("Search my mail (gmail_search) for any email from Card Benefit Services, eClaimsLine or Chase about my {} claim {claim_no} (loss date {}) and notify me of news; stop when the claim is paid or closed.", t.benefit, iso(loss)),
-                       "kind": "interval", "spec": "14400"}),
-            ));
-        }
-        return Step::Calls(calls);
+    if !super::confirm::element_values(read, "password").is_empty() {
+        return Step::Done(csr_result(s, &t, "waiting_on_user", m.today));
     }
-    let status = if reference.is_some() {
-        "submitted"
-    } else {
-        "handed_over"
+    // signed in: the claim pages have no form function — the browser-use skill fills them with these facts
+    let url = match get_str(&json_of(read), "url") {
+        u if u.is_empty() => s.start_url.to_string(),
+        u => u,
     };
-    Step::Done(csr_result(
-        s,
-        &t,
-        status,
-        reference.as_deref(),
-        true,
-        m.today,
-    ))
+    let mut v = csr_result(s, &t, "browser_use", m.today);
+    v["url"] = json!(url);
+    Step::Done(v)
 }
 
 /// The CSR claim's result: the benefit, the two dates, the amount and its arithmetic, the status, the documents, the
 /// reminders, the limits — and `hints`.
-fn csr_result(
-    s: &ClaimSpec,
-    t: &TripClaim,
-    status: &str,
-    reference: Option<&str>,
-    reminders: bool,
-    today: NaiveDate,
-) -> Value {
+fn csr_result(s: &ClaimSpec, t: &TripClaim, status: &str, today: NaiveDate) -> Value {
     let amount = format!("USD {}", money(t.amount));
     let mut must = vec![format!("{} claim on the {}", t.benefit, t.card_product)];
     // the facts the user must read: appended to the reply by code (agent/show.rs)
@@ -1847,31 +1840,15 @@ fn csr_result(
             "材料截止",
             &format!("{} (loss date + {} days)", long(d90), s.documents_days),
         ));
-        if reminders {
-            show.push(S::fact(
-                "Reminders set",
-                "已设提醒",
-                &format!(
-                    "{} (7 days before the documents deadline) and a mail check every 10 days until the claim is paid",
-                    long(d90 - Duration::days(7))
-                ),
-            ));
-        }
         dates = json!({"loss_date": iso(loss), "notify_by": iso(d20), "documents_by": iso(d90), "notice_window_closed": late});
     }
-    match (status, reference) {
-        (_, Some(r)) => {
-            show.push(S::reference("Claim number", "理赔编号", r));
-            must.push(
-                "you pressed Submit yourself on eClaimsLine (the assistant did not submit it)".into(),
-            );
-        }
-        ("handed_over", None) => show.push(S::fact(
+    if status == "waiting_on_user" {
+        show.push(S::fact(
             "Status",
             "状态",
-            "the claim is filled in on eClaimsLine and waiting for your Submit — nothing has been submitted for you",
-        )),
-        _ => {}
+            "Card Claim Center's sign-in is open in the browser tab (your email filled in): sign in or create your account, then ask me to continue — nothing has been filed",
+        ));
+        must.push("the sign-in is the user's; nothing was filed".into());
     }
     show.push(S::fact("Decides the claim", "审核方", s.decides));
     let doctor = if t.has_doctor_letter {
@@ -1888,7 +1865,7 @@ fn csr_result(
         "status": status, "claim": s.name, "benefit": t.benefit, "card": t.card_product,
         "amount": amount, "arithmetic": t.arithmetic(), "reason_filed": t.reason,
         "bookings": t.suppliers.iter().map(|(a, b)| json!({"supplier": a, "reference": b})).collect::<Vec<_>>(),
-        "trip": t.trip, "portal": s.start_url, "reference": reference,
+        "trip": t.trip, "portal": s.start_url,
         "documents": [doctor, "the e-ticket / itinerary", "the card statement showing the charge", supplier],
         "decides": s.decides,
         "excluded": "pre-existing conditions (treated in the 60 days before the booking), a change of plans, travel against medical advice, trips longer than 60 days",
@@ -2025,45 +2002,16 @@ fn next_sg_claim(
         Ok(p) => p,
         Err(st) => return finish(st, &base),
     };
-    // the certificate uploaded into the form's file input (#docs): a snapshot after the fill gives the page's elements
-    // their refs, the input's ref is read by its id
-    let uploaded = results_of(run, "browser_upload")
-        .last()
-        .is_some_and(|(_, m)| pos(run, m) > fill_pos);
-    if let (Some(path), false) = (saved_path(run), uploaded) {
-        let snap = results_of(run, "browser_snapshot")
-            .last()
-            .map(|(_, m)| pos(run, m))
-            .filter(|p| *p > fill_pos);
-        let Some(snap) = snap else {
-            return ids.one("browser_snapshot", json!({"max_chars": 6000}));
-        };
-        let read = results_of(run, "browser_read_elements")
-            .into_iter()
-            .find(|(a, m)| get_str(&a["read"][0], "name") == "docs" && pos(run, m) > snap);
-        let Some((_, read)) = read else {
-            return ids.one(
-                "browser_read_elements",
-                super::confirm::refs_args(&[("docs", CLAIM_DOCS_SEL)]),
-            );
-        };
-        if let Some(r) = super::confirm::first_value(read, "docs") {
-            return ids.one("browser_upload", json!({"ref": r, "path": path}));
-        }
-    }
-    let after = results_of(run, "browser_upload")
-        .last()
-        .map(|(_, m)| pos(run, m))
-        .unwrap_or(fill_pos)
-        .max(fill_pos);
+    // step 1 is filled; "next" checks the policy on FWD's server and opens the steps that are the user's (the bank
+    // account, the incident page with the delay certificate, Submit) — not mapped, handed over with the facts
+    let saved = saved_path(run);
     let reason = format!(
-        "The travel delay claim is filled in on FWD's form from your policy email, {}'s delay certificate, your profile and your passport (Vault): policy {}, {} on {} delayed {} ({} × {} h → {} {}){}. Check it, then {} yourself; hand the browser back when the confirmation shows (or without submitting).",
-        if d.airline.is_empty() { "the airline" } else { &d.airline },
+        "FWD's claim form, step 1, is filled in from your profile and the Vault (claimant, NRIC/FIN, mobile, email, policy {}). The claim: {} on {} delayed {} ({} × {} h → {} {}){}. Now {} yourself; hand the browser back when done (or without submitting).",
         d.policy_no, d.flight_no, d.incident_date, hours_text(d.minutes), d.blocks(), d.block_hours, s.currency, money(d.amount),
-        if uploaded || saved_path(run).is_none() { "" } else { "; attach the delay certificate from attachments/ if it is not on the form" },
+        match &saved { Some(p) => format!("; the airline's delay certificate is saved at {p}"), None => String::new() },
         s.user_steps
     );
-    let back = match review_gate(run, ids, after, reason) {
+    let back = match review_gate(run, ids, fill_pos, reason) {
         Ok(p) => p,
         Err(st) => return finish(st, &base),
     };
@@ -2101,7 +2049,7 @@ fn next_sg_claim(
             show.push(S::reference("Claim reference", "理赔编号", r));
             must.push("you pressed Submit yourself on FWD's claim form (the assistant did not submit it)".into());
         }
-        None => show.push(S::fact("Status", "状态", "the claim is filled in on FWD's online form (policy, your details, the passport from the Vault, the incident, the amount, the delay certificate) and waiting for your Submit — nothing has been submitted for you")),
+        None => show.push(S::fact("Status", "状态", "step 1 of FWD's online claim is filled in (claimant, NRIC/FIN from the Vault, mobile, email, policy number); next, the bank account, the incident with the delay certificate and Submit are yours — nothing has been submitted for you")),
     }
     show.push(S::fact(
         "Reminders set",
@@ -2123,7 +2071,7 @@ fn next_sg_claim(
         s,
         &d,
         status,
-        json!({"reference": reference, "portal": s.start_url, "certificate_attached": uploaded,
+        json!({"reference": reference, "portal": s.start_url, "certificate_saved": saved.is_some(),
                "documents": [if att.is_some() { "the airline's delay certificate (have, from the airline's email)" } else { "the airline's delay certificate (ask the airline for it)" },
                              "the boarding pass or e-ticket if asked"],
                "show": show, "hints": must}),
@@ -2150,14 +2098,12 @@ fn next_hk_claim(
             );
         }
     }
-    // the claim form: the PDF the page links; else the link on FWD's site (a known page), clicked, and the download
-    let navs = results_of(run, "browser_navigate");
-    let pdf_path = navs
+    // the claim form: bolttech's fillable PDF at its fixed address on FWD's site — opening it downloads it (2026-11-02);
+    // the download's path from the navigation's result, else the browser's downloads
+    let pdf_path = results_of(run, "browser_navigate")
         .iter()
-        .chain(results_of(run, "browser_click").iter())
         .find_map(|(_, m)| {
-            let v = json_of(m);
-            let p = get_str(&v["pdf"], "path");
+            let p = get_str(&json_of(m)["pdf"], "path");
             (!p.is_empty()).then_some(p)
         })
         .or_else(|| {
@@ -2172,46 +2118,19 @@ fn next_hk_claim(
         });
     let form_path = match pdf_path {
         Some(p) => p,
+        None if !opened(run, s.host, "/files/") => {
+            return ids.one("browser_navigate", json!({"url": s.start_url}))
+        }
+        None if results_of(run, "browser_downloads").is_empty() => {
+            return ids.one("browser_downloads", json!({}))
+        }
         None => {
-            if !opened(run, s.host, "/files/") {
-                return ids.one("browser_navigate", json!({"url": s.start_url}));
-            }
-            if !opened(run, s.host, "fwd.com.hk/") || navs.len() < 2 {
-                return ids.one(
-                    "browser_navigate",
-                    json!({"url": "https://www.fwd.com.hk/"}),
-                );
-            }
-            // the claim form's link on the site's page by its fixed address (its ref, given by the page's snapshot)
-            let nav_pos = navs.last().map(|(_, m)| pos(run, m)).unwrap_or(0);
-            let read = results_of(run, "browser_read_elements")
-                .into_iter()
-                .find(|(a, m)| {
-                    get_str(&a["read"][0], "name") == "claim_form" && pos(run, m) > nav_pos
-                });
-            let Some((_, read)) = read else {
-                return ids.one(
-                    "browser_read_elements",
-                    super::confirm::refs_args(&[("claim_form", HK_CLAIM_FORM_SEL)]),
-                );
-            };
-            let link = super::confirm::first_value(read, "claim_form");
-            match (
-                link,
-                results_of(run, "browser_click").is_empty(),
-                results_of(run, "browser_downloads").is_empty(),
-            ) {
-                (Some(r), true, _) => return ids.one("browser_click", json!({"ref": r})),
-                (Some(_), false, true) => return ids.one("browser_downloads", json!({})),
-                _ => {
-                    return Step::Done(delay_result(
-                        s,
-                        &d,
-                        "error",
-                        json!({"show": [S::fact("Claim form not opened", "理赔表未能打开", "bolttech's Travel Insurance Claim Form (the PDF on FWD Hong Kong's site) could not be opened or downloaded: upload the form to this chat and I will fill it in")]}),
-                    ))
-                }
-            }
+            return Step::Done(delay_result(
+                s,
+                &d,
+                "error",
+                json!({"show": [S::fact("Claim form not opened", "理赔表未能打开", "bolttech's Travel Insurance Claim Form (the PDF on FWD Hong Kong's site) could not be downloaded: upload the form to this chat and I will fill it in")]}),
+            ))
         }
     };
     let output = format!(
@@ -2239,7 +2158,9 @@ fn next_hk_claim(
             json!({"path": filled, "note": "bolttech's travel claim form, filled in — add your HKID number, bank account, signature and date before sending"}),
         );
     }
-    if results_of(run, "gmail_create_draft").is_empty() {
+    // the draft and the mail check need a connected mailbox (`mailbox` in the machine's profile)
+    let mailbox = !get_str(m.profile, "mailbox").trim().is_empty();
+    if mailbox && results_of(run, "gmail_create_draft").is_empty() {
         let mut atts = vec![filled.clone()];
         if !letter.is_empty() {
             atts.push(letter.clone());
@@ -2261,7 +2182,7 @@ fn next_hk_claim(
                    "body": body, "attachments": atts}),
         );
     }
-    if results_of(run, "schedule_create").is_empty() {
+    if mailbox && results_of(run, "schedule_create").is_empty() {
         return ids.one(
             "schedule_create",
             json!({"name": format!("bolttech claim check {}", d.policy_no),
@@ -2274,26 +2195,59 @@ fn next_hk_claim(
     } else {
         d.airline.clone()
     };
+    // the draft needs a mailbox: without one (an error result) the user sends the form themselves
+    let drafted = results_of(run, "gmail_create_draft")
+        .last()
+        .is_some_and(|(_, m)| !super::bagtrace::failed(m));
+    let email = if drafted {
+        S::fact(
+            "Email draft (not sent)",
+            "邮件草稿（未发送）",
+            &format!(
+                "to {} in your Drafts{} — sign the form, replace it in the draft and send it",
+                s.claims_email,
+                if letter.is_empty() {
+                    " with the form attached".to_string()
+                } else {
+                    format!(" with the form and {airline}'s delay letter attached")
+                }
+            ),
+        )
+    } else {
+        S::fact("Send it to", "发送到", &format!("{} — no mailbox is connected, so no draft was made: sign the form and email it with the airline's delay letter", s.claims_email))
+    };
+    let mut show = vec![
+        S::fact("Handled by", "处理方", s.decides),
+        S::file("Claim form (filled in)", "理赔表（已填）", "", &filled),
+        S::fact(
+            "You still add",
+            "你还需填写",
+            "your HKID card number, the bank account for the payment, your signature and the date",
+        ),
+        email,
+    ];
+    if results_of(run, "schedule_create")
+        .last()
+        .is_some_and(|(_, m)| !super::bagtrace::failed(m))
+    {
+        show.push(S::fact(
+            "Reminder set",
+            "已设提醒",
+            "a weekly mail check for the insurer's reply",
+        ));
+    }
     Step::Done(delay_result(
         s,
         &d,
-        "drafted",
-        json!({"form": filled, "draft_to": s.claims_email, "letter_attached": !letter.is_empty(),
-        "show": [
-            S::fact("Handled by", "处理方", s.decides),
-            S::file("Claim form (filled in)", "理赔表（已填）", "", &filled),
-            S::fact("You still add", "你还需填写", "your HKID card number, the bank account for the payment, your signature and the date"),
-            S::fact("Email draft (not sent)", "邮件草稿（未发送）", &format!("to {} in your Drafts{} — sign the form, replace it in the draft and send it",
-                    s.claims_email, if letter.is_empty() { " with the form attached".to_string() } else { format!(" with the form and {airline}'s delay letter attached") })),
-            S::fact("Reminder set", "已设提醒", "a weekly mail check for the insurer's reply"),
-        ],
-        "hints": []}),
+        if drafted { "drafted" } else { "form_filled" },
+        json!({"form": filled, "draft_to": s.claims_email, "drafted": drafted, "letter_attached": !letter.is_empty(),
+        "show": show, "hints": []}),
     ))
 }
 
 // ---------------------------------------------------------------- the FWD Singapore purchase
 
-fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
+fn next_buy(args: &Value, run: &[Value], ids: &Ids, m: &Machine) -> Step {
     let s = spec(Flow::FwdSgBuy);
     let dest = s_arg(args, "destination");
     let (dep, ret) = (s_arg(args, "depart"), s_arg(args, "return"));
@@ -2302,27 +2256,20 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
     if !opened(run, s.host, "/travel-insurance/online-quote") {
         return ids.one("browser_navigate", json!({"url": s.start_url}));
     }
-    let quote = json!({"destination": dest, "depart": dep, "return": ret, "travellers": travellers.to_string()});
+    let quote = json!({"destination": dest, "depart": dep, "return": ret, "travellers": travellers.to_string(),
+                       "today": iso(m.today)});
     let base = json!({"insurer": s.decides, "trip": trip});
     let quote_pos = match fill_gate(run, ids, "quote", quote, s.name) {
         Ok(p) => p,
         Err(st) => return finish(st, &base),
     };
-    // the plans the page lists, read from its table's cells after the quote
+    // the plans the summary lists, read from its table's elements after the quote
     let (plans, plan_pos) = match results_of(run, "browser_read_elements")
         .iter()
         .find(|(_, x)| pos(run, x) > quote_pos)
     {
-        Some((_, x)) => (
-            plans_in(&super::confirm::element_rows(x, "plans")),
-            pos(run, x),
-        ),
-        None => {
-            return ids.one(
-                "browser_read_elements",
-                json!({"read": [{"name": "plans", "sel": PLAN_ROWS, "cells": true}]}),
-            )
-        }
+        Some((_, x)) => (plans_of(x), pos(run, x)),
+        None => return ids.one("browser_read_elements", plans_read_args()),
     };
     let minimum = match (s_arg(args, "cover"), n_arg(args, "cover_at_least")) {
         (c, Some(x)) if !c.is_empty() => Some((c, x)),
@@ -2336,15 +2283,14 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
         );
     };
     let listed: Vec<String> = plans.iter().map(|p| p.summary(s.currency)).collect();
-    let pick_line = format!(
-        "chosen: {}, {} {} — {rule}",
-        picked.name,
-        s.currency,
-        money(picked.premium)
-    );
-    let mut must = vec![
+    let must = vec![
         format!("FWD Singapore travel insurance for {trip}"),
-        pick_line,
+        format!(
+            "chosen: {}, {} {} — {rule}",
+            picked.name,
+            s.currency,
+            money(picked.premium)
+        ),
     ];
     // the facts the user must read: appended to the reply by code (agent/show.rs)
     let mut show = vec![
@@ -2359,169 +2305,58 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
     ];
     let mut result = json!({"insurer": s.decides, "trip": trip, "plans": listed, "picked": picked.name,
         "premium": format!("{} {}", s.currency, money(picked.premium)), "rule": rule, "quote_page": s.start_url});
-    if results_of(run, "present_choices").is_empty() {
+    let choices = results_of(run, "present_choices");
+    let Some((_, shown)) = choices.last() else {
         let options: Vec<Value> = plans
             .iter()
             .map(|p| {
                 json!({"label": p.name, "source_url": s.start_url,
-                       "details": p.cover.iter().map(|(_, v)| format!("{} {}", s.currency, whole(*v))).collect::<Vec<_>>(),
+                       "details": p.cover.iter().map(|(c, v)| format!("{c} {} {}", s.currency, whole(*v))).collect::<Vec<_>>(),
                        "note": if p.name == picked.name { format!("picked: {rule}") } else { String::new() }})
             })
             .collect();
         return ids.one(
             "present_choices",
-            json!({"question": format!("FWD Singapore plans for {trip}: premium, then the covers in the page's order ({})",
-                                       picked.cover.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>().join(", ")),
+            json!({"question": format!("FWD Singapore plans for {trip}: the premium and the covers"),
                    "kind": "comparison", "options": options, "picked": picked.name}),
         );
-    }
+    };
     if s_arg(args, "action") == "compare" {
         result["status"] = json!("shown");
         result["show"] = json!(show);
         result["hints"] = json!(must);
         return Step::Done(result);
     }
-    // the plan's Select link, then the application
-    let opened_plan = results_of(run, "browser_navigate")
-        .iter()
-        .any(|(a, x)| sget(a, "url") == picked.link && pos(run, x) > plan_pos);
-    if !opened_plan {
-        return ids.one("browser_navigate", json!({"url": picked.link}));
-    }
-    let base = {
-        let mut b = result.clone();
-        b["show"] = json!(show);
-        b["hints"] = json!(must);
-        b
-    };
-    let apply_pos = match fill_gate(run, ids, "apply", json!({"plan": picked.name}), s.name) {
-        Ok(p) => p,
+    // the plan's button on the summary; FWD then asks its eligibility statements — the user's own answers
+    let shown_pos = pos(run, shown).max(plan_pos);
+    let pick_pos = match fill_gate(run, ids, "pick", json!({"plan": picked.name}), s.name) {
+        Ok(p) => p.max(shown_pos),
         Err(st) => return finish(st, &base),
     };
-    // the card: the Vault's list once, the card the user named (the tool's argument)
-    let vaults = results_of(run, "vault_list");
-    let Some((_, vault)) = vaults.last() else {
-        return ids.one("vault_list", json!({}));
-    };
-    let cards = vault_cards(&content_of(vault));
-    let card = pick_card(&cards, &[s_arg(args, "card")]);
-    let card_ok = card.is_some_and(|c| !c.name_only);
-    let item_name = format!(
-        "{} travel insurance, {}, {} to {}, {} traveller(s)",
-        picked.name, dest, dep, ret, travellers
+    let status_line = format!(
+        "the {} plan is chosen on FWD's page; FWD's eligibility statements, the add-ons, your details and Pay are yours — nothing has been paid",
+        picked.name
     );
-    let mut secrets_pos = apply_pos;
-    if let (Some(c), true) = (card, card_ok) {
-        let purchases = results_of(run, "purchase_confirm");
-        let Some((_, pm)) = purchases.last() else {
-            return ids.one(
-                "purchase_confirm",
-                json!({"site": s.host, "items": [{"name": item_name, "qty": 1, "price": picked.premium}], "shipping": 0,
-                       "total": picked.premium, "currency": s.currency, "delivery": "policy documents by email",
-                       "card_item_id": c.id}),
-            );
-        };
-        let pc = content_of(pm);
-        if pc.starts_with("DENIED") || pc.to_lowercase().contains("\"status\": \"denied\"") {
-            show.push(S::fact(
-                "Not bought",
-                "未购买",
-                "you declined the payment approval",
-            ));
-            result["status"] = json!("not_confirmed");
-            result["show"] = json!(show);
-            result["hints"] = json!(must);
-            return Step::Done(result);
-        }
-        let ppos = pos(run, pm);
-        // the card fields' refs after the approval: a snapshot gives the page's elements their refs, the fields' refs
-        // are read by their fixed ids, then one secret fill per field
-        let snap = results_of(run, "browser_snapshot")
-            .iter()
-            .map(|(_, x)| pos(run, x))
-            .find(|p| *p > ppos);
-        let Some(snap) = snap else {
-            return ids.one("browser_snapshot", json!({"max_chars": 6000}));
-        };
-        let refs = results_of(run, "browser_read_elements")
-            .into_iter()
-            .find(|(a, m)| {
-                get_str(&a["read"][0], "name").starts_with("card_") && pos(run, m) > snap
-            });
-        let Some((_, refs)) = refs else {
-            let names: Vec<(String, &str)> = CARD_FIELDS
-                .iter()
-                .map(|(f, sel)| (format!("card_{f}"), *sel))
-                .collect();
-            let items: Vec<(&str, &str)> = names.iter().map(|(n, s)| (n.as_str(), *s)).collect();
-            return ids.one("browser_read_elements", super::confirm::refs_args(&items));
-        };
-        let done: Vec<String> = results_of(run, "browser_fill_secret")
-            .iter()
-            .filter(|(_, x)| pos(run, x) > ppos)
-            .map(|(a, _)| sget(a, "field"))
-            .collect();
-        for (field, _) in CARD_FIELDS {
-            if done.iter().any(|d| d == field) {
-                continue;
-            }
-            if let Some(r) = super::confirm::first_value(refs, &format!("card_{field}")) {
-                return ids.one(
-                    "browser_fill_secret",
-                    json!({"ref": r, "item_id": c.id, "field": field}),
-                );
-            }
-        }
-        secrets_pos = results_of(run, "browser_fill_secret")
-            .last()
-            .map(|(_, x)| pos(run, x))
-            .unwrap_or(ppos)
-            .max(ppos);
-    }
-    let card_note = match card {
-        Some(c) if card_ok => format!(" and your {} (Vault)", c.label),
-        Some(c) => format!(". Your {} in the Vault has no number, expiry or CVC (added by its name only): type the card on the page yourself, or add the details in Memory → Vault first", c.label),
-        None => ". There is no card in your Vault: type the card on the page yourself".to_string(),
-    };
-    let reason = format!(
-        "The {} plan ({} {}) application is filled in from your booking, profile and passport (Vault){}. The health and declaration questions are yours: {}; hand the browser back when the confirmation shows (or without paying).",
-        picked.name, s.currency, money(picked.premium), card_note, s.user_steps
-    );
-    let card_line = match card {
-        Some(c) if card_ok => format!("the application is filled in (name, date of birth, contact, passport and your {} from the Vault); the declaration and Pay now are yours — nothing has been paid", c.label),
-        Some(c) => format!("the application is filled in (name, date of birth, contact, passport from the Vault); your {} is in the Vault by its name only — its number, expiry and CVC are unknown, so nothing was charged: type the card on the page yourself, or add the details in Memory → Vault and ask me again; the declaration and Pay now are yours", c.label),
-        None => "the application is filled in (name, date of birth, contact, passport from the Vault); there is no card in your Vault: type the card on the page yourself; the declaration and Pay now are yours — nothing has been paid".into(),
-    };
     let base = {
         let mut b = result.clone();
         let mut ss = show.clone();
-        ss.push(S::fact("Status", "状态", &card_line));
+        ss.push(S::fact("Status", "状态", &status_line));
         b["show"] = json!(ss);
         b["hints"] = json!(must);
         b
     };
-    let back = match review_gate(run, ids, secrets_pos, reason) {
-        Ok(p) => p,
-        Err(st) => return finish(st, &base),
-    };
-    let reference = match reference_after(run, ids, back, s) {
-        Ok(r) => r,
-        Err(st) => return st,
-    };
-    match reference {
-        Some(p) => {
-            show.push(S::reference("Policy number", "保单号", &p));
-            must.push("bought — you paid on FWD's page; the documents come by email".into());
-            result["status"] = json!("bought");
-            result["policy_no"] = json!(p);
-        }
-        None => {
-            show.push(S::fact("Status", "状态", &card_line));
-            result["status"] = json!("handed_over");
-        }
+    let reason = format!(
+        "The {} plan ({} {}) is chosen on FWD's quote. FWD now asks you to confirm its eligibility statements (a Singapore resident with an NRIC or FIN, never refused travel insurance, nothing material withheld): only you can answer them. Then {}; hand the browser back when done (or without paying).",
+        picked.name,
+        s.currency,
+        money(picked.premium),
+        s.user_steps
+    );
+    if let Err(st) = review_gate(run, ids, pick_pos, reason) {
+        return finish(st, &base);
     }
-    result["card"] = json!(card.map(|c| c.label.clone()));
-    result["card_complete"] = json!(card_ok);
+    show.push(S::fact("Status", "状态", &status_line));
+    result["status"] = json!("handed_over");
     result["show"] = json!(show);
     result["hints"] = json!(must);
     Step::Done(result)
@@ -2532,19 +2367,62 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids) -> Step {
 fn next_bag(args: &Value, run: &[Value], ids: &Ids) -> Step {
     use super::bagtrace;
     let file_ref = s_arg(args, "file_ref");
-    let fail = |why: &str| {
+    let airline = bagtrace::airline_of(&file_ref);
+    let flight_date = parse_iso(&s_arg(args, "flight_date"));
+    let lost_after = flight_date.map(|d| {
+        S::fact(
+            "Treated as lost after",
+            "视为遗失的日期",
+            &format!(
+                "{} (21 days after {}): the lost-bag claim starts then",
+                long(d + Duration::days(21)),
+                long(d)
+            ),
+        )
+    });
+    let watch = b_arg(args, "watch");
+    let done = |status: &str, mut show: Vec<Value>, page: &str| {
+        show.extend(lost_after.clone());
         Step::Done(
-            json!({"status": "error", "file_ref": file_ref, "tracing_page": bagtrace::TRACE_URL,
-            "show": [S::fact(&format!("WorldTracer not checked for file {file_ref}"), &format!("未能在 WorldTracer 查询文件 {file_ref}"), why),
-                     S::link("Track it yourself", "自己查询", "WorldTracer", bagtrace::TRACE_URL)],
-            "hints": ["or track it in the airline's app"]}),
+            json!({"status": status, "file_ref": file_ref, "airline": airline, "watch": watch,
+            "lost_after": flight_date.map(|d| iso(d + Duration::days(21))), "tracing_page": page,
+            "show": show, "hints": []}),
+        )
+    };
+    // the airline's page on WorldTracer's passenger site; an airline not on it is said so, nothing opened
+    let Some(page) = bagtrace::manage_url(&airline) else {
+        return done(
+            "not_on_worldtracer",
+            vec![
+                S::reference("WorldTracer file", "WorldTracer 文件号", &file_ref),
+                S::fact(
+                    "Bag status",
+                    "行李状态",
+                    &format!("not looked up: the airline {airline} does not track bags on WorldTracer's passenger site (mybag.aero) — use the airline's own baggage page or app with the file reference"),
+                ),
+            ],
+            bagtrace::TRACE_URL,
+        );
+    };
+    let fail = |why: &str| {
+        done(
+            "error",
+            vec![
+                S::fact(
+                    &format!("WorldTracer not checked for file {file_ref}"),
+                    &format!("未能在 WorldTracer 查询文件 {file_ref}"),
+                    why,
+                ),
+                S::link("Track it yourself", "自己查询", "WorldTracer", &page),
+            ],
+            &page,
         )
     };
     let Some((_, nav)) = results_of(run, "browser_navigate").into_iter().next() else {
-        return ids.one("browser_navigate", json!({"url": bagtrace::TRACE_URL}));
+        return ids.one("browser_navigate", json!({"url": page}));
     };
     if bagtrace::failed(nav) {
-        return fail("the tracing page did not open");
+        return fail("the airline's baggage page did not open");
     }
     let Some((_, fill)) = results_of(run, "form_fill").into_iter().next() else {
         let mut a = json!({"file_ref": file_ref});
@@ -2564,49 +2442,35 @@ fn next_bag(args: &Value, run: &[Value], ids: &Ids) -> Step {
         return ids.one("browser_read_elements", bagtrace::read_args());
     };
     let trace = bagtrace::trace_of(read, &file_ref);
-    let flight_date = parse_iso(&s_arg(args, "flight_date"))
-        .or_else(|| trace.as_ref().and_then(|t| t.flight_date));
-    let watch = b_arg(args, "watch");
     if watch && results_of(run, "schedule_create").is_empty() {
         return ids.one(
             "schedule_create",
             json!({"name": format!("Bag {file_ref} check"),
-                   "goal": format!("Check the status of my delayed bag on WorldTracer (file {file_ref}) and notify me when it changes; stop when the bag is delivered or the claim is closed."),
+                   "goal": format!("Check the status of my delayed bag on WorldTracer (file {file_ref}, {page}) and notify me when it changes; stop when the bag is delivered or the claim is closed."),
                    "kind": "interval", "spec": "720"}),
         );
     }
     let Some(t) = trace else {
-        return fail("the result page showed no status");
+        return fail("WorldTracer gave no answer to the lookup (it may have asked for a check such as a CAPTCHA)");
     };
-    let must: Vec<String> = Vec::new();
-    // the facts the user must read: appended to the reply by code (agent/show.rs)
     let mut show = vec![
         S::reference("WorldTracer file", "WorldTracer 文件号", &file_ref),
         S::fact(
             "Bag status",
             "行李状态",
-            &format!(
-                "{}{}",
-                t.status.trim_end_matches('.'),
-                if t.last_update.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — last update {}", t.last_update)
-                }
-            ),
+            &if t.found {
+                "WorldTracer has the report: open it for the bag's latest status".to_string()
+            } else {
+                format!("WorldTracer says: {}", t.status.trim_end_matches('.'))
+            },
+        ),
+        S::link(
+            "Your report on WorldTracer",
+            "WorldTracer 上的报告",
+            "mybag.aero",
+            &page,
         ),
     ];
-    if let Some(d) = flight_date {
-        show.push(S::fact(
-            "Treated as lost after",
-            "视为遗失的日期",
-            &format!(
-                "{} (21 days after {}): the lost-bag claim starts then",
-                long(d + Duration::days(21)),
-                long(d)
-            ),
-        ));
-    }
     if watch {
         show.push(S::fact(
             "Bag check",
@@ -2614,12 +2478,7 @@ fn next_bag(args: &Value, run: &[Value], ids: &Ids) -> Step {
             "twice a day; you are told when its status changes",
         ));
     }
-    let status = if t.found { "traced" } else { "no_file" };
-    Step::Done(
-        json!({"status": status, "file_ref": file_ref, "bag_status": t.status, "last_update": t.last_update,
-        "lost_after": flight_date.map(|d| iso(d + Duration::days(21))), "watch": watch,
-        "tracing_page": bagtrace::TRACE_URL, "show": show, "hints": must}),
-    )
+    done(if t.found { "traced" } else { "no_file" }, show, &page)
 }
 
 #[cfg(test)]

@@ -8,6 +8,8 @@
 #   bash tests/run_in_docker.sh real            # the real-model suites (REAL_SUITES below; billed), with the env file
 #                                                 OMUSE_E2E_ENV_FILE (default ~/.config/omuse/e2e.env)
 #   bash tests/run_in_docker.sh realdata        # only the e2e suites that run on the real services now (REAL_DATA_SUITES)
+#   bash tests/run_in_docker.sh realsites       # the bookings and orders on the real booking sites and shops (REAL_SITES),
+#                                                 always one at a time (-j 1)
 # OMUSE_IMAGE picks the image (default: omuse-test, built from Dockerfile.test when missing). Exit code 1 if a suite fails.
 # docker_browser_e2e.py is not part of this: it needs a real model (see its docstring).
 set -u
@@ -20,10 +22,19 @@ travel_ask_real stream_real bots_real "
 # the other e2e suites: the app with the real model and the real image / video provider, nothing outside faked
 REAL_APP_SUITES="assistant_real automations_real memory_real chat_real docs_real chart_real media_real attach_media_real \
 travel_receipts_real"
-# skeletons being rebuilt on the official sites (each has a "TODO real URL:" line); not in `real` until they are
-REAL_PENDING_SUITES="arrival_real arrival_cards_real arrival_cards2_real arrival_cards3_real arrival_cards4_real \
-arrival_address_real arrival_address2_real insurance_real insurance_hk_real claims_real cards_claim_real \
-cards_interruption_real cards_pay_real"
+# REAL_SITES: bookings and orders on the real booking sites and shops — code searches and picks, opens the real booking
+# page and hands it to browser-use, which fills it with the profile's fake data and hands over at the first step that is
+# the user's (sign-in, CAPTCHA, Pay); no card in the Vault, nothing paid. Run one at a time (`realsites` forces -j 1):
+# a real site sees one session at a time, never a burst.
+# The arrival cards (arrival_*_real) are here too: each opens the official government site, code fills what its form
+# function maps and hands over at the first user step (Cloudflare check, sign-in, passport photo, emailed code, Submit);
+# the Taiwan and UK ETA suites connect the test inbox (OMUSE_E2E_IMAP_*) to read the emailed code. Not in `real`: a
+# government site sees these runs only when `realsites` is asked for, never on every gate
+# The insurance, claims, baggage and departure-tax suites too: FWD Singapore's quote and claim, bolttech's PDF, Card
+# Claim Center's sign-in, WorldTracer's mybag.aero and the APDT platform, each stopped at the first user step.
+REAL_SITES="travel_book_real shop_real arrival_real arrival_cards_real arrival_cards2_real arrival_cards3_real \
+arrival_cards4_real arrival_address_real arrival_address2_real insurance_real insurance_hk_real claims_real \
+cards_claim_real cards_interruption_real apdt_real"
 REAL_SUITES="$REAL_DATA_SUITES $REAL_APP_SUITES"
 
 # bash reads a script as it runs: a copy keeps a run going while the file is edited (another suite added to the lists)
@@ -36,9 +47,9 @@ if [ "${1:-}" = "-j" ]; then
   # summary; e.g. `bash tests/run_in_docker.sh -j 4 real`
   JOBS="$2"; shift 2
   cd "$OMUSE_RUNNER_COPY"
-  if [ "$*" = real ] || [ "$*" = realdata ]; then
+  if [ "$*" = real ] || [ "$*" = realdata ] || [ "$*" = realsites ]; then
     export OMUSE_E2E_ENV_FILE="${OMUSE_E2E_ENV_FILE:-$HOME/.config/omuse/e2e.env}"
-    if [ "$*" = real ]; then ALL="$REAL_SUITES"; else ALL="$REAL_DATA_SUITES"; fi
+    case "$*" in real) ALL="$REAL_SUITES" ;; realdata) ALL="$REAL_DATA_SUITES" ;; *) ALL="$REAL_SITES"; JOBS=1 ;; esac
   elif [ $# -gt 0 ]; then
     ALL="$*"
   else
@@ -66,7 +77,7 @@ if [ "${1:-}" = "-j" ]; then
 fi
 if [ "${1:-}" != "--inside" ]; then
   cd "$OMUSE_RUNNER_COPY"
-  if { [ "${1:-}" = real ] || [ "${1:-}" = realdata ]; } && [ -z "${OMUSE_E2E_ENV_FILE:-}" ]; then
+  if { [ "${1:-}" = real ] || [ "${1:-}" = realdata ] || [ "${1:-}" = realsites ]; } && [ -z "${OMUSE_E2E_ENV_FILE:-}" ]; then
     OMUSE_E2E_ENV_FILE="$HOME/.config/omuse/e2e.env"
     [ -f "$OMUSE_E2E_ENV_FILE" ] || { echo "real: needs OMUSE_E2E_ENV_FILE (the model endpoint, key and names)"; exit 1; }
   fi
@@ -98,9 +109,9 @@ export PYTHONPATH=/src
 # the suites on the app's timezone (tests/run_local.sh: Asia/Singapore): they say the same "today" as the app
 export TZ=Asia/Singapore
 
-if [ "$*" = real ] || [ "$*" = realdata ]; then
+if [ "$*" = real ] || [ "$*" = realdata ] || [ "$*" = realsites ]; then
   [ -n "${OMUSE_E2E_REAL:-}" ] || { echo "real: OMUSE_E2E_REAL is not set (pass OMUSE_E2E_ENV_FILE)"; exit 1; }
-  if [ "$*" = real ]; then SUITES="$REAL_SUITES"; else SUITES="$REAL_DATA_SUITES"; fi
+  case "$*" in real) SUITES="$REAL_SUITES" ;; realdata) SUITES="$REAL_DATA_SUITES" ;; *) SUITES="$REAL_SITES" ;; esac
 elif [ $# -gt 0 ]; then
   SUITES="$*"
 else

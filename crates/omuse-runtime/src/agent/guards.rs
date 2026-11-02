@@ -265,6 +265,27 @@ pub fn browser_use_active(transcript: &[Value]) -> bool {
 
 /// A call made by a code machine (the arrival cards, the claims, APDT, booking): its fills are code's, with fixed
 /// ids, never the model's.
+/// A `browser_fill_form` call the model wrote that carries a page script (`op: js`): refused — the scripts are form
+/// functions' constants (`crate::forms::Script`), run only in plans code built (a code machine's call, or `form_fill`
+/// whose plan code computes).
+pub fn model_script_guard(call: &ToolCall) -> Option<String> {
+    if call.name != "browser_fill_form" || code_call(call) {
+        return None;
+    }
+    let scripted = call
+        .args
+        .get("fills")
+        .and_then(Value::as_array)
+        .is_some_and(|f| {
+            f.iter()
+                .any(|o| get_str(o, "op") == "js" || o.get("src").is_some())
+        });
+    scripted.then(|| {
+        "ERROR: [code_only] a page script (op js) runs only in a form function's plan, never in a call written here."
+            .to_string()
+    })
+}
+
 pub fn code_call(call: &ToolCall) -> bool {
     [
         "drv_",
@@ -771,9 +792,13 @@ pub fn handover_reason(transcript: &[Value], generic: &str) -> String {
         .flat_map(tool_calls)
         .map(|tc| (get_str(tc, "id"), stored_call(tc).0))
         .collect();
+    // the page may be anywhere between the booking link and the payment step (a browser-use run whose model stopped
+    // early: travel_book_real 2026-11-02, "The checkout is filled in" said over a hotel's listings page with nothing
+    // typed), so the reason says only what is certain
     if purchase_approved(transcript, &calls) {
-        "The checkout is filled in with the order you approved. Review it and place the order yourself — the final \
-place-order / pay click is yours; hand the browser back when it is done."
+        "The booking / checkout page of the order you approved is open. Check what is filled in, complete anything \
+still empty and place the order yourself — the final place-order / pay click is yours; hand the browser back when it \
+is done."
             .to_string()
     } else {
         generic.to_string()
@@ -2124,5 +2149,38 @@ mod tests {
         // a failed search holds no results; a mail search is not a listing
         assert_eq!(ask_before_listing(&[ev("flights_search", false)]), None);
         assert_eq!(ask_before_listing(&[ev("gmail_search", true)]), None);
+    }
+}
+
+#[cfg(test)]
+mod script_tests {
+    use super::*;
+
+    fn call(id: &str, name: &str, args: Value) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            args,
+        }
+    }
+
+    #[test]
+    fn a_page_script_runs_only_in_a_plan_code_built() {
+        let scripted = json!({"fills": [{"op": "js", "script": "mat_select", "src": "async (sel, nth, args) => {}"}]});
+        // the model's own call: refused
+        assert!(
+            model_script_guard(&call("call_1", "browser_fill_form", scripted.clone()))
+                .is_some_and(|e| e.contains("code_only"))
+        );
+        // a machine's call (code built it): runs
+        assert!(model_script_guard(&call("drv_3", "browser_fill_form", scripted)).is_none());
+        // a plan without a script, or another tool: not this guard's
+        assert!(model_script_guard(&call(
+            "call_2",
+            "browser_fill_form",
+            json!({"fills": [{"op": "text", "sel": "#a", "value": "x"}]})
+        ))
+        .is_none());
+        assert!(model_script_guard(&call("call_3", "form_fill", json!({}))).is_none());
     }
 }

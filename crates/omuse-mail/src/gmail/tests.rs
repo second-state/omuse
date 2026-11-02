@@ -806,3 +806,39 @@ fn crc_and_ids() {
     assert_eq!(crc32(b"hello"), 0x3610a686);
     assert!(GEN_ID.is_match("x0123abcd-42") && !GEN_ID.is_match("q-1"));
 }
+
+/// The email verification step's read (`code_mail`): the newest matching message dated after the press, with its body
+/// NOT redacted (the security mail an agent's read withholds) — and nothing when it came before the press.
+#[tokio::test]
+async fn a_verification_mail_is_read_whole_only_after_the_press() {
+    let log = new_log();
+    let l2 = log.clone();
+    let mut g = Gmail::with_gmail_defaults("lucas@x.com", "abcd abcd abcd abcd").with_dialer(
+        dialer(move || {
+            let mut inner = fake(l2.clone(), true);
+            Box::new(move |verb: &str, args: &str, lit: Option<Vec<u8>>| {
+                if verb == "UID FETCH" && args.contains("BODY.PEEK[]") {
+                    let raw = [HDR2, b"Your code is 123456\r\n".as_slice()].concat();
+                    return Reply::ok(fetch_line(2, &[("UID 102 BODY[]", &raw)]));
+                }
+                inner(verb, args, lit)
+            }) as Handler
+        }),
+    );
+    // Tue, 22 Sep 2026 10:00 +0800 = 02:00 UTC
+    let before = mime::date_key("Tue, 22 Sep 2026 01:59:00 +0000");
+    let m = g
+        .code_mail("from:bank.com newer_than:1d", before)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(m["subject"], "Your verification code");
+    assert!(vs(&m, "body").contains("123456"), "{m}");
+    // a press after the mail's date: the mail is an old one, not the code just sent
+    let after = mime::date_key("Tue, 22 Sep 2026 02:01:00 +0000");
+    assert!(g
+        .code_mail("from:bank.com newer_than:1d", after)
+        .await
+        .unwrap()
+        .is_none());
+}

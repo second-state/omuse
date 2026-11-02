@@ -238,6 +238,7 @@ pub fn profile_alias(name: &str) -> String {
         "home_address" | "address" => "address_home",
         "work_address" | "office_address" => "address_work",
         "citizenship" | "country_of_citizenship" => "nationality",
+        "place_of_birth" | "country_of_birth" | "birth_country" | "birth_place" => "birthplace",
         "employer" => "company",
         "occupation" | "title" | "position" => "job_title",
         _ => return name.trim().to_string(),
@@ -246,7 +247,7 @@ pub fn profile_alias(name: &str) -> String {
 }
 
 /// `PROFILE_FIELDS`: key, 中文, English.
-pub const PROFILE_FIELDS: [(&str, &str, &str); 18] = [
+pub const PROFILE_FIELDS: [(&str, &str, &str); 19] = [
     ("name_en", "英文姓名（证件拼写）", "Name as on passport"),
     // the key stays `name_zh` (profiles saved before keep their value); it holds any other name: Chinese, Japanese, a
     // married or former name
@@ -266,6 +267,9 @@ pub const PROFILE_FIELDS: [(&str, &str, &str); 18] = [
     // as on the passport (Male, Female or X): arrival cards and bookings ask for it; read from the ID photo
     ("gender", "性别", "Gender"),
     ("nationality", "国籍", "Nationality"),
+    // a country name, as on the passport: arrival cards ask for it (SG, MDAC, Taiwan) and code never guesses it from the
+    // nationality
+    ("birthplace", "出生国家/地区", "Country of birth"),
     ("preferred_airline", "常用航空公司", "Preferred airline"),
     (
         "preferred_hotel_brand",

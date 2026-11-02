@@ -37,6 +37,7 @@ pub mod claims;
 pub mod confirm;
 pub mod decide;
 pub mod driver;
+pub mod email_code;
 pub mod exec;
 pub mod ext;
 pub mod facts;

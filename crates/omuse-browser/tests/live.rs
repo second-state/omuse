@@ -54,3 +54,49 @@ async fn egress_filter_blocks_private_hosts() {
     b.stop().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A secret's box shows only whether it holds a value: a filled card number reads `value=[hidden]` (never the
+/// digits), an empty one `value=""` (shop_real 2026-11-02: Shopify's empty card boxes read as filled at the hand-over).
+/// Needs internet access; skipped without Chromium or network.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn an_empty_secret_box_reads_empty_and_a_filled_one_hidden() {
+    let dir = std::env::temp_dir().join(format!("omuse-browser-secret-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("workspace")).unwrap();
+    let cfg = config(&dir);
+    if launch::find_executable(&cfg).is_none()
+        || reqwest::get("https://example.com/").await.is_err()
+    {
+        eprintln!("no chromium or no network: skipping");
+        return;
+    }
+    let b = Broker::new(cfg);
+    act(
+        &b,
+        "navigate",
+        json!({"task_id": "s1", "url": "example.com"}),
+    )
+    .await;
+    let page = b.page("s1").await.unwrap();
+    page.eval(
+        None,
+        "() => { document.body.innerHTML = '<label>Card number <input autocomplete=\"cc-number\" id=\"a\"></label>' + \
+         '<label>Security code <input autocomplete=\"cc-csc\" id=\"b\" value=\"123\"></label>'; return 1; }",
+        vec![],
+    )
+    .await
+    .unwrap();
+    let snap = act(&b, "snapshot", json!({"task_id": "s1"})).await;
+    let text = snap["snapshot"].as_str().unwrap_or_default();
+    let line = |name: &str| {
+        text.lines()
+            .find(|l| l.trim_start().starts_with('[') && l.contains(name))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(line("Card number").contains("value=\"\""), "{text}");
+    assert!(line("Security code").contains("value=[hidden]"), "{text}");
+    assert!(!line("Security code").contains("123"), "{text}");
+    b.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

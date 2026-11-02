@@ -1,9 +1,9 @@
-"""FWD Hong Kong travel insurance claim with a real model, from the user's point of view (tests/user_common.py,
-tests/claims_common.py). SKELETON awaiting the real claim form on FWD Hong Kong's site (TODO line below). FWD Hong Kong's
-travel plans are underwritten by bolttech, whose claim form is a fillable PDF on FWD's site that goes by email to
-claims.hk@bolttechinsurance.com. The user gives the policy (MyTravel MT-HK-2026-00881, HKD 300 for every 6 full hours of
+"""FWD Hong Kong travel insurance claim with a real model, on the REAL claim form, from the user's point of view
+(tests/user_common.py, tests/claims_common.py). FWD Hong Kong's travel plans are underwritten by bolttech, whose claim
+form is a fillable PDF on FWD's site (https://www.fwd.com.hk/files/…/travel-insurance-clm-form-fillable.pdf: opening it
+downloads it) that goes by email to claims.hk@bolttechinsurance.com. The user gives the policy (MyTravel MT-HK-2026-00881, HKD 300 for every 6 full hours of
 delay) and the delay (CX 543 two days ago, 09:05 → 15:20) in the request; the profile has their name, email, phone and
-address. No mailbox: the draft to bolttech is not checked here.
+address. No mailbox: no draft is made, and the block says where to send the signed form.
 
 The user asks Main's chat to prepare the delay claim: the form filled, not sent (they sign and send it themselves).
 Checked from the user's side:
@@ -11,12 +11,11 @@ Checked from the user's side:
 * the filled claim form is in the chat as a file card; downloaded and opened, it has the policy number, the user's name,
   CX 543, the hours delayed and HKD 300 (the values the user gave) — and the HKID number, the bank account and the
   signature are left empty;
-* the block code appends says bolttech decides the claim, gives the amount (HKD 300) and what the user still adds
-  (HKID, signature).
-One TIMING line.
+* the block code appends says bolttech decides the claim, gives the amount (HKD 300), what the user still adds (HKID,
+  signature) and where to send it (no mailbox, so no draft).
+One TIMING line. In run_in_docker.sh's REAL_SITES (one at a time).
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh insurance_hk_real"""
-# TODO real URL: https://www.fwd.com.hk/ (the travel insurance claim form, travel-insurance-clm-form-fillable.pdf)
 import datetime as dt
 import os
 import re
@@ -59,7 +58,7 @@ async def main():
             if vals:
                 break
         print(f"INFO hk: the form's values {vals}")
-        # TODO real URL: the field names are the real form's (checked against the PDF on FWD's site)
+        # the field names are the real form's (the PDF on FWD's site, read with pypdf 2026-11-02)
         check("hk: the downloaded form has the policy number and the user's name (as given)",
               C.flat(vals.get("fill_17", "")) == POLICY and "CHANTAIMAN" in C.flat(vals.get("Full name", "")), vals)
         check("hk: … the flight, the hours delayed and the amount (CX 543, 6 hours, HKD 300)",
@@ -72,6 +71,8 @@ async def main():
               "Handled by: bolttech" in block and "Claim amount: HKD 300.00" in block, (block, text[:300]))
         check("hk: the block code appends after the answer says what the user still adds (HKID, signature)",
               "You still add:" in block and "HKID" in block and "signature" in block, block)
+        check("hk: no mailbox — no draft claimed; the block says where to send the signed form",
+              "Send it to: claims.hk@bolttechinsurance.com" in block and "Email draft" not in block, block)
 
 
 U.setup(vault=False, profile={"name_en": "CHAN TAI MAN", "email_personal": "taiman@example.com", "phone": "+852 9123 4567",

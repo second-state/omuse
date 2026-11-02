@@ -147,7 +147,9 @@
       if (ty === 'checkbox' || ty === 'radio') line += el.checked ? ' [checked]' : ' [unchecked]';
       else if (ty === 'password') line += ' (password field — only the user types it, in a takeover)';
       else if (ty === 'file') line += ' (file upload)';
-      else if (!['button', 'submit', 'reset', 'image'].includes(ty)) line += sensitive(el) ? ' value=[hidden]' : ` value="${cut(el.value, 80)}"`;
+      // a secret's value is never shown — only whether the box holds one (an empty card box reads empty, so a page
+      // handed over shows what is left for the user: shop_real 2026-11-02, empty Shopify card boxes read as filled)
+      else if (!['button', 'submit', 'reset', 'image'].includes(ty)) line += sensitive(el) ? (el.value ? ' value=[hidden]' : ' value=""') : ` value="${cut(el.value, 80)}"`;
       if (ty === 'submit') line += ' (submit)';
     } else if (el.tagName === 'SELECT') {
       const opts = Array.from(el.options).slice(0, 12).map(o => cut(o.text, 30));

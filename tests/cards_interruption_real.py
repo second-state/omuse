@@ -1,5 +1,6 @@
-"""Chase Sapphire Reserve trip interruption claim, with a real model and from the user's point of view
-(tests/user_common.py). SKELETON awaiting eClaimsLine's real site (TODO line below); nothing is submitted. The user flew
+"""Chase Sapphire Reserve trip interruption claim, with a real model on the REAL claims portal and from the user's point
+of view (tests/user_common.py); nothing is filed. www.eclaimsline.com now redirects to Card Claim Center
+(https://cardclaimcenter.com/internal/log-in): the whole claim lies behind the account's sign-in, which is the user's. The user flew
 to Tokyo, broke a wrist on the second day and flew home that evening on the doctor's advice. No mailbox: the user gives
 the costs in the request (the return UA 838 moved forward for a USD 300.00 change fee; the Park Hyatt Tokyo's prepaid
 non-refundable stay, 5 nights at USD 250.00, one night used and one refunded as a courtesy: USD 750.00 for 3 nights not
@@ -10,14 +11,12 @@ user sees and is checked:
 * the Credit cards (or Insurance & claims) bot answers (its link); the block code appends names the benefit, Trip
   Interruption (the trip had started), the amount (750.00 + 300.00 = USD 1,050.00), the 90-day documents deadline and
   the 20-day notice deadline as dates;
-* the agent asks the user to take over the browser on eClaimsLine (their sign-in or Submit); when the page handed over
-  is the claim form, it holds the date of loss, USD 1,050.00 and the cardholder's name; the user hands it back without
-  pressing anything;
+* the agent asks the user to take over the browser on Card Claim Center's sign-in; the user hands it back without signing in;
 * no card number in any answer.
-If the bot stops for a question, the user answers once in the same chat. One TIMING line per request.
+If the bot stops for a question, the user answers once in the same chat. One TIMING line per request. In
+run_in_docker.sh's REAL_SITES (one at a time).
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh cards_interruption_real"""
-# TODO real URL: https://www.eclaimsline.com/
 import datetime as dt
 import os
 import re
@@ -49,7 +48,7 @@ async def main():
         seen = []
 
         async def look_then_hand_back(pg, request: str) -> None:
-            # the user reads the request, looks at the claim form and hands it back; Submit is theirs, never pressed here
+            # the user reads the request, looks at the sign-in page and hands it back without signing in
             url = await u.view_url()
             form = await u.view_form()
             await u.view_picture(os.path.join(OUT, f"cards_interruption_form{len(seen)}.png") if OUT else None)
@@ -78,14 +77,9 @@ async def main():
               "(USD 1,050.00)", C.money_in(block, "1050.00"), block)
         check("interruption: the block code appends after the answer gives the 90-day documents deadline as a date",
               "Documents by:" in block and C.date_in(block, D90), (D90, block))
-        portal = [x for x in seen if "eclaimsline.com" in x["url"]]
-        check("interruption: the user was asked to take over the browser on eClaimsLine", bool(portal), [x["url"] for x in seen])
-        forms = [x["form"] for x in portal if any(f["value"] for f in x["form"])]
-        if forms:   # the claim form itself (not the sign-in)
-            form = forms[-1]
-            check("interruption: the handed-over claim form holds the date of loss, USD 1,050.00 and the cardholder's name",
-                  bool(U.field(form, r"date|loss")) and C.money_in(U.field(form, r"amount"), "1050.00") and "LU" in U.field(form, r"name").upper(),
-                  [(f["label"][:30], f["value"][:20]) for f in form][:30])
+        portal = [x for x in seen if "cardclaimcenter.com" in x["url"]]
+        check("interruption: the user was asked to take over the browser on Card Claim Center's sign-in", bool(portal),
+              [x["url"] for x in seen])
         check("interruption: the block code appends after the answer gives the 20-day notice deadline as a date",
               C.date_in(block, D20), (D20, block))
         check("interruption: no card number in the answers", not C.CARD_NO.search(text), text[:300])

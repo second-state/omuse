@@ -782,6 +782,21 @@ message to use as written) stays in that language. Output only the rewritten rep
         Some(r)
     }
 
+    /// Sleep `dur`, waking at once when the task is cancelled: `true` when it was (a code step's wait — the email
+    /// verification step's poll for the mail, agent/email_code.rs — ends then).
+    pub(crate) async fn sleep_or_cancel(&self, task_id: &str, dur: Duration) -> bool {
+        let notified = self.cancel_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.cancel_flags.lock().contains(task_id) {
+            return true;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(dur) => self.cancel_flags.lock().contains(task_id),
+            _ = &mut notified => self.cancel_flags.lock().contains(task_id),
+        }
+    }
+
     async fn chat_cancellable(
         &self,
         task_id: &str,

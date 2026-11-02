@@ -1007,9 +1007,12 @@ cover) run through bolttech's single partner API, which needs a commercial agree
 intermediary licence: that is the route if buying should ever happen inside OMuse.
 
 - **Singapore**: FWD Singapore Pte. Ltd. is the insurer. Buying: the public quote page
-  (`fwd.com.sg/travel-insurance/online-quote/`), then the application with the passport and card from the Vault after
-  `purchase_confirm`, handed over for Pay. Claiming: the travel claim form (`fwd.com.sg/claim-online/travel.html`) or the
-  customer portal, filled and handed over for Submit; FWD asks to be told within 30 days. FWD's robots.txt keeps
+  (`fwd.com.sg/travel-insurance/online-quote/`: Vuetify selects by label, read-only date pickers, then `summary` with
+  the plans), the plan's button pressed, then handed over at FWD's eligibility statements (the user's), before the
+  add-ons, the details and Pay. Claiming: the travel claim form (`fwd.com.sg/claim-online/travel.html`, no sign-in),
+  step 1 filled by input names (claimant, NRIC/FIN from the Vault, mobile, email, policy number) and handed over: "next"
+  checks the policy on FWD's server, so steps 2–3 (bank account, incident, Submit) are the user's; FWD asks to be told
+  within 30 days. FWD's robots.txt keeps
   crawlers off the quote pages; a browser acting for a signed-in user is not a crawler, but the pages may change.
 - **Hong Kong**: the three travel plans on fwd.com.hk (MyTravel, TravelCare Plus, GBA Easy Travel) are underwritten by
   **bolttech Insurance (Hong Kong)**; FWD Financial sells them as bolttech's appointed agency. Only HKID holders in Hong

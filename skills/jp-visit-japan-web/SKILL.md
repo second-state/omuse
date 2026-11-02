@@ -8,7 +8,7 @@ profile: nationality
 ---
 # Visit Japan Web / 日本入境二维码
 
-Visit Japan Web (https://vjw-lp.digital.go.jp) is optional: it pre-fills the immigration card and the customs declaration and gives one QR code used at both counters; paper forms still work. It needs an account (email + password) — the user signs in themselves (browser_request_takeover for the login and any 2-factor code), then you fill the trip. Register at least a few hours before departure; days before is better. The tax-free shopping registration can be added in the same account.
+Visit Japan Web (https://www.vjw.digital.go.jp, from the landing page vjw-lp.digital.go.jp) is optional: it pre-fills the immigration card and the customs declaration and gives one QR code used at both counters; paper forms still work. It needs an account (email + password) — the user signs in themselves (browser_request_takeover for the login and any 2-factor code), then you fill the trip. Register at least a few hours before departure; days before is better. The tax-free shopping registration can be added in the same account.
 This is the traveller's own legal declaration: code fills it (a form function with fixed ids), the user reviews it and presses Submit.
 
 ## How it runs (code)

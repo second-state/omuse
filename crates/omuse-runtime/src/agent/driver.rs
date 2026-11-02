@@ -58,7 +58,45 @@ pub struct CardSpec {
     pub ref_sel: &'static str,
     /// the reference's format, checked over that element's whole value
     pub ref_re: &'static str,
+    /// the site's email verification step, run by code (`agent/email_code.rs`) after a fill that stopped at it
+    pub email_code: Option<super::email_code::Spec>,
+    /// the final page's Submit — the user's click, never code's — by a fixed selector taken from the real page: code
+    /// checks it is there before it hands the filled form over (absent = the fill stopped early: `stopped_early`).
+    /// `None`: the form lies behind a user's step that could not be passed to map it (a Cloudflare check, a sign-in,
+    /// the passport photo)
+    pub final_page: Option<Marker>,
+    /// the elements that mark the user's own steps that come before the form (a Cloudflare check, the sign-in, the
+    /// passport photo, the email code): a hand-over at such a step is right when one of them is on the page
+    pub user_step_at: &'static [Marker],
 }
+
+/// An element that marks a page: its fixed selector, the text it must show ("" = any; an input's text is empty), and
+/// whether a hidden one counts (a Turnstile's response field, a file input).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Marker {
+    pub sel: &'static str,
+    pub text: &'static str,
+    pub hidden: bool,
+}
+
+const fn mark(sel: &'static str, text: &'static str) -> Marker {
+    Marker {
+        sel,
+        text,
+        hidden: false,
+    }
+}
+
+const fn mark_hidden(sel: &'static str) -> Marker {
+    Marker {
+        sel,
+        text: "",
+        hidden: true,
+    }
+}
+
+/// The code box after a Send: the first visible text-like input (the email box is `type=email`).
+const CODE_BOX: &str = "input[type=text], input[type=tel], input[type=number], input:not([type])";
 
 pub const CARDS: &[CardSpec] = &[
     CardSpec {
@@ -72,18 +110,25 @@ pub const CARDS: &[CardSpec] = &[
         user_steps: "tick the declaration and press Submit",
         ref_sel: ".ref",
         ref_re: r"\bDE\d{9,}\b",
+        email_code: None,
+        final_page: Some(mark("button.general-button-container", "Submit")),
+        user_step_at: &[],
     },
     CardSpec {
         skill: "my-arrival-card",
         name: "Malaysia Digital Arrival Card (MDAC)",
         country: "Malaysia",
         mail_words: "(Malaysia OR \"Kuala Lumpur\" OR KUL OR Penang OR PEN OR Johor OR \"Kota Kinabalu\")",
-        start_url: "https://imigresen-online.imi.gov.my/mdac/main",
+        // the registration form itself (the landing page's REGISTER opens it)
+        start_url: "https://imigresen-online.imi.gov.my/mdac/main?registerMain",
         host: "imigresen-online.imi.gov.my",
         window_days: 3,
         user_steps: "solve the slider puzzle and press Submit",
         ref_sel: ".ref",
         ref_re: r"\bMDAC-[A-Z0-9-]{6,}\b",
+        email_code: None,
+        final_page: Some(mark("#submit", "")),
+        user_step_at: &[],
     },
     CardSpec {
         skill: "kr-arrival-card",
@@ -96,6 +141,9 @@ pub const CARDS: &[CardSpec] = &[
         user_steps: "press Submit and enter the code Korea emails you",
         ref_sel: ".ref",
         ref_re: r"\bKR-EA-\d{6,}\b",
+        email_code: None,
+        final_page: Some(mark("#btnSubmit", "Submit")),
+        user_step_at: &[],
     },
     CardSpec {
         skill: "id-arrival-card",
@@ -108,6 +156,10 @@ pub const CARDS: &[CardSpec] = &[
         user_steps: "tick the certification and press Submit",
         ref_sel: ".ref",
         ref_re: r"\bALLIND-\d{6,}\b|\b[A-Z]{2,4}-?\d{8,}\b",
+        email_code: None,
+        // the Declaration step's Submit (the last of the four steps)
+        final_page: Some(mark("button", "Submit")),
+        user_step_at: &[],
     },
     CardSpec {
         skill: "tw-arrival-card",
@@ -120,6 +172,17 @@ pub const CARDS: &[CardSpec] = &[
         user_steps: "tick the declaration and press SUBMIT",
         ref_sel: ".ref",
         ref_re: r"\bTWAC-?[A-Z0-9]{6,}\b",
+        // step 1 (mapped 2026-11-02): the email box, SEND VERIFICATION CODE, the code box, VERIFY
+        email_code: Some(super::email_code::Spec {
+            email_sel: "input[name=email]",
+            send_text: "SEND VERIFICATION CODE",
+            code_sel: CODE_BOX,
+            verify_text: "VERIFY",
+            from: "immigration.gov.tw",
+        }),
+        // the stepper's current step is Review (then the user's SUBMIT and Confirmation)
+        final_page: Some(mark(".steps li.current .stepTitle", "Review")),
+        user_step_at: &[mark("input[name=email]", "")],
     },
     CardSpec {
         skill: "th-arrival-card",
@@ -129,9 +192,13 @@ pub const CARDS: &[CardSpec] = &[
         start_url: "https://tdac.immigration.go.th/",
         host: "tdac.immigration.go.th",
         window_days: 3,
-        user_steps: "type the CAPTCHA and press Submit",
+        // the form is behind a Cloudflare check on the home page (the hand-over): the user fills it after the check
+        user_steps: "pass the Cloudflare check, fill in the card, type the CAPTCHA and press Submit",
         ref_sel: ".ref",
         ref_re: r"\bTH[A-Z0-9]{7,}\b",
+        email_code: None,
+        final_page: None,
+        user_step_at: &[mark_hidden("input[name=cf-turnstile-response]")],
     },
     CardSpec {
         skill: "cn-arrival-card",
@@ -144,19 +211,26 @@ pub const CARDS: &[CardSpec] = &[
         user_steps: "answer the companion question and press Submit",
         ref_sel: ".ref",
         ref_re: r"\bCN-ARC-[A-Z0-9-]{6,}\b",
+        email_code: None,
+        final_page: None,
+        user_step_at: &[mark_hidden("input[type=file][name=file]")],
     },
     CardSpec {
         skill: "jp-visit-japan-web",
         name: "Visit Japan Web registration",
         country: "Japan",
         mail_words: "(Japan OR Tokyo OR NRT OR HND OR Osaka OR KIX OR Nagoya OR Fukuoka OR Sapporo)",
-        start_url: "https://vjw-lp.digital.go.jp/",
-        host: "vjw-lp.digital.go.jp",
+        // the service moved from vjw-lp.digital.go.jp (2026-11-02): it opens on the sign-in to the user's account
+        start_url: "https://www.vjw.digital.go.jp/main/#/vjwplo001",
+        host: "www.vjw.digital.go.jp",
         // registered any time before the flight: no filing window
         window_days: 0,
-        user_steps: "type the security check characters and press Register",
+        user_steps: "sign in, register the planned entry and press Register",
         ref_sel: ".ref",
         ref_re: r"\bJP-\d{4}-\d{4}\b",
+        email_code: None,
+        final_page: None,
+        user_step_at: &[mark("#textbox02", "")],
     },
     CardSpec {
         skill: "kh-arrival-card",
@@ -166,9 +240,16 @@ pub const CARDS: &[CardSpec] = &[
         start_url: "https://arrival.gov.kh/",
         host: "arrival.gov.kh",
         window_days: 7,
-        user_steps: "type the CAPTCHA and press Submit",
+        user_steps: "pick your occupation, phone country code and country of birth, fill in the travel, health and customs steps, then press Submit",
         ref_sel: ".ref",
         ref_re: r"\bKH-EAC-\d{6,}\b",
+        email_code: None,
+        // the stepper's selected step is the last, "Confirm Declaration" (its Submit renders only there)
+        final_page: Some(mark(
+            "mat-step-header[aria-selected=true]",
+            "5 Confirm Declaration",
+        )),
+        user_step_at: &[],
     },
     CardSpec {
         skill: "ph-etravel",
@@ -179,9 +260,12 @@ pub const CARDS: &[CardSpec] = &[
         host: "etravel.gov.ph",
         // 72 hours before arrival
         window_days: 3,
-        user_steps: "type the CAPTCHA and press Submit",
+        user_steps: "sign in, fill in the registration and press Submit",
         ref_sel: ".ref",
         ref_re: r"\bETRV-PH-\d{6,}\b",
+        email_code: None,
+        final_page: None,
+        user_step_at: &[mark("#password", "")],
     },
     // The ETA is an authorisation, not an arrival card: the application has no trip or accommodation section, so the
     // driver's trip facts (the flight, the stay) are optional here — the mail searches still find the trip for the
@@ -192,12 +276,28 @@ pub const CARDS: &[CardSpec] = &[
         name: "UK ETA application",
         country: "United Kingdom",
         mail_words: "(London OR LHR OR LGW OR STN OR Manchester OR MAN OR Edinburgh OR EDI OR \"United Kingdom\" OR UK)",
-        start_url: "https://www.gov.uk/eta",
-        host: "www.gov.uk",
+        // the web application (gov.uk/eta's "Start now"), mapped 2026-11-02
+        start_url: "https://apply-for-an-eta.homeoffice.gov.uk/apply/electronic-travel-authorisation",
+        host: "apply-for-an-eta.homeoffice.gov.uk",
         window_days: 0,
-        user_steps: "upload your face photo, then press Submit and pay the ETA fee",
+        user_steps: "take the passport and face photos, answer the questions, then press Submit and pay the ETA fee",
         ref_sel: ".ref",
         ref_re: r"\b\d{4}-\d{4}-\d{4}\b",
+        // the email page ("Continue application" sends a security code), then the code page's Continue
+        email_code: Some(super::email_code::Spec {
+            email_sel: "#enter-email-address-value",
+            send_text: "Continue application",
+            code_sel: CODE_BOX,
+            verify_text: "Continue",
+            from: "gov.uk",
+        }),
+        final_page: None,
+        // the email page and the security-code page (mapped 2026-11-02); the identity / photo pages after them are the
+        // Home Office's confirm-your-identity service
+        user_step_at: &[
+            mark("#enter-email-address-value", ""),
+            mark("#check-your-email-value", ""),
+        ],
     },
 ];
 
@@ -228,7 +328,6 @@ pub fn card_of(country: &str) -> Option<&'static CardSpec> {
 
 /// The catalog entry of the workflow tool.
 pub fn tool_schemas() -> Vec<Value> {
-    let s = json!({"type": "string"});
     let date = |what: &str| json!({"type": "string", "description": format!("YYYY-MM-DD: {what} (resolve relative dates from today in the live state)")});
     let countries: Vec<&str> = CARDS.iter().map(|c| c.country).collect();
     vec![fn_(
@@ -258,7 +357,7 @@ invalid: fix the arguments and call again. Write the reply from the result, usin
             "purpose": {"type": "string", "enum": ["holiday", "business", "family", "study", "transit"]},
             "departure_date": date("the day the user leaves the country, when a return or onward flight or the user gives it"),
             "next_city": {"type": "string", "description": "the next city after the country, when an onward flight or the user gives it"},
-            "occupation": s
+            "occupation": {"type": "string", "description": "the user's job, only when they gave it — optional: a card that asks for it leaves the box for the user's review, so it is never asked for (needs_input lists everything that is)"}
         }),
         &["country"],
     )]
@@ -818,6 +917,26 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     let fill = fills.last().map(|(_, msg)| *msg).unwrap_or(&Value::Null);
     let fill_pos = last_fill.unwrap_or(0);
     let take_after_fill = last_take.is_some_and(|tk| tk > fill_pos);
+    // the site's email verification step (agent/email_code.rs), once per run: after the fill that stopped at it, code
+    // types the email (and with a mailbox, sends the code, reads it from the mail and types it); a typed code → the fill
+    // goes on, anything else → the hand-over below
+    let codes = results_of(t, super::email_code::EMAIL_CODE);
+    let code_status = codes
+        .last()
+        .filter(|(_, msg)| pos(t, msg) > fill_pos)
+        .map(|(_, msg)| get_str(&json_of(msg), "status"));
+    if let Some(spec) = card.email_code.as_ref() {
+        if codes.is_empty() && !take_after_fill && stopped(fill).is_some() {
+            return Step::Calls(vec![call(
+                0,
+                super::email_code::EMAIL_CODE,
+                spec.args(&user_email(m.profile)),
+            )]);
+        }
+        if code_status.as_deref() == Some("typed") {
+            return Step::Calls(vec![call(0, "form_fill", trip.args())]);
+        }
+    }
     let assumed = assumptions(
         &trip,
         truthy(args.get("purpose_assumed").unwrap_or(&Value::Null)),
@@ -834,6 +953,9 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     if !take_after_fill && user_steps_back >= 2 {
         if let Some(why) = stopped(fill) {
             let step = user_step(&why);
+            if let Some(r) = code_not_read(card, &codes) {
+                return Step::Done(r);
+            }
             return Step::Done(
                 json!({"status": "waiting_on_user", "card": card.name, "step": step,
                 "trip": trip.json(),
@@ -842,11 +964,36 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             );
         }
     }
+    // the page check before the hand-over: the card's declared elements, read by their fixed selectors — the final
+    // page's Submit, the markers of the user's own steps (never a click: the Submit is the user's)
+    let page = page_check(t, fill_pos);
+    let declared = card.final_page.is_some() || !card.user_step_at.is_empty();
+    if !take_after_fill && page.is_none() && declared {
+        return Step::Calls(vec![call(
+            0,
+            "browser_read_elements",
+            page_check_args(card),
+        )]);
+    }
+    let page = page.map(|m| PageSeen::of(card, m)).unwrap_or_default();
+    // a filled form handed over before its final page: the fill stopped early (the result and the hand-over say so)
+    let early = stopped(fill).is_none() && card.final_page.is_some() && !page.on_final;
     if !take_after_fill {
         let reason = match stopped(fill) {
             Some(why) => format!(
-                "This step is yours: {}. Do it on the page, then hand the browser back and I will fill in the rest of the form.",
-                user_step(&why)
+                "This step is yours: {}.{} Do it on the page, then hand the browser back and I will fill in the rest of the form.",
+                user_step(&why),
+                match code_status.as_deref() {
+                    Some("no_mailbox") | Some("no_send_button") => " Your email is filled in: press the button that sends the code and type the code from the email.",
+                    Some("timeout") | Some("no_code") | Some("code_not_typed") => " Your email is filled in and the code was requested: type the code from the email.",
+                    _ => "",
+                }
+            ),
+            None if early => format!(
+                "I filled in what I could, but the {} stopped before its last page ({}). Fill in what is still missing on this page and go on to the end, then {}; nothing has been submitted. Hand the browser back when the confirmation shows.",
+                card.name,
+                if page.url.is_empty() { "the page in the browser tab".to_string() } else { page.url.clone() },
+                card.user_steps
             ),
             None => {
                 let left: Vec<String> = json_of(fill)
@@ -875,9 +1022,17 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     let back_after_fill = last_back.is_some_and(|b| b > fill_pos);
     if !back_after_fill {
         // the page is still the user's (the takeover ended without the hand-back)
+        if early {
+            return Step::Done(stopped_early(card, &trip, &page));
+        }
+        if stopped(fill).is_some() {
+            if let Some(r) = code_not_read(card, &codes) {
+                return Step::Done(r);
+            }
+        }
         return Step::Done(
             json!({"status": "handed_over", "card": card.name, "trip": trip.json(),
-            "user_steps": card.user_steps,
+            "user_steps": card.user_steps, "on_final_page": page.on_final, "at_user_step": page.at_step,
             "show": [S::fact("Status", "状态", &format!("the {} is filled in and waiting in the browser tab; nothing has been submitted yet", card.name)),
                      S::fact("Your step", "你的步骤", card.user_steps)],
             "hints": []}),
@@ -907,12 +1062,117 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             "show": [S::reference(&format!("{} confirmation number", card.name), &format!("{} 确认号", card.name), &r)],
             "hints": [format!("{} submitted", card.name)]})
         }
+        None if early => stopped_early(card, &trip, &page),
         None => {
             json!({"status": "not_confirmed", "card": card.name, "country": card.country, "trip": trip.json(),
+            "on_final_page": page.on_final, "at_user_step": page.at_step,
             "show": [S::fact("Not confirmed", "未确认", &format!("no reference showed after the hand-back: check the browser tab whether the {} was submitted", card.name))],
             "hints": []})
         }
     })
+}
+
+/// The name prefix of the page check's reads (`page_check_args`).
+const PAGE_FINAL: &str = "page_final";
+const PAGE_STEP: &str = "page_step";
+
+/// The `browser_read_elements` arguments of the page check: the final page's Submit (visible), each user step's
+/// marker (hidden ones too where the card says so).
+pub fn page_check_args(card: &CardSpec) -> Value {
+    let mut read: Vec<Value> = Vec::new();
+    if let Some(m) = card.final_page {
+        read.push(json!({"name": PAGE_FINAL, "sel": m.sel, "max": 5}));
+    }
+    for (i, m) in card.user_step_at.iter().enumerate() {
+        read.push(
+            json!({"name": format!("{PAGE_STEP}{i}"), "sel": m.sel, "hidden": m.hidden, "max": 5}),
+        );
+    }
+    json!({"read": read})
+}
+
+/// The page check after the last fill (`at` = its position), when it was read.
+fn page_check(t: &[Value], at: usize) -> Option<&Value> {
+    results_of(t, "browser_read_elements")
+        .into_iter()
+        .filter(|(a, msg)| {
+            pos(t, msg) > at
+                && a["read"]
+                    .as_array()
+                    .is_some_and(|r| r.iter().any(|x| sget(x, "name").starts_with("page_")))
+        })
+        .map(|(_, msg)| msg)
+        .next_back()
+}
+
+/// What the page check found.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct PageSeen {
+    url: String,
+    /// the final page's Submit is on the page (with its declared text)
+    on_final: bool,
+    /// a user's step's marker is on the page
+    at_step: bool,
+}
+
+impl PageSeen {
+    fn of(card: &CardSpec, m: &Value) -> Self {
+        let present = |name: &str, text: &str| {
+            let vals = super::confirm::element_values(m, name);
+            !vals.is_empty()
+                && (text.is_empty() || vals.iter().any(|v| v.trim().eq_ignore_ascii_case(text)))
+        };
+        PageSeen {
+            url: get_str(&json_of(m), "url"),
+            on_final: card.final_page.is_some_and(|f| present(PAGE_FINAL, f.text)),
+            at_step: card
+                .user_step_at
+                .iter()
+                .enumerate()
+                .any(|(i, s)| present(&format!("{PAGE_STEP}{i}"), s.text)),
+        }
+    }
+}
+
+/// The result of a run handed over at the email step because code could not read the verification code (no mailbox,
+/// no mail before the timeout, no code in it): it says so, and why — the user enters the code on the page. `None` when
+/// no `email_code` step ran or it typed the code.
+fn code_not_read(card: &CardSpec, codes: &[(Value, &Value)]) -> Option<Value> {
+    let (_, msg) = codes.last()?;
+    let status = get_str(&json_of(msg), "status");
+    if status == "typed" {
+        return None;
+    }
+    let from = card.email_code.map(|e| e.from).unwrap_or("");
+    let why = match status.as_str() {
+        "no_mailbox" => "no mailbox is connected".to_string(),
+        "timeout" => format!("no mail from {from} came in time"),
+        "no_code" => "the mail held no code I could read".to_string(),
+        "code_not_typed" => "the code box did not take the code".to_string(),
+        "no_send_button" => "the page had no button that sends the code".to_string(),
+        "no_email_field" | "no_email" => "the page had no email box".to_string(),
+        "cancelled" => "the task was cancelled".to_string(),
+        other => other.replace('_', " "),
+    };
+    Some(
+        json!({"status": EMAIL_CODE_NOT_READ, "card": card.name, "country": card.country, "reason": status,
+    "show": [S::fact("Email code", "邮件验证码", &format!(
+        "I could not read the verification code ({why}) — enter the code from the email on the page; nothing has been submitted"))],
+    "hints": ["say the code could not be read and that the user enters it on the page"]}),
+    )
+}
+
+/// The status of a run handed over at the email step because the code could not be read.
+pub const EMAIL_CODE_NOT_READ: &str = "email_code_not_read";
+
+/// The result of a fill that stopped before the form's final page: where it stopped; nothing was submitted.
+fn stopped_early(card: &CardSpec, trip: &Trip, page: &PageSeen) -> Value {
+    json!({"status": "stopped_early", "card": card.name, "country": card.country, "trip": trip.json(),
+    "page": page.url, "on_final_page": false,
+    "show": [S::fact("Stopped early", "未填到最后一页", &format!(
+        "the {} was filled only up to {} — not its last page; finish the rest in the browser tab. Nothing has been submitted",
+        card.name, if page.url.is_empty() { "the page in the browser tab" } else { page.url.as_str() }))],
+    "hints": ["say which page the form stopped on and that nothing was submitted"]})
 }
 
 // ---------------------------------------------------------------- shared helpers (the transcript, read back)
@@ -941,6 +1201,16 @@ pub enum Step {
     /// the machine is done: its JSON result goes back as the workflow tool's `T_result` code exchange and the model
     /// writes the reply from it (`agent/workflow.rs`, docs/json-tools.md)
     Done(Value),
+}
+
+/// The email a site's verification step gets: the profile's personal email, else its email, else the connected
+/// mailbox's address (`Runtime::machine_profile` puts it in as `mailbox`).
+fn user_email(profile: &Value) -> String {
+    ["email_personal", "email", "mailbox"]
+        .iter()
+        .map(|k| get_str(profile, k).trim().to_string())
+        .find(|e| !e.is_empty())
+        .unwrap_or_default()
 }
 
 /// The country of a city in the table ("Sydney" → "Australia"); "" when it is not there.
@@ -1147,9 +1417,42 @@ mod tests {
     /// done; panics on a question to the user after the form opened and on a code-written answer.
     fn run(
         args: &Value,
+        t: Vec<Value>,
+        m: &Machine,
+        answer: impl Fn(&str, &Value) -> String,
+    ) -> (Vec<Value>, Value) {
+        run_page(args, t, m, answer, true)
+    }
+
+    /// The page check's answer: every declared element present (`on_final`), or only the user steps' markers.
+    fn page_answer(a: &Value, on_final: bool) -> String {
+        let mut els = Map::new();
+        for r in a["read"].as_array().into_iter().flatten() {
+            let name = sget(r, "name");
+            let present = on_final || name.starts_with(PAGE_STEP);
+            // the declared text of the card's element with this selector (the page shows what the card declares)
+            let sel = sget(r, "sel");
+            let text = CARDS
+                .iter()
+                .filter_map(|c| c.final_page)
+                .find(|f| f.sel == sel && name == PAGE_FINAL)
+                .map(|f| f.text)
+                .unwrap_or("");
+            els.insert(name, if present { json!([text]) } else { json!([]) });
+        }
+        format!(
+            "<untrusted_content source=\"web page https://x.test/form\">{}</untrusted_content>",
+            json!({"url": "https://x.test/form", "elements": els})
+        )
+    }
+
+    /// `run` with the page check answered by `page_answer(on_final)` (the other calls by `answer`).
+    fn run_page(
+        args: &Value,
         mut t: Vec<Value>,
         m: &Machine,
         answer: impl Fn(&str, &Value) -> String,
+        on_final: bool,
     ) -> (Vec<Value>, Value) {
         let from = t
             .iter()
@@ -1167,7 +1470,15 @@ mod tests {
                             "the id {} was used before",
                             call.id
                         );
-                        let content = answer(&call.name, &call.args);
+                        let is_check = call.name == "browser_read_elements"
+                            && call.args["read"].as_array().is_some_and(|r| {
+                                r.iter().any(|x| sget(x, "name").starts_with("page_"))
+                            });
+                        let content = if is_check {
+                            page_answer(&call.args, on_final)
+                        } else {
+                            answer(&call.name, &call.args)
+                        };
                         t.extend(step(&call.id, &call.name, call.args.clone(), &content));
                     }
                     let q = questions_after_navigate(&t);
@@ -1593,8 +1904,10 @@ mod tests {
                 ARRIVAL_CARD_FILL,
                 "browser_navigate",
                 "form_fill",
+                "browser_read_elements",
                 "browser_request_takeover",
                 "form_fill",
+                "browser_read_elements",
                 "browser_request_takeover",
                 "form_fill"
             ]
@@ -1718,6 +2031,160 @@ mod tests {
             json!({"name": "load_skill", "args": {"name": "tokyo"}})
         )])
         .is_none());
+    }
+
+    #[test]
+    fn the_email_step_is_codes_once_then_the_fill_goes_on_or_the_page_is_handed_over() {
+        let p = json!({"email_personal": "michael@michaelyuan.com"});
+        let args = valid(
+            json!({"country": "Taiwan", "flight_no": "CI 52", "arrival_date": "2026-11-02", "origin_city": "Sydney",
+                   "stay_name": "Xinyi Park Hotel", "purpose": "holiday"}),
+            &p,
+            false,
+            &[],
+        );
+        let m = Machine {
+            profile: &p,
+            mail_ready: true,
+            today: today(),
+            first: 0,
+        };
+        let stop = "{\"url\": \"https://twac.immigration.gov.tw/submit\", \"filled\": [{\"op\": \"require\", \"field\": \"traveler_form\", \"ok\": false, \"stop\": true, \"why\": \"the email verification (the code Taiwan emails) is the user's: hand the page over for it, then call form_fill again\"}]}";
+        let names = |t: &[Value]| -> Vec<String> {
+            t.iter()
+                .flat_map(tool_calls)
+                .map(|tc| stored_call(tc).0)
+                .collect()
+        };
+        // a typed code: the fill again (the traveller's form now shows), then the review hand-over
+        let fills = std::cell::Cell::new(0);
+        let (t, _) = run(
+            &args,
+            started("Fill in my TWAC", &args),
+            &m,
+            |name, _| match name {
+                "form_fill" => {
+                    fills.set(fills.get() + 1);
+                    if fills.get() == 1 {
+                        stop.into()
+                    } else {
+                        "{\"url\": \"x\", \"filled\": []}".into()
+                    }
+                }
+                "email_code" => {
+                    "{\"status\": \"typed\", \"email_filled\": true, \"sent\": true}".into()
+                }
+                "browser_request_takeover" => BACK.into(),
+                _ => "{}".into(),
+            },
+        );
+        assert_eq!(
+            names(&t)[..7],
+            [
+                ARRIVAL_CARD_FILL,
+                "browser_navigate",
+                "form_fill",
+                "email_code",
+                "form_fill",
+                "browser_read_elements",
+                "browser_request_takeover"
+            ]
+        );
+        let code = &calls_of(&t, "email_code")[0];
+        assert_eq!(code["email"], "michael@michaelyuan.com");
+        assert_eq!(code["email_sel"], "input[name=email]");
+        assert_eq!(code["from"], "immigration.gov.tw");
+        assert!(sget(&calls_of(&t, "browser_request_takeover")[0], "reason")
+            .contains("The Taiwan Arrival Card (TWAC) is filled in"));
+        // no mailbox (or no code): the hand-over at the step, saying the email is in; one email step per run, also
+        // after the hand-back
+        let (t, res) = run(
+            &args,
+            started("Fill in my TWAC", &args),
+            &m,
+            |name, _| match name {
+                "form_fill" => stop.into(),
+                "email_code" => {
+                    "{\"status\": \"no_mailbox\", \"email_filled\": true, \"sent\": false}".into()
+                }
+                "browser_request_takeover" => BACK.into(),
+                _ => "{}".into(),
+            },
+        );
+        assert_eq!(calls_of(&t, "email_code").len(), 1);
+        let reason = sget(&calls_of(&t, "browser_request_takeover")[0], "reason");
+        assert!(
+            reason.starts_with("This step is yours: email verification"),
+            "{reason}"
+        );
+        assert!(reason.contains("Your email is filled in"), "{reason}");
+        // the result says the code could not be read, and why, as a line code appends to the reply
+        assert_eq!(res["status"], EMAIL_CODE_NOT_READ);
+        assert_eq!(res["reason"], "no_mailbox");
+        assert!(
+            shown(&res).contains(
+                "- Email code: I could not read the verification code (no mailbox is connected)"
+            ),
+            "{res}"
+        );
+        // a card without an email step never calls it
+        let sg = valid(sg_facts(), &p, false, &[]);
+        let (t, _) = run(&sg, started("x", &sg), &m, |name, _| match name {
+            "form_fill" => stop.into(),
+            "browser_request_takeover" => BACK.into(),
+            _ => "{}".into(),
+        });
+        assert!(calls_of(&t, "email_code").is_empty());
+    }
+
+    #[test]
+    fn a_form_handed_over_before_its_final_page_says_it_stopped_early() {
+        let p = json!({});
+        let args = valid(sg_facts(), &p, false, &[]);
+        let m = Machine {
+            profile: &p,
+            mail_ready: false,
+            today: today(),
+            first: 0,
+        };
+        let answer = |name: &str, _: &Value| match name {
+            "form_fill" => "{\"url\": \"x\", \"filled\": []}".to_string(),
+            "browser_request_takeover" => BACK.to_string(),
+            _ => {
+                "<untrusted_content source=\"web page https://x.test/form\">{}</untrusted_content>"
+                    .to_string()
+            }
+        };
+        // the page check reads the card's declared Submit (nothing is clicked)
+        let (t, res) = run_page(&args, started("x", &args), &m, answer, false);
+        let check = &calls_of(&t, "browser_read_elements")[0];
+        assert_eq!(check["read"][0]["name"], PAGE_FINAL);
+        assert_eq!(check["read"][0]["sel"], "button.general-button-container");
+        let reason = sget(&calls_of(&t, "browser_request_takeover")[0], "reason");
+        assert!(
+            reason.contains("stopped before its last page (https://x.test/form)"),
+            "{reason}"
+        );
+        assert_eq!(res["status"], "stopped_early");
+        assert_eq!(res["page"], "https://x.test/form");
+        assert!(shown(&res).contains("Nothing has been submitted"), "{res}");
+        // on the final page: the usual review hand-over
+        let (t, res) = run_page(&args, started("x", &args), &m, answer, true);
+        let reason = sget(&calls_of(&t, "browser_request_takeover")[0], "reason");
+        assert!(
+            reason.starts_with("The SG Arrival Card is filled in"),
+            "{reason}"
+        );
+        assert_eq!(res["status"], "not_confirmed");
+        assert_eq!(res["on_final_page"], true);
+        // every card declares where its hand-over is: the final page's Submit, or a user's step before the form
+        for c in CARDS {
+            assert!(
+                c.final_page.is_some() || !c.user_step_at.is_empty(),
+                "{}",
+                c.skill
+            );
+        }
     }
 
     #[test]

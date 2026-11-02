@@ -778,6 +778,24 @@ pub async fn mail_check(State(ctx): State<App>) -> JsonResult {
     Ok(Json(json!({"accounts": out})))
 }
 
+/// `POST /internal/mail_code` `{query, since}`: the email verification step's mail — the newest message matching the
+/// fixed query (the site's sender, recent) dated `since` (epoch seconds) or later, its body unredacted, for the
+/// runtime's one extraction call (agent/email_code.rs). Never a tool: the agent's mail reads stay redacted.
+pub async fn mail_code(State(ctx): State<App>, body: Bytes) -> JsonResult {
+    let b = body_obj(&body)?;
+    let query = s_or(&b, "query", "");
+    if query.trim().is_empty() {
+        return Ok(Json(json!({"error": "query is empty", "found": false})));
+    }
+    let since = b.get("since").and_then(Value::as_f64).unwrap_or(0.0);
+    match crate::actions::code_mail(&ctx, &query, since).await {
+        Ok(v) => Ok(Json(v)),
+        Err(e) => Ok(Json(
+            json!({"error": take_chars(&e.to_string(), 300), "found": false}),
+        )),
+    }
+}
+
 /// `GET /internal/browser_state`.
 pub async fn browser_state(State(ctx): State<App>) -> JsonResult {
     match deps::broker(&ctx, "GET", "/state", None, 10.0).await {

@@ -3,23 +3,20 @@
 //!
 //! The model reads the user's words — and the boarding passes and the receipt the machine fetched — and calls the
 //! tool with JSON arguments: the flights into and out of Hong Kong with their dates, the documents' paths, the
-//! departure tax the receipt shows, the passport photo the user attached, the refund method (and the e-wallet account,
-//! the Vault card the user named). [`check`] validates them in code (flight numbers, dates, the files are this chat's,
-//! the method is the platform's) and decides what happens before the platform opens: the fixed mail search when the
-//! documents are not known yet (the machine saves the attachments and reads them; its result `mail_read` has the model
-//! call again with the facts in them), `needs_input` for what only the user can give. Nothing here reads the user's
-//! wording, a mail's text or a document's text.
+//! departure tax the receipt shows, the refund method (and the e-wallet account). [`check`] validates them in code
+//! (flight numbers, dates, the files are this chat's, the method is the platform's) and decides what happens before
+//! the platform opens: the fixed mail search when the trip is not known yet (the machine saves the attachments and reads
+//! them; its result `mail_read` has the model call again with the facts in them), `needs_input` for what only the user
+//! can give (the trip, the refund method). Nothing here reads the user's wording, a mail's text or a document's text.
 //!
 //! Then every step is code ([`next`]): the eligibility rule (left Hong Kong the same or the next calendar day, within
-//! 28 days of the departure flight, after departing, the tax paid), the card from the Vault, the platform's pages
-//! filled by their form functions (`crate::forms`, fixed ids), each page read by its HTML elements
-//! (`browser_read_elements`: the error boxes `.err`, the saved reference `#refShown`, and the refs a snapshot gave the
-//! upload boxes `#file_*` and the card fields `#card_*` — docs/json-tools.md "Reading pages"), the uploads into their
-//! boxes, the card by `browser_fill_secret` (a card the Vault cannot fill is typed by the user in a takeover), the
-//! reference from the submit page's address. The face recognition is the user's own step on their phone: never opened, never
-//! handed over (`guards::apdt_face_guard`). The machine ends with [`Step::Done`]: a JSON result (status, the
-//! reference, the link, the deadline, the refund — as `show`, appended to the reply by code — and `hints`); the model
-//! writes the reply from it.
+//! 28 days of the departure flight, after departing, the tax paid), then the real platform (a Vue app behind a Queue-it
+//! waiting room, mapped 2026-11-02) through its notes, "Start", "New Application" and the entry mode up to the travel
+//! document's upload, by its form function (`crate::forms`). The documents' photos, the refund method and the face
+//! recognition are the user's own steps, on their phone: never uploaded from a made-up file, never handed over
+//! (`guards::apdt_face_guard`). The machine ends with [`Step::Done`]: a JSON result (status, the rule's verdict, the
+//! amount, the deadline, the steps left and the link — as `show`, appended to the reply by code — and `hints`); the
+//! model writes the reply from it.
 
 use std::sync::LazyLock;
 
@@ -28,8 +25,7 @@ use omuse_common::util::{get_str, truthy};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
-use super::claims::vault_cards;
-use super::driver::{handed_back, json_of, norm_flight, pos, results_of, walk_messages, Step};
+use super::driver::{json_of, norm_flight, results_of, stopped, walk_messages, Step};
 use super::show as S;
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
@@ -82,34 +78,27 @@ fn failed(m: &Value) -> bool {
 
 /// The catalog entry of the workflow tool.
 pub fn tool_schemas() -> Vec<Value> {
-    let s = json!({"type": "string"});
     let date = |what: &str| json!({"type": "string", "description": format!("YYYY-MM-DD: {what}")});
-    let file = |what: &str| json!({"type": "string", "description": format!("the workspace path of {what} (a path this chat shows: attachments/… or uploads/…)")});
     vec![fn_(
         APDT_REFUND,
         "Apply for the Hong Kong air passenger departure tax (APDT) refund on the Airport Authority's platform — only \
-when the user asks to apply. Pass what the user gave and what the boarding passes and the receipt show. When the \
-documents are not given and a mailbox is connected, code fetches them (status mail_read: read the boarding passes and \
-the receipt just read and call again with every field). Code checks the rule (left Hong Kong the same or the next day, \
-within 28 days, the tax paid), fills every page and uploads every document, the card from the Vault, and stops before \
-the face recognition, which is the user's own step on their phone. The JSON result has the reference and the link \
-(status confirmed) or says why not. status needs_input: ask the user for the missing fields, then call again with \
-every field; invalid: fix the arguments and call again. Write the reply from the result, using its hints \
-(code appends the facts in show to the reply).",
+when the user asks to apply. Call it with the flights the user gave (or the boarding passes and the receipt show) and the \
+refund method: no document is needed for the call — the user uploads the documents themselves, on their phone. When \
+the flights are not given and a mailbox is connected, code fetches the documents (status mail_read: read the boarding \
+passes and the receipt just read and call again with the flights). Code checks the rule (left Hong Kong the same or the next day, \
+within 28 days, the tax paid), opens the platform and goes through its notes and entry mode to the document upload, \
+and stops there: the documents' photos, the refund method and the face recognition are the user's, on their phone. \
+The JSON result has the rule's verdict, the deadline, the amount and the link (status ready) or says why not. status \
+needs_input: ask the user for the missing fields, then call again with every field; invalid: fix the arguments and call \
+again. Write the reply from the result (code appends the facts in show to the reply).",
         json!({
             "in_flight": {"type": "string", "description": "the flight INTO Hong Kong: airline code and number (\"SQ 890\")"},
             "in_date": date("the day that flight arrived in Hong Kong"),
             "out_flight": {"type": "string", "description": "the flight OUT of Hong Kong (the departure the tax was paid on)"},
             "out_date": date("the day that flight left Hong Kong"),
-            "in_pass_file": file("the boarding pass of the flight into Hong Kong"),
-            "out_pass_file": file("the boarding pass of the flight out of Hong Kong"),
-            "receipt_file": file("the e-ticket receipt or itinerary that shows the departure tax"),
             "tax_hkd": {"type": "integer", "description": "the Hong Kong Air Passenger Departure Tax the receipt shows (120 or 200); 0 when the receipt shows none"},
-            "passport_file": file("the photo / scan of the passport photo page the user attached"),
             "refund_method": {"type": "string", "enum": ["card", "cash", "alipay", "wechat", "alipayHK", "wechatHK"], "description": "how the user wants the refund"},
-            "wallet_account": {"type": "string", "description": "the e-wallet account the refund goes to (Alipay / WeChat Pay)"},
-            "card": {"type": "string", "description": "the Vault card the user named for the refund: its id from vault_list (id=…), its card_id, or its label exactly as listed"},
-            "address": s
+            "wallet_account": {"type": "string", "description": "the e-wallet account the refund goes to (Alipay / WeChat Pay)"}
         }),
         &[],
     )]
@@ -245,8 +234,6 @@ const KEYS: &[&str] = &[
     "passport_file",
     "refund_method",
     "wallet_account",
-    "card",
-    "address",
 ];
 const FILES: &[&str] = &[
     "in_pass_file",
@@ -388,32 +375,23 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
             None => problems.push(format!("refund_method: one of {}", METHODS.join(", "))),
         }
     }
-    for k in ["wallet_account", "card", "address"] {
-        let v = s_arg(&a, k);
-        if !v.is_empty() {
-            out.insert(k.into(), json!(v));
-        }
+    let wallet = s_arg(&a, "wallet_account");
+    if !wallet.is_empty() {
+        out.insert("wallet_account".into(), json!(wallet));
     }
     if !problems.is_empty() {
         return Checked::Invalid(problems);
     }
-    let docs_known = [
-        "in_flight",
-        "in_date",
-        "out_flight",
-        "out_date",
-        "in_pass_file",
-        "out_pass_file",
-        "receipt_file",
-    ]
-    .iter()
-    .all(|k| out.contains_key(*k));
-    // the documents not known yet: fetched and read first (the mail's, and the PDFs the user attached)
+    // the trip decides the rule (the same or the next day, within 28 days): known before the platform opens
+    let trip_known = ["in_flight", "in_date", "out_flight", "out_date"]
+        .iter()
+        .all(|k| out.contains_key(*k));
+    // the trip not known yet: the documents are fetched and read first (the mail's, and the PDFs the user attached)
     let user_pdfs: Vec<String> = user_files(cx.transcript)
         .into_iter()
         .filter(|f| f.to_lowercase().ends_with(".pdf"))
         .collect();
-    if !docs_known && (cx.mail_ready || !user_pdfs.is_empty()) && !docs_fetched(cx.transcript) {
+    if !trip_known && (cx.mail_ready || !user_pdfs.is_empty()) && !docs_fetched(cx.transcript) {
         out.insert("read_mail".into(), json!(true));
         out.insert("user_pdfs".into(), json!(user_pdfs));
         return Checked::Valid(Value::Object(out));
@@ -425,24 +403,11 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
     }
     let has = |k: &str| out.contains_key(k);
     let mut missing: Vec<String> = Vec::new();
-    if !has("passport_file") {
-        missing.push(
-            "passport_file (a photo or scan of the passport photo page, attached here)".into(),
-        );
+    if !(has("in_flight") && has("in_date")) {
+        missing.push("the flight into Hong Kong and its date (in_flight, in_date)".into());
     }
-    if !(has("in_flight") && has("in_date") && has("in_pass_file")) {
-        missing.push(
-            "the boarding pass of the flight into Hong Kong (in_flight, in_date, in_pass_file)"
-                .into(),
-        );
-    }
-    if !(has("out_flight") && has("out_date") && has("out_pass_file")) {
-        missing.push("the boarding pass of the flight out of Hong Kong (out_flight, out_date, out_pass_file)".into());
-    }
-    if !has("receipt_file") {
-        missing.push(
-            "receipt_file (the e-ticket receipt or itinerary that shows the departure tax)".into(),
-        );
+    if !(has("out_flight") && has("out_date")) {
+        missing.push("the flight out of Hong Kong and its date (out_flight, out_date)".into());
     }
     match out.get("refund_method").and_then(Value::as_str) {
         None => missing.push("refund_method (a credit / debit card, Alipay / WeChat Pay with the account, or cash at the airport)".into()),
@@ -459,198 +424,6 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
     Checked::Valid(Value::Object(out))
 }
 
-// ---------------------------------------------------------------- the platform's pages
-
-/// The address of a browser result (the envelope's `url`, else its `source="web page …"`).
-fn url_of(m: &Value) -> String {
-    static SRC: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"source="web page (https?://[^"\s]+)"#).unwrap());
-    let c = crate::links::decode(&content_of(m));
-    let v = json_of(m);
-    let u = get_str(&v, "url");
-    if !u.is_empty() {
-        return crate::links::decode(&u);
-    }
-    SRC.captures(&c)
-        .map(|x| x[1].to_string())
-        .unwrap_or_default()
-}
-
-/// The page a URL is on: the start page, the upload, refund, confirm or submit page (the face page is never opened).
-fn page_of(url: &str) -> &'static str {
-    let path = url.split('?').next().unwrap_or("").to_lowercase();
-    for p in [
-        "apdt_upload",
-        "apdt_refund",
-        "apdt_confirm",
-        "apdt_submit",
-        "apdt_face",
-    ] {
-        if path.contains(p) {
-            return p;
-        }
-    }
-    if path.contains("hktaxmobile") {
-        "start"
-    } else {
-        ""
-    }
-}
-
-/// The element read of the platform's error boxes (under a field, or for the whole page).
-const ERRORS: &str = "errors";
-/// The element read of the saved application's reference (the "Uploaded successfully" box).
-const SAVED: &str = "saved";
-/// The upload boxes by their fixed ids: the travel document, the arrival and the departure boarding pass, the proof of
-/// tax payment (the supplementary box is left alone).
-const BOXES: [(&str, &str); 4] = [
-    ("doc", "#file_doc"),
-    ("inboard", "#file_inboard"),
-    ("outboard", "#file_outboard"),
-    ("paydoc", "#file_paydoc"),
-];
-/// The refund page's card fields by their fixed ids (the Vault field each takes).
-const CARD_BOXES: [(&str, &str); 3] = [
-    ("number", "#card_number"),
-    ("expiry", "#card_valid"),
-    ("holder", "#card_holder"),
-];
-
-/// The arguments of `browser_read_elements` for a platform page: its error boxes, the saved reference, and the refs of
-/// the upload boxes and the card fields (given by the snapshot before, `data-persona-ref`).
-fn state_args() -> Value {
-    let mut read = vec![
-        json!({"name": ERRORS, "sel": ".err"}),
-        json!({"name": SAVED, "sel": "#refShown"}),
-    ];
-    for (name, sel) in BOXES.iter().chain(CARD_BOXES.iter()) {
-        read.push(json!({"name": format!("ref_{name}"), "sel": sel, "attr": "data-persona-ref", "hidden": true}));
-    }
-    json!({"read": read})
-}
-
-/// A platform page as its elements read it.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct PageState {
-    pub url: String,
-    /// the platform's error messages, in its own words
-    pub errors: Vec<String>,
-    /// the saved application's reference shown in the "Uploaded successfully" box
-    pub saved: String,
-    /// position of the read in the transcript
-    pub pos: usize,
-    read: Value,
-}
-
-impl PageState {
-    fn of(t: &[Value], m: &Value) -> PageState {
-        let errs = super::confirm::element_values(m, ERRORS);
-        PageState {
-            url: url_of(m),
-            errors: site_errors(&errs),
-            saved: super::confirm::element_values(m, SAVED)
-                .into_iter()
-                .find(|v| !v.trim().is_empty())
-                .unwrap_or_default(),
-            pos: pos(t, m),
-            read: m.clone(),
-        }
-    }
-
-    /// The ref of the element read as `ref_<name>` (an upload box or a card field).
-    fn ref_of(&self, name: &str) -> Option<String> {
-        super::confirm::element_values(&self.read, &format!("ref_{name}"))
-            .into_iter()
-            .find(|r| !r.trim().is_empty())
-    }
-}
-
-/// The platform's error messages among its error boxes' texts (the empty ones left out), each once, at most five.
-pub fn site_errors(boxes: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for b in boxes.iter().map(|b| b.trim()).filter(|b| !b.is_empty()) {
-        let b: String = b.chars().take(220).collect();
-        if !out.contains(&b) {
-            out.push(b);
-        }
-        if out.len() >= 5 {
-            break;
-        }
-    }
-    out
-}
-
-/// The reference the platform issued: the `bizId` parameter the submit page's address carries (a fixed part of the
-/// known page), in its format (4–12 letters and digits); nothing is looked for in the page's text.
-pub fn reference_on(url: &str) -> Option<String> {
-    let u = url::Url::parse(url).ok()?;
-    let (_, v) = u.query_pairs().find(|(k, _)| k == "bizId")?;
-    let ok = (4..=12).contains(&v.len()) && v.chars().all(|c| c.is_ascii_alphanumeric());
-    ok.then(|| v.to_string())
-}
-
-/// The first result of `tool` after position `after` (and its position).
-fn first_after<'a>(
-    transcript: &'a [Value],
-    tool: &str,
-    after: usize,
-) -> Option<(Value, &'a Value, usize)> {
-    results_of(transcript, tool)
-        .into_iter()
-        .map(|(a, m)| {
-            let p = pos(transcript, m);
-            (a, m, p)
-        })
-        .find(|(_, _, p)| *p > after)
-}
-
-/// The fill of `stage` (once per run, after position `after`): `Err(step)` to run it, `Ok(position)` once it ran.
-fn stage(
-    transcript: &[Value],
-    n: usize,
-    name: &str,
-    after: usize,
-    mut args: Value,
-) -> Result<usize, Step> {
-    args["stage"] = json!(name);
-    match results_of(transcript, "form_fill")
-        .into_iter()
-        .rfind(|(a, m)| sget(a, "stage") == name && pos(transcript, m) > after)
-    {
-        Some((_, m)) => Ok(pos(transcript, m)),
-        None => Err(Step::Calls(vec![call(n, "form_fill", args)])),
-    }
-}
-
-/// The page right after position `after` as its elements read it (the first `browser_read_elements` since):
-/// `Err(step)` to read it.
-fn read_after(transcript: &[Value], n: usize, after: usize) -> Result<PageState, Step> {
-    match first_after(transcript, "browser_read_elements", after) {
-        Some((_, m, _)) => Ok(PageState::of(transcript, m)),
-        None => Err(Step::Calls(vec![call(
-            n,
-            "browser_read_elements",
-            state_args(),
-        )])),
-    }
-}
-
-/// A snapshot after position `after` (it gives the page's elements their refs), then the page read: `Err(step)` for
-/// the next of the two.
-fn refs_after(transcript: &[Value], n: usize, after: usize) -> Result<PageState, Step> {
-    let snap = match first_after(transcript, "browser_snapshot", after) {
-        Some((_, _, p)) => p,
-        None => {
-            return Err(Step::Calls(vec![call(
-                n,
-                "browser_snapshot",
-                json!({"max_chars": 12000}),
-            )]))
-        }
-    };
-    read_after(transcript, n, snap)
-}
-
 // ---------------------------------------------------------------- the machine
 
 /// The refund method of the validated arguments.
@@ -662,23 +435,27 @@ pub enum Method {
     Wallet(String, String),
 }
 
-/// Everything the application needs, from the validated arguments.
+impl Method {
+    /// The method as the user reads it.
+    fn words(&self) -> String {
+        match self {
+            Method::Card => "to a credit / debit card (the platform's fee up to HK$18)".into(),
+            Method::Cash => "in cash at the airport's counter, after approval".into(),
+            Method::Wallet(w, a) => format!("to {w} ({a})"),
+        }
+    }
+}
+
+/// Everything the rule and the result need, from the validated arguments.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Facts {
     pub in_flight: String,
     pub in_date: Option<NaiveDate>,
     pub out_flight: String,
     pub out_date: Option<NaiveDate>,
-    pub in_file: String,
-    pub out_file: String,
-    pub receipt_file: String,
     /// the departure tax the receipt shows (HK$), when the arguments say
     pub tax: Option<u32>,
-    pub passport: String,
     pub method: Option<Method>,
-    /// the Vault card the user named
-    pub card: String,
-    pub address: String,
 }
 
 impl Facts {
@@ -695,85 +472,10 @@ impl Facts {
             in_date: date_of(&g("in_date")),
             out_flight: g("out_flight"),
             out_date: date_of(&g("out_date")),
-            in_file: g("in_pass_file"),
-            out_file: g("out_pass_file"),
-            receipt_file: g("receipt_file"),
             tax: a.get("tax_hkd").and_then(Value::as_u64).map(|t| t as u32),
-            passport: g("passport_file"),
             method,
-            card: g("card"),
-            address: g("address"),
         }
     }
-
-    /// The `form_fill` facts (the platform's flight fields take the number without the space); the card picked
-    /// before the platform opened rides along (`kept`): a call's arguments survive the transcript's compression, the
-    /// Vault list does not.
-    fn args(&self, card: Option<&Card>, holder: &str) -> Value {
-        let d = |x: Option<NaiveDate>| {
-            x.map(|d| d.format("%Y-%m-%d").to_string())
-                .unwrap_or_default()
-        };
-        let (method, account) = match &self.method {
-            Some(Method::Card) => ("card".to_string(), String::new()),
-            Some(Method::Cash) => ("cash".to_string(), String::new()),
-            Some(Method::Wallet(w, a)) => (w.clone(), a.clone()),
-            None => (String::new(), String::new()),
-        };
-        json!({"in_flight": self.in_flight.replace(' ', ""), "in_date": d(self.in_date),
-               "out_flight": self.out_flight.replace(' ', ""), "out_date": d(self.out_date),
-               "method": method, "account": account, "holder": holder,
-               "card": if card.is_some_and(|c| !c.name_only) { "vault" } else { "type" },
-               "address": self.address,
-               "kept": {"card": card.map(|c| json!({"id": c.id, "label": c.label, "name_only": c.name_only,
-                                                     "last4": c.last4, "holder": c.holder}))}})
-    }
-}
-
-/// The refund card from the Vault: the one the user named, else the first with its details, else the first.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Card {
-    pub id: String,
-    pub label: String,
-    /// saved by its name only (number UNKNOWN): the user types it
-    pub name_only: bool,
-    pub last4: String,
-    /// the Vault keeps the holder's name
-    pub holder: bool,
-}
-
-/// The card of a `vault_list` result: the one the tool argument names exactly (its Vault id, its card_id or its whole
-/// label — `claims::pick_card`), else the first with its details, else the first.
-fn vault_card(text: &str, named: &str) -> Option<Card> {
-    static L4: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"•+\s*(\d{4})").unwrap());
-    let cards = vault_cards(text);
-    let c = super::claims::pick_card(&cards, &[named.to_string()])?;
-    let line = text
-        .lines()
-        .find(|l| l.contains(&format!("id={} ", c.id)))
-        .unwrap_or("");
-    Some(Card {
-        id: c.id.clone(),
-        label: c.label.clone(),
-        name_only: c.name_only,
-        last4: L4
-            .captures(line)
-            .map(|x| x[1].to_string())
-            .unwrap_or_default(),
-        holder: line.contains("holder"),
-    })
-}
-
-/// The card the start page's fill kept.
-fn kept_card(a: &Value) -> Option<Card> {
-    let c = &a["kept"]["card"];
-    c.is_object().then(|| Card {
-        id: get_str(c, "id"),
-        label: get_str(c, "label"),
-        name_only: c["name_only"].as_bool().unwrap_or(false),
-        last4: get_str(c, "last4"),
-        holder: c["holder"].as_bool().unwrap_or(false),
-    })
 }
 
 /// Why the trip does not qualify (the rule), or `None` when it does.
@@ -915,10 +617,10 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             .collect();
         return Step::Done(json!({"status": MAIL_READ, "files": files, "hints": []}));
     }
+    // 2. the rule, then the platform
     let opened = results_of(t, "browser_navigate")
         .iter()
         .any(|(a, _)| sget(a, "url").contains(s.host));
-    // 2. the rule, then the card from the Vault, then the platform
     if !opened {
         if let Some((code, why)) = ineligible(&f, m.today, s.window_days) {
             return Step::Done(
@@ -927,296 +629,68 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
                 "hints": ["nothing was submitted"]}),
             );
         }
-        if f.method == Some(Method::Card) && results_of(t, "vault_list").is_empty() {
-            return Step::Calls(vec![call(n, "vault_list", json!({}))]);
-        }
         return Step::Calls(vec![call(
             n,
             "browser_navigate",
             json!({"url": s.start_url}),
         )]);
     }
-    // the card: the one the start page's fill kept (the Vault list may have been compressed since), else the list's
-    let card = match results_of(t, "form_fill")
+    // 3. the notes, "Start", "New Application" and the entry mode, up to the travel document's upload (its form
+    //    function, `crate::forms`); the photos from there on are the user's
+    let Some((_, fill)) = results_of(t, "form_fill")
         .into_iter()
         .find(|(a, _)| sget(a, "stage") == "start")
-    {
-        Some((a, _)) => kept_card(&a),
-        None if f.method == Some(Method::Card) => results_of(t, "vault_list")
-            .last()
-            .and_then(|(_, msg)| vault_card(&content_of(msg), &f.card)),
-        None => None,
+    else {
+        return Step::Calls(vec![call(n, "form_fill", json!({"stage": "start"}))]);
     };
-    let card = card.as_ref();
-    let holder = get_str(m.profile, "name_en").trim().to_uppercase();
-    let args_fill = f.args(card, &holder);
-    let stuck = |st: &PageState, wanted: &str| -> Step {
-        let url = st.url.as_str();
-        let errs = st.errors.clone();
-        let page = if page_of(url).is_empty() {
-            "current"
-        } else {
-            page_of(url)
-        };
-        let mut must = vec![format!(
-            "the refund application stopped on the platform's {page} page instead of the {wanted} page"
-        )];
-        if !errs.is_empty() {
-            must.push(format!("the site says: {}", errs.join(" ")));
-        }
-        must.push("the face recognition was not started; nothing was submitted".into());
-        let mut show = vec![S::fact(
-            "Stopped",
-            "已停止",
-            &format!(
-                "on the platform's {page} page instead of the {wanted} page; nothing was submitted"
-            ),
-        )];
-        if !errs.is_empty() {
-            show.push(S::fact("The site says", "网站提示", &errs.join(" ")));
-        }
-        Step::Done(
-            json!({"status": "stopped", "page": page, "expected": wanted, "site_errors": errs,
-            "url": url, "show": show, "hints": must}),
-        )
-    };
-    // a page is checked only until the stage after it ran: the transcript's compression may have shortened an older
-    // snapshot since (apdt_real 2026-11-01: the saved-reference page read again after the card fill, cut short)
-    let ran = |name: &str| {
-        results_of(t, "form_fill")
-            .iter()
-            .any(|(a, _)| sget(a, "stage") == name)
-    };
-    // 3. the notes and "Start New Application" → the upload page
-    let start = match stage(t, n, "start", 0, args_fill.clone()) {
-        Ok(p) => p,
-        Err(st) => return st,
-    };
-    let upload_page = match refs_after(t, n, start) {
-        Ok(x) => x,
-        Err(st) => return st,
-    };
-    let snap_pos = upload_page.pos;
-    if !ran("details") && page_of(&upload_page.url) != "apdt_upload" {
-        return stuck(&upload_page, "upload");
-    }
-    // 4. the uploads, each in its box (refs from the upload page's snapshot)
-    let files = [
-        ("doc", f.passport.clone()),
-        ("inboard", f.in_file.clone()),
-        ("outboard", f.out_file.clone()),
-        ("paydoc", f.receipt_file.clone()),
-    ];
-    let uploads = results_of(t, "browser_upload");
-    let mut uploaded = snap_pos;
-    for (what, path) in &files {
-        if path.is_empty() {
-            continue;
-        }
-        let tries: Vec<&(Value, &Value)> = uploads
-            .iter()
-            .filter(|(a, msg)| sget(a, "path") == *path && pos(t, msg) > snap_pos)
-            .collect();
-        if let Some((_, msg)) = tries.iter().find(|(_, msg)| !failed(msg)) {
-            uploaded = uploaded.max(pos(t, msg));
-            continue;
-        }
-        if let Some((_, msg)) = tries.first() {
-            let file = path.rsplit('/').next().unwrap_or(path);
-            let err: String = content_of(msg).chars().take(160).collect();
-            return Step::Done(json!({"status": "error", "file": file, "error": err,
-                "show": [S::fact(&format!("{file} not uploaded"), &format!("{file} 上传失败"), &format!("{err}; nothing was submitted"))],
-                "hints": []}));
-        }
-        let Some(r) = upload_page.ref_of(what) else {
-            return stuck(&upload_page, "upload");
-        };
-        return Step::Calls(vec![call(
-            n,
-            "browser_upload",
-            json!({"ref": r, "path": path}),
-        )]);
-    }
-    // 5. the details, the declarations and "Next Step" → the reference; "Continue" → the refund page
-    let details = match stage(t, n, "details", uploaded, args_fill.clone()) {
-        Ok(p) => p,
-        Err(st) => return st,
-    };
-    let saved_page = match read_after(t, n, details) {
-        Ok(x) => x,
-        Err(st) => return st,
-    };
-    let details_snap = saved_page.pos;
-    if !ran("continue") && saved_page.saved.is_empty() {
-        return stuck(&saved_page, "reference");
-    }
-    let cont = match stage(t, n, "continue", details_snap, json!({})) {
-        Ok(p) => p,
-        Err(st) => return st,
-    };
-    let refund_page = match read_after(t, n, cont) {
-        Ok(x) => x,
-        Err(st) => return st,
-    };
-    let refund_snap = refund_page.pos;
-    if !ran("refund") && page_of(&refund_page.url) != "apdt_refund" {
-        return stuck(&refund_page, "refund method");
-    }
-    // 6. the refund method; the card from the Vault (or typed by the user), then "Next"
-    let refund = match stage(t, n, "refund", refund_snap, args_fill.clone()) {
-        Ok(p) => p,
-        Err(st) => return st,
-    };
-    let mut before_next = refund;
-    if f.method == Some(Method::Card) {
-        let card_page = match refs_after(t, n, refund) {
-            Ok(x) => x,
-            Err(st) => return st,
-        };
-        let card_snap = card_page.pos;
-        let fills = results_of(t, "browser_fill_secret");
-        let done = |field: &str| {
-            fills
-                .iter()
-                .find(|(a, msg)| sget(a, "field") == field && pos(t, msg) > card_snap)
-                .map(|(_, msg)| !failed(msg))
-        };
-        let vault_ok = card.is_some_and(|c| !c.name_only) && done("number") != Some(false);
-        if let (true, Some(c)) = (vault_ok, card) {
-            let wanted: &[&str] = if c.holder {
-                &["number", "expiry", "holder"]
-            } else {
-                &["number", "expiry"]
-            };
-            for field in wanted {
-                if done(field).is_some() {
-                    continue;
-                }
-                if let Some(r) = card_page.ref_of(field) {
-                    return Step::Calls(vec![call(
-                        n,
-                        "browser_fill_secret",
-                        json!({"ref": r, "item_id": c.id, "field": field}),
-                    )]);
-                }
-            }
-            before_next = fills
-                .iter()
-                .map(|(_, msg)| pos(t, msg))
-                .filter(|p| *p > card_snap)
-                .max()
-                .unwrap_or(card_snap);
-        } else {
-            // no complete card in the Vault: the user types it, in a takeover (the only one of the run)
-            let takeovers = results_of(t, "browser_request_takeover");
-            match takeovers.iter().rfind(|(_, msg)| pos(t, msg) > card_snap) {
-                None => {
-                    let what = match card {
-                        Some(c) => format!("your {} is in the Vault by its name only", c.label),
-                        None => "there is no card in your Vault".to_string(),
-                    };
-                    return Step::Calls(vec![call(
-                        n,
-                        "browser_request_takeover",
-                        json!({"reason": format!("This step is yours: {what}. Type your card number for the refund into Card Number, then the expiry (MM/YY) into Validity Period; hand the browser back when done and I will finish the application.")}),
-                    )]);
-                }
-                Some((_, msg)) if handed_back(msg) => before_next = pos(t, msg),
-                Some(_) => {
-                    return Step::Done(json!({"status": "handed_over", "page": "refund",
-                        "show": [S::fact("Your step", "你的步骤", "the refund page is waiting in the browser tab for your card number and expiry; nothing was submitted")],
-                        "hints": []}))
-                }
-            }
-        }
-    }
-    let next_pos = match stage(t, n, "next", before_next, json!({})) {
-        Ok(p) => p,
-        Err(st) => return st,
-    };
-    let confirm_page = match read_after(t, n, next_pos) {
-        Ok(x) => x,
-        Err(st) => return st,
-    };
-    let confirm_snap = confirm_page.pos;
-    if !ran("confirm") && page_of(&confirm_page.url) != "apdt_confirm" {
-        return stuck(&confirm_page, "confirmation");
-    }
-    // 7. "Please confirm your application information": the declaration and "Confirm and Next Step"
-    let confirm = match stage(t, n, "confirm", confirm_snap, json!({})) {
-        Ok(p) => p,
-        Err(st) => return st,
-    };
-    let submit_page = match read_after(t, n, confirm) {
-        Ok(x) => x,
-        Err(st) => return st,
-    };
-    // 8. "Submit your application — Proceed with Facial Recognition": stop; the reference from the page's address
-    if page_of(&submit_page.url) != "apdt_submit" {
-        return stuck(&submit_page, "face recognition");
-    }
-    let url = submit_page.url.clone();
-    Step::Done(result(&f, reference_on(&url).as_deref(), &url, card))
-}
-
-/// The machine's JSON result once the application is confirmed: the reference, the trip, what was uploaded, the
-/// refund, and the face recognition with the application's own link and the last day for it.
-pub fn result(f: &Facts, reference: Option<&str>, url: &str, card: Option<&Card>) -> Value {
-    let leg = |no: &str, d: Option<NaiveDate>| json!({"flight": no, "date": d.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()});
-    let deadline = f.out_date.map(|d| d + Duration::days(APDT.window_days));
-    let refund = match (&f.method, card) {
-        (Some(Method::Card), Some(c)) if !c.last4.is_empty() => {
-            json!({"method": "card", "card": c.label, "last4": c.last4,
-            "fee": "up to HK$18", "arrives": "about 3 working days after approval"})
-        }
-        (Some(Method::Card), _) => {
-            json!({"method": "card", "fee": "up to HK$18", "arrives": "about 3 working days after approval"})
-        }
-        (Some(Method::Cash), _) => {
-            json!({"method": "cash", "where": "the airport's designated counter, after approval"})
-        }
-        (Some(Method::Wallet(w, _)), _) => {
-            json!({"method": w, "fee": "the e-wallet's processing fee"})
-        }
-        (None, _) => Value::Null,
-    };
-    let common = json!({"trip": {"arrival": leg(&f.in_flight, f.in_date), "departure": leg(&f.out_flight, f.out_date),
-                                  "tax_hkd": f.tax},
-        "uploaded": ["the passport photo page", "both boarding passes", "the e-ticket receipt"],
-        "identity": "name, date of birth and nationality from the profile, the passport number from the Vault (not shown)",
-        "refund": refund});
-    let Some(code) = reference else {
-        let mut v = json!({"status": "not_confirmed", "home": HOME,
-            "show": [S::fact("Reference number", "申请编号", "none showed on the page (the application is filled in and confirmed)"),
-                     S::link("Find it with \"Resume Application\"", "用 \"Resume Application\" 找回", "", HOME)],
-            "hints": ["the face recognition is yours, on your phone"]});
-        v.as_object_mut()
-            .unwrap()
-            .extend(common.as_object().cloned().unwrap_or_default());
-        return v;
-    };
-    let link = if url.contains("bizId=") { url } else { HOME };
-    let must = vec![
-        "the face recognition is your step, on your phone: press \"Proceed with Facial Recognition\" on the application's page".to_string(),
-        format!("if asked to sign in again: \"Resume Application\" at {HOME} with your travel document number and the reference {code}"),
-    ];
-    // the facts the user must read: appended to the reply by code (agent/show.rs)
-    let mut show = vec![
-        S::reference("Reference number", "申请编号", code),
-        S::link(
-            "Face recognition (your step, on your phone)",
-            "人脸识别（你的步骤，在手机上）",
-            "",
-            link,
-        ),
-    ];
-    if let Some(d) = deadline {
-        show.push(S::fact(
-            "Face recognition deadline",
-            "人脸识别截止日期",
-            &format!("{} (28 days after the departure flight)", long(d)),
+    if failed(fill) {
+        return Step::Done(stopped_result(
+            &f,
+            "the platform's page could not be filled",
         ));
     }
+    if let Some(why) = stopped(fill) {
+        return Step::Done(stopped_result(&f, &why));
+    }
+    Step::Done(result(&f, m.today))
+}
+
+/// The run stopped before the document upload (the platform's waiting room, a page that changed): the facts, the
+/// link, nothing submitted.
+fn stopped_result(f: &Facts, why: &str) -> Value {
+    let mut v = result(f, NaiveDate::MIN);
+    v["status"] = json!("stopped");
+    v["why"] = json!(why);
+    if let Some(show) = v["show"].as_array_mut() {
+        show.retain(|x| get_str(x, "label") != "Next steps (yours)");
+        show.push(S::fact(
+            "Stopped",
+            "已停止",
+            &format!("{why} — nothing was submitted; apply on your phone at the link"),
+        ));
+    }
+    v
+}
+
+/// The machine's JSON result at the document upload: the rule's verdict, the trip, the amount, the deadline, the
+/// steps that are the user's (the documents' photos, the refund method, the face recognition — on their phone) and
+/// the platform's link.
+pub fn result(f: &Facts, _today: NaiveDate) -> Value {
+    let leg = |no: &str, d: Option<NaiveDate>| json!({"flight": no, "date": d.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()});
+    let deadline = f.out_date.map(|d| d + Duration::days(APDT.window_days));
+    let day = |d: Option<NaiveDate>| d.map(long).unwrap_or_else(|| "?".into());
+    // the facts the user must read: appended to the reply by code (agent/show.rs)
+    let mut show = vec![S::fact(
+        "Eligible",
+        "符合条件",
+        &format!(
+            "arrived on {} {}, left on {} {} — the same or the next calendar day",
+            f.in_flight,
+            day(f.in_date),
+            f.out_flight,
+            day(f.out_date)
+        ),
+    )];
     if let Some(tax) = f.tax {
         show.push(S::amount(
             "Departure tax to be refunded",
@@ -1225,29 +699,39 @@ pub fn result(f: &Facts, reference: Option<&str>, url: &str, card: Option<&Card>
             "HKD",
         ));
     }
-    if let (Some(Method::Card), Some(c)) = (&f.method, card) {
-        if !c.last4.is_empty() {
-            show.push(S::fact(
-                "Refund to",
-                "退款到",
-                &format!("your {} card ending {}", c.label, c.last4),
-            ));
-        }
+    if let Some(d) = deadline {
+        show.push(S::fact(
+            "Apply by",
+            "申请截止",
+            &format!("{} (28 days after the departure flight)", long(d)),
+        ));
     }
-    let mut v = json!({"status": "confirmed", "reference": code, "link": link, "home": HOME,
-        "face_deadline": deadline.map(|d| d.format("%Y-%m-%d").to_string()), "show": show, "hints": must});
-    v.as_object_mut()
-        .unwrap()
-        .extend(common.as_object().cloned().unwrap_or_default());
-    v
+    let refund = f
+        .method
+        .as_ref()
+        .map(Method::words)
+        .unwrap_or_else(|| "the method you choose".into());
+    show.push(S::fact(
+        "Next steps (yours)",
+        "下一步（你的）",
+        &format!("the platform is open at its document upload (entry by air chosen): upload your passport's photo page, both boarding passes and the e-ticket receipt showing the tax, choose the refund {refund}, then do the face recognition — on your phone; nothing was submitted"),
+    ));
+    show.push(S::link(
+        "Refund platform",
+        "退税平台",
+        "Airport Authority Hong Kong",
+        HOME,
+    ));
+    json!({"status": "ready", "home": HOME,
+        "trip": {"arrival": leg(&f.in_flight, f.in_date), "departure": leg(&f.out_flight, f.out_date), "tax_hkd": f.tax},
+        "apply_by": deadline.map(|d| d.format("%Y-%m-%d").to_string()), "refund": refund,
+        "show": show, "hints": ["nothing was submitted; the documents, the refund method and the face recognition are the user's, on their phone"]})
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::driver::questions_after_navigate;
     use super::*;
-
-    const BACK: &str = "\"Takeover finished: the user handed browser control back.\"";
 
     fn today() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()
@@ -1263,40 +747,12 @@ mod tests {
 
     const REQUEST: &str = "I flew through Hong Kong this week on two separate tickets: Singapore Airlines into Hong Kong, then \
 Cathay Pacific to Tokyo the next morning, and I paid the Hong Kong departure tax on the Cathay ticket. Please apply for \
-the Hong Kong departure tax refund for me. The boarding passes and the e-ticket receipt are in my email, and I attached \
-the photo page of my passport. Refund it to my Visa card.";
-
-    /// A platform page as `browser_read_elements` reads it (the error boxes, the saved reference, the refs).
-    fn elements(url: &str, read: Value) -> String {
-        format!(
-            "<untrusted_content source=\"web page {url}\">\n{}\n</untrusted_content>",
-            json!({"trust": "untrusted", "source": format!("web page {url}"), "url": url, "title": "APDT",
-                   "elements": read})
-        )
-    }
-
-    /// The upload page: its boxes' refs (the snapshot gave them), no error.
-    fn upload_page() -> Value {
-        json!({"errors": ["", ""], "saved": [], "ref_doc": ["e9"], "ref_inboard": ["e11"], "ref_outboard": ["e15"],
-               "ref_paydoc": ["e20"], "ref_number": [], "ref_expiry": [], "ref_holder": []})
-    }
-
-    /// The upload page after "Next Step": the "Uploaded successfully" box with the reference.
-    fn saved_page() -> Value {
-        json!({"errors": [""], "saved": ["K7P2QD"]})
-    }
-
-    /// The refund page: the card fields' refs.
-    fn refund_page() -> Value {
-        json!({"errors": [""], "saved": [], "ref_number": ["e6"], "ref_expiry": ["e8"], "ref_holder": ["e7"]})
-    }
-
-    const SUBMIT_URL: &str = "https://app.apdtrefund.hk/hkTaxMobile/apdt_submit.html?lang=en&bizId=K7P2QD&type=1&tsType=bank&t=eyJyZWYiOiJLN1AyUUQifQ";
+the Hong Kong departure tax refund for me. The boarding passes and the e-ticket receipt are in my email. Refund it to my \
+card.";
 
     const SQ_PASS: &str = "attachments/BoardingPass_SQ890_LU_LUCAS.pdf";
     const CX_PASS: &str = "attachments/BoardingPass_CX500_LU_LUCAS.pdf";
     const RECEIPT: &str = "attachments/ETKT_1602345678901_Receipt.pdf";
-    const PASSPORT: &str = "uploads/2026-11/passport.jpg";
 
     fn mails() -> Vec<(String, Value)> {
         vec![
@@ -1304,28 +760,25 @@ the photo page of my passport. Refund it to my Visa card.";
                 "i-17".into(),
                 json!({"from": "Singapore Airlines <boardingpass@singaporeair.example>",
                 "subject": "Your boarding pass: SQ 890 Singapore to Hong Kong on 2026-10-29",
-                "body": "You are checked in for SQ 890 from Singapore (SIN) to Hong Kong (HKG) on 2026-10-29.",
                 "attachments": [{"filename": "BoardingPass_SQ890_LU_LUCAS.pdf", "type": "application/pdf"}]}),
             ),
             (
                 "i-18".into(),
                 json!({"from": "Cathay Pacific <eticket@cathaypacific.example>",
                 "subject": "Your e-ticket receipt: CX 500 Hong Kong to Tokyo Narita, 2026-10-30",
-                "body": "CX 500 Hong Kong (HKG) 09:05 to Tokyo Narita (NRT) 14:30 on 2026-10-30. Your receipt is attached.",
                 "attachments": [{"filename": "ETKT_1602345678901_Receipt.pdf", "type": "application/pdf"}]}),
             ),
             (
                 "i-19".into(),
                 json!({"from": "Cathay Pacific <checkin@cathaypacific.example>",
                 "subject": "Boarding pass: CX 500 Hong Kong to Tokyo Narita, 2026-10-30",
-                "body": "You are checked in for CX 500 on 2026-10-30. Please find your boarding pass attached.",
                 "attachments": [{"filename": "BoardingPass_CX500_LU_LUCAS.pdf", "type": "application/pdf"}]}),
             ),
         ]
     }
 
-    /// The world's answer to one of the machine's calls (the stand-in platform's pages, page by page).
-    fn respond(t: &[Value], name: &str, args: &Value, vault: &str) -> String {
+    /// The world's answer to one of the machine's calls; `fill` is the start page's fill result.
+    fn respond(name: &str, args: &Value, fill: &str) -> String {
         match name {
             "gmail_search" => json!({"count": 3, "messages": mails().iter().map(|(id, m)| json!({"id": id, "subject": m["subject"]})).collect::<Vec<_>>()}).to_string(),
             "gmail_get_message" => {
@@ -1338,33 +791,10 @@ the photo page of my passport. Refund it to my Visa card.";
                 sget(args, "filename")
             ),
             "files_read" => format!("<untrusted_content source=\"file {}\">\n--- page 1 ---\nBOARDING PASS\n</untrusted_content>", sget(args, "path")),
-            "vault_list" => vault.into(),
-            "browser_navigate" => page("https://app.apdtrefund.hk/hkTaxMobile/?lang=en", "  Notes for Application"),
-            // an action's result is the page it leaves, as a snapshot (the machine reads nothing in it)
-            "browser_upload" => page("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en", "  Document Upload"),
-            "browser_fill_secret" => page("https://app.apdtrefund.hk/hkTaxMobile/apdt_refund.html?lang=en&bizId=K7P2QD", "  Refund Method"),
-            "browser_request_takeover" => BACK.into(),
-            "form_fill" => json!({"url": "x", "filled": []}).to_string(),
-            "browser_snapshot" => page("https://app.apdtrefund.hk/hkTaxMobile/", "  (the page's elements get their refs)"),
-            "browser_read_elements" => {
-                // the page the last fill left
-                let last = results_of(t, "form_fill").last().map(|(a, _)| sget(a, "stage")).unwrap_or_default();
-                match last.as_str() {
-                    "start" => elements("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en", upload_page()),
-                    "details" => elements("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en", saved_page()),
-                    "continue" | "refund" => elements("https://app.apdtrefund.hk/hkTaxMobile/apdt_refund.html?lang=en&bizId=K7P2QD", refund_page()),
-                    "next" => elements("https://app.apdtrefund.hk/hkTaxMobile/apdt_confirm.html?lang=en&bizId=K7P2QD", json!({"errors": [""]})),
-                    "confirm" => elements(SUBMIT_URL, json!({"errors": []})),
-                    _ => elements("https://app.apdtrefund.hk/hkTaxMobile/?lang=en", json!({"errors": []})),
-                }
-            }
+            "browser_navigate" => page(HOME, "  Notes for Application"),
+            "form_fill" => fill.to_string(),
             _ => "ok".into(),
         }
-    }
-
-    /// The user's request with the passport photo attached.
-    fn user_msg(user: &str) -> Value {
-        json!({"role": "user", "content": format!("{user}\n\n### passport.jpg — image, 60000 bytes, path: {PASSPORT}")})
     }
 
     fn step(id: &str, name: &str, args: &Value, result: &str) -> Vec<Value> {
@@ -1376,7 +806,7 @@ the photo page of my passport. Refund it to my Visa card.";
     }
 
     fn checked(args: Value, t: &[Value], mail_ready: bool) -> Checked {
-        let p = profile();
+        let p = json!({"name_en": "LUCAS LU"});
         check(
             APDT_REFUND,
             &args,
@@ -1404,56 +834,25 @@ the photo page of my passport. Refund it to my Visa card.";
         (t, args)
     }
 
-    fn machine<'a>(p: &'a Value, t: &[Value], from: usize) -> Machine<'a> {
-        Machine {
-            profile: p,
-            mail_ready: true,
-            today: today(),
-            first: t[..from]
-                .iter()
-                .flat_map(tool_calls)
-                .filter(|tc| get_str(tc, "id").starts_with(PREFIX))
-                .count(),
-        }
-    }
-
-    /// Runs the machine from the latest `call_w` to its result against the stand-in platform; panics on a question after
-    /// the platform opened. `squeeze`: once the platform is open, after each turn every tool result but the last two
-    /// is cut as the transcript's compression cuts it.
-    fn run_with(
-        mut t: Vec<Value>,
-        args: &Value,
-        vault: &str,
-        squeeze: bool,
-    ) -> (Vec<Value>, Value) {
+    /// Runs the machine from the latest `call_w` to its result; panics on a question after the platform opened.
+    fn run(mut t: Vec<Value>, args: &Value, fill: &str) -> (Vec<Value>, Value) {
         let from = t
             .iter()
             .rposition(|x| tool_calls(x).iter().any(|tc| get_str(tc, "id") == "call_w"))
             .unwrap();
-        let p = profile();
-        for _ in 0..60 {
-            if squeeze && !calls_of(&t, "browser_navigate").is_empty() {
-                let tools: Vec<usize> = (0..t.len())
-                    .filter(|&k| get_str(&t[k], "role") == "tool")
-                    .collect();
-                for &k in tools.iter().rev().skip(2) {
-                    let c = content_of(&t[k]);
-                    if c.chars().count() > 600 && !c.contains(crate::agent::guards::COMPRESSED_MARK)
-                    {
-                        let head: String = c.chars().take(500).collect();
-                        t[k]["content"] = json!(format!(
-                            "{head} … [{}]",
-                            crate::agent::guards::COMPRESSED_MARK
-                        ));
-                    }
-                }
-            }
-            let m = machine(&p, &t, from);
+        let p = json!({});
+        for _ in 0..30 {
+            let m = Machine {
+                profile: &p,
+                mail_ready: true,
+                today: today(),
+                first: 0,
+            };
             match next(APDT_REFUND, args, &t[from..], &m) {
                 Step::Calls(c) => {
                     for call in &c {
                         assert!(call.id.starts_with(PREFIX), "{}", call.id);
-                        let result = respond(&t, &call.name, &call.args, vault);
+                        let result = respond(&call.name, &call.args, fill);
                         t.extend(step(&call.id, &call.name, &call.args, &result));
                     }
                     let q = questions_after_navigate(&t);
@@ -1465,10 +864,6 @@ the photo page of my passport. Refund it to my Visa card.";
         panic!("the run did not end")
     }
 
-    fn run(t: Vec<Value>, args: &Value, vault: &str) -> (Vec<Value>, Value) {
-        run_with(t, args, vault, false)
-    }
-
     fn calls_of(t: &[Value], name: &str) -> Vec<Value> {
         t.iter()
             .flat_map(tool_calls)
@@ -1478,51 +873,25 @@ the photo page of my passport. Refund it to my Visa card.";
             .collect()
     }
 
-    const VAULT: &str = "- id=vlt_1 · Passport Lucas · id_document · •••• 567X · fields: number, name, expiry, country · only on: apdtrefund.hk\n\
-- id=vlt_2 · Visa Lucas · card · •••• 1111 · fields: number, expiry, cvc, holder · only on: apdtrefund.hk";
-
-    fn profile() -> Value {
-        json!({"name_en": "LUCAS LU", "birthday": "1985-04-12", "nationality": "Australia", "email_personal": "lucas@example.com"})
-    }
-
     /// What the model reads in the boarding passes and the receipt the machine fetched.
     fn facts() -> Value {
         json!({"in_flight": "SQ 890", "in_date": "2026-10-29", "out_flight": "CX 500", "out_date": "2026-10-30",
                "in_pass_file": SQ_PASS, "out_pass_file": CX_PASS, "receipt_file": RECEIPT, "tax_hkd": 120,
-               "refund_method": "card", "card": "Visa"})
+               "refund_method": "card"})
     }
 
-    /// The request, the bare call, the documents fetched and read (`mail_read`), then the call again with the facts.
-    fn fetched_then_called() -> (Vec<Value>, Value) {
-        let (t, args) = started(
-            vec![user_msg(REQUEST)],
-            json!({"refund_method": "card", "card": "Visa"}),
-            true,
-        );
-        assert_eq!(args["read_mail"], true);
-        let (mut t, res) = run(t, &args, VAULT);
-        assert_eq!(res["status"], MAIL_READ);
-        let paths: Vec<String> = res["files"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|f| sget(f, "path"))
-            .collect();
-        assert_eq!(paths, [SQ_PASS, RECEIPT, CX_PASS]);
-        assert!(calls_of(&t, "browser_navigate").is_empty());
-        t.extend(workflow::result_exchange(&t, APDT_REFUND, &res));
-        started(t, facts(), true)
-    }
+    const FILLED: &str = r#"{"url": "https://app.apdtrefund.hk/hkTaxMobile/process/upload", "filled": [{"op": "click", "field": "entry_air", "ok": true}]}"#;
 
     #[test]
-    fn the_arguments_are_validated_and_what_is_missing_is_asked_before_the_platform() {
-        let t = vec![user_msg(REQUEST)];
-        // a mailbox and nothing known: the documents are fetched first
+    fn the_trip_and_the_refund_method_are_asked_before_the_platform_the_documents_are_not() {
+        let t = vec![json!({"role": "user", "content": REQUEST})];
+        // a mailbox and the trip unknown: the documents are fetched first
         match checked(json!({}), &t, true) {
             Checked::Valid(a) => assert_eq!(a["read_mail"], true),
             other => panic!("{other:?}"),
         }
-        // no mailbox, no documents: one needs_input naming everything only the user can give
+        // no mailbox: the trip and the method only the user can give — never the documents (their photos are the
+        // user's step on the platform)
         let bare = vec![
             json!({"role": "user", "content": "Please apply for my Hong Kong departure tax refund."}),
         ];
@@ -1530,163 +899,109 @@ the photo page of my passport. Refund it to my Visa card.";
             Checked::NeedsInput(m) => {
                 let m = m.join(" | ");
                 assert!(
-                    m.contains("passport_file")
-                        && m.contains("into Hong Kong")
-                        && m.contains("receipt_file")
+                    m.contains("into Hong Kong")
+                        && m.contains("out of Hong Kong")
                         && m.contains("refund_method"),
                     "{m}"
                 );
-                assert!(!m.to_lowercase().contains("address"), "{m}");
+                assert!(
+                    !m.contains("passport_file") && !m.contains("receipt_file"),
+                    "{m}"
+                );
             }
             other => panic!("{other:?}"),
         }
+        // the trip given in words: valid with no files
+        match checked(
+            json!({"in_flight": "sq890", "in_date": "2026-10-29", "out_flight": "CX 500", "out_date": "2026-10-30", "refund_method": "card"}),
+            &bare,
+            false,
+        ) {
+            Checked::Valid(v) => assert_eq!(v["in_flight"], "SQ 890"),
+            other => panic!("{other:?}"),
+        }
         // the fields the model can fix
-        let (t, _) = fetched_then_called();
         for (k, bad, why) in [
             ("in_flight", json!("890"), "airline code"),
             ("out_date", json!("30/10"), "not a YYYY-MM-DD"),
-            (
-                "receipt_file",
-                json!("attachments/other.pdf"),
-                "not a file of this chat",
-            ),
             ("refund_method", json!("bitcoin"), "one of card"),
         ] {
             let mut a = facts();
             a[k] = bad;
-            match checked(a, &t[..t.len() - 2], true) {
+            a["in_pass_file"] = json!("");
+            a["out_pass_file"] = json!("");
+            a["receipt_file"] = json!("");
+            match checked(a, &bare, false) {
                 Checked::Invalid(p) => assert!(p.iter().any(|x| x.contains(why)), "{k}: {p:?}"),
                 other => panic!("{k}: {other:?}"),
             }
         }
-        // a bare file name is the chat's file; the passport defaults to the user's only picture; flights normalised
-        let mut a = facts();
-        a["receipt_file"] = json!("ETKT_1602345678901_Receipt.pdf");
-        a["in_flight"] = json!("sq890");
-        match checked(a, &t[..t.len() - 2], true) {
-            Checked::Valid(v) => {
-                assert_eq!(
-                    (v["receipt_file"].as_str(), v["passport_file"].as_str()),
-                    (Some(RECEIPT), Some(PASSPORT))
-                );
-                assert_eq!(v["in_flight"], "SQ 890");
-            }
-            other => panic!("{other:?}"),
-        }
         // an e-wallet needs its account
         let mut a = facts();
         a["refund_method"] = json!("alipayHK");
-        a["card"] = json!("");
-        match checked(a, &t[..t.len() - 2], true) {
+        for k in ["in_pass_file", "out_pass_file", "receipt_file"] {
+            a[k] = json!("");
+        }
+        match checked(a, &bare, false) {
             Checked::NeedsInput(m) => assert!(m[0].contains("wallet_account"), "{m:?}"),
             other => panic!("{other:?}"),
         }
     }
 
     #[test]
-    fn the_refund_is_applied_by_code_from_the_mail_to_the_face_step() {
-        // apdt_real 2026-11-01: the model stopped on the upload page asking for a residential address the platform
-        // never asks for; code runs every step, no question once the platform is open, and stops before the face step
-        let (t, args) = fetched_then_called();
-        let q = calls_of(&t, "gmail_search");
-        assert_eq!(q.len(), 1);
-        assert!(sget(&q[0], "query").contains("\"boarding pass\""));
+    fn code_reads_the_mail_then_goes_to_the_platforms_document_upload_and_stops() {
+        let (t, args) = started(
+            vec![json!({"role": "user", "content": REQUEST})],
+            json!({"refund_method": "card"}),
+            true,
+        );
+        let (mut t, res) = run(t, &args, FILLED);
+        assert_eq!(res["status"], MAIL_READ);
         assert_eq!(calls_of(&t, "gmail_save_attachment").len(), 3);
         assert_eq!(calls_of(&t, "files_read").len(), 3);
-        let (t, res) = run(t, &args, VAULT);
-        // every upload in its box: the passport the user attached, the two boarding passes, the receipt
-        let ups: Vec<(String, String)> = calls_of(&t, "browser_upload")
-            .iter()
-            .map(|a| (sget(a, "ref"), sget(a, "path")))
-            .collect();
-        assert_eq!(
-            ups,
-            vec![
-                ("e9".into(), PASSPORT.into()),
-                ("e11".into(), SQ_PASS.into()),
-                ("e15".into(), CX_PASS.into()),
-                ("e20".into(), RECEIPT.into()),
-            ]
+        assert!(calls_of(&t, "browser_navigate").is_empty());
+        t.extend(workflow::result_exchange(&t, APDT_REFUND, &res));
+        let (t, args) = started(t, facts(), true);
+        let (t, res) = run(t, &args, FILLED);
+        assert_eq!(res["status"], "ready");
+        assert_eq!(calls_of(&t, "browser_navigate")[0]["url"], APDT.start_url);
+        assert_eq!(calls_of(&t, "form_fill"), [json!({"stage": "start"})]);
+        // no upload, no card, no hand-over: the documents and the face recognition are the user's, on their phone
+        for never in [
+            "browser_upload",
+            "browser_fill_secret",
+            "browser_request_takeover",
+            "vault_list",
+        ] {
+            assert!(calls_of(&t, never).is_empty(), "{never}");
+        }
+        let lines = super::super::show::lines(&res, false).join("\n");
+        assert!(lines.contains("- Apply by: 27 November 2026"), "{lines}");
+        assert!(lines.contains("HKD 120.00"), "{lines}");
+        assert!(
+            lines.contains("document upload") && lines.contains("face recognition"),
+            "{lines}"
         );
-        let fills = calls_of(&t, "form_fill");
-        let stages: Vec<String> = fills.iter().map(|a| sget(a, "stage")).collect();
-        assert_eq!(
-            stages,
-            ["start", "details", "continue", "refund", "next", "confirm"]
-        );
-        let d = &fills[1];
-        assert_eq!(
-            (
-                sget(d, "in_flight"),
-                sget(d, "in_date"),
-                sget(d, "out_flight"),
-                sget(d, "out_date")
-            ),
-            (
-                "SQ890".into(),
-                "2026-10-29".into(),
-                "CX500".into(),
-                "2026-10-30".into()
-            )
-        );
-        assert_eq!(sget(&fills[3], "method"), "card");
-        // the Visa card from the Vault, field by field; no takeover, no face click, no question
-        let secrets: Vec<String> = calls_of(&t, "browser_fill_secret")
-            .iter()
-            .map(|a| format!("{}:{}", sget(a, "field"), sget(a, "ref")))
-            .collect();
-        assert_eq!(secrets, ["number:e6", "expiry:e8", "holder:e7"]);
-        assert!(calls_of(&t, "browser_request_takeover").is_empty());
-        assert!(calls_of(&t, "browser_click").is_empty());
-        assert!(calls_of(&t, "ask_user").is_empty());
-        // the result: the reference from the page, the application's link, the card by its last digits, the deadline
-        assert_eq!(res["status"], "confirmed");
-        assert_eq!(
-            (res["reference"].as_str(), res["link"].as_str()),
-            (Some("K7P2QD"), Some(SUBMIT_URL))
-        );
-        assert_eq!(res["face_deadline"], "2026-11-27");
-        assert_eq!(res["trip"]["departure"]["flight"], "CX 500");
-        assert_eq!(res["trip"]["tax_hkd"], 120);
-        // the lines code appends to the reply (agent/show.rs)
-        let shown = super::super::show::lines(&res, false);
-        assert_eq!(
-            shown,
-            vec![
-                "- Reference number: **K7P2QD**".to_string(),
-                format!("- Face recognition (your step, on your phone): [{SUBMIT_URL}]({SUBMIT_URL})"),
-                "- Face recognition deadline: 27 November 2026 (28 days after the departure flight)".to_string(),
-                "- Departure tax to be refunded: HKD 120.00".to_string(),
-                "- Refund to: your Visa Lucas card ending 1111".to_string(),
-            ]
-        );
-        assert!(!res.to_string().contains("E1234567X"));
+        assert!(lines.contains(HOME), "{lines}");
     }
 
     #[test]
-    fn older_pages_cut_by_the_compression_do_not_stop_the_run() {
-        // apdt_real 2026-11-01: after the card number went in, the saved-reference snapshot (compressed by then) was
-        // read again and the run ended "stopped on the upload page"
-        let (t, args) = fetched_then_called();
-        let (t, res) = run_with(t, &args, VAULT, true);
-        assert_eq!(calls_of(&t, "browser_fill_secret").len(), 3, "{res}");
-        assert_eq!(calls_of(&t, "browser_upload").len(), 4, "{res}");
-        assert_eq!(res["reference"], "K7P2QD");
-        assert!(super::super::show::lines(&res, false)
-            .contains(&"- Refund to: your Visa Lucas card ending 1111".to_string()));
-    }
-
-    #[test]
-    fn a_card_by_name_only_is_typed_by_the_user_and_no_question_after_the_platform_opens() {
-        let (t, args) = fetched_then_called();
-        let vault = "- id=vlt_2 · Visa Lucas · card · UNKNOWN · fields: number, expiry · only on: apdtrefund.hk";
-        let (t, res) = run(t, &args, vault);
-        assert!(calls_of(&t, "browser_fill_secret").is_empty());
-        let tk = calls_of(&t, "browser_request_takeover");
-        assert_eq!(tk.len(), 1);
-        assert!(sget(&tk[0], "reason").contains("Card Number"));
-        assert!(questions_after_navigate(&t).is_empty());
-        assert_eq!(res["reference"], "K7P2QD");
+    fn a_page_that_did_not_reach_the_upload_stops_with_the_facts() {
+        let bare = vec![json!({"role": "user", "content": "apply"})];
+        let mut a = facts();
+        for k in ["in_pass_file", "out_pass_file", "receipt_file"] {
+            a[k] = json!("");
+        }
+        let (t, args) = started(bare, a, false);
+        let stop = r#"{"url": "x", "filled": [{"op": "require", "field": "travel_document", "ok": false, "stop": true, "why": "the platform did not reach its document upload"}]}"#;
+        let (_, res) = run(t, &args, stop);
+        assert_eq!(res["status"], "stopped");
+        let lines = super::super::show::lines(&res, false).join("\n");
+        assert!(
+            lines.contains("did not reach its document upload"),
+            "{lines}"
+        );
+        assert!(!lines.contains("Next steps (yours)"), "{lines}");
     }
 
     #[test]
@@ -1710,12 +1025,13 @@ the photo page of my passport. Refund it to my Visa card.";
         f.tax = Some(0);
         assert_eq!(ineligible(&f, today(), 28).unwrap().0, "no_tax");
         // ineligible: the result says why, and the platform is never opened
-        let (mut t, _) = fetched_then_called();
-        t.truncate(t.len() - 2);
         let mut a = facts();
         a["out_date"] = json!("2026-10-31");
-        let (t, args) = started(t, a, true);
-        let (t2, res) = run(t, &args, VAULT);
+        for k in ["in_pass_file", "out_pass_file", "receipt_file"] {
+            a[k] = json!("");
+        }
+        let (t, args) = started(vec![json!({"role": "user", "content": "apply"})], a, false);
+        let (t2, res) = run(t, &args, FILLED);
         assert_eq!(
             (res["status"].as_str(), res["reason"].as_str()),
             (Some("not_eligible"), Some("stayed_longer"))
@@ -1723,98 +1039,6 @@ the photo page of my passport. Refund it to my Visa card.";
         assert!(super::super::show::lines(&res, false)[0]
             .starts_with("- Not eligible for the Hong Kong departure tax refund: "));
         assert!(calls_of(&t2, "browser_navigate").is_empty());
-    }
-
-    #[test]
-    fn the_upload_boxes_the_errors_and_the_reference_are_read_from_the_page() {
-        let page = json!({"role": "tool", "tool_call_id": "c1",
-            "content": elements("https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en", upload_page())});
-        let st = PageState::of(std::slice::from_ref(&page), &page);
-        let refs: Vec<Option<String>> = ["doc", "inboard", "outboard", "paydoc", "number"]
-            .iter()
-            .map(|w| st.ref_of(w))
-            .collect();
-        assert_eq!(
-            refs,
-            [
-                Some("e9".into()),
-                Some("e11".into()),
-                Some("e15".into()),
-                Some("e20".into()),
-                None
-            ]
-        );
-        assert!(st.url.ends_with("apdt_upload.html?lang=en") && st.errors.is_empty());
-        let errs = site_errors(&[
-            "".into(),
-            "Departure date has exceeded the application deadline (28 calendar days from the departure date).".into(),
-            "Please check the items marked above.".into(),
-            "Please check the items marked above.".into(),
-        ]);
-        assert_eq!(errs.len(), 2);
-        assert!(errs[0].starts_with("Departure date has exceeded"));
-        assert_eq!(reference_on(SUBMIT_URL), Some("K7P2QD".into()));
-        // the page's text is never searched for a reference: no bizId in the address, no reference
-        assert_eq!(reference_on("https://app.apdtrefund.hk/x?lang=en"), None);
-        assert_eq!(
-            reference_on("https://app.apdtrefund.hk/x?bizId=K7%20P2"),
-            None
-        );
-        assert_eq!(
-            passport_default(&[PASSPORT.into(), "uploads/x.pdf".into()]),
-            Some(PASSPORT.into())
-        );
-        assert_eq!(
-            passport_default(&["uploads/a.jpg".into(), "uploads/b.png".into()]),
-            None
-        );
-        assert_eq!(
-            vault_card(VAULT, "Visa").map(|c| c.last4),
-            Some("1111".into())
-        );
-    }
-
-    #[test]
-    fn a_site_error_ends_the_run_with_the_sites_words() {
-        let (mut t, args) = fetched_then_called();
-        let from = t.len() - 2;
-        let p = profile();
-        let err_page = elements(
-            "https://app.apdtrefund.hk/hkTaxMobile/apdt_upload.html?lang=en",
-            json!({"errors": ["", "Departure date has exceeded the application deadline (28 calendar days from the departure date).",
-                              "Please check the items marked above."], "saved": []}),
-        );
-        let res = loop {
-            let m = machine(&p, &t, from);
-            match next(APDT_REFUND, &args, &t[from..], &m) {
-                Step::Calls(c) => {
-                    for call in &c {
-                        let details_done = results_of(&t, "form_fill")
-                            .last()
-                            .map(|(a, _)| sget(a, "stage"))
-                            == Some("details".into());
-                        let r = if call.name == "browser_read_elements" && details_done {
-                            err_page.clone()
-                        } else {
-                            respond(&t, &call.name, &call.args, VAULT)
-                        };
-                        t.extend(step(&call.id, &call.name, &call.args, &r));
-                    }
-                }
-                Step::Done(v) => break v,
-            }
-        };
-        assert_eq!(
-            (res["status"].as_str(), res["expected"].as_str()),
-            (Some("stopped"), Some("reference"))
-        );
-        assert!(
-            super::super::show::lines(&res, false)
-                .join(" ")
-                .contains("- The site says: Departure date has exceeded"),
-            "{res}"
-        );
-        assert!(questions_after_navigate(&t).is_empty());
     }
 
     #[test]
