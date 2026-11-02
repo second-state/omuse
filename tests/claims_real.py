@@ -9,8 +9,8 @@ delay SGD 150 after 6 hours with the PIR and receipts) in the request. Nothing i
    claims bot answers; the block code appends has the flight's line read from Singapore Airlines' status page (the live
    page decides what it says) and the link to that page; nothing submitted or sent.
 2. baggage — the bag did not arrive in Tokyo on yesterday's ANA NH 802 (ANA uses WorldTracer's passenger site); the PIR
-   file is NRTNH12345 (clearly fake); the user bought essentials for JPY 9,850. The user asks what to do, the bag's
-   status, the expenses claim drafted (not sent) and a check on the bag. Checked: the Insurance & claims bot answers; the
+   file is NRTNH12345 (clearly fake). The user asks, in the Insurance bot's example words, where the bag is and to keep
+   an eye on it. Checked: the Insurance & claims bot answers; the
    block has the file and WorldTracer's own answer for it (a fake reference: "No record was found …", read from the live
    page) with the link to ANA's page on mybag.aero, and the 21-day rule; the Automations page lists a check on the bag.
 One TIMING line per request. In run_in_docker.sh's REAL_SITES (one at a time).
@@ -55,10 +55,8 @@ async def delay(u: U.User) -> None:
 
 
 async def baggage(u: U.User) -> None:
-    a = await u.ask("My checked bag didn't arrive in Tokyo on my ANA flight NH 802 from Singapore yesterday. I filed a report at Narita, "
-                    "file reference NRTNH12345, "
-                    "and I've bought toiletries and a change of clothes for JPY 9,850 (I kept the receipts). What should I do? Check where my bag is, "
-                    f"draft my expenses claim (don't send it), and keep an eye on the bag for me. {POLICY}",
+    # the Insurance bot's example in the UI (bots/insurance.md), word for word
+    a = await u.ask("My checked bag didn't arrive on my ANA flight NH 802 to Tokyo yesterday. My Narita report is NRTNH12345. Where is my bag? Please keep an eye on it.",
                     label="baggage", approve=no_send, on_takeover=look, timeout=1200)
     check("baggage: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
     check("baggage: the Insurance & claims bot answered", "nsurance" in a.bot_link, a.bot_link)
