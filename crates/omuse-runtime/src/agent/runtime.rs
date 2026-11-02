@@ -1045,7 +1045,7 @@ message to use as written) stays in that language. Output only the rewritten rep
             .collect::<Vec<_>>()
             .join("\n\n");
         let o = ChatOpts {
-            max_tokens: Some(80),
+            max_tokens: Some(120),
             temperature: Some(0.0),
             no_think: true,
             ..opts("title", task_id)
