@@ -237,11 +237,16 @@ fn offer_line(o: &Value) -> Value {
     S::link("Offer", "商品", &text, &get_str(o, "url"))
 }
 
-/// The user's location: the profile's country (structured) and its currency.
-fn location(profile: &Value) -> (String, String) {
-    let country = crate::places::home_country(profile);
-    let currency = super::home_currency(profile, "");
-    (country, currency)
+/// Where it ships and the currency: the request's checked country (the one the user named, else the profile's home
+/// country) and that country's currency.
+fn location(sr: &ShopReq, profile: &Value) -> (String, String) {
+    if let Some(c) = crate::places::country(&sr.country) {
+        return (c.iso.to_string(), c.currency.to_string());
+    }
+    (
+        crate::places::home_country(profile),
+        super::home_currency(profile, ""),
+    )
 }
 
 /// The next step of a shopping run by API.
@@ -259,7 +264,7 @@ fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
     if !sr.url.is_empty() && sr.query.is_empty() && sr.choices.is_empty() && sr.pick.is_empty() {
         return None;
     }
-    let (country, currency) = location(m.profile);
+    let (country, currency) = location(sr, m.profile);
     let count = sr.ranking.count.unwrap_or(4).clamp(1, 6);
     // the model chose from the review: the card
     if !sr.choices.is_empty() || !sr.pick.is_empty() {

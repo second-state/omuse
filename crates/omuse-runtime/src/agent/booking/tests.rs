@@ -1634,6 +1634,48 @@ fn search_then_choose(args: Value, choices: Value) -> (Value, Vec<Value>, Value)
 }
 
 #[test]
+fn shopping_ships_to_the_profiles_home_country_or_asks_for_it() {
+    let check_with = |args: Value, p: &Value| {
+        check(
+            SHOP_ORDER,
+            &args,
+            &Ctx {
+                profile: p,
+                today: today(),
+                user_texts: &[],
+                transcript: &[],
+            },
+        )
+    };
+    let shoes = json!({"query": "running shoes", "action": "compare"});
+    // the profile's home country (or its home city's)
+    match check_with(shoes.clone(), &json!({"home_country": "SG"})) {
+        Checked::Valid(a) => assert_eq!(a["country"], "SG"),
+        other => panic!("{other:?}"),
+    }
+    match check_with(shoes.clone(), &json!({"home_city": "HKG"})) {
+        Checked::Valid(a) => assert_eq!(a["country"], "HK"),
+        other => panic!("{other:?}"),
+    }
+    // a country the user named wins over the profile's
+    let mut to_jp = shoes.clone();
+    to_jp["country"] = json!("jp");
+    match check_with(to_jp, &json!({"home_country": "SG"})) {
+        Checked::Valid(a) => assert_eq!(a["country"], "JP"),
+        other => panic!("{other:?}"),
+    }
+    // neither: asked before any search
+    match check_with(shoes.clone(), &json!({})) {
+        Checked::NeedsInput(m) => assert!(m[0].starts_with("country"), "{m:?}"),
+        other => panic!("{other:?}"),
+    }
+    // not a country code: the model fixes it
+    let mut bad = shoes;
+    bad["country"] = json!("Singapore");
+    assert!(matches!(check_with(bad, &json!({})), Checked::Invalid(_)));
+}
+
+#[test]
 fn a_shopping_pick_to_buy_links_the_stores_checkout() {
     // the user picks an offer to buy: code links that variant's checkout on the store (pay in the browser); no page
     // opened, nothing bought
