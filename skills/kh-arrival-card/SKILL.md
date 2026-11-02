@@ -13,7 +13,7 @@ This is the traveller's own legal declaration: code fills it (a form function wi
 
 ## How it runs (code)
 Filling it in is ONE `arrival_card_fill` call — only when the user asks for it to be filled in or applied for (a
-question about it is answered from this page and the official site, with no call). Arguments: `country: "Cambodia"` and every trip detail the user gave or a booking shows: `flight_no` (the flight arriving in Cambodia), `arrival_date` (YYYY-MM-DD), `origin_city`, `stay_name` / `stay_address`, `purpose`, and `departure_date` / `next_city` only when they are known.
+question about it is answered from this page and the official site, with no call). Arguments: `country: "Cambodia"` and every trip detail the user gave or a booking shows: `flight_no` (the flight arriving in Cambodia), `arrival_date` (YYYY-MM-DD), `arrival_airport` (IATA), `origin_city` / `origin_country`, `stay_name` / `stay_address`, `stay_phone` (the hotel's or host's phone number: the card requires it), `purpose`, and `departure_date` / `next_city` only when they are known.
 Code does everything else:
 - the bookings: with a mailbox connected and the trip not given, code runs the fixed mail searches and fetches
   the e-ticket and the hotel booking. The result `mail_read` means: read the flight and the stay in those mails
@@ -24,7 +24,7 @@ Code does everything else:
 - the official form, filled by its form function (fixed ids) from these facts, the profile and the Vault, with the
   defaults (every health and declaration question No, departure = arrival + 7 days, next city = the city the flight
   came from), never asked;
-- the hand-over for the user's own steps (type the CAPTCHA and press Submit) and the reference on the confirmation page.
+- the hand-over on the card's last step, Confirm Declaration, for the user's own step (tick the declaration and press Submit) and the reference on the confirmation page.
 
 The result `needs_input` lists what only the user can give: ask for exactly that, in one message, then call again
 with every field; `invalid`: fix the arguments and call again. Never fill, click or type on the form yourself.

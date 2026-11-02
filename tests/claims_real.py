@@ -69,8 +69,13 @@ async def baggage(u: U.User) -> None:
           a.shows("Treated as lost after:", "21 days after"), a.block)
     autos = await C.page_text(u, "schedules")
     print(f"INFO Automations page: {' '.join(autos.split())[:600]}")
-    check("baggage: a check on the bag is on the Automations page",
-          re.search(r"NRTNH12345|baggage|bag", autos, re.I) is not None, autos[:300])
+    # the file reference is the test's own: WorldTracer answers "No record was found" (its page's own message, in the
+    # block) and a check on a file that does not exist is pointless — the check is wanted only when WorldTracer found it
+    no_record = a.shows("No record was found")
+    print(f"INFO baggage: WorldTracer found no record: {no_record}")
+    if not no_record:
+        check("baggage: a check on the bag is on the Automations page",
+              re.search(r"NRTNH12345|baggage|bag", autos, re.I) is not None, autos[:300])
 
 
 async def main():

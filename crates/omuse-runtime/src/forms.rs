@@ -401,9 +401,10 @@ pub fn js_vault(
 /// The scripts of All Indonesia (allindonesia.imigrasi.go.id, React with custom choice rows).
 pub const ID_SCRIPTS: &[Script] = &[CHOICE_ROW, SCROLL_LIST, SEARCH_LIST];
 
-/// A read-only box that opens a list with its own search box (All Indonesia's countries, ports, airlines, purposes):
-/// open it, type `args.typed` into the search box that belongs to this list (several lists keep theirs on the page),
-/// click the row whose text is the value (exactly, else starting with it), and check the box now holds it.
+/// A read-only box that opens a list with its own search box (All Indonesia's countries, ports, airlines, purposes,
+/// hotels): open it, type `args.typed` into the search box that belongs to this list (several lists keep theirs on the
+/// page), wait for the row whose text is the value (exactly, else starting with it) among this list's rows, click it,
+/// and check the box now holds it.
 pub const SEARCH_LIST: Script = Script {
     name: "search_list",
     src: r#"async (sel, nth, args) => {
@@ -424,17 +425,36 @@ pub const SEARCH_LIST: Script = Script {
   for (let a = box.parentElement, k = 0; a && k < 8 && !search; a = a.parentElement, k++) {
     search = [...a.querySelectorAll('input[placeholder="Search"]')].filter(vis)[0] || null;
   }
-  if (search && args.typed) {
-    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-    search.focus(); set.call(search, args.typed);
-    search.dispatchEvent(new Event('input', {bubbles: true}));
-    await sleep(700);
+  // this list's rows first: the search box's nearest ancestor that holds the list (a virtual list's items, the
+  // port of entry's "DPS - I GUSTI NGURAH RAI AIRPORT" rows sit beside the search box, not under it), else the page
+  let near = null;
+  for (let a = search && search.parentElement, k = 0; a && k < 8 && !near; a = a.parentElement, k++) {
+    if (a.querySelector('[data-index], [data-testid="virtuoso-item-list"]')) near = a;
   }
-  // the rows near the search box first (its list), else anywhere on the page
-  const near = search ? search.parentElement.parentElement.parentElement : document;
+  near = near || document;
   const rows = () => [...near.querySelectorAll('li, div, span, p')]
     .filter(e => vis(e) && e.children.length === 0 && e !== box && e.innerText);
-  let r = rows().find(e => norm(e.innerText) === want) || rows().find(e => norm(e.innerText).startsWith(want));
+  const match = () => rows().find(e => norm(e.innerText) === want) || rows().find(e => norm(e.innerText).startsWith(want));
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  const type = async () => {
+    if (!search || !args.typed) return;
+    search.focus(); set.call(search, '');
+    search.dispatchEvent(new Event('input', {bubbles: true}));
+    await sleep(150);
+    set.call(search, args.typed);
+    search.dispatchEvent(new Event('input', {bubbles: true}));
+    await sleep(700);
+  };
+  // the list's own rows may still be loading (they depend on the field before: the airlines come after the transport
+  // type, the ports after the mode): wait for its first rows (up to 5 s; a list searched on the server — the hotels —
+  // shows none before the typing)
+  for (let i = 0; i < 20 && near !== document && !near.querySelector('[data-index]'); i++) await sleep(250);
+  await type();
+  // a list searched on the server shows its rows a moment after the typing: wait for the row (up to 6 s); rows that
+  // came after the search was typed are searched again once
+  let r = match();
+  for (let i = 0; i < 24 && !r; i++) { await sleep(250); r = match(); }
+  if (!r) { await type(); for (let i = 0; i < 24 && !r; i++) { await sleep(250); r = match(); } }
   if (!r) r = [...document.querySelectorAll('li, div, span, p')].filter(e => vis(e) && e.children.length === 0)
     .find(e => norm(e.innerText) === want) || null;
   if (!r) { box.click(); return {ok: false, why: 'no such row'}; }
@@ -786,19 +806,22 @@ fn jp_visit_japan_web(i: &Inputs) -> Vec<Op> {
 }
 
 /// The Cambodia e-Arrival Card (https://arrival.gov.kh/ → "Submit e-Arrival" → "Sign In as Guest" →
-/// `/e-arrival/foreigner/individual-form/draft`), mapped from the live site on 2026-11-02: an Angular Material stepper
-/// (Profile, Travel Information, Health, Customs, Confirm). Fields are `formcontrolname`s; dates are three
-/// `mat-select`s (Day / Month / Year, two-digit options) — passport expiry, birth date and departure in that order on
-/// the page; gender a `mat-select` (Female / Male / Other); countries a picker dialog (the visible box next to the
-/// control opens a search box and a list "Australian . AUS"); the arrival date a radio per allowed day ("November 04,
-/// 2026"). Best effort, the Profile step only: the passport, names, gender, birth date and contact. Its Next needs the
-/// occupation, the phone's country code and the country of birth (pickers whose rows are not mapped), so the Travel,
-/// Health and Customs steps after it (hidden until then) are the user's, as are the CAPTCHA and Submit. The `mat-select`s
-/// are set by the named script `MAT_SELECT`.
+/// `/e-arrival/foreigner/individual-form/draft`), walked end to end on the live site on 2026-11-02 (the map:
+/// docs/sites/kh-arrival-card.md): an Angular Material stepper — 1 Profile, 2 Travel Information, 3 Health Information,
+/// 4 Customs Declaration, 5 Confirm Declaration. Fields are `formcontrolname`s; dates are three `mat-select`s (Day /
+/// Month / Year, two-digit options; passport expiry, birth date and departure, in that order in the document) set by
+/// the named script `MAT_SELECT`; countries, occupation, phone code and purpose are picker dialogs (the visible box
+/// after the control opens a search box `searchControl` and rows `a.avatar-vt-item`). Profile's Next asks "Is the
+/// information correct?" (Correct); the draft is then saved and the contact block (occupation, email, phone) shows again,
+/// empty, on step 2 — it is filled on both. Health and customs questions get No (the user's default; they review the
+/// card), the customs step's declaration box is ticked (its Next needs it). The plan ends on step 5, whose declaration
+/// box and Submit are the user's.
 fn kh_arrival_card(i: &Inputs) -> Vec<Op> {
+    let f = i.facts;
     let (given, family) = i.name_parts();
     let nat3 = iso3(&i.nationality());
-    let (_, mobile) = phone_parts(&i.phone());
+    let (code, mobile) = phone_parts(&i.phone());
+    let dial_country = dial_country(&code);
     let dob = i.birthday();
     let sex = match i.sex_code().as_str() {
         "F" => "Female",
@@ -806,47 +829,66 @@ fn kh_arrival_card(i: &Inputs) -> Vec<Op> {
         "X" => "Other",
         _ => "",
     };
-    // a mat-select (control `name`, the `nth` on the page): the named script opens it, clicks the option and checks it
+    // a mat-select (control `name`, the `nth` in the document): the named script opens it, clicks the option and
+    // checks what it shows
     let mat = |field: &'static str, name: &str, nth: usize, value: &str| {
-        [js(
+        js(
             field,
             &MAT_SELECT,
             &format!("mat-select[formcontrolname={name}]"),
             nth,
             value,
-        )]
+        )
     };
-    // the same with the Vault ID document's date part (Sentinel puts the value in)
+    // the same with the Vault ID document's expiry part (Sentinel puts the value in)
     let mat_vault = |field: &'static str, name: &str, nth: usize, fmt: &'static str| {
-        [js_vault(
+        js_vault(
             field,
             &MAT_SELECT,
             &format!("mat-select[formcontrolname={name}]"),
             nth,
             "expiry",
             fmt,
-        )]
+        )
     };
-    // a country picker: open the dialog, type the code into its search box, click the row ending ". AUS"
-    let picker = |field: &'static str, name: &str, code: &str| {
-        let row = if code.is_empty() {
-            String::new()
-        } else {
-            format!(". {code}")
-        };
-        [
-            Op::new(
-                field,
-                json!({"op": "click", "sel": format!("input[formcontrolname={name}] + input")}),
-                code,
-            ),
-            Op::new(
-                field,
-                json!({"op": "pick", "sel": "input[formcontrolname=searchControl]", "type": code,
-                       "value": row, "option_sel": "a.avatar-vt-item"}),
-                code,
-            ),
-        ]
+    // a picker dialog: open it by the visible box after the control, type into its search box, click the row whose
+    // text is (starts with, contains) `row`, and give the dialog a moment to close and the control its value (the
+    // next picker opens only then)
+    let picker = |field: &'static str, name: &str, typed: &str, row: &str| {
+        let [open, pick] = dropdown(
+            field,
+            &format!("input[formcontrolname={name}] + input"),
+            "input[formcontrolname=searchControl]",
+            "a.avatar-vt-item",
+            typed,
+            row,
+        );
+        [open, pick, wait(800)]
+    };
+    // the step `title` is the stepper's selected step (each step renders a moment after the last one's Next)
+    let at_step = |field: &'static str, title: &str| {
+        Op::new(
+            field,
+            json!({"op": "await", "sel": "mat-step-header[aria-selected=true]", "text": title, "wait_ms": 20_000}),
+            "x",
+        )
+    };
+    // the contact block: on step 1, and again on step 2 after the draft is saved
+    let contact = |ops: &mut Vec<Op>| {
+        ops.extend(picker(
+            "occupation",
+            "occupationOption",
+            KH_OCCUPATION_BUSINESS,
+            KH_OCCUPATION_BUSINESS,
+        ));
+        ops.push(text("email", "input[formcontrolname=email]", &i.email()));
+        ops.extend(picker(
+            "phone_code",
+            "phoneCountryCode",
+            &dial_country,
+            &dial_country,
+        ));
+        ops.push(text("phone", "input[formcontrolname=phoneNumber]", &mobile));
     };
     let mut ops = vec![
         // the home page and the guest sign-in (already on the form: not there, skipped)
@@ -854,7 +896,13 @@ fn kh_arrival_card(i: &Inputs) -> Vec<Op> {
         wait(1500),
         choose("guest", "", "Sign In as Guest"),
         // the guest form renders in 6–8 s
-        wait(9000),
+        Op::new(
+            "await_form",
+            json!({"op": "await", "sel": "input[formcontrolname=passportNumber]", "wait_ms": 20_000}),
+            "x",
+        ),
+        wait(1500),
+        // --- 1. Profile
         vault_as(
             "passport_number",
             "text",
@@ -863,26 +911,217 @@ fn kh_arrival_card(i: &Inputs) -> Vec<Op> {
             "",
         ),
     ];
-    ops.extend(picker("passport_country", "nationality", &nat3));
-    ops.push(wait(500));
-    ops.extend(mat_vault("passport_expiry_day", "day", 0, "%d"));
-    ops.extend(mat_vault("passport_expiry_month", "month", 0, "%m"));
-    ops.extend(mat_vault("passport_expiry_year", "year", 0, "%Y"));
+    let nat_row = if nat3.is_empty() {
+        String::new()
+    } else {
+        format!(". {nat3}")
+    };
+    ops.extend(picker("passport_country", "nationality", &nat3, &nat_row));
     ops.extend([
+        mat_vault("passport_expiry_day", "day", 0, "%d"),
+        mat_vault("passport_expiry_month", "month", 0, "%m"),
+        mat_vault("passport_expiry_year", "year", 0, "%Y"),
         text("surname", "input[formcontrolname=surname]", &family),
         text("given_name", "input[formcontrolname=givenName]", &given),
+        mat("sex", "gender", 0, sex),
+        mat("dob_day", "day", 1, &date(dob, "%d")),
+        mat("dob_month", "month", 1, &date(dob, "%m")),
+        mat("dob_year", "year", 1, &date(dob, "%Y")),
     ]);
-    ops.extend(mat("sex", "gender", 0, sex));
-    ops.extend(mat("dob_day", "day", 1, &date(dob, "%d")));
-    ops.extend(mat("dob_month", "month", 1, &date(dob, "%m")));
-    ops.extend(mat("dob_year", "year", 1, &date(dob, "%Y")));
-    // (the country of birth's picker is left for the user: its rows are not mapped, and a picker left open blocks the
-    // rest of the page)
+    // the country of birth: its list is country names ("Australia"); only from the profile's `birthplace`
+    let birthplace = i.birthplace();
+    ops.extend(picker(
+        "birth_country",
+        "birthCountry",
+        &birthplace,
+        &birthplace,
+    ));
+    contact(&mut ops);
     ops.extend([
-        text("email", "input[formcontrolname=email]", &i.email()),
-        text("phone", "input[formcontrolname=phoneNumber]", &mobile),
+        button("next_to_travel", "Next"),
+        // "Is the information correct?" — the passport number and country read back: Correct
+        Op::new(
+            "await_check",
+            json!({"op": "await", "sel": ".cdk-overlay-container button", "text": "Correct", "wait_ms": 10_000}),
+            "x",
+        ),
+        Op::new(
+            "information_correct",
+            json!({"op": "button", "sel": ".cdk-overlay-container button", "text": "Correct"}),
+            "x",
+        ),
+        at_step("await_travel", "2 Travel Information"),
+        wait(1500),
+        // --- 2. Travel Information
+    ]);
+    contact(&mut ops);
+    ops.push(Op::new(
+        "arrival_date",
+        json!({"op": "click", "sel": "mat-radio-button", "text": date(i.arrival(), "%B %d, %Y")}),
+        &date(i.arrival(), "%B %d, %Y"),
+    ));
+    let leave = i.departure();
+    ops.extend([
+        mat("departure_day", "day", 2, &date(leave, "%d")),
+        mat("departure_month", "month", 2, &date(leave, "%m")),
+        mat("departure_year", "year", 2, &date(leave, "%Y")),
+        mat(
+            "port_of_entry",
+            "portOfEntry",
+            0,
+            kh_port(&f.arrival_airport),
+        ),
+    ]);
+    let purpose = match f.purpose.as_str() {
+        "holiday" | "" => "Holiday/Pleasure/Vocation",
+        "business" => "Business/Meeting/Conference/ Convention/Exhibition",
+        "study" => "Education/Training",
+        "family" => "Visiting Friends/Relatives",
+        "transit" => "Transit",
+        _ => "",
+    };
+    ops.extend(picker(
+        "purpose",
+        "travelPurposeOption",
+        purpose.split('/').next().unwrap_or(""),
+        purpose,
+    ));
+    if !f.flight_no.is_empty() {
+        ops.extend([
+            mat("air_transport", "typeOfAirTransport", 0, "Commercial"),
+            // the site writes the number as "SQ 166" (the validated flight's own form)
+            text(
+                "flight_number",
+                "input[formcontrolname=flightNumber]",
+                &f.flight_no,
+            ),
+        ]);
+    }
+    // the stay: a hotel by name and its phone; the user's own or a friend's home is "Private Residential", whose
+    // province picker is left for the user (its rows are not mapped)
+    let stay_phone = i.arg("stay_phone");
+    match f.stay_kind.as_str() {
+        "hotel" => ops.extend([
+            mat("accommodation_type", "accommodationType", 0, "Hotel"),
+            text(
+                "hotel_name",
+                "input[formcontrolname=hotelName]",
+                &f.stay_name,
+            ),
+            text(
+                "stay_phone",
+                "input[formcontrolname=hotelNumber]",
+                &stay_phone,
+            ),
+        ]),
+        "own" | "friends" => ops.extend([
+            mat(
+                "accommodation_type",
+                "accommodationType",
+                0,
+                "Private Residential",
+            ),
+            text(
+                "stay_phone",
+                "input[formcontrolname=hotelNumber]",
+                &if stay_phone.is_empty() && f.stay_kind == "own" {
+                    i.phone()
+                } else {
+                    stay_phone
+                },
+            ),
+        ]),
+        _ => {}
+    }
+    // where the flight comes from, and the next country: the same (the user's default — next city = the city the
+    // flight came from), picked in its own list (the box "Same as last" copies only a value already committed)
+    let origin = f.origin_country.clone();
+    ops.extend(picker("last_country", "lastCity", &origin, &origin));
+    ops.extend(picker("next_country", "nextCity", &origin, &origin));
+    ops.extend([
+        button("next_to_health", "Next"),
+        at_step("await_health", "3 Health Information"),
+        wait(800),
+    ]);
+    // --- 3. Health Information: three Yes / No questions, No (the user's default; they review the card)
+    for (n, field) in ["yellow_fever", "symptoms", "visited_regions"]
+        .into_iter()
+        .enumerate()
+    {
+        ops.push(Op::new(
+            field,
+            json!({"op": "click", "sel": "mat-radio-group[formcontrolname=answer] mat-radio-button:last-of-type input", "nth": n}),
+            "No",
+        ));
+    }
+    ops.extend([
+        button("next_to_customs", "Next"),
+        at_step("await_customs", "4 Customs Declaration"),
+        wait(800),
+    ]);
+    // --- 4. Customs Declaration: two Yes / No checkbox pairs, No; the step's declaration box (its Next needs it)
+    for (n, field) in ["currency_over_10000", "goods_to_declare"]
+        .into_iter()
+        .enumerate()
+    {
+        ops.push(Op::new(
+            field,
+            json!({"op": "check", "sel": ".check-box-group mat-checkbox:last-of-type input", "nth": n}),
+            "No",
+        ));
+    }
+    ops.extend([
+        tick_sel(
+            "customs_confirm",
+            "mat-checkbox[formcontrolname=confirmDeclaration] input",
+        ),
+        button("next_to_confirm", "Next"),
+        // --- 5. Confirm Declaration: the user's declaration box and Submit
+        at_step("await_confirm", "5 Confirm Declaration"),
     ]);
     ops
+}
+
+/// The Cambodia card's occupation: the general business person of its fixed list (the user's rule, 2026-11-02). The
+/// list (walked 2026-11-02) has no business owner or manager: Student, Teacher, Farmer, Journalist, Government
+/// official, Company employee, Military personnel, Retired, Religious personnel, Member of parliament, Crew member,
+/// NGO staff, Artist, Self-employed, Worker, Police officer, Other.
+pub const KH_OCCUPATION_BUSINESS: &str = "Company employee";
+
+/// The Cambodia card's port of entry for an arrival airport: the `portOfEntry` option. Phnom Penh's flights land at
+/// Techo International (KTI) since September 2025, so PNH is KTI. Empty for any other airport (left for the user).
+pub fn kh_port(iata: &str) -> &'static str {
+    match iata.trim().to_uppercase().as_str() {
+        "PNH" | "KTI" => "Techo International Airport (KTI)",
+        "REP" | "SAI" => "Siem Reap Angkor International Airport (SAI)",
+        "KOS" => "Sihanoukville International Airport (KOS)",
+        _ => "",
+    }
+}
+
+/// The country of a calling code `phone_parts` knows, as phone-code lists name it ("61" → Australia); empty otherwise.
+pub fn dial_country(code: &str) -> String {
+    match code {
+        "1" => "United States",
+        "44" => "United Kingdom",
+        "61" => "Australia",
+        "64" => "New Zealand",
+        "65" => "Singapore",
+        "60" => "Malaysia",
+        "62" => "Indonesia",
+        "63" => "Philippines",
+        "66" => "Thailand",
+        "81" => "Japan",
+        "82" => "South Korea",
+        "84" => "Vietnam",
+        "86" => "China",
+        "852" => "Hong Kong",
+        "853" => "Macau",
+        "886" => "Taiwan",
+        "91" => "India",
+        _ => "",
+    }
+    .to_string()
 }
 
 /// The Philippines eTravel (https://etravel.gov.ph/ → "Click here to Sign In" → `/signin`), mapped from the live site
@@ -1178,16 +1417,20 @@ pub fn choose_in(field: &'static str, scope: &str, sel: &str, text: &str) -> Op 
     )
 }
 
-/// All Indonesia's arrival card (https://allindonesia.imigrasi.go.id/ → Languages → English → Foreign Visitor), mapped
-/// from the live site on 2026-10-31: four steps — Personal Information, Travel Details, Mode of Transportation &
-/// Address, Declaration — each saved on Next. Ids carry a session suffix (prefix selectors); dropdowns are readonly
-/// inputs with a Search box and a list; Yes / No and gender are readonly inputs to click; dates DD/MM/YYYY typed; the
-/// arrival date a list of the allowed days ("DD MONTH YYYY"). The visa question defaults to No (a visa on arrival is
-/// bought at the airport; the user reviews it). The certification and Submit are the user's.
+/// All Indonesia's arrival card (https://allindonesia.imigrasi.go.id/ → Languages → English → Foreign Visitor), walked end
+/// to end on the live site on 2026-11-02 (the map: docs/sites/id-arrival-card.md): four routes under
+/// `/arrival-card-submission/` — personal-information, travel-details/individual, mode-of-transport/foreigner,
+/// declaration/individual — each saved on Next. Ids carry a session suffix (prefix selectors); dropdowns are readonly
+/// inputs opening a list with its own Search box (`SEARCH_LIST`; the hotels are searched on the server, so the stay
+/// must be a hotel on the site's own list); Yes / No and gender are readonly inputs in clickable rows (`CHOICE_ROW`, or
+/// by their order on the declaration page); dates DD/MM/YYYY typed; the arrival day a scrolling list ("04 NOVEMBER
+/// 2026", `SCROLL_LIST`). The visa question and the declarations default to No (a visa on arrival is bought at the
+/// airport; the user reviews every answer). The plan ends on the declaration page: the seat number, the baggage count,
+/// the certification and Submit are the user's.
 fn id_arrival_card(i: &Inputs) -> Vec<Op> {
     let f = i.facts;
-    let (_, number) = flight_parts(&f.flight_no);
-    let (code, mobile) = phone_parts(&i.phone());
+    let (code, number) = flight_parts(&f.flight_no);
+    let (dial, mobile) = phone_parts(&i.phone());
     let nat = i.nationality().to_uppercase();
     let birthplace = i.birthplace().to_uppercase();
     let sex = match i.sex_code().as_str() {
@@ -1209,17 +1452,18 @@ fn id_arrival_card(i: &Inputs) -> Vec<Op> {
         "other" => "OTHERS",
         _ => "",
     };
-    let hotel_words: String = f
-        .stay_name
-        .split_whitespace()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_uppercase();
     let search = "input[placeholder=\"Search\"]";
     // a list with its own search box: the named script types into that list's box and clicks the row
     let dd = |field: &'static str, open: &str, typed: &str, pick: &str| {
         js_with(field, &SEARCH_LIST, open, 0, pick, json!({"typed": typed}))
+    };
+    // the next route's first field shows (each step renders a moment after the last one's Next)
+    let await_el = |field: &'static str, sel: &str| {
+        Op::new(
+            field,
+            json!({"op": "await", "sel": sel, "wait_ms": 15_000}),
+            "x",
+        )
     };
     let mut ops = vec![
         // the home page: English, then the foreign visitor's card (already past it: not there, skipped)
@@ -1236,11 +1480,7 @@ fn id_arrival_card(i: &Inputs) -> Vec<Op> {
             "x",
         ),
         choose_in("foreign_visitor", "", "h1", "Foreign Visitor"),
-        Op::new(
-            "await_form",
-            json!({"op": "await", "sel": "[id^=\"spi_full_name_\"]", "wait_ms": 10_000}),
-            "x",
-        ),
+        await_el("await_form", "[id^=\"spi_full_name_\"]"),
         // the form's dropdowns answer a moment after its first field shows
         wait(2000),
         // --- 1. Personal Information
@@ -1277,7 +1517,7 @@ fn id_arrival_card(i: &Inputs) -> Vec<Op> {
             "No",
         ),
     ]);
-    // the country of birth only when the profile gives it (the same dropdown as the nationality)
+    // the country of birth only when the profile gives it (the same list as the nationality)
     ops.push(dd(
         "place_of_birth",
         "[id^=\"spi_country_or_place_of_birth_\"]",
@@ -1285,10 +1525,10 @@ fn id_arrival_card(i: &Inputs) -> Vec<Op> {
         &birthplace,
     ));
     // the calling code: the readonly box beside the mobile number (no id), its list "+61 - AUSTRALIA"
-    let dial = if code.is_empty() {
+    let dial = if dial.is_empty() {
         String::new()
     } else {
-        format!("+{code}")
+        format!("+{dial}")
     };
     ops.extend([
         Op::new(
@@ -1304,8 +1544,12 @@ fn id_arrival_card(i: &Inputs) -> Vec<Op> {
         text("mobile", "[id^=\"spi_mobile_no_\"]", &mobile),
         text("email", "[id^=\"spi_email_\"]", &i.email()),
         button("next_to_travel", "Next"),
-        wait(2500),
-        // --- 2. Travel Details
+        // --- 2. Travel Details (/travel-details/individual)
+        await_el(
+            "await_travel",
+            "[id^=\"std_arrival_date_foreigner_individual\"]",
+        ),
+        wait(1000),
     ]);
     // the list renders only the rows in view: the named script scrolls it to the day and checks the box holds it
     ops.push(js(
@@ -1329,8 +1573,9 @@ fn id_arrival_card(i: &Inputs) -> Vec<Op> {
             "No",
         ),
         button("next_to_transport", "Next"),
-        wait(2500),
-        // --- 3. Mode of Transportation & Address
+        // --- 3. Mode of Transportation & Address (/mode-of-transport/foreigner)
+        await_el("await_transport", "[id^=\"smta_mode_transport_foreigner\"]"),
+        wait(1000),
     ]);
     let air = !f.flight_no.is_empty();
     ops.push(dd(
@@ -1339,6 +1584,15 @@ fn id_arrival_card(i: &Inputs) -> Vec<Op> {
         if air { "AIR" } else { "" },
         if air { "AIR" } else { "" },
     ));
+    if air {
+        // the air section shows once the mode is AIR; its lists load a moment later (picked at once, the port's list
+        // showed the airlines' rows on the live site, 2026-11-02)
+        ops.push(await_el(
+            "await_air",
+            "[id^=\"smta_place_of_arrival_air_foreigner\"]",
+        ));
+        ops.push(wait(2500));
+    }
     let port = if f.arrival_airport.is_empty() {
         String::new()
     } else {
@@ -1356,7 +1610,14 @@ fn id_arrival_card(i: &Inputs) -> Vec<Op> {
         if air { "COMMERCIAL" } else { "" },
         if air { "COMMERCIAL FLIGHT" } else { "" },
     ));
-    let airline = f.airline.to_uppercase();
+    // the airlines' list loads after the transport type
+    ops.push(wait(1500));
+    // the airline by the flight's code (the site's own names), else the name the trip gives; the code box beside the
+    // number fills itself from the airline
+    let airline = match id_airline(&code) {
+        "" => f.airline.to_uppercase(),
+        known => known.to_string(),
+    };
     ops.push(dd(
         "airline",
         "[id^=\"smta_flight_name_foreigner\"]",
@@ -1381,12 +1642,22 @@ fn id_arrival_card(i: &Inputs) -> Vec<Op> {
         stay_type,
     ));
     if stay_type == "HOTEL" {
+        // a hotel of the site's own list, searched on the server by its name: the row "ALILA SEMINYAK, KAB. BADUNG"
+        // (the nearest immigration office fills itself from it)
+        let hotel = f.stay_name.to_uppercase();
+        ops.push(await_el(
+            "await_hotel",
+            "[id^=\"smta_hotel_name_foreigner\"]",
+        ));
         ops.push(dd(
             "hotel",
             "[id^=\"smta_hotel_name_foreigner\"]",
-            &hotel_words,
-            &f.stay_name.to_uppercase(),
+            &hotel,
+            &hotel,
         ));
+        // the nearest immigration office is looked up from the hotel: Next pressed before it is in says "Invalid
+        // Input: Required field(s) cannot be empty" (live site, 2026-11-02)
+        ops.push(wait(3000));
     } else if stay_type == "RESIDENTIAL" {
         ops.push(text(
             "address",
@@ -1396,14 +1667,76 @@ fn id_arrival_card(i: &Inputs) -> Vec<Op> {
     }
     ops.extend([
         button("next_to_declaration", "Next"),
-        wait(2500),
-        // --- 4. Declaration: No, the user's own default (they review every answer before they submit)
-        choose_in("symptoms", "symptoms", "input", "No"),
-        choose_in("animals_plants", "animals, fish, plants", "input", "No"),
-        choose_in("customs_goods", "declared to Customs", "input", "No"),
-        choose_in("imei", "Mobile Phones", "input", "No"),
+        // --- 4. Declaration (/declaration/individual): its Submit is the user's
+        Op::new(
+            "await_declaration",
+            json!({"op": "await", "sel": "button", "text": "Submit", "wait_ms": 15_000}),
+            "x",
+        ),
+        wait(1000),
     ]);
+    // the countries visited in the 21 days before: the one the flight comes from (a multi-select list of names)
+    let origin = f.origin_country.to_uppercase();
+    ops.push(dd(
+        "countries_visited",
+        "input[readonly][value=\"Select\"]",
+        &origin,
+        &origin,
+    ));
+    // the page's four Yes / No questions in their order — symptoms; animals, fish, plants; goods to declare to
+    // Customs; phones to register (IMEI): No, the user's own default (they review every answer before they submit)
+    for (n, field) in ["symptoms", "animals_plants", "customs_goods", "imei"]
+        .into_iter()
+        .enumerate()
+    {
+        ops.push(Op::new(
+            field,
+            json!({"op": "click", "sel": "input[readonly][value=\"No\"]", "nth": n}),
+            "No",
+        ));
+    }
     ops
+}
+
+/// All Indonesia's airline (its "Flight Name" list, read 2026-11-02) for an IATA airline code; empty for one this table
+/// does not know (the trip's airline name is used then).
+pub fn id_airline(code: &str) -> &'static str {
+    match code.trim().to_uppercase().as_str() {
+        "GA" => "GARUDA INDONESIA",
+        "SQ" => "SINGAPORE AIRLINES",
+        "QF" => "QANTAS AIRWAYS",
+        "JQ" => "JETSTAR AIRWAYS",
+        "3K" => "JETSTAR ASIA AIRWAYS",
+        "VA" => "VIRGIN AUSTRALIA",
+        "QZ" => "INDONESIA AIRASIA",
+        "AK" => "AIRASIA BERHAD",
+        "D7" => "AIRASIA X",
+        "MH" => "MALAYSIA AIRLINES",
+        "OD" => "BATIK AIR MALAYSIA",
+        "ID" => "BATIK AIR",
+        "JT" => "LION AIR",
+        "QG" => "CITILINK",
+        "TR" => "SCOOT",
+        "CX" => "CATHAY PACIFIC AIRWAYS",
+        "EK" => "EMIRATES",
+        "QR" => "QATAR AIRWAYS",
+        "KL" => "KLM",
+        "TG" => "THAI AIRWAYS",
+        "FD" => "THAI AIRASIA",
+        "SL" => "THAI LION AIR",
+        "KE" => "KOREAN AIR",
+        "JL" => "JAPAN AIRLINES",
+        "NH" => "ALL NIPPON AIRWAYS",
+        "CA" => "AIR CHINA",
+        "CI" => "CHINA AIRLINES",
+        "BR" => "EVA AIR",
+        "TK" => "TURKISH AIRLINES",
+        "PR" => "PHILIPPINE AIRLINES",
+        "Z2" => "PHILIPPINES AIRASIA",
+        "VN" => "VIETNAM AIRLINES",
+        "NZ" => "AIR NEW ZEALAND",
+        _ => "",
+    }
 }
 
 /// Click `sel` inside the section headed `scope` (Element UI fields have no ids: their label heads the section).
@@ -2421,7 +2754,8 @@ mod tests {
     fn the_indonesia_card_plan_walks_its_four_steps() {
         let facts = Facts::from_args(
             &json!({"flight_no": "GA 715", "arrival_date": "2026-11-02", "origin_city": "Sydney",
-                                             "arrival_airport": "dps", "airline": "Garuda Indonesia",
+                                             "origin_country": "Australia",
+                                             "arrival_airport": "dps", "airline": "",
                                              "stay_name": "Seminyak Lagoon Resort", "stay_address": "Jl. Kayu Aya No. 8, Seminyak, Bali 80361",
                                              "stay_kind": "hotel", "purpose": "holiday"}),
         );
@@ -2473,13 +2807,71 @@ mod tests {
         assert_eq!(by("airline")["value"], "GARUDA INDONESIA");
         assert_eq!(by("flight_number")["value"], "715");
         assert_eq!(by("purpose")["value"], "HOLIDAY/SIGHTSEEING/LEISURE");
-        assert_eq!(by("hotel")["args"]["typed"], "SEMINYAK LAGOON");
+        // the hotel of the site's own list, searched on the server by its full name; the script waits for the row
+        assert_eq!(by("hotel")["args"]["typed"], "SEMINYAK LAGOON RESORT");
+        assert_eq!(by("hotel")["value"], "SEMINYAK LAGOON RESORT");
         assert_eq!(by("hotel")["script"], "search_list");
-        // the certification and Submit are the user's
+        assert!(
+            SEARCH_LIST.src.contains("[data-index]")
+                && SEARCH_LIST.src.contains("await sleep(250)")
+        );
+        // each step's first field is awaited after its Next; the declaration page by its Submit (never pressed)
+        for f in [
+            "await_travel",
+            "await_transport",
+            "await_air",
+            "await_hotel",
+            "await_declaration",
+        ] {
+            assert_eq!(by(f)["op"], "await", "{f}");
+        }
+        // the airline by the flight's code, from the site's own list
+        assert_eq!(id_airline("sq"), "SINGAPORE AIRLINES");
+        // the declaration's four Yes / No questions by their order on the page, No; the countries visited: the
+        // flight's origin
+        for (n, f) in ["symptoms", "animals_plants", "customs_goods", "imei"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(
+                (by(f)["sel"].as_str(), by(f)["nth"].as_u64()),
+                (Some("input[readonly][value=\"No\"]"), Some(n as u64))
+            );
+        }
+        assert_eq!(by("countries_visited")["value"], "AUSTRALIA");
+        // the certification and Submit are the user's: Submit is only awaited (the declaration page has come), never
+        // pressed
         assert!(!plan
             .iter()
-            .any(|o| o["text"] == "Submit"
+            .any(|o| (o["text"] == "Submit" && o["op"] != "await")
                 || o["text"].as_str().is_some_and(|t| t.contains("certify"))));
+    }
+
+    /// `OMUSE_FORM_PLAN_OUT_KH=<file>`: the Cambodia plan as JSON, for replaying it against the official page.
+    #[test]
+    fn dump_kh_plan() {
+        let Ok(out) = std::env::var("OMUSE_FORM_PLAN_OUT_KH") else {
+            return;
+        };
+        let arrive = (chrono::Local::now().date_naive() + Duration::days(2))
+            .format("%Y-%m-%d")
+            .to_string();
+        let facts = Facts::from_args(
+            &json!({"flight_no": "SQ 166", "arrival_date": arrive, "origin_city": "Singapore",
+                    "origin_country": "Singapore", "arrival_airport": "PNH",
+                    "stay_name": "Riverside Palace Hotel", "stay_address": "51 Sisowath Quay, Phnom Penh",
+                    "stay_kind": "hotel", "purpose": "holiday", "stay_phone": "+855 23 000 000"}),
+        );
+        let mut p = profile();
+        p["birthplace"] = json!("Australia");
+        let plan: Vec<Value> = kh_arrival_card(&Inputs {
+            facts: &facts,
+            profile: &p,
+        })
+        .iter()
+        .filter_map(Op::to_json)
+        .collect();
+        std::fs::write(out, serde_json::to_string_pretty(&plan).unwrap()).unwrap();
     }
 
     /// `OMUSE_FORM_PLAN_OUT_ID=<file>`: the Indonesia plan as JSON, for replaying it against the official page.
@@ -2493,11 +2885,12 @@ mod tests {
             .to_string();
         let facts = Facts::from_args(
             &json!({"flight_no": "GA 715", "arrival_date": arrive, "origin_city": "Sydney",
-                                             "arrival_airport": "DPS", "airline": "Garuda Indonesia",
-                                             "stay_name": "Seminyak Lagoon Resort", "stay_address": "Jl. Kayu Aya No. 8, Seminyak, Bali 80361",
-                                             "stay_kind": "hotel", "purpose": "holiday"}),
+                    "origin_country": "Australia", "arrival_airport": "DPS",
+                    "stay_name": "Alila Seminyak", "stay_address": "Jl. Taman Ganesha No. 9, Seminyak, Bali 80361",
+                    "stay_kind": "hotel", "purpose": "holiday"}),
         );
-        let p = profile();
+        let mut p = profile();
+        p["birthplace"] = json!("Australia");
         let plan: Vec<Value> = id_arrival_card(&Inputs {
             facts: &facts,
             profile: &p,
@@ -2893,13 +3286,18 @@ mod tests {
     }
 
     #[test]
-    fn the_cambodia_plan_fills_the_first_step_by_its_control_names() {
-        let facts = one_page_facts(
+    fn the_cambodia_plan_walks_its_five_steps_to_the_confirm_declaration() {
+        let mut facts = one_page_facts(
             "SQ 166",
             "Riverside Palace Hotel",
             "51 Sisowath Quay, Phnom Penh",
         );
-        let p = profile();
+        facts.origin_city = "Singapore".into();
+        facts.origin_country = "Singapore".into();
+        facts.arrival_airport = "PNH".into();
+        facts.extra = json!({"stay_phone": "+855 23 000 000"});
+        let mut p = profile();
+        p["birthplace"] = json!("Australia");
         let plan = plan_of(kh_arrival_card, &facts, &p);
         assert!(!plan.iter().any(|o| o["op"] == "require"));
         // the guest start, then the passport: the number from the Vault, the issuing country from the picker
@@ -2909,67 +3307,121 @@ mod tests {
             field(&plan, "passport_number")["sel"],
             "input[formcontrolname=passportNumber]"
         );
-        let pick = plan
-            .iter()
-            .find(|o| o["field"] == "passport_country" && o["op"] == "pick")
-            .unwrap();
+        let pick = |name: &str| {
+            plan.iter()
+                .filter(|o| o["field"] == name && o["op"] == "pick")
+                .cloned()
+                .collect::<Vec<Value>>()
+        };
+        let nat = &pick("passport_country")[0];
         assert_eq!(
-            (pick["type"].as_str(), pick["value"].as_str()),
+            (nat["type"].as_str(), nat["value"].as_str()),
             (Some("AUS"), Some(". AUS"))
         );
-        // the expiry's three selects from the Vault (day, month, year), the first of each
-        let expiry: Vec<&Value> = plan
-            .iter()
-            .filter(|o| o["field"] == "passport_expiry_day")
-            .collect();
-        // one named script per select (op js, the mat-select script from this file's table), never a value in it
-        assert_eq!(expiry.len(), 1);
+        assert_eq!(nat["option_sel"], "a.avatar-vt-item");
+        // the expiry's three selects from the Vault (day, month, year), the first of each: one named script per
+        // select (op js, the mat-select script from this file's table), never a value in it
+        let expiry = field(&plan, "passport_expiry_day");
         assert_eq!(
             (
-                expiry[0]["op"].as_str(),
-                expiry[0]["script"].as_str(),
-                expiry[0]["nth"].as_i64()
+                expiry["op"].as_str(),
+                expiry["script"].as_str(),
+                expiry["nth"].as_i64()
             ),
             (Some("js"), Some("mat_select"), Some(0))
         );
-        assert_eq!(expiry[0]["src"], MAT_SELECT.src);
-        assert_eq!(expiry[0]["sel"], "mat-select[formcontrolname=day]");
-        assert_eq!(expiry[0]["vault"]["date_fmt"], "%d");
-        assert!(expiry[0].get("value").is_none());
+        assert_eq!(expiry["src"], MAT_SELECT.src);
+        assert_eq!(expiry["sel"], "mat-select[formcontrolname=day]");
+        assert_eq!(expiry["vault"]["date_fmt"], "%d");
+        assert!(expiry.get("value").is_none());
         assert!(KH_SCRIPTS
             .iter()
             .all(|sc| sc.src.starts_with("async (sel, nth, args)")));
         assert_eq!(field(&plan, "surname")["value"], "LU");
         assert_eq!(field(&plan, "given_name")["value"], "JORDAN");
-        let opt = |name: &str| {
-            plan.iter()
-                .find(|o| o["field"] == name && o["op"] == "js")
-                .map(|o| o["value"].clone())
-                .unwrap_or(Value::Null)
-        };
-        assert_eq!(opt("sex"), "Female");
+        let js_value = |name: &str| field(&plan, name)["value"].clone();
+        assert_eq!(js_value("sex"), "Female");
         assert_eq!(
-            (opt("dob_day"), opt("dob_month"), opt("dob_year")),
+            (
+                js_value("dob_day"),
+                js_value("dob_month"),
+                js_value("dob_year")
+            ),
             (json!("12"), json!("04"), json!("1985"))
         );
-        // the birth date is the second of the date selects; the Travel step (hidden until the Profile step is done)
-        // is the user's: nothing of it in the plan
         assert_eq!(field(&plan, "dob_day")["nth"], 1);
-        assert!(plan
+        // the country of birth by its name; the occupation the list's business person; the phone code by country
+        assert_eq!(pick("birth_country")[0]["value"], "Australia");
+        assert_eq!(pick("occupation")[0]["value"], KH_OCCUPATION_BUSINESS);
+        assert_eq!(pick("phone_code")[0]["value"], "Australia");
+        assert_eq!(field(&plan, "phone")["value"], "400000000");
+        // the contact block twice: step 1, and step 2 after the draft is saved (it shows there again, empty)
+        assert_eq!(pick("occupation").len(), 2);
+        assert_eq!(pick("phone_code").len(), 2);
+        // step 1's Next, the "Is the information correct?" check, then step 2
+        assert!(index(&plan, "next_to_travel") < index(&plan, "information_correct"));
+        assert!(index(&plan, "information_correct") < index(&plan, "await_travel"));
+        assert_eq!(field(&plan, "information_correct")["text"], "Correct");
+        // step 2: the arrival day's radio by its label, the departure the third date selects (arrival + 7 days)
+        assert_eq!(field(&plan, "arrival_date")["text"], "November 03, 2026");
+        assert_eq!(field(&plan, "departure_day")["nth"], 2);
+        assert_eq!(
+            (
+                js_value("departure_day"),
+                js_value("departure_month"),
+                js_value("departure_year")
+            ),
+            (json!("10"), json!("11"), json!("2026"))
+        );
+        // Phnom Penh's flights land at Techo International since 2025
+        assert_eq!(
+            js_value("port_of_entry"),
+            "Techo International Airport (KTI)"
+        );
+        assert_eq!(pick("purpose")[0]["value"], "Holiday/Pleasure/Vocation");
+        assert_eq!(field(&plan, "flight_number")["value"], "SQ 166");
+        assert_eq!(js_value("accommodation_type"), "Hotel");
+        assert_eq!(
+            field(&plan, "hotel_name")["value"],
+            "Riverside Palace Hotel"
+        );
+        assert_eq!(field(&plan, "stay_phone")["value"], "+855 23 000 000");
+        assert_eq!(pick("last_country")[0]["value"], "Singapore");
+        assert_eq!(pick("next_country")[0]["value"], "Singapore");
+        // steps 3 and 4: No by the questions' order; the customs step's declaration ticked (its Next needs it)
+        for (n, f) in ["yellow_fever", "symptoms", "visited_regions"]
             .iter()
-            .all(|o| !["departure_day", "arrival_date", "flight_number"]
-                .contains(&o["field"].as_str().unwrap_or(""))));
-        assert_eq!(field(&plan, "email")["value"], "jordan.lu@example.com");
-        // the country of birth's picker is left for the user (its rows are not mapped)
-        let mut with_birth = p.clone();
-        with_birth["birthplace"] = json!("Australia");
-        assert!(plan_of(kh_arrival_card, &facts, &with_birth)
+            .enumerate()
+        {
+            assert_eq!(field(&plan, f)["nth"], n);
+        }
+        assert_eq!(field(&plan, "goods_to_declare")["nth"], 1);
+        assert_eq!(
+            field(&plan, "customs_confirm")["sel"],
+            "mat-checkbox[formcontrolname=confirmDeclaration] input"
+        );
+        // the plan ends on step 5: its declaration box and Submit are the user's
+        assert_eq!(
+            plan.last().map(|o| o["field"].clone()),
+            Some(json!("await_confirm"))
+        );
+        assert_eq!(
+            field(&plan, "await_confirm")["text"],
+            "5 Confirm Declaration"
+        );
+        assert!(!plan.iter().any(|o| o["text"] == "Submit"
+            || o["sel"]
+                .as_str()
+                .is_some_and(|s| s.contains("formcontrolname=confirm]"))));
+        // without the country of birth in the profile its picker is left for the user (never guessed)
+        assert!(plan_of(kh_arrival_card, &facts, &profile())
             .iter()
             .all(|o| o["field"] != "birth_country"));
-        // the CAPTCHA and Submit stay the user's
-        assert!(!plan
-            .iter()
-            .any(|o| o["field"] == "captcha" || o["text"] == "Submit"));
+        assert_eq!(
+            kh_port("REP"),
+            "Siem Reap Angkor International Airport (SAI)"
+        );
+        assert_eq!(kh_port("BKK"), "");
         assert!(form_for("https://arrival.gov.kh/").is_some_and(|(n, _)| n == "kh-arrival-card"));
     }
 

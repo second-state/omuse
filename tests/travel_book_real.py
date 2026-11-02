@@ -3,7 +3,7 @@ e2e env file with OMUSE_E2E_SERPAPI_KEY). Nothing is booked or paid: there is no
 clearly fake traveller data, and the suite hands the browser back without pressing anything.
 
 1. A fresh install (no travel key): the user asks Main's chat to book the cheapest Singapore → Bangkok flight about a
-   month out. Code searches Kiwi.com's real data, picks the cheapest, shows the choice card, asks to approve the fare
+   month out. Code searches Kiwi.com's real data, the model picks the cheapest (travel_pick), asks to approve the fare
    (auto-approved, as a fresh install has it), opens the itinerary's REAL Kiwi.com booking page and hands it to the
    browser-use skill, which fills it with the profile's fake data and asks the user to take over at the first step
    that is theirs (sign-in, CAPTCHA, payment).
@@ -11,7 +11,7 @@ clearly fake traveller data, and the suite hands the browser back without pressi
    Hotels' real data, the room by rule, the seller's REAL booking page (the hotel's own site or an OTA), the same
    hand-over.
 
-Checked, from what the user sees: the choice card (real options, one picked), the hand-over on the real booking site,
+Checked, from what the user sees: the hotel's choice card (real options, one picked), the hand-over on the real booking site,
 no card number or other secret put into the page, the block code appends (the booking page's link and the amount), and
 nothing booked (no confirmation reference; the page handed over is not a confirmation). A site that blocks automation
 is handed over at the block — the suite does not get around bot protection. One TIMING line per request.
@@ -51,7 +51,7 @@ async def main():
         seen = Handover()
         a = await u.ask(f"Book me the cheapest flight from Singapore to Bangkok on {day(D1)}, 1 adult, economy.",
                         label="flight", on_takeover=seen.look(u, "flight"))
-        await choice_card(u, "flight")
+        # a flight is the model's pick (travel_pick) shown alone — no comparison card (0.6.1)
         check_handover(a, seen, "flight", sites=("kiwi.com",))
 
         if not KEY:

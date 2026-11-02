@@ -72,6 +72,8 @@ class Card:
     # the flight that leaves the country, for a card that requires it (Taiwan's itinerary step: the departure by air
     # needs its flight code and number); "" = one way
     leave: str = ""
+    # the stay's phone number, for a card that requires it (Cambodia's "Hotel contact number"); "" = not told
+    hotel_phone: str = ""
 
     def flight_text(self) -> str:
         o, d = self.origin, self.dest
@@ -82,7 +84,8 @@ class Card:
 
     def details(self) -> str:
         """The trip as the user tells it: the flight and the hotel."""
-        return f"{self.flight_text()} I'm staying at the {self.hotel[0]}, {self.hotel[1]}."
+        phone = f" (the hotel's phone: {self.hotel_phone})" if self.hotel_phone else ""
+        return f"{self.flight_text()} I'm staying at the {self.hotel[0]}, {self.hotel[1]}{phone}."
 
 
 CARDS = {
@@ -118,20 +121,23 @@ CARDS = {
                "https://twac.immigration.gov.tw/", "CI 52",
                ("Sydney", "SYD"), ("Taipei Taoyuan", "TPE"), ("Xinyi Park Hotel", "6 Songshou Road, Xinyi District, Taipei 110"),
                handover="email", email_code=True, then_form=True, leave="CI 51"),
-    # four steps saved on Next: the page handed over is the declaration step
+    # four steps saved on Next: the page handed over is the declaration step (its Submit). The hotel is picked from the
+    # site's own list (searched on its server by name): a real hotel on it (docs/sites/id-arrival-card.md)
     "id": Card("id", "Please fill in my All Indonesia arrival card for my trip to Bali — it's a holiday.",
                "https://allindonesia.imigrasi.go.id/", "GA 715",
-               ("Sydney", "SYD"), ("Denpasar Bali", "DPS"), ("Seminyak Lagoon Resort", "Jl. Kayu Aya No. 8, Seminyak, Bali 80361"), path="/arrival-card-submission/"),
+               ("Sydney", "SYD"), ("Denpasar Bali", "DPS"), ("Alila Seminyak", "Jl. Taman Ganesha No. 9, Petitenget, Seminyak, Bali 80361"),
+               path="/arrival-card-submission/"),
     # every registration starts with the sign-in to the user's eTravel account (Cloudflare check, email, password)
     "ph": Card("ph", "Please do my Philippines eTravel registration for my trip to Manila — it's a holiday.",
                "https://etravel.gov.ph/", "PR 210",
                ("Sydney", "SYD"), ("Manila", "MNL"), ("Makati Palm Suites", "1200 Ayala Avenue, Makati City, Metro Manila"),
                handover="signin"),
-    # the Profile step of the Angular stepper (its Next needs the occupation, phone code and country of birth: the user's)
+    # the Angular stepper's five steps: the page handed over is step 5, Confirm Declaration (its Submit). The travel step
+    # requires the hotel's phone ("Hotel contact number"): told in the request (clearly fake)
     "kh": Card("kh", "Please fill in my Cambodia e-Arrival Card for my trip to Phnom Penh — it's a holiday.",
                "https://arrival.gov.kh/", "SQ 166",
                ("Singapore", "SIN"), ("Phnom Penh", "PNH"), ("Riverside Palace Hotel", "51 Sisowath Quay, Phnom Penh"),
-               path="/e-arrival/"),
+               path="/e-arrival/", hotel_phone="+855 23 000 000"),
     # one question per page: the start pages, then the email and its security code; the photos are the user's
     "uk": Card("uk", "Please apply for my UK ETA for my trip to London — it's a holiday. I work as a software engineer.",
                # after the code the passport step is on confirm-your-identity.homeoffice.gov.uk: the Home Office's own
@@ -351,11 +357,9 @@ def card_checks(label: str, card: Card, to: Takeover, a: U.Answer, *, mailbox: b
           or a.shows("nothing has been submitted") or a.shows("Your step"), a.block[:300])
 
 
-# cards not run for now, with why (each prints a SKIP line; the card and its form function stay): the user's decision
-# 2026-11-02 — Indonesia and Cambodia stop early on the real site (Indonesia at step 3 of 4, Cambodia on the Profile
-# step) and hand over with the honest "stopped early" line; they are finished after 0.6.0
-DEFERRED = {"id": "deferred to after 0.6.0 (stops early on the real site)",
-            "kh": "deferred to after 0.6.0 (stops early on the real site)"}
+# cards not run for now, with why (each prints a SKIP line; the card and its form function stay). Indonesia and
+# Cambodia, deferred in 0.6.0, run again since 0.6.1 (walked end to end on the live sites: docs/sites/)
+DEFERRED: dict[str, str] = {}
 
 
 def run_cards(keys: list[str], *, mailbox: bool = False) -> None:

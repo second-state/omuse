@@ -175,6 +175,14 @@ fn user_msg(text: impl Into<String>) -> Value {
     json!({"role": "user", "content": text.into()})
 }
 
+/// The workflow tools whose bots' tasks are one-off requests: no memory selection for them (see `Runtime::run`).
+const ONE_OFF_TOOLS: [&str; 3] = ["travel_search", "shop_order", "insurance_buy"];
+
+/// A bot whose tasks are one-off workflow requests (Travel, Shopping, Insurance): its tasks select no memory.
+pub fn one_off(bot: &crate::bots::Bot) -> bool {
+    ONE_OFF_TOOLS.iter().any(|w| crate::bots::has_tool(bot, w))
+}
+
 impl Runtime {
     /// `Runtime(data_dir, publish)`: open the runtime store under `data_dir`, make the workspace, wire the model
     /// client's hooks and the health watch.
@@ -2309,7 +2317,14 @@ message to use as written) stays in that language. Output only the rewritten rep
         let conv_id = get_str(&t, "conv_id");
         let (history, history_txt) = self.history(&conv_id, task_id);
         let goal_text = get_str(&t, "goal");
-        let facts = self.facts_for(&t, &history_txt).await;
+        // a one-off workflow request (a travel search, a shopping search, an insurance quote: the bots whose work is a
+        // workflow tool) needs no memory — the structured profile its machine reads is enough, and the selection is a
+        // model call (the user, 2026-11-02)
+        let facts = if one_off(self.bot_of(&t)) {
+            Vec::new()
+        } else {
+            self.facts_for(&t, &history_txt).await
+        };
         let t_transcript_empty = arr(&t, "transcript").is_empty();
         if facts
             .first()
@@ -2838,8 +2853,11 @@ yourself; ask_bot is not available for it."
             let mut turn_text = resp.content.clone();
             // the compulsory workflow call (agent/required.rs): a loaded skill that asks through a workflow tool gets
             // that call before a final answer — the answer without it is not taken; the model is asked once more with
-            // the provider's forced tool choice, and its call goes through the JSON layer like any workflow call
-            if calls.is_empty() && !force_final && unmet.is_none() {
+            // the provider's forced tool choice, and its call goes through the JSON layer like any workflow call. A
+            // question to the user in place of the call is the same: what the call needs from the user, the tool asks
+            // itself (`needs_input`) — arrival_cards4_real 2026-11-02: asked for an arrival date that
+            // entry_requirements does not need
+            if super::required::only_questions(&calls) && !force_final && unmet.is_none() {
                 if let Some(need) = super::required::pending(&transcript) {
                     let offered: Vec<Value> = tools
                         .as_deref()

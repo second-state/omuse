@@ -190,6 +190,7 @@ pub fn tool_schemas() -> Vec<Value> {
     travel["depart_after"] = json!({"type": "string", "description": "flight: HH:MM local at the departure airport — copy the user's own time limit (\"after 6 pm\" → 18:00); empty when the user gave none"});
     travel["depart_before"] = json!({"type": "string", "description": "flight: HH:MM local at the departure airport — the user's limit (\"leave before noon\" → 12:00); empty when none"});
     travel["arrive_after"] = json!({"type": "string", "description": "flight: HH:MM local at the arrival airport — the user's limit; for \"the last flight …\" you may narrow the search to the evening (18:00) so the last ones are in it; empty when none"});
+    travel["comprehensive"] = json!({"type": "boolean", "description": "flight: true when the answer depends on seeing EVERY flight of the day — the last / first / earliest / latest flight, a flight at a given time, a flight number — a slower, complete search; false for an ordinary search (the cheapest, a few options)"});
     travel["arrive_before"] = json!({"type": "string", "description": "flight: HH:MM local at the arrival airport — the user's limit (\"lands before midnight\" → 23:59, \"by 8 pm\" → 20:00); empty when none. The search filters by the hour; the pick from its flights (travel_pick) is yours"});
     let search = fn_(
         TRAVEL_SEARCH,
@@ -458,6 +459,9 @@ fn check_travel(a: &Value, cx: &Ctx, book: bool) -> Checked {
             if let Some(x) = after("return_date", ret, &mut problems) {
                 out.insert("return_date".into(), json!(iso(x)));
             }
+            // a "range" ending on the day itself is that one day: no range, fixed here (not sent back to the model — a
+            // second travel_search call for nothing, the user's HK → Singapore request 2026-11-02)
+            let date_to = date_to.filter(|x| Some(*x) != d);
             if let Some(x) = after("date_to", date_to, &mut problems) {
                 out.insert("date_to".into(), json!(iso(x)));
             }
@@ -474,6 +478,14 @@ fn check_travel(a: &Value, cx: &Ctx, book: bool) -> Checked {
                 )),
             }
             out.insert("nonstop".into(), json!(b_arg(a, "nonstop")));
+            // how complete the search must be (the model's judgement of the request): without it, complete
+            out.insert(
+                "comprehensive".into(),
+                json!(a
+                    .get("comprehensive")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)),
+            );
             // the user's local time window: HH:MM (24-hour), passed to the search's own time filter
             for k in TIME_KEYS {
                 let v = s_arg(a, k);
@@ -1179,6 +1191,8 @@ pub struct Req {
     pub book: bool,
     /// a flight's local time window as given ((`depart_after` …, HH:MM)), passed to the search's own time filter
     pub times: Vec<(String, String)>,
+    /// a flight search that must list every flight of the day (the model's `comprehensive`; SerpApi's deep search)
+    pub comprehensive: bool,
 }
 
 impl Req {
@@ -1226,6 +1240,10 @@ impl Req {
             pick: s_arg(a, "pick"),
             next: list_arg(a, "next"),
             book: b_arg(a, "book"),
+            comprehensive: a
+                .get("comprehensive")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
             times: TIME_KEYS
                 .iter()
                 .map(|k| (k.to_string(), s_arg(a, k)))
@@ -1270,6 +1288,7 @@ impl Req {
                 for (k, v) in &self.times {
                     a[k.as_str()] = json!(v);
                 }
+                a["comprehensive"] = json!(self.comprehensive);
                 a
             }
             Kind::Hotel => {
@@ -2410,6 +2429,49 @@ fn last_after<'a>(transcript: &'a [Value], base: &str, after: usize) -> Option<(
         .rfind(|(_, m)| pos(transcript, m) > after)
 }
 
+/// Michelin restaurants without the travel connector's guide search: one web search for the guide's restaurants in the
+/// city, its pages shown as web pages (no table is booked from them); without web search either, said so.
+fn michelin_on_the_web(req: &Req, t: &[Value], m: &Machine, ids: &Ids, searched: &Value) -> Step {
+    let not_connected = S::fact(
+        "Michelin Guide search",
+        "米其林指南搜索",
+        "not connected (a travel connector on Connections) — these are web pages about it",
+    );
+    let Some((_, msg)) = calls_of(t, "web_search").into_iter().last() else {
+        if !m.available.iter().any(|n| n == "web_search") {
+            return Step::Done(json!({"status": "not_connected", "searched": searched,
+                "show": [S::fact("Michelin Guide search", "米其林指南搜索", "not connected (a travel connector on Connections)")],
+                "hints": []}));
+        }
+        let stars = if req.distinction.is_empty() {
+            String::new()
+        } else {
+            format!("{} ", req.distinction)
+        };
+        let query = format!("Michelin Guide {stars}restaurants {}", req.city);
+        return ids.calls(
+            "web_search",
+            json!({"query": query.trim(), "max_results": 8}),
+        );
+    };
+    let pages = web_pages(&data_of(msg));
+    if pages.is_empty() {
+        return Step::Done(json!({"status": "nothing_found", "searched": searched,
+            "show": [not_connected, S::fact("Nothing found", "没有找到结果", &searched_line(Kind::Michelin, req))],
+            "hints": []}));
+    }
+    let mut show = vec![not_connected];
+    show.extend(
+        pages
+            .iter()
+            .map(|p| S::link("Web page", "网页", &get_str(p, "title"), &get_str(p, "url"))),
+    );
+    Step::Done(
+        json!({"status": "shown", "source": "web", "searched": searched,
+                      "options": [], "web_pages": pages, "show": show, "hints": []}),
+    )
+}
+
 /// The tool to call for `base`: the native one when the catalog has it, else a travel MCP connector's
 /// (`mcp_<server>__<base>`), else the native name (`michelin_search` and `restaurant_availability` only exist on a
 /// connector: `mcp_travel__…` by default).
@@ -2530,6 +2592,15 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     let searched = req.searched(kind);
     // 1. one search, on the user's connector when the arguments say so (the data tools follow the search)
     let searches = calls_of(t, spec.search);
+    // the Michelin Guide's search lives on a travel connector only: without one, a web search for the guide's
+    // restaurants (travel_ask_real 2026-11-02: the connector's tool ran as "unknown tool", the answer said "nothing
+    // found")
+    if kind == Kind::Michelin && searches.is_empty() {
+        let tool = tool_for(spec.search, m.available, true);
+        if !m.available.is_empty() && !m.available.contains(&tool) {
+            return michelin_on_the_web(req, t, m, ids, &searched);
+        }
+    }
     let connector = req.use_connector
         || searches
             .last()
@@ -2554,7 +2625,10 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     if offers.is_empty() {
         // the native search found nothing priced: the user's travel connector next, once
         let mcp = tool_for(spec.search, m.available, true);
-        if mcp.starts_with("mcp_") && !search_name(t, search_msg).starts_with("mcp_") {
+        if mcp.starts_with("mcp_")
+            && (m.available.is_empty() || m.available.contains(&mcp))
+            && !search_name(t, search_msg).starts_with("mcp_")
+        {
             return ids.calls(&mcp, req.search_args(kind));
         }
         // the flight / hotel APIs failed and a search fell back to the web: the pages it read
@@ -2885,7 +2959,9 @@ fn present(s: Shown, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             "on your preferred airline",
         ));
     }
-    if kind == Kind::Flight && pick.id.starts_with("fl_") {
+    // who sells the flight (`flight_offer`, a second SerpApi request): for a booking only — a search's answer links
+    // the flight's own booking page already (the user, 2026-11-02: no second call for a search)
+    if kind == Kind::Flight && req.book && pick.id.starts_with("fl_") {
         let got = calls_of(t, "flight_offer")
             .into_iter()
             .rfind(|(a, msg)| sget(a, "offer_id") == pick.id && pos(t, msg) > search_pos);

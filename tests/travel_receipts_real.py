@@ -67,6 +67,9 @@ async def menu(u: U.User) -> None:
                     label="menu", new_chat=False)
     T2.answered("menu", a)
     mem = await C.page_text(u, "memory")
+    # a pending profile change shows its value in an editable box (the user may correct it before Accept): the boxes'
+    # values are what the user reads there
+    mem += " " + " ".join(await u.page.locator("#view input[type=text]").evaluate_all("els => els.map(e => e.value)"))
     print(f"INFO Memory page: {' '.join(mem.split())[:900]}")
     check("menu: the Memory page shows the peanut allergy (to confirm or saved)", re.search(r"peanut|ピーナッツ|落花生", mem, re.I), mem[:900])
 

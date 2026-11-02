@@ -4,7 +4,7 @@ the question and the same answer, a follow-up landing in the same bot conversati
 chat started in a bot's own view answered there, an approval inside a bot shown in Main — are tested from the user's
 side by tests/bots_real.py (a takeover inside a bot shown in Main: tests/arrival_real.py). What stays here, and why it
 cannot be e2e:
-  * the five bots with their skills and names (the bot definitions, exact);
+  * the six bots with their skills and names (the bot definitions, exact);
   * the planner's routing decision and the hand-over coming from it, the fallbacks when routing fails or names a
     conversation that is not the bot's, Main refusing another bot's skill or tool (internal events and forced
     failures of the planner);
@@ -43,7 +43,7 @@ def conv(cid):
 # ---------------------------------------------------------------- the bots and their skills
 bots = c.get(B + "/api/bots", headers=H).json()["bots"]
 ids = [b["id"] for b in bots]
-K.check("five bots, Main first: main, travel, insurance, cards, photos", ids == ["main", "travel", "insurance", "cards", "photos"], ids)
+K.check("six bots, Main first: main, travel, insurance, cards, photos, shopping", ids == ["main", "travel", "insurance", "cards", "photos", "shopping"], ids)
 sk = {b["id"]: set(b["skills"]) for b in bots}
 K.check("each bot has its own skills; Main keeps the general ones and none of the travel ones",
         "flight-booking" in sk["travel"] and "flight-booking" not in sk["main"] and "news-search" in sk["main"] and "tokyo" in sk["travel"]

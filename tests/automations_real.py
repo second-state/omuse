@@ -1,4 +1,5 @@
 """Goals with a real model, from the user's point of view (tests/user_common.py).
+  With the test inbox connected (read-only; the goals are not run):
   1. goal — "Keep an eye on my inbox until John confirms the contract; check once a day, until 20 November."
      Automations lists the goal, Active.
   2. pause — a second goal ("…until the landlord replies about the rent"); the user presses "Pause": it shows Paused.
@@ -11,12 +12,18 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tests import arrival_common as A  # noqa: E402
 from tests import user_common as U  # noqa: E402
 from tests.user_common import check  # noqa: E402
 
 
 async def main():
     async with U.User() as u:
+        # the user's own mailbox is connected (a goal that watches the inbox needs one; the model rightly declines
+        # without it): the test inbox, read-only — the goals are not run here
+        if not A.connect_mailbox():
+            print("SKIP automations_real: no test inbox (OMUSE_E2E_IMAP_* in the env file)")
+            return
         # ---- 1. a goal
         await u.page.goto(U.APP + "#chat")
         a = await u.ask("Keep an eye on my inbox until John confirms the contract for the Q4 pilot. Check once a day, until 20 November 2026.",

@@ -839,7 +839,7 @@ fn a_range_of_days_is_one_search_and_the_result_counts_the_days() {
 }
 
 #[test]
-fn a_google_offer_gets_its_sellers() {
+fn a_searched_google_offer_needs_no_second_request_for_its_sellers() {
     let p = profile();
     let a = valid(
         TRAVEL_SEARCH,
@@ -870,12 +870,15 @@ fn a_google_offer_gets_its_sellers() {
         },
         |r| ids_where(r, |f| f["offer_id"] == "fl_1"),
     );
-    assert_eq!(
-        args_of(&t, "flight_offer")[0],
-        json!({"offer_id": "fl_1", "currency": "SGD"})
+    // a search: the flight's own booking page is linked; who sells it is a second SerpApi request, not made (the user,
+    // 2026-11-02)
+    assert!(args_of(&t, "flight_offer").is_empty());
+    assert!(res.get("sellers").is_none());
+    assert!(
+        must(&res).contains("https://www.google.com/travel/flights/booking?tfs=1"),
+        "{}",
+        must(&res)
     );
-    assert_eq!(res["sellers"][1]["book_with"], "Trip.com");
-    assert!(must(&res).contains("- Sold by: Singapore Airlines, Trip.com"));
 }
 
 // ---------------------------------------------------------------- mail
@@ -1339,6 +1342,66 @@ fn an_empty_search_is_nothing_found() {
 // ---------------------------------------------------------------- restaurants
 
 #[test]
+fn michelin_without_the_travel_connector_searches_the_web_and_says_so() {
+    // travel_ask_real 2026-11-02: no travel connector — the guide's search ran as "unknown tool" and the answer said
+    // "nothing found"
+    let p = profile();
+    let ask =
+        "I need to book a Michelin 3 star restaurant in Tokyo next Friday. What are my options?";
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "michelin", "city": "Tokyo", "date": "2026-11-06", "distinction": "3 stars"}),
+        ask,
+        &p,
+    );
+    let mut env = Env::of(&p);
+    env.available = vec!["web_search".into(), "places_search".into()];
+    let (t, res) = run(
+        TRAVEL_SEARCH,
+        &a,
+        started(TRAVEL_SEARCH, &a, ask),
+        &env,
+        |name, _, _| {
+            match name {
+        "web_search" => json!({"results": [
+            {"title": "Tokyo – the MICHELIN Guide 3 Stars", "url": "https://guide.michelin.com/en/tokyo-region/tokyo/restaurants/3-stars-michelin", "snippet": "Three Stars"}]})
+        .to_string(),
+        _ => "{}".into(),
+    }
+        },
+    );
+    assert!(
+        names(&t).iter().all(|n| !n.contains("michelin_search")),
+        "{:?}",
+        names(&t)
+    );
+    let q = sget(&args_of(&t, "web_search")[0], "query");
+    assert!(
+        q.contains("Michelin Guide") && q.contains("Tokyo") && q.contains("3 stars"),
+        "{q}"
+    );
+    assert_eq!(res["status"], "shown");
+    let m = must(&res);
+    assert!(m.contains("Michelin Guide search: not connected"), "{m}");
+    assert!(
+        m.contains("https://guide.michelin.com/en/tokyo-region/tokyo/restaurants/3-stars-michelin"),
+        "{m}"
+    );
+
+    // no web search either: said so, nothing searched
+    env.available = vec!["places_search".into()];
+    let (t, res) = run(
+        TRAVEL_SEARCH,
+        &a,
+        started(TRAVEL_SEARCH, &a, ask),
+        &env,
+        |_, _, _| "{}".into(),
+    );
+    assert!(args_of(&t, "web_search").is_empty());
+    assert_eq!(res["status"], "not_connected");
+}
+
+#[test]
 fn a_michelin_table_takes_the_next_candidate_when_full_and_the_deposit_is_confirmed() {
     let p = profile();
     let a = valid(
@@ -1568,6 +1631,33 @@ fn search_then_choose(args: Value, choices: Value) -> (Value, Vec<Value>, Value)
     t.push(json!({"role": "tool", "tool_call_id": "call_w", "content": json!({"status": "running", "args": b}).to_string()}));
     let (t2, shown) = run(SHOP_ORDER, &b, t, &Env::of(&p), answer);
     (review, t2, shown)
+}
+
+#[test]
+fn a_shopping_pick_to_buy_links_the_stores_checkout() {
+    // the user picks an offer to buy: code links that variant's checkout on the store (pay in the browser); no page
+    // opened, nothing bought
+    let p = sg_profile();
+    let args = json!({"query": "running shoes", "action": "compare", "max_price": 150});
+    let (review, mut t, _) = search_then_choose(args.clone(), json!([]));
+    let o = &review["offers"][0];
+    assert!(get_str(o, "checkout_url").starts_with("https://"), "{o}");
+    let mut buy = args;
+    buy["pick"] = o["title"].clone();
+    let b = valid(SHOP_ORDER, buy, "x", &p);
+    t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_b", "type": "function",
+                  "function": {"name": SHOP_ORDER, "arguments": b.to_string()}}]}));
+    t.push(json!({"role": "tool", "tool_call_id": "call_b", "content": json!({"status": "running", "args": b}).to_string()}));
+    let (t2, res) = run_call("call_b", SHOP_ORDER, &b, t, &Env::of(&p), |_, _, _| {
+        "{}".into()
+    });
+    assert_eq!(res["status"], "link", "{res}");
+    let m = must(&res);
+    assert!(
+        m.contains("Check out and pay in your browser") && m.contains(&get_str(o, "checkout_url")),
+        "{m}"
+    );
+    assert!(!names(&t2).iter().any(|n| n.starts_with("browser_")));
 }
 
 #[test]
@@ -2404,8 +2494,8 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
     for other in ["TR 983", "CX 715", "UO 777", "SQ 893", "cheapest"] {
         assert!(!m.contains(other), "{other} in {m}");
     }
-    // the pick's sellers (Google Flights) are read for that flight only
-    assert_eq!(args_of(&t, "flight_offer")[0]["offer_id"], "fl_sq895");
+    // a search: no second request for the pick's sellers
+    assert!(args_of(&t, "flight_offer").is_empty());
     // the block names what was searched, the window included
     assert!(
         m.contains("- Searched: HKG to SIN on 2026-11-03, economy, 1 adult, arriving 18:00–23:59"),
@@ -2485,6 +2575,40 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
         m.contains("https://www.kayak.com/flights/HKG-SIN/2026-11-03"),
         "{m}"
     );
+}
+
+#[test]
+fn a_range_ending_on_the_day_itself_is_that_day_not_a_second_call() {
+    // the user's HK → Singapore request, 2026-11-02: date_to = date was sent back as a problem, and the model called
+    // travel_search a second time
+    let p = profile();
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "origin": "Hong Kong", "destination": "Singapore", "date": "2026-11-03",
+               "date_to": "2026-11-03", "arrive_before": "23:59"}),
+        "the last flight from HK to Singapore tomorrow that lands before midnight",
+        &p,
+    );
+    assert!(a.get("date_to").is_none(), "{a}");
+    assert_eq!(a["date"], "2026-11-03");
+}
+
+#[test]
+fn how_complete_a_flight_search_is_is_the_models_flag() {
+    // the user, 2026-11-02: the model decides from the request whether the search must list every flight (SerpApi's
+    // deep search); Kiwi.com ignores it
+    let p = profile();
+    for (given, want) in [(Some(true), true), (Some(false), false), (None, true)] {
+        let mut args =
+            json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03"});
+        if let Some(g) = given {
+            args["comprehensive"] = json!(g);
+        }
+        let a = valid(TRAVEL_SEARCH, args, "flights to Singapore tomorrow", &p);
+        assert_eq!(a["comprehensive"], want, "{a}");
+        let req = Req::from_args(&a);
+        assert_eq!(req.search_args(Kind::Flight)["comprehensive"], want);
+    }
 }
 
 #[test]

@@ -153,11 +153,11 @@ pub const CARDS: &[CardSpec] = &[
         start_url: "https://allindonesia.imigrasi.go.id/",
         host: "allindonesia.imigrasi.go.id",
         window_days: 3,
-        user_steps: "tick the certification and press Submit",
+        user_steps: "add your seat number and baggage count, tick the certification and press Submit",
         ref_sel: ".ref",
         ref_re: r"\bALLIND-\d{6,}\b|\b[A-Z]{2,4}-?\d{8,}\b",
         email_code: None,
-        // the Declaration step's Submit (the last of the four steps)
+        // the Declaration step's Submit (/arrival-card-submission/declaration/individual, the last of the four steps)
         final_page: Some(mark("button", "Submit")),
         user_step_at: &[],
     },
@@ -240,15 +240,12 @@ pub const CARDS: &[CardSpec] = &[
         start_url: "https://arrival.gov.kh/",
         host: "arrival.gov.kh",
         window_days: 7,
-        user_steps: "pick your occupation, phone country code and country of birth, fill in the travel, health and customs steps, then press Submit",
+        user_steps: "check the card, tick the declaration and press Submit",
         ref_sel: ".ref",
         ref_re: r"\bKH-EAC-\d{6,}\b",
         email_code: None,
-        // the stepper's selected step is the last, "Confirm Declaration" (its Submit renders only there)
-        final_page: Some(mark(
-            "mat-step-header[aria-selected=true]",
-            "5 Confirm Declaration",
-        )),
+        // step 5 "Confirm Declaration": the stepper's action button reads Submit only there (Next on steps 1–4)
+        final_page: Some(mark("button.swot-primary", "Submit")),
         user_step_at: &[],
     },
     CardSpec {
@@ -314,6 +311,13 @@ impl CardSpec {
     pub fn needs_departure_flight(&self) -> bool {
         self.skill == "tw-arrival-card"
     }
+
+    /// The card requires the stay's phone number: Cambodia's travel step ("Hotel contact number", "Private residential
+    /// contact number": required, walked on the live site 2026-11-02) — never invented, so asked before the form opens
+    /// (`needs_input`) when the user did not give it; the user's own home takes their own phone.
+    pub fn needs_stay_phone(&self) -> bool {
+        self.skill == "kh-arrival-card"
+    }
 }
 
 // ---------------------------------------------------------------- the workflow tool
@@ -365,6 +369,7 @@ invalid: fix the arguments and call again. Write the reply from the result, usin
             "departure_date": date("the day the user leaves the country, when a return or onward flight or the user gives it"),
             "next_city": {"type": "string", "description": "the next city after the country, when an onward flight or the user gives it"},
             "departure_flight_no": {"type": "string", "description": "the flight that LEAVES the country (the return or onward flight), when the user or a booking gives it: airline code and number (\"CI 51\")"},
+            "stay_phone": {"type": "string", "description": "the stay's phone number (the hotel's, or the host's), when the user or a booking gives it, with its country code (\"+855 23 000 000\")"},
             "occupation": {"type": "string", "description": "the user's job, only when they gave it — optional: a card that asks for it leaves the box for the user's review, so it is never asked for (needs_input lists everything that is)"}
         }),
         &["country"],
@@ -420,6 +425,7 @@ const FACT_KEYS: &[&str] = &[
     "next_city",
     "occupation",
     "departure_flight_no",
+    "stay_phone",
 ];
 
 static FLIGHT_NO: LazyLock<Regex> =
@@ -585,6 +591,23 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
     for k in ["airline", "next_city", "occupation"] {
         put(k, s_arg(&a, k));
     }
+    // the stay's phone: digits with an optional +, spaces, dashes, dots or brackets, at least six digits
+    let stay_phone = s_arg(&a, "stay_phone");
+    let stay_phone = if stay_phone.is_empty() {
+        String::new()
+    } else if stay_phone
+        .chars()
+        .all(|c| c.is_ascii_digit() || " +-().".contains(c))
+        && stay_phone.chars().filter(char::is_ascii_digit).count() >= 6
+    {
+        stay_phone
+    } else {
+        problems.push(format!(
+            "stay_phone: {stay_phone:?} is not a phone number (\"+855 23 000 000\")"
+        ));
+        String::new()
+    };
+    put("stay_phone", stay_phone.clone());
     // the stay: what the arguments say, else the user's own address they chose, else the profile's one address there
     let own = own_addresses(cx.profile, card.country);
     let mut stay_name = s_arg(&a, "stay_name");
@@ -670,6 +693,17 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
             card.country
         ));
     }
+    if stay_phone.is_empty() && card.needs_stay_phone() && stay_kind != "own" {
+        missing.push(format!(
+            "stay_phone (the phone number of the {} you stay at in {}: the card requires it)",
+            if stay_kind == "hotel" {
+                "hotel"
+            } else {
+                "place"
+            },
+            card.country
+        ));
+    }
     if leave.is_empty() && card.needs_departure_flight() {
         missing.push(format!(
             "departure_flight_no (the flight leaving {} and its date: the card requires it)",
@@ -716,6 +750,7 @@ pub struct Trip {
     pub next_city: String,
     pub occupation: String,
     pub departure_flight_no: String,
+    pub stay_phone: String,
 }
 
 impl Trip {
@@ -737,6 +772,7 @@ impl Trip {
             next_city: g("next_city"),
             occupation: g("occupation"),
             departure_flight_no: g("departure_flight_no"),
+            stay_phone: g("stay_phone"),
         }
     }
 
@@ -748,6 +784,7 @@ impl Trip {
             "stay_name": self.stay_name, "stay_address": self.stay_address, "stay_kind": self.stay_kind,
             "purpose": self.purpose, "departure_date": self.departure_date, "next_city": self.next_city,
             "occupation": self.occupation, "departure_flight_no": self.departure_flight_no,
+            "stay_phone": self.stay_phone,
         })
     }
 
@@ -2001,6 +2038,40 @@ mod tests {
         assert_eq!(c[0].name, "browser_navigate");
     }
 
+    /// Cambodia's travel step requires the stay's phone ("Hotel contact number", walked on the live site 2026-11-02:
+    /// its Next stays blocked without it): never invented — asked before the form opens, passed on to the form
+    /// function once given (a malformed one is the model's to fix); the user's own home takes their own phone.
+    #[test]
+    fn cambodia_asks_for_the_hotels_phone_before_the_form_opens() {
+        let p = json!({});
+        let base = json!({"country": "Cambodia", "flight_no": "SQ 166", "arrival_date": "2026-11-02",
+                          "arrival_airport": "PNH", "stay_name": "Riverside Palace Hotel", "purpose": "holiday"});
+        match checked(base.clone(), &p, false, &[]) {
+            Checked::NeedsInput(m) => {
+                assert!(m.iter().any(|x| x.starts_with("stay_phone")), "{m:?}")
+            }
+            other => panic!("not needs_input: {other:?}"),
+        }
+        let mut with = base.clone();
+        with["stay_phone"] = json!("+855 23 000 000");
+        let a = valid(with, &p, false, &[]);
+        assert_eq!(a["stay_phone"], "+855 23 000 000");
+        assert_eq!(Trip::from_args(&a).args()["stay_phone"], "+855 23 000 000");
+        let mut bad = base.clone();
+        bad["stay_phone"] = json!("ask the front desk");
+        assert!(matches!(checked(bad, &p, false, &[]), Checked::Invalid(_)));
+        // the user's own home: no question (their own phone is the contact)
+        let mut own = base.clone();
+        own["stay_kind"] = json!("own");
+        own["stay_name"] = json!("");
+        own["stay_address"] = json!("12 Street 240, Phnom Penh");
+        assert!(matches!(checked(own, &p, false, &[]), Checked::Valid(_)));
+        // a card that does not need it: no question
+        let mut id = base;
+        id["country"] = json!("Indonesia");
+        assert!(matches!(checked(id, &p, false, &[]), Checked::Valid(_)));
+    }
+
     /// Taiwan's itinerary requires the flight that leaves the country (arrival_cards2_real 2026-11-02: "Expected Mode
     /// of Departure: Please choose an option." on step 3): never invented — asked before the form opens, and passed on
     /// to the form function once given (a malformed one is the model's to fix).
@@ -2037,7 +2108,7 @@ mod tests {
             let args = valid(
                 json!({"country": c.country, "flight_no": "XX 100", "arrival_date": "2026-11-02",
                        "stay_name": "Test Hotel", "purpose": "holiday", "occupation": "Engineer",
-                       "departure_flight_no": "XX 101"}),
+                       "departure_flight_no": "XX 101", "stay_phone": "+855 23 000 000"}),
                 &p,
                 false,
                 &[],
