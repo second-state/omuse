@@ -373,6 +373,11 @@ pub fn decide(
     if connector == "search" {
         return Ok(Decision::new(ALLOW, &t_risk, String::new()));
     }
+    // Shopify's public APIs, called by the shop_order machine only: a checkout is built by API, never paid (the user
+    // pays on its link)
+    if connector == "shopping" {
+        return Ok(Decision::new(ALLOW, &t_risk, String::new()));
+    }
     // the searches always run (flights: Kiwi.com first; hotels and places fall back to web search without the SerpApi
     // key); the detail tools read Google ids, so they need the key (the user's, or the server's default)
     let keyed_tool = tool == "hotel_rooms" || tool == "place_details";

@@ -622,6 +622,7 @@ impl Runtime {
                     mail_ready,
                     available: &available,
                     first,
+                    before: &t[..from],
                 };
                 super::booking::next(tool, args, &t[from..], &m)
             }
@@ -2212,6 +2213,8 @@ message to use as written) stays in that language. Output only the rewritten rep
                     && n != "browser_fill_form"
                     // read by the code machines with their fixed selectors (a known page's elements)
                     && n != "browser_read_elements"
+                    // the store providers by API: the shop_order machine's own call
+                    && n != "shop_search"
                     && allow.is_none_or(|a| a.contains(&n))
             })
             .collect();
@@ -2640,12 +2643,15 @@ yourself; ask_bot is not available for it."
                     .into_iter()
                     .filter(|x| !(workflow_bot && super::guards::machine_only(tool_name(x))))
                     .collect();
-                // the reply to a machine's result: the workflow tools are not offered on that turn
+                // the reply to a machine's result: the workflow tools are not offered on that turn — except
+                // shop_order right after its review result (the model chooses the offers from it)
                 let reply_turn = super::workflow::reply_turn(&transcript);
+                let review = reply_turn && super::booking::shopping::review_open(&transcript);
                 let tl: Vec<Value> = tl
                     .into_iter()
                     .filter(|x| {
                         !(reply_turn
+                            && !(review && tool_name(x) == super::booking::SHOP_ORDER)
                             && ((super::booking::TOOLS.contains(&tool_name(x))
                                 && tool_name(x) != super::booking::TRAVEL_PICK)
                                 || super::claims::TOOLS.contains(&tool_name(x))
@@ -4082,6 +4088,8 @@ pub fn compress_with(
                 // a known page's elements read by a machine's fixed selectors (code-only): code reads them again at
                 // every step (shopping_real 2026-11-01: the results' cards cut short read as "0 listings")
                 || name == "browser_read_elements"
+                // the shopping machine's API answers are its state (the offers)
+                || name == "shop_search"
         })
         .map(|tc| get_str(tc, "id"))
         .collect();

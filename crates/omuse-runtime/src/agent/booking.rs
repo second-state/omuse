@@ -210,12 +210,18 @@ booking reference (status booked) or says why not. Write the reply from it, usin
     );
     let shop = fn_(
         SHOP_ORDER,
-        "Compare, add to the cart or buy on a shop whose link the user gave. Code opens the shop's page and hands it to \
-the browser-use skill (status browser_use) with the criteria: list the page's products as present_choices options \
-(price, stars, ratings) with these criteria as its ranking, and code ranks them; cart and checkout are filled there, \
-Place order is the user's. Write the reply from the JSON result, using its hints (code appends the facts in show to the reply).",
+        "Find and compare products, then buy one. Code searches the stores for the user's location by API (Shopify's \
+Global Catalog across merchants first; only the stores the user named when they named some) and returns the offers \
+as JSON (status review): read them and call shop_order again with the same arguments plus `choices` = the offer_ids of \
+the few offers that best fit the request, best first — code shows them as a choice card with the price in the user's \
+currency, the merchant and the link. Nothing is bought here: a pick is bought on the merchant's page. No page is \
+opened: a shop that is not one of the stores searched by API is not searched (status not_covered). Write the reply \
+from the JSON result (code appends the facts in show to the reply).",
         json!({
-            "url": {"type": "string", "description": "the shop's link the user gave in this chat (a results or product page) — the same link again when a later message asks to add to the cart or buy"},
+            "query": {"type": "string", "description": "what to look for, as product words (\"running shoes\"); the same words again with choices or a pick"},
+            "url": {"type": "string", "description": "a shop's link the user gave in this chat (only reported back: shops are searched by API, never opened)"},
+            "stores": {"type": "array", "items": s.clone(), "description": "stores the user named to search (\"Shopify\"); empty = the stores for the user's location"},
+            "choices": {"type": "array", "items": s.clone(), "description": "after a review result: the offer_ids of the 3 to 5 offers that best fit the request, best first"},
             "action": {"type": "string", "enum": ["compare", "cart", "buy"]},
             "by": {"type": "string", "enum": ["rating", "price", "ratings"], "description": "best-rated, cheapest or most-reviewed first"},
             "max_price": {"type": "number"}, "min_price": {"type": "number"}, "min_stars": {"type": "number"},
@@ -224,7 +230,7 @@ Place order is the user's. Write the reply from the JSON result, using its hints
             "title_not": strs,
             "pick": {"type": "string", "description": "the listing the user chose: its title exactly as the choice card listed it (the text after \"I choose: \")"}
         }),
-        &["url", "action"],
+        &["action"],
     );
     let pick = fn_(
         TRAVEL_PICK,
@@ -677,14 +683,29 @@ fn check_shop(a: &Value) -> Checked {
     let mut problems = Vec::new();
     let mut out = Map::new();
     let url = s_arg(a, "url");
-    if url.is_empty() {
-        return Checked::NeedsInput(vec!["url (the shop's link)".into()]);
+    let query = s_arg(a, "query");
+    let pick = s_arg(a, "pick");
+    if url.is_empty() && query.is_empty() && pick.is_empty() {
+        return Checked::NeedsInput(vec![
+            "query (what to look for) or url (the shop's link)".into()
+        ]);
     }
-    match url::Url::parse(&url) {
-        Ok(u) if u.scheme() == "http" || u.scheme() == "https" => {
-            out.insert("url".into(), json!(url));
+    if !url.is_empty() {
+        match url::Url::parse(&url) {
+            Ok(u) if u.scheme() == "http" || u.scheme() == "https" => {
+                out.insert("url".into(), json!(url));
+            }
+            _ => problems.push(format!("url: \"{url}\" is not a web address")),
         }
-        _ => problems.push(format!("url: \"{url}\" is not a web address")),
+    }
+    if !query.is_empty() {
+        out.insert("query".into(), json!(query));
+    }
+    for k in ["stores", "choices"] {
+        let v = list_arg(a, k);
+        if !v.is_empty() {
+            out.insert(k.into(), json!(v));
+        }
     }
     let action = s_arg(a, "action").to_lowercase();
     match action.as_str() {
@@ -724,7 +745,6 @@ fn check_shop(a: &Value) -> Checked {
             out.insert(k.into(), json!(v));
         }
     }
-    let pick = s_arg(a, "pick");
     if !pick.is_empty() {
         out.insert("pick".into(), json!(pick));
     }
@@ -1274,6 +1294,12 @@ pub struct ShopReq {
     pub action: String,
     pub ranking: crate::listings::Ranking,
     pub pick: String,
+    /// the product words to search for
+    pub query: String,
+    /// the stores the user named (a provider's name)
+    pub stores: Vec<String>,
+    /// the offer ids the model chose after a review result
+    pub choices: Vec<String>,
 }
 
 impl ShopReq {
@@ -1299,6 +1325,9 @@ impl ShopReq {
                 count: n_arg(a, "count").map(|x| x as usize),
             },
             pick: s_arg(a, "pick"),
+            query: s_arg(a, "query"),
+            stores: list_arg(a, "stores"),
+            choices: list_arg(a, "choices"),
         }
     }
 }
@@ -2354,6 +2383,8 @@ pub struct Machine<'a> {
     pub available: &'a [String],
     /// the machine's code calls in the transcript before this run's tool call: the ids go on from there
     pub first: usize,
+    /// the transcript before this run's tool call (a shopping review result the model chose from)
+    pub before: &'a [Value],
 }
 
 /// The ids of the machine's code calls go on from the ones already in the transcript.
@@ -2378,7 +2409,9 @@ impl Ids {
 pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     let ids = Ids::new(t, m.first);
     if tool == SHOP_ORDER {
-        return next_shop(&ShopReq::from_args(args), t, &ids);
+        let sr = ShopReq::from_args(args);
+        // the store providers by API (the Shopping bot): no page is opened
+        return shopping::next(&sr, t, m, &ids);
     }
     if tool == TRAVEL_PICK {
         return next_pick(args, t, m, &ids);
@@ -3283,29 +3316,7 @@ fn handover_show(item: &Item, page_url: &str) -> Vec<Value> {
     show
 }
 
-// ---------------------------------------------------------------- shopping
-
-/// A shopping run: the shop's link opened and the page handed to `browser-use` (no shop has a form function). The
-/// criteria go with the result: the model lists the page's products as `present_choices` options with their price,
-/// stars and ratings, and code ranks them by these criteria (`listings::Ranking`).
-fn next_shop(sr: &ShopReq, t: &[Value], ids: &Ids) -> Step {
-    let url = sr.url.clone();
-    let Some((a, msg)) = calls_of(t, "browser_navigate")
-        .into_iter()
-        .rfind(|(a, _)| sget(a, "url") == url)
-    else {
-        return ids.calls("browser_navigate", json!({"url": url}));
-    };
-    let page = landed(&a, msg);
-    let mut out = json!({"status": "browser_use", "url": page, "action": sr.action,
-        "criteria": sr.ranking.to_json(),
-        "show": [S::link("The shop's page (open in the browser)", "商店页面（已在浏览器中打开）", "", &page)],
-        "hints": []});
-    if !sr.pick.is_empty() {
-        out["pick"] = json!(sr.pick);
-    }
-    Step::Done(out)
-}
+pub(crate) mod shopping;
 
 #[cfg(test)]
 mod tests;

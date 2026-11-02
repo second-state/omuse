@@ -22,12 +22,18 @@ exa_mcp = \"$OFF/mcp\"
 kiwi_mcp = \"$OFF/\"
 kayak = \"$OFF\"
 rentalcars = \"$OFF\"
+shopify_auth = \"$OFF\"
+shopify_catalog = \"$OFF\"
 market_data_hosts = [\"$OFF\"]"
   FREE_EXA=false
+  SHOPPING=""
 else
   ENGINES="${OMUSE_E2E_SEARCH_ENGINES-}"
   ENDPOINTS=""
   FREE_EXA=true
+  # the real-model suites search Shopify's Global Catalog with the test credentials (the env file's OMUSE_E2E_SHOPIFY_*)
+  SHOPPING="shopify_client_id = \"${OMUSE_E2E_SHOPIFY_CLIENT_ID:-}\"
+shopify_client_secret = \"${OMUSE_E2E_SHOPIFY_CLIENT_SECRET:-}\""
 fi
 cat > $T/config.toml <<TOML
 [server]
@@ -66,6 +72,9 @@ free_exa = $FREE_EXA
 
 [endpoints]
 $ENDPOINTS
+
+[shopping]
+$SHOPPING
 
 [skills]
 dir = "${OMUSE_E2E_SKILLS_DIR-}"   # OMUSE_E2E_SKILLS_DIR=/repo/skills (run_in_docker.sh): the working tree's skills, no rebuild

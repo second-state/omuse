@@ -812,6 +812,9 @@ pub async fn execute(
         let text = fstr(args, "text");
         return telegram_send(st, take_chars(&text, 3500)).await;
     }
+    if connector == "shopping" {
+        return Ok(shop_search(st, args).await);
+    }
     if connector == "travel" {
         // cabin, stops and self_transfer are the model's (required enums in the catalog), never read from the request
         let checked = checked_travel_args(tool, args)?;
@@ -2205,6 +2208,63 @@ fn remember_search_ok(st: &AppState, p: omuse_apps::websearch::Provider) {
             .store
             .save_connection("search", Some(&json!({"last_ok": p.id()})), None, None);
     }
+}
+
+/// `shop_search` (the shop_order machine's code call; docs/sites/shopify.md): the Shopping bot's store providers by
+/// API — the providers for the user's location (or only the ones the user named), queried in parallel with a time limit
+/// each (`omuse_apps::shops`), the offers merged, and every price also in the user's currency (`price_local`: the
+/// merchant's own price for that market, else converted at the market rate). Always a JSON answer (the machine reads it).
+pub async fn shop_search(st: &AppState, args: &Value) -> Value {
+    use omuse_apps::shops::{self, Clients, SearchReq};
+    let clients = Clients {
+        shopify: omuse_apps::shopify::Shopify::new(
+            st.http.clone(),
+            &st.cfg.endpoints.shopify_auth,
+            &st.cfg.endpoints.shopify_catalog,
+            &st.cfg.endpoints.shopify_agent_profile,
+            &st.cfg.shopping.shopify_client_id,
+            &st.cfg.shopping.shopify_client_secret,
+        ),
+    };
+    let currency = fstr(args, "currency").to_uppercase();
+    let req = SearchReq {
+        query: fstr(args, "query"),
+        country: fstr(args, "country").to_uppercase(),
+        currency: currency.clone(),
+        min_price: args.get("min_price").and_then(as_f64),
+        max_price: args.get("max_price").and_then(as_f64),
+        limit: args.get("limit").and_then(Value::as_u64).unwrap_or(20),
+    };
+    let named: Vec<String> = args
+        .get("stores")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let providers = match shops::providers_for(&req.country, &named) {
+        Ok(p) => p,
+        Err(unknown) => return json!({"offers": [], "providers": [], "not_covered": unknown}),
+    };
+    let mut out = shops::search_all(&providers, &clients, &req, Duration::from_secs(9)).await;
+    if currency.len() == 3 {
+        if let Some(offers) = out.get_mut("offers").and_then(Value::as_array_mut) {
+            let syms = shops::fx_symbols(offers, &currency);
+            let rates = if syms.is_empty() {
+                Value::Null
+            } else {
+                omuse_apps::market::Market::new(st.http.clone(), st.cfg.market_data_hosts())
+                    .fetch(&syms, "5d")
+                    .await
+            };
+            let results = rates["results"].as_array().cloned().unwrap_or_default();
+            omuse_apps::shopify::localise(offers, &currency, &results);
+        }
+    }
+    out
 }
 
 /// The SerpApi key in force for the Flights & hotels connection: the user's, else the server's default; "" = none.

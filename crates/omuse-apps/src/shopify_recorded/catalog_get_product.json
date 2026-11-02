@@ -1,0 +1,157 @@
+{
+ "jsonrpc": "2.0",
+ "id": 2,
+ "result": {
+  "structuredContent": {
+   "ucp": {
+    "version": "2026-08-25",
+    "capabilities": {
+     "dev.ucp.shopping.catalog.search": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/catalog/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/catalog_search.json"
+      }
+     ],
+     "dev.ucp.shopping.catalog.lookup": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/catalog/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/catalog_lookup.json"
+      }
+     ],
+     "dev.shopify.catalog.global": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://shopify.dev/docs/agents/catalog/global-catalog",
+       "schema": "https://shopify.dev/ucp/schemas/2026-08-25/shopify_catalog_global.json",
+       "extends": [
+        "dev.ucp.shopping.catalog.search",
+        "dev.ucp.shopping.catalog.lookup"
+       ],
+       "requires": {
+        "protocol": {
+         "min": "2026-08-25"
+        }
+       }
+      }
+     ]
+    },
+    "status": "success"
+   },
+   "product": {
+    "id": "gid://shopify/p/373KEiTesCX9KxCQk7uoMk",
+    "title": "Men's Wool Runner - Natural Grey (Light Grey Sole)",
+    "handle": "mens-wool-runners",
+    "rating": {
+     "value": 4.6,
+     "scale_min": 1,
+     "scale_max": 5,
+     "count": 7064
+    },
+    "options": [
+     {
+      "name": "Size",
+      "values": [
+       {
+        "label": "9",
+        "available": true,
+        "exists": true
+       },
+       {
+        "label": "10",
+        "available": true,
+        "exists": true
+       },
+       {
+        "label": "11",
+        "available": true,
+        "exists": true
+       },
+       {
+        "label": "13",
+        "available": true,
+        "exists": true
+       }
+      ]
+     },
+     {
+      "name": "Color",
+      "values": [
+       {
+        "label": "Natural Grey (Light Grey Sole)",
+        "available": true,
+        "exists": true
+       }
+      ]
+     }
+    ],
+    "variants": [
+     {
+      "id": "gid://shopify/ProductVariant/30674260033616",
+      "title": "Men's Wool Runner - Natural Grey (Light Grey Sole)",
+      "handle": "mens-wool-runners",
+      "url": "https://www.allbirds.com/products/mens-wool-runners?variant=30674260033616&_gsid=3wcKZzup2rMi&utm_source=shopify&utm_medium=catalog",
+      "price": {
+       "amount": 11000,
+       "currency": "USD"
+      },
+      "availability": {
+       "available": true
+      },
+      "options": [
+       {
+        "name": "Color",
+        "label": "Natural Grey (Light Grey Sole)"
+       },
+       {
+        "name": "Size",
+        "label": "10"
+       }
+      ],
+      "seller": {
+       "id": "gid://shopify/Shop/11044168",
+       "name": "Allbirds",
+       "url": "https://www.allbirds.com",
+       "domain": "weareallbirds.myshopify.com"
+      },
+      "checkout_url": "https://www.allbirds.com/cart/30674260033616:1?_gsid=3wcKZzup2rMi&utm_source=shopify&utm_medium=catalog",
+      "rating": {
+       "value": 4.5,
+       "scale_min": 1,
+       "scale_max": 5,
+       "count": 1189
+      },
+      "condition": [
+       "new"
+      ],
+      "eligible": {
+       "native_checkout": false
+      },
+      "source": "shopify"
+     }
+    ],
+    "price_range": {
+     "min": {
+      "amount": 11000,
+      "currency": "USD"
+     },
+     "max": {
+      "amount": 11000,
+      "currency": "USD"
+     }
+    },
+    "selected": [
+     {
+      "name": "Color",
+      "label": "Natural Grey (Light Grey Sole)"
+     },
+     {
+      "name": "Size",
+      "label": "10"
+     }
+    ]
+   }
+  }
+ }
+}

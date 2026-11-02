@@ -115,6 +115,7 @@ fn run_call(
             mail_ready: env.mail_ready,
             available: &env.available,
             first,
+            before: &t[..from],
         };
         match next(tool, args, &t[from..], &m) {
             Step::Calls(c) => {
@@ -348,7 +349,9 @@ fn bad_fields_are_problems_and_user_only_fields_are_asked_before_any_page() {
     );
     assert_eq!(
         check(SHOP_ORDER, &json!({"action": "buy"}), &cx),
-        Checked::NeedsInput(vec!["url (the shop's link)".into()])
+        Checked::NeedsInput(vec![
+            "query (what to look for) or url (the shop's link)".into()
+        ])
     );
     // a restaurant gets its default time; a bad time is a problem
     let a = valid(
@@ -1481,7 +1484,7 @@ fn a_choice_cards_pick_is_booked_by_its_label() {
 // ---------------------------------------------------------------- shopping
 
 #[test]
-fn an_unknown_shop_is_opened_and_handed_to_browser_use() {
+fn a_shop_link_is_never_opened_only_reported_as_not_searched() {
     let p = profile();
     let a = valid(
         SHOP_ORDER,
@@ -1494,13 +1497,203 @@ fn an_unknown_shop_is_opened_and_handed_to_browser_use() {
         &a,
         started(SHOP_ORDER, &a, "x"),
         &Env::of(&p),
-        |name, args, _| match name {
-            "browser_navigate" => snap(&sget(args, "url"), "[e1] button \"Add to cart\""),
-            _ => "{}".into(),
+        |_, _, _| "{}".into(),
+    );
+    assert_eq!(
+        names(&t).len(),
+        1,
+        "no call at all: no page, no browser-use"
+    );
+    assert_eq!(res["status"], "not_covered");
+    assert!(S::lines(&res, false).join("\n").contains("lazada.sg"));
+}
+
+// ---------------------------------------------------------------- shopping by API (recorded real responses)
+
+/// `shop_search`'s answer built from a Global Catalog search recorded from the real service on 2026-11-02 for a
+/// Singapore buyer ("running shoes", ships to SG; omuse-apps/src/shopify_recorded/catalog_search_sg.json), tagged and
+/// localised the way Sentinel does it (the GBP / USD / EUR rates are fixed test values). Recorded data, labelled as such.
+fn sg_search() -> String {
+    use omuse_apps::{shopify as sh, shops};
+    let sc: Value = serde_json::from_str(include_str!(
+        "../../../../omuse-apps/src/shopify_recorded/catalog_search_sg.json"
+    ))
+    .unwrap();
+    let mut offers = shops::tag(
+        shops::Provider::ShopifyCatalog,
+        sh::products_of(&sh::tool_result(&sc).unwrap()),
+    );
+    let rates = vec![
+        json!({"symbol": "GBPSGD=X", "last": 1.7}),
+        json!({"symbol": "USDSGD=X", "last": 1.3}),
+        json!({"symbol": "EURSGD=X", "last": 1.5}),
+    ];
+    sh::localise(&mut offers, "SGD", &rates);
+    json!({"offers": offers, "providers": [{"provider": "shopify", "ok": true, "count": 6}]})
+        .to_string()
+}
+
+fn sg_profile() -> Value {
+    json!({"name_en": "OMUSE TESTER", "home_city": "SIN", "home_country": "SG", "email_personal": "omuse.e2e.tester@example.com"})
+}
+
+/// A search run, then the model's choice in a second call (the transcript carries the first run's review result).
+fn search_then_choose(args: Value, choices: Value) -> (Value, Vec<Value>, Value) {
+    let p = sg_profile();
+    let a = valid(SHOP_ORDER, args.clone(), "x", &p);
+    let answer = |name: &str, _: &Value, _: &[Value]| match name {
+        "shop_search" => sg_search(),
+        "present_choices" => "{\"shown\": true}".to_string(),
+        _ => "{}".to_string(),
+    };
+    let (mut t, review) = run(
+        SHOP_ORDER,
+        &a,
+        started(SHOP_ORDER, &a, "x"),
+        &Env::of(&p),
+        answer,
+    );
+    t.extend(crate::agent::workflow::result_exchange(
+        &t, SHOP_ORDER, &review,
+    ));
+    assert!(
+        shopping::review_open(&t),
+        "shop_order stays offered after the review"
+    );
+    let mut again = args;
+    again["choices"] = choices;
+    let b = valid(SHOP_ORDER, again, "x", &p);
+    t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_w", "type": "function",
+                  "function": {"name": SHOP_ORDER, "arguments": b.to_string()}}]}));
+    t.push(json!({"role": "tool", "tool_call_id": "call_w", "content": json!({"status": "running", "args": b}).to_string()}));
+    let (t2, shown) = run(SHOP_ORDER, &b, t, &Env::of(&p), answer);
+    (review, t2, shown)
+}
+
+#[test]
+fn a_shopping_search_goes_to_the_providers_for_the_users_location() {
+    let p = sg_profile();
+    let a = valid(
+        SHOP_ORDER,
+        json!({"query": "running shoes", "action": "compare", "max_price": 150}),
+        "x",
+        &p,
+    );
+    let (t, res) = run(
+        SHOP_ORDER,
+        &a,
+        started(SHOP_ORDER, &a, "x"),
+        &Env::of(&p),
+        |_, _, _| sg_search(),
+    );
+    assert_eq!(names(&t)[1..], ["shop_search"], "one API call, no page");
+    let s = &args_of(&t, "shop_search")[0];
+    assert_eq!(
+        (s["country"].as_str(), s["currency"].as_str()),
+        (Some("SG"), Some("SGD"))
+    );
+    assert_eq!(s["max_price"], 150.0);
+    assert_eq!(res["status"], "review");
+    let offers = res["offers"].as_array().unwrap();
+    // under S$150 in Singapore dollars: the converted prices are compared, the shop's own kept beside them
+    assert!(!offers.is_empty());
+    assert!(
+        offers
+            .iter()
+            .all(|o| o["currency"] == "SGD" && o["price"].as_f64().unwrap() <= 150.0),
+        "{offers:?}"
+    );
+    assert!(offers.iter().any(|o| o["shop_currency"] == "GBP"));
+    // the Tracksmith shoe at SGD 160 passed the catalog's USD-based filter: code leaves it out
+    assert!(!offers
+        .iter()
+        .any(|o| o["title"].as_str().unwrap().contains("Tracksmith")));
+    assert!(offers
+        .iter()
+        .all(|o| o["offer_id"].as_str().unwrap().starts_with("shopify-")));
+    assert!(res["show"].is_null(), "a review shows nothing yet");
+}
+
+#[test]
+fn the_models_choices_are_checked_by_id_and_shown_as_a_card_in_local_currency() {
+    let (review, t, res) = search_then_choose(
+        json!({"query": "running shoes", "action": "compare", "max_price": 150}),
+        json!(["shopify-3", "nope-9", "shopify-2"]),
+    );
+    assert_eq!(review["status"], "review");
+    assert_eq!(res["status"], "shown");
+    assert_eq!(res["unknown_ids"], json!(["nope-9"]));
+    let ids: Vec<&str> = res["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["offer_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["shopify-3", "shopify-2"],
+        "the model's order, unknown ids dropped"
+    );
+    let card = args_of(&t, "present_choices").pop().unwrap();
+    assert_eq!(card["options"].as_array().unwrap().len(), 2);
+    assert_eq!(card["options"][0]["currency"], "SGD");
+    assert!(
+        card["options"][0]["price"].as_f64().is_some(),
+        "the price in its own field"
+    );
+    let lines = S::lines(&res, false).join("\n");
+    assert!(lines.contains("SGD "), "{lines}");
+    assert!(lines.contains("](https://"), "{lines}");
+}
+
+#[test]
+fn no_valid_choice_falls_back_to_the_first_offers_by_rule() {
+    let (review, _, res) = search_then_choose(
+        json!({"query": "running shoes", "action": "compare"}),
+        json!(["x-1"]),
+    );
+    let first = review["offers"][0]["offer_id"].clone();
+    assert_eq!(res["options"][0]["offer_id"], first);
+}
+
+#[test]
+fn a_store_the_user_named_that_no_provider_covers_is_said_so() {
+    let p = sg_profile();
+    let a = valid(
+        SHOP_ORDER,
+        json!({"query": "socks", "stores": ["Amazon"]}),
+        "x",
+        &p,
+    );
+    let (t, res) = run(
+        SHOP_ORDER,
+        &a,
+        started(SHOP_ORDER, &a, "x"),
+        &Env::of(&p),
+        |_, _, _| json!({"offers": [], "providers": [], "not_covered": ["amazon"]}).to_string(),
+    );
+    assert_eq!(args_of(&t, "shop_search")[0]["stores"], json!(["Amazon"]));
+    assert_eq!(res["status"], "nothing_found");
+    assert!(S::lines(&res, false).join("\n").contains("amazon"));
+}
+
+#[test]
+fn a_provider_left_out_is_reported() {
+    let p = sg_profile();
+    let a = valid(SHOP_ORDER, json!({"query": "socks"}), "x", &p);
+    let (_, res) = run(
+        SHOP_ORDER,
+        &a,
+        started(SHOP_ORDER, &a, "x"),
+        &Env::of(&p),
+        |_, _, _| {
+            json!({"offers": [], "providers": [{"provider": "shopify", "ok": false, "error": "no_credentials"}]}).to_string()
         },
     );
-    assert_eq!(names(&t)[1..], ["browser_navigate"]);
-    assert_eq!(res["status"], "browser_use");
+    assert_eq!(res["status"], "nothing_found");
+    assert!(S::lines(&res, false)
+        .join("\n")
+        .contains("shopify: not set up"));
 }
 
 // ---------------------------------------------------------------- the transcript: compression, ids
@@ -1574,6 +1767,7 @@ fn the_booking_stage_carries_on_when_the_search_result_was_compressed() {
             mail_ready: false,
             available: &env.available,
             first: 0,
+            before: &[],
         };
         match next(TRAVEL_BOOK, &a, &t[1..], &mm) {
             Step::Calls(c) => {
