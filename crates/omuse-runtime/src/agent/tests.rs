@@ -747,6 +747,34 @@ async fn a_form_skill_gets_a_form_sized_step_budget() {
     assert_eq!(rt.inner.lock().skill_steps.get(&get_str(&t2, "id")), None);
 }
 
+/// A schedule asked for in a chat posts its runs into that chat — no chat of its own (the user, 2026-11-02: the runs
+/// showed up as a separate "⏰" chat).
+#[tokio::test]
+async fn a_schedule_runs_in_the_chat_it_was_asked_in() {
+    let (rt, _d) = rt();
+    let conv = rt.store.create_conv("BTC", "chat", None).unwrap();
+    let t = json!({"id": "t1", "conv_id": conv, "goal": "x"});
+    let r = rt
+        .local(
+            &t,
+            "schedule_create",
+            &json!({"name": "BTC update", "goal": "Report BTC price and news", "kind": "cron", "spec": "0 8 * * *"}),
+        )
+        .await
+        .unwrap();
+    assert!(r.contains("schedule created"), "{r}");
+    let sch = rt.store.schedules().unwrap();
+    assert_eq!(sch.len(), 1);
+    assert_eq!(get_str(&sch[0], "conv_id"), conv);
+    // no "⏰" chat was made for it
+    assert!(rt
+        .store
+        .convs(20)
+        .unwrap()
+        .iter()
+        .all(|c| get_str(c, "kind") != "schedule"));
+}
+
 /// A machine's offer on a choice card keeps its structured price, currency and id (shopping_real 2026-11-02: the
 /// Shopping bot's card reached the chat without them).
 #[tokio::test]

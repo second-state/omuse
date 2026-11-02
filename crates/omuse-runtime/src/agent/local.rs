@@ -1139,7 +1139,8 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                     &json!(req_str(a, "spec")?),
                     &tz,
                     "",
-                    "",
+                    // its runs post into the chat it was asked in (the user, 2026-11-02)
+                    &get_str(t, "conv_id"),
                 )
                 .map_err(value_err)?;
                 self.publish(json!({"kind": "schedule_update"})).await;
@@ -1182,7 +1183,8 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                     &json!(pyjson::dumps(&spec)),
                     &tz,
                     "",
-                    "",
+                    // its runs post into the chat it was asked in (the user, 2026-11-02)
+                    &get_str(t, "conv_id"),
                 ) {
                     Ok(s) => s,
                     Err(e) => return value_msg(e),
@@ -2006,7 +2008,8 @@ these are listings from a results page, and a comparison of them takes `ranking`
             &json!(pyjson::dumps(&spec)),
             &tz,
             "",
-            "",
+            // its runs post into the chat it was asked in (the user, 2026-11-02)
+            &get_str(t, "conv_id"),
         ) {
             Ok(s) => s,
             Err(e) => return value_msg(e),

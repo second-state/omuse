@@ -8,11 +8,12 @@ and is not checked — only that the update came, carries the price, opens and i
    the answer and on the app's pages: the BTC price (BTC-USD, within 3% of the live price the market data gives now);
    the first update's report (the HTML edition under /artifacts/, which opens and is the newspaper with the price under
    its masthead); delivered here in the chat and not emailed; Automations lists the daily task at 08:00 and the Tasks
-   tab its next run at 08:00. Then the user deletes the task's ⏰ chat from the chat list: it is gone from the list and the
+   tab its next run at 08:00. The runs post into this chat (no ⏰ chat); the user deletes the chat: the task leaves the
    Tasks tab.
 One TIMING line per request.
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh btc_monitor_real"""
+import asyncio
 import os
 import re
 import sys
@@ -84,24 +85,20 @@ async def main():
         check("monitor: the Tasks tab lists it with its next run at 08:00",
               re.search(r"News report", tasks) and re.search(r"Next run[^A-Za-z]{0,40}\b0?8:00", tasks), tasks[:600])
 
-        # the user deletes the scheduled task's chat from Main's chat list (its × and the confirm): it stops and leaves
-        # the Tasks tab
+        # the update runs post into this same chat (no "⏰" chat of their own); the user deletes this chat (🗑 in its
+        # header): the task goes with it — gone from the Tasks tab
         titles = await u.chat_titles()
         print(f"INFO chat list: {titles}")
+        check("monitor: no separate scheduled-task chat (the runs post into this chat)", not any("⏰" in t for t in titles), titles)
         pg = u.page
-        row = pg.locator(".convlist .conv", has=pg.locator(".ct", has_text="⏰")).first
-        check("monitor: Main's chat list shows the scheduled task's chat (⏰)", await row.count() > 0, titles)
-        if await row.count():
-            pg.once("dialog", lambda d: d.accept())
-            await row.hover()
-            await row.locator(".cx").click()
-            await pg.wait_for_timeout(2500)
-            after = await u.chat_titles()
-            check("monitor: the deleted chat is gone from the chat list", not any("⏰" in t for t in after), after)
-            tasks = await C.page_text(u, "timers")
-            print(f"INFO Tasks tab after the delete: {tasks[:400]!r}")
-            check("monitor: the Tasks tab no longer lists the deleted task", "News report" not in tasks, tasks[:400])
-
+        await pg.goto(U.APP + "#chat/" + await u.conv_id())
+        await pg.wait_for_timeout(2000)
+        pg.once("dialog", lambda d: asyncio.ensure_future(d.accept()))
+        await pg.locator(".thread button", has_text="🗑").first.click()
+        await pg.wait_for_timeout(2500)
+        tasks = await C.page_text(u, "timers")
+        print(f"INFO Tasks tab after the delete: {tasks[:400]!r}")
+        check("monitor: deleting the chat removes the task from the Tasks tab", "News report" not in tasks, tasks[:400])
 
 U.setup()
 U.run(main)
