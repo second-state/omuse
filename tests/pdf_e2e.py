@@ -63,10 +63,6 @@ check("HTML source printed", rr.status_code == 200 and rr.json().get("path") == 
 if rr.status_code == 200:
     txt = "".join(p.extract_text() or "" for p in PdfReader(WS + "/reports/page.pdf").pages)
     check("scripts in the source did not run", "HTML" in txt and "HACKED" not in txt, txt[:200])
-time.sleep(1)
-log = open(T + "/pages.log").read()
-check("no network requests while printing", "track-md.png" not in log and "track-html.png" not in log,
-      [l for l in log.splitlines() if "track" in l])
 # a page count the user asked for: a list that runs a little over one page is fitted to one (printed smaller)
 long_md = "# Packing list\n\n" + "\n".join(f"- [ ] item {i}: something to pack for the trip" for i in range(50))
 rt = {"X-Persona-Runtime": "rt-test"}

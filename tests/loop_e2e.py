@@ -1,4 +1,5 @@
-"""A scheduled run whose model loops on one RSS feed: feed is readable, loop is blocked, step limit -> FAILED + notice."""
+"""A scheduled run whose model loops on one feed URL: the loop is blocked, step limit -> FAILED + notice (the feed itself
+was a test page and went with them)."""
 import sys, time, httpx
 
 B = "http://127.0.0.1:8080"
@@ -28,7 +29,6 @@ while time.time() - t0 < 90:
 res = [e["data"] for e in t["events"] if e["type"] == "tool_result"]
 check("step limit -> FAILED, not COMPLETED", t["status"] == "FAILED" and "步数上限" in (t.get("error") or ""), (t["status"], t.get("error")))
 check("summary kept as result", "LOOP SUMMARY" in (t.get("result") or ""), t.get("result"))
-check("feed shown as item list", res and "RSS/Atom feed" in res[0]["preview"] and "Robot story 0" in res[0]["preview"], res[:1])
 blocked = [r for r in res if "重复调用已拦截" in r["preview"]]
 check("identical re-opens blocked", len(blocked) >= 2 and len(res) - len(blocked) <= 3, [r["preview"][:80] for r in res])
 t0 = time.time()

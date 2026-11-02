@@ -49,8 +49,12 @@ async def ui():
         await card.wait_for(timeout=15000)
         await pg.wait_for_timeout(500)
         check("Settings has a Password section that says it is the initial one", await pg.locator("#pwDefault").count() == 1)
-        top = await pg.evaluate("document.querySelector('#password').getBoundingClientRect().top - document.querySelector('#view').getBoundingClientRect().top")
-        check("the link opens Settings at the Password section (scrolled into view)", pg.url.endswith("#settings/password") and -2 <= top < 120, (pg.url, top))
+        top, at_end = await pg.evaluate("""() => { const v = document.querySelector('#view');
+            return [document.querySelector('#password').getBoundingClientRect().top - v.getBoundingClientRect().top,
+                    v.scrollTop > 0 && v.scrollTop + v.clientHeight >= v.scrollHeight - 2]; }""")
+        # at the top of the view, or as far as the page scrolls (a short Settings page cannot bring it higher)
+        check("the link opens Settings at the Password section (scrolled into view)", pg.url.endswith("#settings/password")
+              and (-2 <= top < 120 or (at_end and top < 600)), (pg.url, top, at_end))
         await card.get_by_label("Current password").fill("local-test")
         await card.get_by_label("New password (at least 8 characters)").fill("my-own-password-1")
         await card.get_by_label("New password again").fill("different")

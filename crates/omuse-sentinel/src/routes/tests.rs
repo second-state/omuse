@@ -604,7 +604,7 @@ async fn a_keyless_places_search_in_a_tainted_task_asks_like_the_map_page_load()
 
 /// A fake browser broker for one checkout page: what a ref is, the page text with its total, and the typing.
 async fn fake_checkout_broker() -> String {
-    const URL: &str = "https://shop.test/book/restaurant/R-TYO-2";
+    const URL: &str = "https://shop.example/book/restaurant/R-TYO-2";
     let r = Router::new()
         .route(
             "/agent/describe",
@@ -676,12 +676,12 @@ async fn a_checkout_pages_text_never_sets_the_amount_it_is_shown_next_to_the_mod
     assert!(v.to_string().contains("purchase_confirm"), "{v}");
     assert!(ctx
         .store
-        .active_purchase("t1", "shop.test")
+        .active_purchase("t1", "shop.example")
         .unwrap()
         .is_none());
     // the model's purchase_confirm (it read JPY 25,000; the page text says 28,000; a `_page_shows` it sends is dropped)
     let (_, v) = act(json!({"tool": "purchase_confirm", "task_id": "t1", "call_id": "c2",
-                             "args": {"site": "shop.test", "items": [{"name": "Deposit", "qty": 1, "price": 25000}],
+                             "args": {"site": "shop.example", "items": [{"name": "Deposit", "qty": 1, "price": 25000}],
                                       "total": 25000, "currency": "JPY", "delivery": "Table for 2", "card_item_id": card,
                                       "_page_shows": 1}}))
     .await;
@@ -707,13 +707,13 @@ async fn a_checkout_pages_text_never_sets_the_amount_it_is_shown_next_to_the_mod
     assert_eq!(ap["args"]["total"], json!(25000), "{ap}");
     // the same total as the page shows: the auto-approval setting applies as before
     let (_, v) = act(json!({"tool": "purchase_confirm", "task_id": "t1", "call_id": "c3",
-                             "args": {"site": "shop.test", "items": [{"name": "Deposit", "qty": 1, "price": 28000}],
+                             "args": {"site": "shop.example", "items": [{"name": "Deposit", "qty": 1, "price": 28000}],
                                       "total": 28000, "currency": "JPY", "delivery": "Table for 2", "card_item_id": card}}))
     .await;
     assert_eq!(v["auto_approved"], true, "{v}");
     let p = ctx
         .store
-        .active_purchase("t1", "shop.test")
+        .active_purchase("t1", "shop.example")
         .unwrap()
         .expect("a confirmed purchase");
     assert!(p.to_string().contains("28000"), "{p}");

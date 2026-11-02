@@ -1061,7 +1061,7 @@ mod tests {
         assert_eq!(big(&Value::Null), "—");
     }
 
-    // ---------------------------------------------------------------- fake Yahoo (tests/fake_apps.py): host 1 is rate-limited
+    // ---------------------------------------------------------------- an in-process fake Yahoo: host 1 is rate-limited
     fn mkt(sym: &str) -> Option<(&'static str, &'static str, f64)> {
         match sym {
             "0700.HK" => Some(("Tencent Holdings Limited", "HKD", 400.0)),

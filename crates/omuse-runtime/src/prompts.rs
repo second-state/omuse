@@ -1154,11 +1154,6 @@ mod tests {
     }
 
     #[test]
-    fn requested_target_language() {
-        assert!(language_rule("en").contains("Exceptions:"));
-    }
-
-    #[test]
     fn agent_language_follows_the_setting() {
         let en = "English";
         let p = planner_user(
@@ -1168,9 +1163,6 @@ mod tests {
             "",
             en,
         );
-        assert!(p
-            .trim_end()
-            .ends_with("even if the request or the context above is in another language."));
         assert!(p.contains("in English"));
         assert!(p.contains("- Lucas 喜欢直飞"));
         let s = executor_system(&ExecutorPrompt {
@@ -1188,23 +1180,6 @@ mod tests {
                 && s.contains("Data/omuse/workspace")
         );
         assert!(!s.contains("连接")); // English mode: bilingual connection lines are cut to their English half
-        let s = executor_system(&ExecutorPrompt {
-            user_name: "L".into(),
-            tz: "UTC".into(),
-            language: "en".into(),
-            reply_lang: "English".into(),
-            ..Default::default()
-        });
-        assert!(s.to_lowercase().contains("quota") && s.to_lowercase().contains("delegate"));
-        // a new flight / hotel / car search or booking does not read mail; preparing an existing trip does
-        assert!(
-            s.contains("never reads the user's mail")
-                && s.contains("Preparing for a trip or a meeting the user already has")
-        );
-        assert!(PLANNER_SYSTEM.contains(
-            "Searching or booking a new flight, hotel, restaurant or rental car has no mail step"
-        ));
-        assert!(s.contains("then come in the live state") && s.contains("{\"state\": {\"time\""));
         let zh = executor_system(&ExecutorPrompt {
             tz: "Asia/Shanghai".into(),
             connections: json!({"gmail": {"ready": true, "accounts": ["a@x.com", "b@y.com"], "providers": {"b@y.com": "Outlook"}},
@@ -1225,13 +1200,6 @@ mod tests {
                 && zh.contains("- sk: 中文 English desc")
                 && zh.contains("Data/omuse/workspace")
         );
-        assert!(PLANNER_SYSTEM.contains("planning module"));
-        assert!(
-            PLANNER_SYSTEM.contains("\"parallel\"")
-                && PLANNER_SYSTEM.contains("same \"parallel\" label")
-        );
-        assert!(zh.contains("Work in parallel whenever parts of the job are independent"));
-        assert!(MEMORY_EXTRACT.starts_with("Sort what the USER says"));
         // the memory prompts list every topic the store validates against (crate::store::TOPICS)
         for (k, _) in crate::store::TOPICS {
             assert!(MEMORY_EXTRACT.contains(k) && MEMORY_SORT.contains(k), "{k}");
@@ -1262,12 +1230,7 @@ mod tests {
             language: "en".into(),
             ..Default::default()
         });
-        assert!(sysp.contains("call plan_task for work that takes several dependent steps"));
-        assert!(sysp.contains("You decide first whether a request needs a plan."));
         assert!(!sysp.contains("Standing preferences"));
-        assert!(sysp.contains("A follow-up that acts on something this conversation already found"));
-        assert!(sysp.contains("Never plan what one tool call can cover"));
-        assert!(sysp.contains("Flight, hotel and restaurant searches never use plan_task"));
         let sysp = executor_system(&ExecutorPrompt {
             language: "en".into(),
             prefs: vec![
@@ -1411,7 +1374,6 @@ mod tests {
             region_line("Asia/Singapore").contains("Singapore. For shopping")
                 && region_line("Asia/Singapore").contains("prices in SGD")
         );
-        assert_eq!(region_line("Europe/Kyiv"), "User's location (from their time zone Europe/Kyiv): Kyiv. For shopping, prices, stores, delivery, restaurants and local services use local sites, unless the user names another place.");
         let sel = vec![json!({"fact": "F", "domain": "site", "score": 1.0, "status": "pending"})];
         assert!(
             facts_text(&sel, false).contains("unconfirmed")

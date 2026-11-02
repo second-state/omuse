@@ -356,7 +356,6 @@ impl Runtime {
                 .or_else(|| {
                     machine_only_guard(call, crate::bots::has_tool(self.bot_of(t), "travel_search"))
                 })
-                .or_else(|| super::booking::browser_use_guard(transcript, call))
                 .or_else(|| invented_id_guard(transcript, call, seen.as_ref()))
                 .or_else(|| repeat_guard(transcript, call))
                 .or_else(|| retype_guard(transcript, call))

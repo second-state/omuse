@@ -1,6 +1,6 @@
 """What the credit-card real suites (tests/cards_*_real.py) share, all from the user's point of view
 (tests/user_common.py): the Vault card on the Memory page as the user reads it, adding a card there by its name, and
-the patterns the checks read in an answer (a card number, a date, the catalog's date, a claim said to be submitted)."""
+the patterns the checks read in an answer or a block (a card number, a date, an amount, the catalog's date)."""
 from __future__ import annotations
 
 import datetime as dt
@@ -12,12 +12,6 @@ from tests import user_common as U
 CARD_NO = re.compile(r"\b(?:\d[ -]?){13,19}\b")
 # the date the card terms were verified, as the catalog gives it (August 2026), in any common form
 CATALOG_DATE = re.compile(r"2026-08|Aug(ust)?\.? (\d{1,2},? )?2026|\d{1,2} Aug(ust)? 2026|08/2026", re.I)
-# a claim said to be submitted or filed by the assistant — not "has not been submitted" / "no claim has been filed"
-SUBMITTED = re.compile(r"(?<!\bno )(?<!\bno insurance )(?<!\bno trip )\b(claim|it) (has been|was|is now) (successfully )?(submitted|filed)"
-                       r"|\bI( have|'ve)? (submitted|filed) (the|your) claim", re.I)
-# the answer tells the user to add the card's details in Memory → Vault
-ADD_IN_VAULT = re.compile(r"vault", re.I)
-DETAILS = re.compile(r"number|expir|CVC|CVV|security code|card details", re.I)
 
 
 def date_in(text: str, d: dt.date) -> bool:

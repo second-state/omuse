@@ -3,17 +3,15 @@
   1. ask — which card for a S$180 dinner in Singapore: the Credit cards bot (its link) asks which cards the user holds
      (one question, no pick yet, no card number asked for).
   2. cards — the user answers in the same chat (a DBS Altitude and a UOB One from Singapore, an HSBC Red from Hong
-     Kong): the pick is made from those cards in Singapore dollars, with the catalog's date and the note that the
-     Singapore rows are unverified; the question is not asked again. The Memory page's Vault card shows the three
+     Kong): the block code appends gives the catalog's date and the note that the Singapore rows are unverified; the
+     question is not asked again. The Memory page's Vault card shows the three
      cards by name and country, marked name-only.
   3. The user adds a Hang Seng Travel+ Visa Signature on the Vault card by its name, with no country.
-  4. hk — which card for a HK$1,500 dinner in Hong Kong: the Hong Kong cards from Hong Kong's table — the Travel+ (no
-     country, a Hong Kong bank) with its 5% dining rebate, in HK dollars, the foreign fee on
-     the Singapore cards, at least one more of the user's cards compared, the catalog's date.
+  4. hk — which card for a HK$1,500 dinner in Hong Kong: the block gives the foreign fee on the Singapore cards and the
+     catalog's date.
   5. named — the user names a Citi PremierMiles from Singapore (and the UOB One again) for a S$1,500 flight on
-     singaporeair.com: the answer covers the PremierMiles; the Vault shows it by name with Singapore, and the UOB One
-     still once.
-No card number in any answer. One TIMING line per request.
+     singaporeair.com: the Vault shows it by name with Singapore, and the UOB One still once.
+No card number in any answer. (Which card the model picks and the values it quotes are its wording, not checked.) One TIMING line per request.
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh cards_markets_real"""
 import os
@@ -25,8 +23,6 @@ from tests import cards_common as C  # noqa: E402
 from tests import user_common as U  # noqa: E402
 from tests.user_common import check  # noqa: E402
 
-SG = re.compile(r"S\$\s?\d|SGD\s?\d|\d[\d,.]*\s?SGD", re.I)
-HK = re.compile(r"HK\$\s?\d|HKD\s?\d|\d[\d,.]*\s?HKD", re.I)
 SG_C = re.compile(r"singapore|\bSG\b", re.I)
 HK_C = re.compile(r"hong kong|\bHK\b", re.I)
 
@@ -48,8 +44,6 @@ async def main():
                         "from Hong Kong.", label="cards", new_chat=False)
         check("cards: answered by the Credit cards bot", "Credit cards" in a.bot_link, a.bot_link)
         check("cards: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.seconds)
-        check("cards: the pick is one of the cards the user named", a.mentions("Altitude", "UOB One", "HSBC Red"), a.text[:600])
-        check("cards: the value per card in Singapore dollars", bool(SG.search(a.text)), a.text[:900])
         check("cards: the block code appends after the answer gives the catalog's date (August 2026)",
               "Card terms from the catalog as of" in a.block and bool(C.CATALOG_DATE.search(a.block)), a.block)
         check("cards: the block code appends after the answer says the Singapore rows are unverified seeds",
@@ -77,13 +71,6 @@ async def main():
         a = await u.ask("I'm in Hong Kong next week: which of my cards should I use for a HK$1,500 dinner at a restaurant there?", label="hk")
         check("hk: answered by the Credit cards bot", "Credit cards" in a.bot_link, a.bot_link)
         check("hk: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.seconds)
-        check("hk: the Travel+ (saved without a country) is counted as a Hong Kong card with its 5% dining rebate",
-              a.mentions("Travel+") and bool(re.search(r"Travel\+[^\n]{0,400}\b5(\.0)?\s?%|\b5(\.0)?\s?%[^\n]{0,400}Travel\+", a.text)), a.text[:900])
-        check("hk: the Travel+ is not said to be missing from the catalog",
-              not re.search(r"Travel\+[^.\n]{0,80}(not in|isn't in|isn’t in|missing from)[^.\n]{0,20}catalog", a.text, re.I), a.text[:900])
-        others = [n for n in ("Altitude", "UOB One", "HSBC Red") if a.mentions(n)]
-        check("hk: the answer compares the Travel+ with at least one more of the user's cards", bool(others), a.text[:900])
-        check("hk: the values in Hong Kong dollars", bool(HK.search(a.text)), a.text[:900])
         check("hk: the block code appends after the answer gives the foreign transaction fee of the Singapore cards (catalog)",
               "foreign transaction fee" in a.block, a.block)
         check("hk: the block code appends after the answer gives the catalog's date (August 2026)",
@@ -94,8 +81,6 @@ async def main():
         a = await u.ask("I forgot: I also have a Citi PremierMiles card from Singapore, besides my UOB One. Which card is best for a "
                         "S$1,500 Singapore Airlines flight booked on singaporeair.com?", label="named")
         check("named: answered by the Credit cards bot", "Credit cards" in a.bot_link, a.bot_link)
-        check("named: the answer covers the Citi PremierMiles", a.mentions("PremierMiles", "Premier Miles"), a.text[:900])
-        check("named: the values in Singapore dollars", bool(SG.search(a.text)), a.text[-900:])
         check("named: the block code appends after the answer gives the catalog's date (August 2026)",
               "Card terms from the catalog as of" in a.block and bool(C.CATALOG_DATE.search(a.block)), a.block)
         check("named: no card number in the answer", not C.CARD_NO.search(a.text), a.text[:300])

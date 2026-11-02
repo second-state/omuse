@@ -2,11 +2,8 @@
 //!
 //! The model turns the user's words ("the three best-rated cases under S$25 with at least 200 ratings") into
 //! [`Ranking`] criteria; picking and ordering the listings is done here. The listings themselves are structured data,
-//! never found by a pattern over a page's text: a known shop's results page is read by its HTML elements (each listing
-//! card's name, rating, price and link by fixed selectors, [`Listing::from_fields`]); on any other site the model
-//! extracts them into JSON (`present_choices` options with `price`, `stars` and `ratings`, [`Listing::from_option`]).
-
-use std::collections::BTreeMap;
+//! never found by a pattern over a page's text: the model extracts them from the shop's page into JSON
+//! (`present_choices` options with `price`, `stars` and `ratings`, [`Listing::from_option`]).
 
 use serde_json::{json, Value};
 
@@ -56,32 +53,6 @@ pub fn amount(s: &str) -> Option<f64> {
 }
 
 impl Listing {
-    /// A listing card read by a known shop's selectors: `title`, `rating` (its rating element: the stars first, the
-    /// number of ratings last), `price` (its price element) and `url` (the card's link).
-    pub fn from_fields(f: &BTreeMap<String, String>) -> Option<Listing> {
-        let get = |k: &str| f.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
-        let title = get("title");
-        if title.is_empty() {
-            return None;
-        }
-        let rating_text = get("rating");
-        let n = numbers(&rating_text);
-        let price_text = get("price");
-        Some(Listing {
-            title,
-            stars: n.first().copied().filter(|s| *s <= 5.0).unwrap_or(0.0),
-            ratings: if n.len() >= 2 {
-                n.last().map_or(0, |r| *r as u64)
-            } else {
-                0
-            },
-            rating_text,
-            price: amount(&price_text),
-            price_text,
-            url: get("url"),
-        })
-    }
-
     /// A listing the model extracted from a page into a `present_choices` option: `label`, `price` (a number),
     /// `price_text`, `stars`, `ratings`, `source_url`, and its `details` as the rating text.
     pub fn from_option(o: &Value) -> Option<Listing> {
@@ -245,7 +216,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Kaya Mobile's results page as its listing cards' elements read it (`.card`: `h2 a`, `.rating`, `.price`).
+    /// A shop's results page as the model extracts its listings into `present_choices` options.
     fn page() -> Vec<Listing> {
         [
             (
@@ -296,31 +267,23 @@ mod tests {
         ]
         .iter()
         .filter_map(|(t, r, p)| {
-            let f: BTreeMap<String, String> = [
-                ("title", *t),
-                ("rating", *r),
-                ("price", *p),
-                ("url", "https://shop.test/kaya_item.html"),
-            ]
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-            Listing::from_fields(&f)
+            let n = numbers(r);
+            Listing::from_option(&json!({"label": t, "details": [r], "price_text": p,
+                "stars": n[0], "ratings": n[2], "source_url": "https://shop.example/item"}))
         })
         .collect()
     }
 
     #[test]
-    fn a_listing_cards_elements_give_its_rating_count_and_price() {
+    fn a_listings_rating_count_and_price_are_numbers() {
         let l = page();
         assert_eq!(l.len(), 9);
         let aurora = l.iter().find(|x| x.title.starts_with("Aurora")).unwrap();
-        assert_eq!(aurora.stars, 4.7);
-        assert_eq!(aurora.ratings, 1203);
-        assert_eq!(aurora.price, Some(21.9));
+        assert_eq!(
+            (aurora.stars, aurora.ratings, aurora.price),
+            (4.7, 1203, Some(21.9))
+        );
         assert_eq!(aurora.price_text, "S$21.90");
-        assert_eq!(aurora.rating_text, "4.7 out of 5 stars · 1,203 ratings");
-        assert!(Listing::from_fields(&BTreeMap::new()).is_none());
         assert_eq!(numbers("RM 1,299.50 (12)"), [1299.5, 12.0]);
     }
 

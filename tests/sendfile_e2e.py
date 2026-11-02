@@ -1,16 +1,13 @@
 """Files handed to the user: the guarantees a real-model run cannot see (local stack, scripted model). The use cases — a
-file card in the web chat whose Download saves the file (tests/chat_real.py), the file itself sent to the user's
-Telegram chat when the conversation came from Telegram (tests/telegram_real.py) — are tested from the user's side.
+file card in the web chat whose Download saves the file (tests/chat_real.py) — are tested from the user's side.
 What stays here, and why it cannot be e2e:
   * the exact HTTP headers: Download is an attachment named after the file, opening a plain file is inline;
-  * a file from a web chat is not also pushed to Telegram (an internal routing guarantee);
   * active content (HTML) in the workspace is never rendered on the app's own origin (forced download, sandbox CSP, no
     text/html), and a path outside the workspace is refused (forced security cases)."""
 import os, sys, time
 import httpx
 
 B = "http://127.0.0.1:8080"
-TG = "http://127.0.0.1:8091"
 H = {"X-Persona-UI": "1"}
 WS = "/tmp/claude-0/persona-test/workspace"
 c = httpx.Client(timeout=60, trust_env=False)
@@ -47,7 +44,6 @@ check("download returns the file as an attachment", d.status_code == 200 and "He
 i = c.get(B + "/api/files/raw", params={"path": "reports/brief.md"})
 check("open (inline) still works for plain files", i.status_code == 200 and "inline" in i.headers.get("content-disposition", ""),
       dict(i.headers))
-check("not sent to Telegram (web chat)", not c.get(TG + "/_log").json().get("docs"), c.get(TG + "/_log").json().get("docs"))
 
 # 2 HTML in the workspace is never rendered on the app origin
 os.makedirs(WS + "/downloads", exist_ok=True)

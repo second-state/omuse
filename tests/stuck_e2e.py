@@ -53,7 +53,7 @@ check("failure reason says it stopped retrying", "停止重试" in (t.get("error
 check("the page itself was opened once", len(ran) == 1, [r.get("preview", "")[:80] for r in res])
 check("copies of a call in the same turn are skipped, not run", len(skipped) >= 4 and "Skipped: identical" in skipped[0]["preview"],
       [r.get("preview", "")[:80] for r in skipped][:3])
-check("at most one re-plan, and it is told the dead end", len(replans) == 1 and "shop.test" in replans[0]["data"].get("dead_ends", ""),
+check("at most one re-plan, and it is told the dead end", len(replans) == 1 and "example.com" in replans[0]["data"].get("dead_ends", ""),
       [e["data"] for e in replans])
 check("gave_up event recorded", len(gave) == 1, gave)
 stuck_calls = httpx.get("http://127.0.0.1:8090/calls_for", params={"marker": "STUCKLOOP"}, timeout=10).json()

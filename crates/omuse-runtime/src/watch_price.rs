@@ -32,20 +32,6 @@ struct Rule {
 
 /// The known sites' price elements (the product page's own price, not a related product's).
 const KNOWN: &[Rule] = &[
-    // Kaya Mobile (the shop stand-in): Amazon's markup, the screen-reader copy holds the whole price
-    Rule {
-        host: "shop.test",
-        path: "/kaya_",
-        sel: ".a-price .a-offscreen",
-        attr: "",
-    },
-    // Stride Sports (the shop stand-in)
-    Rule {
-        host: "shop.test",
-        path: "/stride_",
-        sel: "main .price",
-        attr: "",
-    },
     // Amazon's buy box (every store: amazon.com, amazon.sg, amazon.co.uk, …)
     Rule {
         host: "amazon.",
@@ -315,31 +301,22 @@ mod tests {
 
     #[test]
     fn a_known_site_reads_its_price_element() {
-        assert_eq!(
-            known_rule("http://shop.test:8099/kaya_aurora.html"),
-            Some((".a-price .a-offscreen", ""))
-        );
-        assert_eq!(
-            known_rule("http://shop.test:8099/stride_socks.html").map(|r| r.0),
-            Some("main .price")
-        );
         assert!(
             known_rule("https://www.amazon.sg/dp/B0XYZ").is_some_and(|r| r.0.contains("corePrice"))
         );
         assert!(known_rule("amazon.co.uk/dp/B0XYZ").is_some());
-        assert_eq!(known_rule("http://shop.test:8099/watch.html"), None);
+        assert_eq!(known_rule("https://example.com/watch.html"), None);
         assert_eq!(known_rule("https://notamazon.com/x"), None);
     }
 
     #[test]
     fn how_a_watch_reads_is_decided_when_it_is_made() {
         // a known site: its element rule
-        let d =
-            decided(json!({"url": "http://shop.test:8099/kaya_aurora.html", "keyword": "Aurora"}));
-        assert_eq!(
-            (d["read"].as_str(), d["price_sel"].as_str()),
-            (Some("element"), Some(".a-price .a-offscreen"))
-        );
+        let d = decided(json!({"url": "https://www.amazon.sg/dp/B0XYZ", "keyword": "Aurora"}));
+        assert_eq!(d["read"].as_str(), Some("element"));
+        assert!(d["price_sel"]
+            .as_str()
+            .is_some_and(|s| s.contains("corePrice")));
         assert_eq!(d["item"], "Aurora");
         assert!(d.get("keyword").is_none());
         // the model's selector wins over the table; its attribute is kept when it is a name
@@ -357,14 +334,12 @@ mod tests {
         assert_eq!(d["read"], "model");
         assert!(d.get("price_sel").is_none() && d.get("price_attr").is_none());
         // read=model given (the element showed no price) stays, even on a known site
-        let d = decided(json!({"url": "http://shop.test:8099/kaya_aurora.html", "read": "model"}));
+        let d = decided(json!({"url": "https://www.amazon.sg/dp/B0XYZ", "read": "model"}));
         assert_eq!(d["read"], "model");
         assert!(d.get("price_sel").is_none());
         // the decision is stable when the stored spec is parsed again
-        let again = decided(decided(
-            json!({"url": "http://shop.test:8099/kaya_aurora.html"}),
-        ));
-        assert_eq!(again["price_sel"], ".a-price .a-offscreen");
+        let once = decided(json!({"url": "https://www.amazon.sg/dp/B0XYZ"}));
+        assert_eq!(decided(once.clone())["price_sel"], once["price_sel"]);
     }
 
     #[test]

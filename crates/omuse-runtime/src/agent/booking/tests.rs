@@ -1,8 +1,7 @@
 use super::*;
 use crate::agent::driver::questions_after_navigate;
 
-const TT: &str = "http://shop.test:8097";
-const SHOP: &str = "http://shop.test:8099";
+const TT: &str = "https://booking.example";
 
 fn today() -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 11, 1).unwrap() // a Sunday
@@ -33,15 +32,6 @@ fn snap(url: &str, body: &str) -> String {
     json!({"trust": "untrusted", "source": format!("web page {url}"), "url": url, "title": "", "snapshot": body}).to_string()
 }
 
-/// A `browser_read_elements` result: the values of the confirmation's reference element, and the refs the snapshot
-/// gave the card fields (read by their fixed selectors before the card fills).
-fn refs(values: &[&str]) -> String {
-    json!({"trust": "untrusted", "source": "web page x", "url": "x", "elements": {"reference": values,
-           "card_number": ["e13"], "card_expiry": ["e14"], "card_cvc": ["e15"], "card_holder": ["e16"]}})
-    .to_string()
-}
-
-const BACK: &str = "\"Takeover finished: the user handed browser control back.\"";
 const VAULT: &str = "Vault items:\n- id=card1 · Visa Jordan · card · number ****1111\n- id=pp1 · Passport · id_document · number ****321";
 
 /// The arguments validated as the run loop does it (the user's words for the mailed-to check).
@@ -406,115 +396,13 @@ fn a_flight_comparison_picks_by_rule_and_books_nothing() {
     let m = must(&res);
     assert!(
         m.contains("- Picked: Japan Airlines JL 36 — SGD 455.00 (direct, the cheapest)")
-            && m.contains("- Book Japan Airlines JL 36: [http://shop.test:8097/book/flight/F-SIN-HND-20261203-3]"),
+            && m.contains("- Book Japan Airlines JL 36: [https://booking.example/book/flight/F-SIN-HND-20261203-3]"),
         "{m}"
     );
 }
 
 #[test]
-fn a_flight_is_booked_on_a_known_site_with_fixed_ids_and_handed_over() {
-    let p = profile();
-    let ask = "Book the cheapest flight from Singapore to Tokyo next Friday, business class.";
-    let a = valid(
-        TRAVEL_BOOK,
-        json!({"kind": "flight", "destination": "TYO", "date": "2026-11-06", "cabin": "business"}),
-        ask,
-        &p,
-    );
-    let form = "[e10] textbox \"Full name (as in passport)\"\n[e11] textbox \"Email\"\n[e12] textbox \"Phone\"\n[e13] textbox \"Passport number\"\n\
-[e20] textbox \"Card number\"\n[e21] textbox \"Expiry (MM/YY)\"\n[e22] textbox \"CVC\"\n[e23] textbox \"Name on card\"\n[e30] button \"Pay now\"";
-    let (t, res) = run(
-        TRAVEL_BOOK,
-        &a,
-        started(TRAVEL_BOOK, &a, ask),
-        &Env::of(&p),
-        |name, args, _t| match name {
-            "flights_search" => flight_result(),
-            "vault_list" => VAULT.into(),
-            "purchase_confirm" => "{\"status\": \"approved\", \"purchase_id\": 7}".into(),
-            "browser_navigate" => snap(&sget(args, "url"), form),
-            "browser_fill_form" => "{\"url\": \"x\", \"filled\": [], \"skipped\": []}".into(),
-            "browser_fill_secret" => "{\"filled\": \"filled: Visa\"}".into(),
-            "browser_request_takeover" => BACK.into(),
-            "browser_read_elements" => refs(&["TRV-F1A2B3C"]),
-            "browser_snapshot" => snap(&format!("{TT}/book/flight/F-SIN-HND-20261203-1"), form),
-            _ => "{}".into(),
-        },
-    );
-    assert_eq!(args_of(&t, "flights_search")[0]["cabin"], "business");
-    let seq: Vec<String> = names(&t).into_iter().skip(1).collect();
-    assert_eq!(
-        seq,
-        [
-            "flights_search",
-            "present_choices",
-            "vault_list",
-            "purchase_confirm",
-            "browser_navigate",
-            "browser_fill_form",
-            "browser_snapshot",
-            "browser_read_elements",
-            "browser_fill_secret",
-            "browser_fill_secret",
-            "browser_fill_secret",
-            "browser_fill_secret",
-            "browser_request_takeover",
-            "browser_read_elements"
-        ]
-    );
-    // the card fields by their fixed ids (the refs the snapshot gave them), never by a label in the snapshot's text
-    assert_eq!(
-        args_of(&t, "browser_read_elements")[0]["read"][0]["sel"],
-        "#card_number"
-    );
-    assert_eq!(args_of(&t, "browser_fill_secret")[0]["ref"], "e13");
-    let pc = &args_of(&t, "purchase_confirm")[0];
-    assert_eq!(
-        (
-            pc["site"].as_str(),
-            pc["total"].as_f64(),
-            pc["card_item_id"].as_str()
-        ),
-        (Some("shop.test"), Some(380.0), Some("card1"))
-    );
-    let fill = &args_of(&t, "browser_fill_form")[0];
-    assert_eq!(fill["form"], "traveltest-flight");
-    let sels: Vec<String> = fill["fills"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|f| sget(f, "sel"))
-        .collect();
-    assert_eq!(sels, ["#full_name", "#email", "#phone", "#passport"]);
-    assert_eq!(fill["fills"][0]["value"], "JORDAN LU");
-    assert_eq!(fill["fills"][3]["vault"]["field"], "number");
-    let secrets: Vec<String> = args_of(&t, "browser_fill_secret")
-        .iter()
-        .map(|a| sget(a, "ref"))
-        .collect();
-    assert_eq!(secrets, ["e13", "e14", "e15", "e16"]);
-    let reason = sget(&args_of(&t, "browser_request_takeover")[0], "reason");
-    assert!(
-        reason.contains("press Pay now yourself")
-            && reason.contains("Visa Jordan")
-            && reason.contains("SGD 380.00"),
-        "{reason}"
-    );
-    // (the reference read from the stand-in's confirmation page after the hand-back is not checked: a real
-    // confirmation page has none of the stand-in's element ids)
-    assert_eq!(
-        (
-            res["booking"]["amount"].as_f64(),
-            res["booking"]["currency"].as_str(),
-            res["booking"]["card"].as_str()
-        ),
-        (Some(380.0), Some("SGD"), Some("Visa Jordan"))
-    );
-    assert_eq!(res["booking"]["confirmation_to"], "jordan@example.com");
-}
-
-#[test]
-fn a_refused_purchase_and_a_page_kept_by_the_user_are_results_too() {
+fn a_refused_purchase_books_nothing_and_opens_no_page() {
     let p = profile();
     let a = valid(
         TRAVEL_BOOK,
@@ -539,22 +427,6 @@ fn a_refused_purchase_and_a_page_kept_by_the_user_are_results_too() {
         (Some("not_confirmed"), Some("purchase_not_approved"))
     );
     assert!(!names(&t).iter().any(|n| n == "browser_navigate"));
-    let form = "[e10] textbox \"Full name (as in passport)\"";
-    let (_, res) = run(
-        TRAVEL_BOOK,
-        &a,
-        started(TRAVEL_BOOK, &a, "book"),
-        &Env::of(&p),
-        |name, args, _| match name {
-            "flights_search" => flight_result(),
-            "vault_list" => "Vault items: none".into(),
-            "purchase_confirm" => "{\"status\": \"approved\"}".into(),
-            "browser_navigate" => snap(&sget(args, "url"), form),
-            "browser_request_takeover" => "\"The user kept the page.\"".into(),
-            _ => "{}".into(),
-        },
-    );
-    assert_eq!(res["status"], "handed_over");
 }
 
 #[test]
@@ -915,39 +787,20 @@ fn the_options_are_mailed_only_with_a_connected_mail_account() {
 // ---------------------------------------------------------------- contact details
 
 #[test]
-fn contact_details_come_from_the_profile_then_the_mailbox_then_the_arguments() {
-    let given = json!({"name": "Lucas Lu", "email": "lucas@example.com", "phone": "+65 8000 0000"});
-    // no profile: the arguments
-    let (p, email) = guest_profile(&json!({}), &given);
-    let g = Guest {
-        profile: &p,
-        requests: "",
-    };
-    assert_eq!(
-        (g.name(), email.as_str(), g.phone()),
-        (
-            "Lucas Lu".into(),
-            "lucas@example.com",
-            "+65 8000 0000".into()
-        )
-    );
+fn the_confirmation_email_is_the_profiles_then_the_mailbox_then_the_users() {
+    let given = json!({"name": "Lucas Lu", "email": "lucas@example.com"});
+    assert_eq!(contact_email(&json!({}), &given), "lucas@example.com");
     // a connected mailbox comes before the email the user typed
-    let (_, email) = guest_profile(&json!({"mailbox": "lucas.box@example.com"}), &given);
-    assert_eq!(email, "lucas.box@example.com");
-    // the profile's own details win
-    let (p, email) = guest_profile(&profile(), &given);
-    let g = Guest {
-        profile: &p,
-        requests: "",
-    };
     assert_eq!(
-        (g.name(), email.as_str()),
-        ("Jordan Lu".into(), "jordan@example.com")
+        contact_email(&json!({"mailbox": "lucas.box@example.com"}), &given),
+        "lucas.box@example.com"
     );
+    // the profile's own email wins
+    assert_eq!(contact_email(&profile(), &given), "jordan@example.com");
 }
 
 #[test]
-fn the_booking_page_is_filled_with_the_contact_the_user_gave_when_the_profile_has_none() {
+fn the_e_ticket_goes_to_the_email_the_user_gave_when_the_profile_has_none() {
     let p = json!({});
     let ask = "Book it. I'm Lucas Lu, lucas@example.com, +65 8000 0000.";
     let a = valid(
@@ -957,8 +810,7 @@ fn the_booking_page_is_filled_with_the_contact_the_user_gave_when_the_profile_ha
         ask,
         &p,
     );
-    let form = "[e10] textbox \"Full name (as in passport)\"";
-    let (t, _) = run(
+    let (t, res) = run(
         TRAVEL_BOOK,
         &a,
         started(TRAVEL_BOOK, &a, ask),
@@ -967,23 +819,12 @@ fn the_booking_page_is_filled_with_the_contact_the_user_gave_when_the_profile_ha
             "flights_search" => flight_result(),
             "vault_list" => "Vault items: none".into(),
             "purchase_confirm" => "{\"status\": \"approved\"}".into(),
-            "browser_navigate" => snap(&sget(args, "url"), form),
-            "browser_request_takeover" => "\"kept\"".into(),
+            "browser_navigate" => snap(&sget(args, "url"), "[e10] textbox \"Full name\""),
             _ => "{}".into(),
         },
     );
-    let fill = &args_of(&t, "browser_fill_form")[0];
-    let vals: Vec<String> = fill["fills"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|f| sget(f, "value"))
-        .collect();
-    assert_eq!(
-        vals[..3],
-        ["LUCAS LU", "lucas@example.com", "+65 8000 0000"]
-    );
     assert!(sget(&args_of(&t, "purchase_confirm")[0], "delivery").contains("lucas@example.com"));
+    assert_eq!(res["status"], "browser_use");
 }
 
 // ---------------------------------------------------------------- hotels
@@ -1084,9 +925,6 @@ fn a_hotel_room_is_picked_by_rule_and_a_pay_at_hotel_rate_needs_no_card() {
             "hotels_search" => hotels.to_string(),
             "hotel_rooms" => rooms.to_string(),
             "browser_navigate" => snap(&sget(args, "url"), form),
-            "browser_fill_form" => "{\"url\": \"x\", \"filled\": []}".into(),
-            "browser_request_takeover" => BACK.into(),
-            "browser_read_elements" => refs(&["TRV-HAB12CD"]),
             _ => "{\"shown\": 2}".into(),
         },
     );
@@ -1106,12 +944,9 @@ fn a_hotel_room_is_picked_by_rule_and_a_pay_at_hotel_rate_needs_no_card() {
         );
     }
     assert_eq!(
-        args_of(&t, "browser_fill_form")[0]["form"],
-        "traveltest-hotel"
+        (res["status"].as_str(), res["booking"]["charged"].as_bool()),
+        (Some("browser_use"), Some(false))
     );
-    // (the reference read from the stand-in's confirmation page after the hand-back is not checked: a real
-    // confirmation page has none of the stand-in's element ids)
-    assert_eq!(res["booking"]["charged"], false);
 }
 
 #[test]
@@ -1293,7 +1128,7 @@ fn a_michelin_table_takes_the_next_candidate_when_full_and_the_deposit_is_confir
         {"restaurant_id": "R-TYO-2", "name": "Ryotei Matsu", "distinction": "2 Stars", "cuisine": "Kaiseki", "price_range": "¥45,000 - ¥60,000 per person (JPY)", "closed": "Monday", "deposit_policy": "¥18,000 per person charged by card at booking", "booking_url": format!("{TT}/book/restaurant/R-TYO-2")},
         {"restaurant_id": "R-TYO-3", "name": "Sushi Ume", "distinction": "1 Star", "cuisine": "Sushi", "price_range": "¥20,000 per person (JPY)", "closed": "open daily", "booking_url": format!("{TT}/book/restaurant/R-TYO-3")}]});
     let form = "[e10] textbox \"Full name\"\n[e20] textbox \"Card number\"\n[e21] textbox \"Expiry (MM/YY)\"\n[e22] textbox \"CVC\"\n[e23] textbox \"Name on card\"";
-    let (t, _res) = run(
+    let (t, res) = run(
         TRAVEL_BOOK,
         &a,
         started(TRAVEL_BOOK, &a, "x"),
@@ -1310,11 +1145,7 @@ fn a_michelin_table_takes_the_next_candidate_when_full_and_the_deposit_is_confir
         "vault_list" => VAULT.into(),
         "purchase_confirm" => "{\"status\": \"approved\"}".into(),
         "browser_navigate" => snap(&sget(args, "url"), form),
-        "browser_fill_form" => "{\"filled\": []}".into(),
-        "browser_fill_secret" => "{\"filled\": \"ok\"}".into(),
-        "browser_request_takeover" => BACK.into(),
-        "browser_read_elements" => refs(&["TRV-RZZ9Y8X"]),
-        "browser_snapshot" => snap("x", form),
+
         _ => "{\"shown\": 2}".into(),
     }
         },
@@ -1338,13 +1169,7 @@ fn a_michelin_table_takes_the_next_candidate_when_full_and_the_deposit_is_confir
         args_of(&t, "browser_navigate")[0]["url"],
         format!("{TT}/book/restaurant/R-TYO-2-1930")
     );
-    let fill = &args_of(&t, "browser_fill_form")[0];
-    assert_eq!(
-        fill["fills"].as_array().unwrap().last().unwrap()["value"],
-        "anniversary"
-    );
-    // (the reference read from the stand-in's confirmation page after the hand-back is not checked: a real
-    // confirmation page has none of the stand-in's element ids)
+    assert_eq!(res["status"], "browser_use");
 }
 
 #[test]
@@ -1420,7 +1245,6 @@ fn a_choice_cards_pick_is_booked_by_its_label() {
             "vault_list" => VAULT.into(),
             "purchase_confirm" => "{\"status\": \"approved\"}".into(),
             "browser_navigate" => snap(&sget(args, "url"), "x"),
-            "browser_request_takeover" => "\"kept\"".into(),
             _ => "{}".into(),
         },
     );
@@ -1435,300 +1259,6 @@ fn a_choice_cards_pick_is_booked_by_its_label() {
 }
 
 // ---------------------------------------------------------------- shopping
-
-/// Kaya Mobile's results page as its listing cards' elements read it (`.grid .card` with `fields`).
-fn results() -> Value {
-    let card = |t: &str, r: &str, p: &str| json!({"title": t, "rating": r, "price": p, "url": format!("{SHOP}/kaya_item.html?id=x")});
-    json!([
-        card(
-            "Titan Pro Shockproof Case for iPhone 17 Pro (6.3-inch), Military Grade",
-            "4.9 out of 5 stars · 860 ratings",
-            "S$22.90"
-        ),
-        card(
-            "Lumi Crystal Clear Case for iPhone 17 Pro Max, Anti-Scratch",
-            "4.9 out of 5 stars · 38 ratings",
-            "S$17.90"
-        ),
-        card(
-            "Aurora Glitter Case for iPhone 17 Pro Max, MagSafe Compatible",
-            "4.7 out of 5 stars · 1,203 ratings",
-            "S$21.90"
-        ),
-        card(
-            "Slim Leather Case for iPhone 17 Pro Max, MagSafe Compatible",
-            "4.6 out of 5 stars · 512 ratings",
-            "S$24.90"
-        ),
-        card(
-            "Carbon Fibre Case for iPhone 17 Pro Max, Ultra Thin 0.6 mm",
-            "4.5 out of 5 stars · 268 ratings",
-            "S$18.90"
-        ),
-        card(
-            "MagSafe Silicone Case for iPhone 17 Pro Max",
-            "4.4 out of 5 stars · 2,048 ratings",
-            "S$19.90"
-        ),
-        card(
-            "Kickstand Case for iPhone 17 Pro Max, MagSafe Ring Stand",
-            "4.8 out of 5 stars · 379 ratings",
-            "S$33.90"
-        ),
-        card(
-            "Camera Lens Protector for iPhone 17 Pro Max, 2-Pack",
-            "4.8 out of 5 stars · 2,770 ratings",
-            "S$9.90"
-        ),
-    ])
-}
-
-/// A `browser_read_elements` result with these elements.
-fn read_of(elements: Value) -> String {
-    json!({"trust": "untrusted", "source": "web page x", "url": "x", "elements": elements})
-        .to_string()
-}
-
-const SLIM: &str = "Slim Leather Case for iPhone 17 Pro Max, MagSafe Compatible";
-
-fn shop_answer(name: &str, args: &Value, t: &[Value]) -> String {
-    let added = args_of(t, "browser_fill_form")
-        .iter()
-        .any(|a| a["form"] == "kaya-item");
-    match name {
-        "browser_navigate" if sget(args, "url").ends_with("kaya_cart.html") => snap(&sget(args, "url"), "Cart"),
-        "browser_navigate" if sget(args, "url").ends_with("kaya_checkout.html") => snap(&sget(args, "url"), "[e10] textbox \"Full name\""),
-        "browser_navigate" => snap(&sget(args, "url"), "[e2] link \"Cart (0)\""),
-        "browser_fill_form" => "{\"url\": \"x\", \"filled\": [{\"ok\": true}]}".into(),
-        "browser_read_elements" => match args["read"][0]["name"].as_str() {
-            Some("listings") => read_of(json!({"listings": results()})),
-            Some("cart_items") if added => read_of(json!({"cart_items": [format!("{SLIM} — Colour: Saddle Brown")]})),
-            Some("cart_items") => read_of(json!({"cart_items": []})),
-            Some("cart_count") => read_of(json!({"cart_count": ["Cart (1)"], "colour": ["Saddle Brown"]})),
-            _ => refs(&["KM-50731"]),
-        },
-        "browser_snapshot" if names(t).iter().any(|n| n == "purchase_confirm") => snap(
-            &format!("{SHOP}/kaya_checkout.html"),
-            "[e10] textbox \"Full name\"\n[e13] textbox \"Card number\"\n[e14] textbox \"Expiry (MM/YY)\"\n[e15] textbox \"Security code (CVC)\"",
-        ),
-        "vault_list" => VAULT.into(),
-        "purchase_confirm" => "{\"status\": \"approved\"}".into(),
-        "browser_fill_secret" => "{\"filled\": \"ok\"}".into(),
-        "browser_request_takeover" => BACK.into(),
-        _ => "{\"shown\": 3, \"verified\": true}".into(),
-    }
-}
-
-fn shop_args(extra: Value) -> Value {
-    let mut a = json!({"url": format!("{SHOP}/kaya_search.html"), "action": "compare", "by": "rating", "max_price": 25,
-                       "min_ratings": 200, "count": 3, "title_has": ["case", "iPhone 17 Pro Max"]});
-    for (k, v) in extra.as_object().cloned().unwrap_or_default() {
-        a[k] = v;
-    }
-    a
-}
-
-#[test]
-fn shopping_on_a_known_shop_choices_then_cart_then_checkout_by_fixed_ids() {
-    let p = profile();
-    // 1. the options for the user to choose from: no pick by code
-    let a = valid(
-        SHOP_ORDER,
-        shop_args(json!({"let_user_choose": true})),
-        "x",
-        &p,
-    );
-    let (t, res) = run(
-        SHOP_ORDER,
-        &a,
-        started(SHOP_ORDER, &a, "x"),
-        &Env::of(&p),
-        shop_answer,
-    );
-    let pc = &args_of(&t, "present_choices")[0];
-    let labels: Vec<String> = pc["options"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|o| sget(o, "label"))
-        .collect();
-    assert!(
-        labels[0].starts_with("Aurora Glitter")
-            && labels[1].starts_with("Slim Leather")
-            && labels[2].starts_with("Carbon Fibre"),
-        "{labels:?}"
-    );
-    assert!(pc.get("picked").is_none());
-    assert_eq!(pc["ranking"]["min_ratings"], 200);
-    assert_eq!(
-        (res["status"].as_str(), res["choose"].as_bool()),
-        (Some("shown"), Some(true))
-    );
-    // 2. the pick into the cart: the cart checked first, the product by its title, Add to Cart by #add, verified
-    let a = valid(
-        SHOP_ORDER,
-        shop_args(json!({"action": "cart", "pick": SLIM})),
-        "x",
-        &p,
-    );
-    let (t, res) = run(
-        SHOP_ORDER,
-        &a,
-        started(SHOP_ORDER, &a, "x"),
-        &Env::of(&p),
-        shop_answer,
-    );
-    let fills = args_of(&t, "browser_fill_form");
-    assert_eq!(fills[0]["fills"][0]["text"], SLIM);
-    assert_eq!(
-        fills[1]["fills"].as_array().unwrap().last().unwrap()["sel"],
-        "#add"
-    );
-    assert_eq!(res["status"], "in_cart");
-    assert_eq!(
-        (
-            res["item"]["colour"].as_str(),
-            res["cart"]["count"].as_u64()
-        ),
-        (Some("Saddle Brown"), Some(1))
-    );
-    assert!(!names(&t)
-        .iter()
-        .any(|n| n == "purchase_confirm" || n == "browser_request_takeover"));
-    // 3. buy (the item is in the cart): no second Add to Cart; purchase_confirm, the checkout, the card, the hand-over
-    let mut t2 = t.clone();
-    let a = valid(
-        SHOP_ORDER,
-        shop_args(json!({"action": "buy", "pick": SLIM, "card": "Visa"})),
-        "x",
-        &p,
-    );
-    t2.extend(started(SHOP_ORDER, &a, "buy it"));
-    let (t, _res) = run(SHOP_ORDER, &a, t2, &Env::of(&p), shop_answer);
-    assert_eq!(
-        args_of(&t, "browser_fill_form")
-            .iter()
-            .filter(|a| a["form"] == "kaya-item")
-            .count(),
-        1
-    );
-    let pc = &args_of(&t, "purchase_confirm")[0];
-    assert_eq!(
-        (
-            pc["total"].as_f64(),
-            pc["currency"].as_str(),
-            pc["card_item_id"].as_str()
-        ),
-        (Some(24.9), Some("SGD"), Some("card1"))
-    );
-    let checkout = args_of(&t, "browser_fill_form")
-        .into_iter()
-        .find(|a| a["form"] == "kaya-checkout")
-        .unwrap();
-    let sels: Vec<String> = checkout["fills"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|f| sget(f, "sel"))
-        .collect();
-    assert_eq!(sels, ["#name", "#phone", "#address"]);
-    // (the reference read from the stand-in's confirmation page after the hand-back is not checked: a real
-    // confirmation page has none of the stand-in's element ids)
-}
-
-#[test]
-fn a_shop_comparison_picks_by_the_criteria_and_the_quantity_is_clicked() {
-    let p = profile();
-    let a = valid(SHOP_ORDER, shop_args(json!({})), "x", &p);
-    let (_, res) = run(
-        SHOP_ORDER,
-        &a,
-        started(SHOP_ORDER, &a, "x"),
-        &Env::of(&p),
-        shop_answer,
-    );
-    assert_eq!(res["status"], "shown");
-    assert!(sget(&res["pick"], "label").starts_with("Aurora Glitter"));
-    let a = valid(
-        SHOP_ORDER,
-        shop_args(json!({"action": "cart", "quantity": 2, "colour": "Midnight Black"})),
-        "x",
-        &p,
-    );
-    let (t, _) = run(
-        SHOP_ORDER,
-        &a,
-        started(SHOP_ORDER, &a, "x"),
-        &Env::of(&p),
-        shop_answer,
-    );
-    let item = args_of(&t, "browser_fill_form")
-        .into_iter()
-        .find(|a| a["form"] == "kaya-item")
-        .unwrap();
-    let ops: Vec<String> = item["fills"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|f| sget(f, "sel"))
-        .collect();
-    assert_eq!(ops, ["#colour", "#add", "#add"]);
-}
-
-#[test]
-fn a_product_page_with_its_checkout_is_bought_by_fixed_ids() {
-    let p = profile();
-    let page = "Labelled elements visible on screen:\n[e10] textbox \"Full name\"\n[e13] textbox \"Card number\"\n[e14] textbox \"Expiry\"\n[e15] textbox \"CVC\"\n[e16] button \"Place order\"\n\nText visible on screen:\nKiprun Run 500 running socks\nS$4.90\nCheckout\nPayment — total S$4.90";
-    let product = |url: &str| {
-        json!({"trust": "untrusted", "source": format!("web page {url}"), "url": url,
-               "title": "Kiprun Run 500 running socks — Stride Sports Singapore", "snapshot": page})
-        .to_string()
-    };
-    let a = valid(
-        SHOP_ORDER,
-        json!({"url": format!("{SHOP}/stride_socks.html"), "action": "buy"}),
-        "x",
-        &p,
-    );
-    let (t, _res) = run(
-        SHOP_ORDER,
-        &a,
-        started(SHOP_ORDER, &a, "x"),
-        &Env::of(&p),
-        |name, args, _t| match name {
-            "browser_navigate" => product(&sget(args, "url")),
-            "vault_list" => VAULT.into(),
-            "purchase_confirm" => "{\"status\": \"approved\"}".into(),
-            "browser_fill_form" => "{\"filled\": []}".into(),
-            "browser_fill_secret" => "{\"filled\": \"ok\"}".into(),
-            "browser_request_takeover" => BACK.into(),
-            "browser_read_elements" if args["read"][0]["name"] == "price" => {
-                read_of(json!({"price": ["S$4.90"]}))
-            }
-            "browser_read_elements" => refs(&["SR-48213", "S$4.90"]),
-            "browser_snapshot" => snap("x", page),
-            _ => "{}".into(),
-        },
-    );
-    assert_eq!(
-        names(&t)[1..]
-            .iter()
-            .filter(|n| *n == "browser_navigate")
-            .count(),
-        1
-    );
-    let pc = &args_of(&t, "purchase_confirm")[0];
-    assert_eq!(
-        (pc["total"].as_f64(), pc["items"][0]["name"].as_str()),
-        (Some(4.9), Some("Kiprun Run 500 running socks"))
-    );
-    assert_eq!(
-        args_of(&t, "browser_fill_form")[0]["form"],
-        "stride-checkout"
-    );
-    // (the reference read from the stand-in's confirmation page after the hand-back is not checked: a real
-    // confirmation page has none of the stand-in's element ids)
-}
 
 #[test]
 fn an_unknown_shop_is_opened_and_handed_to_browser_use() {
@@ -1793,8 +1323,7 @@ fn the_booking_stage_carries_on_when_the_search_result_was_compressed() {
         "x",
         &p,
     );
-    let form = "[e10] textbox \"Full name (as in passport)\"\n[e20] textbox \"Card number\"\n[e21] textbox \"Expiry (MM/YY)\"\n\
-[e22] textbox \"CVC\"\n[e23] textbox \"Name on card\"\n[e30] button \"Pay now\"";
+    let form = "[e10] textbox \"Full name (as in passport)\"\n[e30] button \"Pay now\"";
     let answer = |name: &str, args: &Value, _t: &[Value]| -> String {
         match name {
             "mcp_travel__flights_search" => {
@@ -1803,18 +1332,13 @@ fn the_booking_stage_carries_on_when_the_search_result_was_compressed() {
             "vault_list" => VAULT.into(),
             "purchase_confirm" => "{\"status\": \"approved\", \"purchase_id\": 7}".into(),
             "browser_navigate" => snap(&sget(args, "url"), form),
-            "browser_fill_form" => "{\"url\": \"x\", \"filled\": []}".into(),
-            "browser_fill_secret" => "{\"filled\": \"filled: Visa\"}".into(),
-            "browser_request_takeover" => BACK.into(),
-            "browser_read_elements" => refs(&[]),
-            "browser_snapshot" => snap(&format!("{TT}/book/flight/F-SIN-HND-20261203-1"), form),
             _ => "{\"shown\": 4, \"verified\": true}".into(),
         }
     };
     let mut t = started(TRAVEL_BOOK, &a, "x");
     let mut res = Value::Null;
     for _ in 0..40 {
-        if names(&t).iter().any(|n| n == "browser_fill_secret") {
+        if names(&t).iter().any(|n| n == "browser_navigate") {
             for m in t.iter_mut() {
                 let c = content_of(m);
                 if get_str(m, "role") == "tool" && c.contains("Japan Airlines JL 36") {
@@ -1847,23 +1371,14 @@ fn the_booking_stage_carries_on_when_the_search_result_was_compressed() {
     assert!(t
         .iter()
         .any(|m| content_of(m).contains(super::super::guards::COMPRESSED_MARK)));
-    let seq: Vec<String> = names(&t).into_iter().skip(1).collect();
     assert_eq!(
-        seq.iter().filter(|n| *n == "browser_fill_secret").count(),
-        4,
-        "{seq:?}"
+        names(&t)
+            .iter()
+            .filter(|n| *n == "browser_navigate")
+            .count(),
+        1
     );
-    assert!(
-        seq.ends_with(&[
-            "browser_request_takeover".to_string(),
-            "browser_read_elements".to_string()
-        ]),
-        "{seq:?}"
-    );
-    assert_eq!(
-        (res["status"].as_str(), res["reason"].as_str()),
-        (Some("not_confirmed"), Some("no_reference"))
-    );
+    assert_eq!(res["status"], "browser_use");
     assert!(sget(&res["booking"], "what").contains("Cathay Pacific CX 712"));
 }
 
@@ -2123,9 +1638,6 @@ fn the_rooms_of_a_booking_are_asked_on_the_connector_the_search_ran_on() {
             }
             "hotel_rooms" => "DENIED by Sentinel: SerpApi key needed".into(),
             "browser_navigate" => snap(&sget(args, "url"), form),
-            "browser_fill_form" => "{\"url\": \"x\", \"filled\": []}".into(),
-            "browser_request_takeover" => BACK.into(),
-            "browser_read_elements" => refs(&["TRV-HAB12CD"]),
             _ => "{\"shown\": 1, \"verified\": true}".into(),
         },
     );
@@ -2135,36 +1647,6 @@ fn the_rooms_of_a_booking_are_asked_on_the_connector_the_search_ran_on() {
         args_of(&t, "browser_navigate")[0]["url"],
         format!("{TT}/book/hotel/H-TYO-1-20261130-20261203-2-R2")
     );
-}
-
-#[test]
-fn the_model_loading_browser_use_on_a_shop_code_fills_is_refused() {
-    // shopping_real 2026-11-01: "buy it now" after the cart turn went to browser-use instead of shop_order
-    let call = |id: &str| crate::llm::ToolCall {
-        id: id.into(),
-        name: "load_skill".into(),
-        args: json!({"name": BROWSER_USE}),
-    };
-    let args = json!({"url": format!("{SHOP}/kaya_search.html"), "action": "cart"});
-    let t = started(SHOP_ORDER, &args, "add it to my cart");
-    let r = browser_use_guard(&t, &call("call_9")).expect("refused");
-    let v: Value = serde_json::from_str(&r).unwrap();
-    assert_eq!(
-        (v["refused"].as_str(), v["tool"].as_str()),
-        (Some("known_shop"), Some(SHOP_ORDER))
-    );
-    // code's own load after a browser_use result, a shop code has no form for, another site opened since: allowed
-    assert!(browser_use_guard(&t, &call("bkg_skill_3")).is_none());
-    let other = started(
-        SHOP_ORDER,
-        &json!({"url": "https://shop.example/x", "action": "buy"}),
-        "x",
-    );
-    assert!(browser_use_guard(&other, &call("call_9")).is_none());
-    let mut moved = t.clone();
-    moved.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function",
-        "function": {"name": "browser_navigate", "arguments": json!({"url": "https://forms.example/apply"}).to_string()}}]}));
-    assert!(browser_use_guard(&moved, &call("call_9")).is_none());
 }
 
 #[test]

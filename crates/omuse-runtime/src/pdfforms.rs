@@ -796,7 +796,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/pages/permission_slip.pdf")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/permission_slip.pdf")
     }
 
     #[test]

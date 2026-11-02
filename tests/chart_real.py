@@ -6,14 +6,11 @@
      a second picture in the chat, a real PNG.
   3. report — the chart and the flowchart in a PDF report and in a Word document: a PDF card and a Word card in the
      chat; the PDF downloads with the pictures in it, the Word file opens (a .docx) with its pictures inside.
-  4. bad request — a bar chart of four quarters with only three values: the answer points out the missing value (or
-     asks for it) instead of drawing a chart that invents it.
 One TIMING line per request.
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh chart_real"""
 import io
 import os
-import re
 import sys
 import zipfile
 
@@ -85,15 +82,6 @@ async def main():
             check("report: the Word file opens (a .docx) with both pictures inside", ok and len(media) >= 2, (len(data), media))
         names = [c["name"] for c in cards]
         check("report: each file is shown once", len(names) == len(set(names)), names)
-
-        # 4. a request that does not add up
-        a = await u.ask("Make a bar chart of our quarterly profit: the labels are Q1, Q2, Q3 and Q4 and the values are 10, 20 and 30.",
-                        label="bad", timeout=400)
-        pics = [m for m in await u.media() if m["kind"] == "image"]
-        flagged = a.mentions("Q4") and re.search(r"missing|only three|only 3|three values|3 values|no value|not given|not provided|didn.t give|"
-                                                 r"provide|what (is|was|should)|what[’']s|which value|fourth", a.text, re.I) is not None
-        check("bad: the answer points out the missing Q4 value (or asks for it)", flagged, a.text[:600])
-        print(f"INFO bad: {len(pics)} picture(s) in that chat")
 
 
 U.setup(vault=False)

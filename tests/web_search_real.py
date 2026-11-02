@@ -6,8 +6,8 @@ and Tavily keys ("Save & test"), presses "Test all", then asks Main a current-ev
 Only what the user sees is checked: each key's "Save & test" says it is connected and the row shows "your key", "Test
 all" reports every source working (Brave, the free Exa MCP, Tavily for news), and the answer to the news question is
 about the subject, cites its sources as links, and those links open. The browser's own search engines answer
-web_search first; the test stack has a stand-in engine there, which is switched off (the user's world: the services
-answer, as they do when the browser's engines fail). A few searches are billed against the free tiers.
+web_search first: run_in_docker.sh points them at an address that does not answer for this suite (the user's world: the
+services answer, as they do when the browser's engines fail). A few searches are billed against the free tiers.
 
     OMUSE_E2E_BRAVE_EP=https://api.search.brave.com/res/v1 OMUSE_E2E_TAVILY_EP=https://api.tavily.com \\
     OMUSE_E2E_EXA_MCP_EP=https://mcp.exa.ai/mcp OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh web_search_real"""
@@ -20,7 +20,6 @@ from tests import user_common as U  # noqa: E402
 from tests.user_common import check, opens  # noqa: E402
 
 KEYS = {"brave": ("Brave Search", os.environ.get("OMUSE_E2E_BRAVE_KEY", "")), "tavily": ("Tavily", os.environ.get("OMUSE_E2E_TAVILY_KEY", ""))}
-FAKE = "http://127.0.0.1:8094"
 
 
 async def toast(pg, timeout: float = 60) -> str:
@@ -75,5 +74,4 @@ async def main():
 
 
 U.setup(vault=False)
-U.c.post(FAKE + "/ddg/_down", json={"on": True})   # the stand-in for the browser's search engines is down
 U.run(main)

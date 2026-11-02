@@ -1,5 +1,6 @@
-"""Settings → Connections: the Flights & hotels card (SerpApi key, English only in the English UI, the plan in the chip once
-connected; flights come free from Kiwi.com data meanwhile) and that the MCP card offers no provider preset."""
+"""Settings → Connections: the Flights & hotels card before a key is added (flights come free from Kiwi.com data; English
+only in the English UI) and that the MCP card offers no provider preset. Connecting a real SerpApi key is
+travel_connect_real's."""
 import asyncio
 import os
 import sys
@@ -11,7 +12,6 @@ from tests import skills_common as K  # noqa: E402
 from tests.skills_common import check, finish  # noqa: E402
 
 B = K.B + "/"
-KEY = "serp-test-key-0123456789abcdef"
 K.c.put(K.B + "/api/settings", json={"language": "en", "ui_language": "en"}, headers=K.H)
 K.c.delete(K.B + "/sentinel/api/connections/travel/credential", headers=K.H)
 
@@ -41,15 +41,6 @@ async def main():
               and "a single date is searched on Google Flights" in txt and "Kiwi.com is used only when Google fails" in txt and "A range of dates or self-transfer is one Kiwi.com search" in txt
               and "Each request is one search" in txt and "Google Maps" in txt and "250 searches" in txt and "serpapi.com" in txt and "not used for web search" in txt, txt[:900])
         check("English UI: no Chinese on the card", not han(txt), han(txt)[:3])
-        await card.locator("input[type=password]").fill(KEY)
-        await card.locator("button", has_text="Connect & test").click()
-        await pg.wait_for_selector(".toast")
-        toast = await pg.locator(".toast").inner_text()
-        check("connecting shows the plan and the searches left", "Free Plan" in toast and "238" in toast, toast)
-        await pg.wait_for_function("() => [...document.querySelectorAll('.card')].some(c => c.textContent.includes('Flights & hotels') && c.textContent.includes('Free Plan'))", timeout=15000)
-        card = pg.locator(".card", has_text="Flights & hotels").first
-        txt = await card.text_content()
-        check("connected: the chip shows the plan and the searches left; Disconnect is offered", "Free Plan" in txt and "238 searches left" in txt and "Disconnect" in txt, txt[:300])
         check("the MCP card offers no search-provider or Kiwi preset: the model only sees the generic tools", await pg.locator("button.preset").count() == 0)
         check("no page errors", not errs, errs)
         await br.close()

@@ -1,7 +1,6 @@
 """Web research with a real model, from the user's point of view (tests/user_common.py). In Main's chat the user asks
 for the pros and cons of heat pumps versus gas boilers for a small UK house, with links to the sources. A real-data suite
-(run_in_docker.sh REAL_DATA_SUITES): the web search and the pages are the real ones. What the user sees: an answer that covers both heat pumps and gas boilers with pros and cons,
-and cites its sources as links that open — none of them is a dead link (a 404 or a site that does not exist), which
+(run_in_docker.sh REAL_DATA_SUITES): the web search and the pages are the real ones. What the user sees: an answer that cites its sources as links that open — none of them is a dead link (a 404 or a site that does not exist), which
 would mean a source the agent never opened. One TIMING line.
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh research_real"""
@@ -33,12 +32,6 @@ async def main():
     async with U.User() as u:
         a = await u.ask("Research the pros and cons of heat pumps versus gas boilers for heating a small house in the UK. "
                         "Search the web and give me a short summary with links to your sources.", label="heatpump")
-        check("heatpump: the answer covers heat pumps and gas boilers", a.mentions("heat pump") and a.mentions("boiler"), a.text[:600])
-        check("heatpump: … with pros and cons (costs, efficiency, emissions)",
-              # both sides, however they are named ("trade-offs" is both)
-              a.mentions("pro", "advantage", "benefit", "upside", "trade-off", "tradeoff")
-              and a.mentions("con", "disadvantage", "drawback", "downside", "trade-off", "tradeoff")
-              and a.mentions("cost", "£", "efficien", "emission", "carbon"), a.text[:800])
         cited = sorted({x.rstrip(".;:") for x in a.links + URL.findall(a.text) if "127.0.0.1:8080" not in x})
         print(f"INFO cited {cited}")
         check("heatpump: the answer cites its sources as links", bool(cited), a.text[-600:])

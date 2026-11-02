@@ -1,7 +1,6 @@
-//! The Telnyx ⇄ OpenAI Realtime bridge end to end, against a Rust re-creation of `tests/fake_voice.py`:
+//! The Telnyx ⇄ OpenAI Realtime bridge end to end, against an in-process fake:
 //! a fake Telnyx (REST + the media-stream client side) and a fake Realtime model that greets, hears the restaurant,
-//! presses 1 in the menu, confirms a booking and calls `end_call`. Mirrors the assertions of `tests/phone_e2e.py`
-//! that do not need the sentinel.
+//! presses 1 in the menu, confirms a booking and calls `end_call`. The sentinel is not involved.
 
 use std::future::IntoFuture;
 use std::sync::Arc;

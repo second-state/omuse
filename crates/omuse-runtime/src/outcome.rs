@@ -243,20 +243,20 @@ mod tests {
 
     #[test]
     fn a_known_sites_reference_is_its_elements_value_in_the_sites_format() {
-        let re = r"\bKM-\d{4,}\b";
+        let re = r"\bDE\d{12}\b";
         let v = |x: &[&str]| x.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            reference_in(&v(&["S$24.90", " KM-50731 "]), re).as_deref(),
-            Some("KM-50731")
+            reference_in(&v(&["S$24.90", " DE202611020123 "]), re).as_deref(),
+            Some("DE202611020123")
         );
         // an element holding prose around the shape, or another format: not confirmed
         assert_eq!(
-            reference_in(&v(&["Your order KM-50731 is being processed"]), re),
+            reference_in(&v(&["Your DE202611020123 is being processed"]), re),
             None
         );
         assert_eq!(reference_in(&v(&["SG5X42VMKCAG"]), re), None);
         assert_eq!(reference_in(&v(&[]), re), None);
-        assert_eq!(reference_in(&v(&["KM-50731"]), ""), None);
+        assert_eq!(reference_in(&v(&["DE202611020123"]), ""), None);
     }
 
     fn ev(typ: &str, d: Value) -> Value {

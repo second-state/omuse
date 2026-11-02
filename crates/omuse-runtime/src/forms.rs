@@ -2163,7 +2163,7 @@ mod tests {
     }
 
     /// `OMUSE_FORM_PLAN_OUT=<file> cargo test -p omuse-runtime forms::tests::dump_sg_plan`: the SG plan as JSON, for
-    /// running it against the stand-in page in a browser.
+    /// replaying it against the official page in a browser.
     #[test]
     fn dump_sg_plan() {
         let Ok(out) = std::env::var("OMUSE_FORM_PLAN_OUT") else {
@@ -2238,7 +2238,7 @@ mod tests {
         assert_eq!(by("passport_expiry")["vault"]["date_fmt"], "%d/%m/%Y");
     }
 
-    /// `OMUSE_FORM_PLAN_OUT=<file>`: the Malaysia plan as JSON, for replaying it against the stand-in in a browser.
+    /// `OMUSE_FORM_PLAN_OUT=<file>`: the Malaysia plan as JSON, for replaying it against the official page in a browser.
     #[test]
     fn dump_my_plan() {
         let Ok(out) = std::env::var("OMUSE_FORM_PLAN_OUT_MY") else {
@@ -2305,7 +2305,7 @@ mod tests {
         assert_eq!(by("passport_expiry_year")["vault"]["date_fmt"], "%Y");
     }
 
-    /// `OMUSE_FORM_PLAN_OUT_KR=<file>`: the Korea plan as JSON, for replaying it against the stand-ins in a browser.
+    /// `OMUSE_FORM_PLAN_OUT_KR=<file>`: the Korea plan as JSON, for replaying it against the official page in a browser.
     #[test]
     fn dump_kr_plan() {
         let Ok(out) = std::env::var("OMUSE_FORM_PLAN_OUT_KR") else {
@@ -2374,7 +2374,7 @@ mod tests {
                 || o["text"].as_str().is_some_and(|t| t.contains("certify"))));
     }
 
-    /// `OMUSE_FORM_PLAN_OUT_ID=<file>`: the Indonesia plan as JSON, for replaying it against the stand-in.
+    /// `OMUSE_FORM_PLAN_OUT_ID=<file>`: the Indonesia plan as JSON, for replaying it against the official page.
     #[test]
     fn dump_id_plan() {
         let Ok(out) = std::env::var("OMUSE_FORM_PLAN_OUT_ID") else {
@@ -2454,7 +2454,7 @@ mod tests {
         assert!(!plan2.iter().any(|o| o["field"] == "visa_type"));
     }
 
-    /// `OMUSE_FORM_PLAN_OUT_TW=<file>`: the Taiwan plan as JSON, for replaying it against the stand-in.
+    /// `OMUSE_FORM_PLAN_OUT_TW=<file>`: the Taiwan plan as JSON, for replaying it against the official page.
     #[test]
     fn dump_tw_plan() {
         let Ok(out) = std::env::var("OMUSE_FORM_PLAN_OUT_TW") else {
@@ -2519,7 +2519,7 @@ mod tests {
         assert_eq!(plan.iter().filter(|o| o["text"] == "Next").count(), 2);
     }
 
-    /// `OMUSE_FORM_PLAN_OUT_CN=<file>`: the China plan as JSON, for replaying it against the stand-in.
+    /// `OMUSE_FORM_PLAN_OUT_CN=<file>`: the China plan as JSON, for replaying it against the official page.
     #[test]
     fn dump_cn_plan() {
         let Ok(out) = std::env::var("OMUSE_FORM_PLAN_OUT_CN") else {

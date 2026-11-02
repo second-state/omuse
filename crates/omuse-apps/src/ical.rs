@@ -823,10 +823,10 @@ END:VCALENDAR\r\n";
             .unwrap_err()
             .0
             .contains("https://"));
-        assert!(normalize_url("http://127.0.0.1:8094/ics/a.ics", false).is_err());
+        assert!(normalize_url("http://127.0.0.1:8000/ics/a.ics", false).is_err());
         assert_eq!(
-            normalize_url("http://127.0.0.1:8094/ics/a.ics", true).unwrap(),
-            "http://127.0.0.1:8094/ics/a.ics"
+            normalize_url("http://127.0.0.1:8000/ics/a.ics", true).unwrap(),
+            "http://127.0.0.1:8000/ics/a.ics"
         );
         assert_eq!(
             normalize_url(" webcal://p.example.com/cal.ics ", false).unwrap(),
@@ -835,7 +835,7 @@ END:VCALENDAR\r\n";
         assert!(normalize_url("https://u:p@example.com/cal.ics", false).is_err());
         assert_eq!(label("https://calendar.google.com/calendar/ical/lucas%40example.com/private-abc/basic.ics"), "lucas@example.com");
         assert_eq!(
-            label("http://127.0.0.1:8094/ics/private-ok/basic.ics"),
+            label("http://127.0.0.1:8000/ics/private-ok/basic.ics"),
             "127.0.0.1"
         );
         assert_eq!(label("nonsense"), "iCal");

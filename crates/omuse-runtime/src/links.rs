@@ -299,12 +299,12 @@ mod tests {
     #[test]
     fn two_equally_close_links_leave_it_as_written() {
         let s = vec![
-            "https://shop.test/item?id=1&colour=red".to_string(),
-            "https://shop.test/item?id=1&colour=blue".to_string(),
+            "https://shop.example/item?id=1&colour=red".to_string(),
+            "https://shop.example/item?id=1&colour=blue".to_string(),
         ];
         assert_eq!(
-            repair("https://shop.test/item?id=1", &s),
-            "https://shop.test/item?id=1"
+            repair("https://shop.example/item?id=1", &s),
+            "https://shop.example/item?id=1"
         );
     }
 

@@ -2361,7 +2361,7 @@ mod tests {
     #[test]
     fn vault_fill_policy() {
         let (_t, store) = store();
-        let it = card(&store, "Visa", "shop.test");
+        let it = card(&store, "Visa", "shop.example");
         let args = json!({"ref": "e1", "item_id": it, "field": "number"});
         let el = json!({"tag": "input", "input_type": "text", "name": "Card number"});
         let r = dec(
@@ -2370,11 +2370,11 @@ mod tests {
             args.clone(),
             "t1",
             Some(el.clone()),
-            Some(json!({"url": "https://shop.test/pay", "title": ""})),
+            Some(json!({"url": "https://shop.example/pay", "title": ""})),
         );
         assert_eq!(r.decision, DENY); // a card needs the purchase confirmed first (0.2.68)
         assert!(r.reason.contains("purchase_confirm"));
-        let mem = vault::save_item(&store, &json!({"kind": "membership", "label": "KrisFlyer", "domains": "shop.test",
+        let mem = vault::save_item(&store, &json!({"kind": "membership", "label": "KrisFlyer", "domains": "shop.example",
                                                   "values": {"number": "8800 1111 2222 1234", "name": "LU LIANG"}}), None).unwrap();
         let margs = json!({"ref": "e1", "item_id": mem["id"], "field": "number"});
         let mel = json!({"tag": "input", "input_type": "text", "name": "Membership number"});
@@ -2384,7 +2384,7 @@ mod tests {
             margs.clone(),
             "t1",
             Some(mel.clone()),
-            Some(json!({"url": "https://shop.test/pay", "title": ""})),
+            Some(json!({"url": "https://shop.example/pay", "title": ""})),
         );
         assert_eq!(r.decision, ASK);
         assert!(r.reason.contains("•••• 1234") && !r.reason.contains("8800"));
@@ -2397,7 +2397,7 @@ mod tests {
             Some(json!({"url": "https://evil.example/pay"})),
         );
         assert_eq!(r.decision, DENY);
-        assert_eq!(r.reason, "「Visa」只允许在 shop.test 使用，当前网站是 evil.example (item restricted to other sites)");
+        assert_eq!(r.reason, "「Visa」只允许在 shop.example 使用，当前网站是 evil.example (item restricted to other sites)");
         // a site under a two-label suffix (gov.sg, com.sg, co.uk): matched by the whole host name
         let pp = vault::save_item(
             &store,
@@ -2438,7 +2438,7 @@ mod tests {
                 args.clone(),
                 "t1",
                 Some(json!({"tag": "input", "input_type": "password"})),
-                Some(json!({"url": "https://shop.test/"}))
+                Some(json!({"url": "https://shop.example/"}))
             )
             .decision,
             DENY
@@ -2451,7 +2451,7 @@ mod tests {
             pin,
             "t1",
             Some(el.clone()),
-            Some(json!({"url": "https://shop.test/"})),
+            Some(json!({"url": "https://shop.example/"})),
         );
         assert_eq!(r.decision, DENY);
         assert_eq!(
@@ -2477,7 +2477,7 @@ mod tests {
                 args,
                 "t1",
                 Some(json!({"tag": "div", "name": "Card number"})),
-                Some(json!({"url": "https://shop.test/"}))
+                Some(json!({"url": "https://shop.example/"}))
             )
             .decision,
             DENY
@@ -2500,7 +2500,7 @@ mod tests {
                 margs.clone(),
                 "t1",
                 Some(mel.clone()),
-                Some(json!({"url": "https://shop.test/pay"}))
+                Some(json!({"url": "https://shop.example/pay"}))
             )
             .decision,
             ASK
@@ -2511,9 +2511,9 @@ mod tests {
             margs,
             "t1",
             Some(mel),
-            Some(json!({"url": "http://shop.example/pay"})),
+            Some(json!({"url": "http://other.example/pay"})),
         );
-        assert_eq!(r.decision, DENY); // restricted to shop.test
+        assert_eq!(r.decision, DENY); // restricted to shop.example
         let any = vault::save_item(
             &store,
             &json!({"kind": "other", "label": "Code", "values": {"value": "abcdef123"}}),

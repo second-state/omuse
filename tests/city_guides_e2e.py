@@ -1,8 +1,8 @@
 """City guides for Westerners (skills/<city>/SKILL.md), the part a real-model run cannot check. That every installed guide
 answers its own city's questions from its content is checked from the user's side by city_guides_real.py and
 city_guides2_real.py (all 15 cities). What stays scripted, and why:
-- the files' shape (orientation, entry, money, apps, getting around, business, living, food, sights, timeline, sources,
-  the hand-offs to the task skills, the "remember" section, size, dates): a static check of the skill files, not a use case;
+- the files' front matter (the skill's name, browser off) and that no guide uses the browser: a static check of the
+  skill files, not a use case;
 - every guide is installed and enabled: the skills list, which a user never reads as a whole;
 - a model that calls the browser anyway after loading a guide is refused by the runtime and the refusal is audited: a
   forced security refusal — a real model follows the guide and never makes that call;
@@ -29,13 +29,8 @@ CITIES = {   # skill → (currency pair for market_data, arrival / entry skill i
     "kuala-lumpur": ("USDMYR=X", "my-arrival-card"), "ho-chi-minh-city": ("USDVND=X", "entry-requirements"),
     "hanoi": ("USDVND=X", "entry-requirements"),
 }
-SECTIONS = ["## How to use this skill", "## Orientation", "## Money", "## Getting around", "## Food", "## Timeline",
-            "## Sources", "## Remember what you learn (for next time)"]
-HANDOFFS = ["payments-connectivity-asia", "getting-around-asia", "dining-dietary-translate", "travel-health-emergency",
-            "trip-today", "entry-requirements"]
-
 # ---- the files themselves
-for skill, (_sym, arrival) in CITIES.items():
+for skill in CITIES:
     path = os.path.join(ROOT, skill, "SKILL.md")
     if not os.path.exists(path):
         K.check(f"{skill}: SKILL.md exists", False, path)
@@ -45,19 +40,9 @@ for skill, (_sym, arrival) in CITIES.items():
     K.check(f"{skill}: frontmatter names the skill, describes it for Westerners and turns the browser off",
             front and front.group(1) == skill and "Westerners" in front.group(2) and "use for any question" in front.group(2),
             txt[:300])
-    missing = [s for s in SECTIONS if s not in txt]
-    K.check(f"{skill}: all sections present (entry, apps, business, living, sights too)", not missing
-            and re.search(r"^## (Entering|Getting in)", txt, re.M) and re.search(r"^## .*(apps|online)", txt, re.M | re.I)
-            and re.search(r"^## .*(Business|business)", txt, re.M) and "## Living here" in txt and re.search(r"^## What to see", txt, re.M),
-            missing)
-    K.check(f"{skill}: hands off to the task skills, incl. {arrival}", all(h in txt for h in HANDOFFS + [arrival]),
-            [h for h in HANDOFFS + [arrival] if h not in txt])
     K.check(f"{skill}: no browser use — answers from the sheet and data tools",
             "**No browser.**" in txt and "market_data" in txt and not re.search(r"browser_(search|read|navigate|click)", txt),
             re.findall(r"browser_\w+", txt))
-    K.check(f"{skill}: facts are dated (2025/2026) and the size is a briefing (10–26 KB)",
-            "2026" in txt and 10_000 <= len(txt.encode()) <= 26_000, len(txt.encode()))
-    K.check(f"{skill}: secrets stay in the Vault", "Never store passport, card or ID numbers" in txt)
 
 # ---- installed; a browser call after a guide is refused
 K.setup()

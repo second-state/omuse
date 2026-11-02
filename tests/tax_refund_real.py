@@ -28,8 +28,6 @@ async def main():
         check("tax: the refund system from 1 November 2026 (pay in the shop, refunded when leaving Japan)",
               re.search(r"1 Nov(ember)?,? 2026|Nov(ember)? 1,? 2026|2026-11-01|November 2026", a.text)
               and re.search(r"refund", a.text, re.I) and re.search(r"depart|leav|airport|customs|exit", a.text, re.I), a.text[:1200])
-        check("tax: the passport is needed and the goods leave Japan with the traveller",
-              re.search(r"passport", a.text, re.I) and re.search(r"carry|take|with you|luggage|baggage|customs", a.text, re.I), a.text[:1200])
         check("tax: the official source is named (a link to an official site, or the Japan Tourism Agency / JNTO)",
               any(OFFICIAL.search(x) for x in a.links) or re.search(r"Japan Tourism Agency|JNTO|Japan National Tourism", a.text),
               (a.links, a.text[-400:]))

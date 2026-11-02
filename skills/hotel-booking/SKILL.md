@@ -1,6 +1,6 @@
 ---
 name: hotel-booking
-description: 订酒店：用 travel_search(kind=hotel) 查酒店比价，用 travel_book 预订——城市、区域、入住退房日期（YYYY-MM-DD）、人数、星级、预算等作为参数，代码搜索一次、按规则挑选酒店和房型、预订并把确认交给用户；回复按结果 JSON 写 Search and compare hotels with travel_search(kind=hotel) and book with travel_book — the user's details as JSON arguments; code picks the hotel and the room by rule, fills the booking page and hands the Confirm click to the user; you word the reply from the JSON result.
+description: 订酒店：用 travel_search(kind=hotel) 查酒店比价，用 travel_book 预订——城市、区域、入住退房日期（YYYY-MM-DD）、人数、星级、预算等作为参数，代码搜索一次、按规则挑选酒店和房型、打开预订页交给 browser-use 技能（确认由用户点）；回复按结果 JSON 写 Search and compare hotels with travel_search(kind=hotel) and book with travel_book — the user's details as JSON arguments; code picks the hotel and the room by rule, opens the booking page for the browser-use skill (the Confirm click is the user's); you word the reply from the JSON result.
 
 form: on
 ---
@@ -28,5 +28,5 @@ Code does the work; you turn the user's words into the tool's arguments and the 
   rule, the room picked for it (`pick.room`: the cheapest with free cancellation unless any terms were fine),
   the Kayak `links.compare_url` once. `source: "web"` → these are web pages with "from" prices, not quotes.
 - Check-in / check-out times and cancellation deadlines are in the hotel's local time.
-- `nothing_found` / `booked` / `not_confirmed` / `handed_over` / `browser_use` / `mailed`: as in the flight skill —
+- `nothing_found` / `not_confirmed` / `browser_use` / `mailed`: as in the flight skill —
   a booking is confirmed only with its reference; pay-at-hotel means nothing is charged now.

@@ -342,8 +342,8 @@ mod tests {
     fn reg_domain_keys() {
         assert_eq!(reg_domain("https://www.decathlon.sg/p/1"), "decathlon.sg");
         assert_eq!(reg_domain("https://m.amazon.com.sg/x"), "amazon.com.sg");
-        assert_eq!(reg_domain("https://shop.test/"), "shop.test");
-        assert_eq!(reg_domain("shop.test:8099/x"), "shop.test");
+        assert_eq!(reg_domain("https://shop.example/"), "shop.example");
+        assert_eq!(reg_domain("shop.example:8443/x"), "shop.example");
         assert_eq!(reg_domain(""), "");
     }
 

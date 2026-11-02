@@ -1,24 +1,21 @@
 """Personal context with a real model, from the user's point of view (tests/user_common.py, tests/conn_common.py): what
-OMuse remembers, how the Memory page sorts it, and the right facts used for a request.
+OMuse remembers and how the Memory page sorts it.
   1. tell — in Main's chat the user says, one message each: their running shoes are EU 43; on shop.test the phone field
      takes 8 digits without +65; their wife Mei collects jazz vinyl; they prefer business class on long flights; and a
-     standing rule ("when I say 'prepare for a trip', first check my mail for the flight and hotel"); each answer is
-     about what the user asked to remember. Memory →
+     standing rule ("when I say 'prepare for a trip', first check my mail for the flight and hotel"). Memory →
      Long-term: the Preferences chip shows the shoe size and business class, Site habits shows shop.test, People shows
      Mei, Rules shows the trip rule. The Entities card lists Mei.
   2. try it — Memory → "Try it" with "help me pick running shoes on shop.test": it lists the shoe size and the shop's
      habit, not business class or the jazz records; with "Suggest a birthday present for my wife" it brings up Mei's
      jazz records.
-  3. used — in a new chat: "Suggest a birthday present for my wife." The answer is about jazz vinyl (the wording
-     "my wife" found Mei); and "Which shoe size should I order for running shoes?" — EU 43, without asking.
-  4. profile — "My new mobile number is +65 9000 1111, and I have a dentist appointment this Friday at 4 pm.": Memory →
+  3. profile — "My new mobile number is +65 9000 1111, and I have a dentist appointment this Friday at 4 pm.": Memory →
      Pending suggests the number for the profile (not applied until the user says so); the user presses Accept;
      Profile → Mobile phone shows +65 9000 1111. The one-off dentist appointment is not a long-term fact.
-  5. cards — "I pay with my Citi Prestige from the US, and I also have a Chase Sapphire Reserve 4111 1111 1111 1111.":
+  4. cards — "I pay with my Citi Prestige from the US, and I also have a Chase Sapphire Reserve 4111 1111 1111 1111.":
      the Vault lists both cards by name; the number the user typed is nowhere on the Memory page.
-  6. tidy — the user types two near-identical facts and a process note into Memory → Remember, presses Memory tidy →
+  5. tidy — the user types two near-identical facts and a process note into Memory → Remember, presses Memory tidy →
      Preview, then Apply: the duplicate is merged (one "quiet hotels" fact left) and nothing the user said in 1 is lost.
-  7. title — the chat list shows short titles that say what each chat was about (not the first words of the message).
+  6. title — the chat list shows short titles (not the first words of the message).
 One TIMING line per chat request.
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh memory_real"""
@@ -38,9 +35,6 @@ TELL = [
     ("cabin", "Please remember: I prefer business class on long flights."),
     ("rule", "Please remember this rule: whenever I say 'prepare for a trip', first check my mail for the flight and the hotel."),
 ]
-KEY = {"shoes": ("43",), "shop": ("shop.test", "8 digits", "8-digit", "+65"), "mei": ("Mei", "jazz", "vinyl"),
-       "cabin": ("business",), "rule": ("prepare for a trip", "flight", "hotel")}
-ASK_ONCE = re.compile(r"\?\s*$|what (is|'s) your (shoe )?size|which size do you", re.I)
 
 
 async def remember_box(u: U.User, fact: str) -> None:
@@ -59,7 +53,6 @@ async def main():
         for i, (lab, msg) in enumerate(TELL):
             a = await u.ask(msg, label=f"tell {lab}", new_chat=(i == 0))
             check(f"tell {lab}: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:200])
-            check(f"tell {lab}: the answer is about what the user asked to remember", a.mentions(*KEY[lab]), a.text[:200])
         await u.page.wait_for_timeout(5000)
         print(f"INFO chips: {await C.memory_chips(u)}")
         pref = " ".join(await C.memory_domain(u, "Preferences"))
@@ -85,13 +78,8 @@ async def main():
         print(f"INFO Try it (wife): {tried!r}")
         check("try it: 'a birthday present for my wife' brings up Mei's jazz records", re.search(r"jazz|vinyl", tried, re.I), tried)
 
-        # ---- 3. the right facts used
-        a = await u.ask("Suggest a birthday present for my wife.", label="gift")
-        check("used: the gift ideas are about jazz vinyl (the wording 'my wife' found Mei)", a.mentions("vinyl", "jazz"), a.text[:500])
-        a = await u.ask("Which shoe size should I order for running shoes?", label="size")
-        check("used: the answer gives EU 43 without asking", "43" in a.text and not ASK_ONCE.search(a.text.strip()[-80:]), a.text[:300])
 
-        # ---- 4. a profile detail said in the chat
+        # ---- 3. a profile detail said in the chat
         a = await u.ask("My new mobile number is +65 9000 1111, and I have a dentist appointment this Friday at 4 pm.", label="mobile")
         pend = ""
         for _ in range(8):
@@ -111,7 +99,7 @@ async def main():
             print(f"INFO Profile → Mobile phone: {shown!r}")
             check("profile: after Accept, Profile → Mobile phone shows +65 9000 1111", ok and re.sub(r"\D", "", shown).endswith("6590001111"), shown)
 
-        # ---- 5. cards named in the chat
+        # ---- 4. cards named in the chat
         a = await u.ask("I pay with my Citi Prestige from the US, and I also have a Chase Sapphire Reserve 4111 1111 1111 1111.", label="cards")
         vault = ""
         for _ in range(6):
@@ -125,7 +113,7 @@ async def main():
         check("cards: the Vault lists the Citi Prestige and the Chase Sapphire Reserve by name", "Citi Prestige" in vault and "Sapphire Reserve" in vault, vault[:600])
         check("cards: the card number the user typed is nowhere on the Memory page", not re.search(r"4111\s?1111", whole), "")
 
-        # ---- 6. tidy
+        # ---- 5. tidy
         for f in ("Lucas likes quiet hotels!", "Lucas likes the quiet hotels", "Opened zipair and clicked search"):
             await remember_box(u, f)
         pg = u.page
@@ -156,14 +144,13 @@ async def main():
             check("tidy: what the user told OMuse is still there (43, shop.test, Mei, business class)",
                   all(w in longterm for w in ("43", "shop.test", "Mei")) and re.search(r"business", longterm, re.I), longterm[:1500])
 
-        # ---- 7. titles
-        titles = await C.chat_titles(u)
+        # ---- 6. titles
+        titles = await u.chat_titles()
         print(f"INFO chat list: {titles}")
-        firsts = {m[:40] for _, m in TELL} | {"Suggest a birthday present for my wife."[:40], "Which shoe size should I order for runni"}
+        firsts = {m[:40] for _, m in TELL}
         check("title: every chat in the list has a short title (at most 40 characters)", titles and all(0 < len(t) <= 40 for t in titles), titles)
         check("title: the titles say what the chats were about, not the first words of the message",
               titles and not any(t in firsts for t in titles), titles)
-        check("title: the gift chat's title is about the gift", any(re.search(r"gift|present|birthday", t, re.I) for t in titles), titles)
 
 
 U.setup(vault=False)

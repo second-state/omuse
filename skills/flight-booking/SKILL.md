@@ -1,6 +1,6 @@
 ---
 name: flight-booking
-description: 订机票：用 travel_search(kind=flight) 查航班比价，用 travel_book 预订——把用户的要求作为参数（日期写成 YYYY-MM-DD），代码搜索一次、按规则挑选、展示卡片、预订并把付款交给用户；回复按结果 JSON 写（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search and compare flights with travel_search(kind=flight) and book with travel_book — the user's details as JSON arguments; code runs ONE search, picks by rule, shows the cards, fills the booking page and hands the Pay click to the user; you word the reply from the JSON result.
+description: 订机票：用 travel_search(kind=flight) 查航班比价，用 travel_book 预订——把用户的要求作为参数（日期写成 YYYY-MM-DD），代码搜索一次、按规则挑选、展示卡片、打开预订页交给 browser-use 技能（付款由用户点）；回复按结果 JSON 写（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search and compare flights with travel_search(kind=flight) and book with travel_book — the user's details as JSON arguments; code runs ONE search, picks by rule, shows the cards, opens the booking page for the browser-use skill (the Pay click is the user's); you word the reply from the JSON result.
 
 form: on
 ---
@@ -76,10 +76,9 @@ Code does the work; you turn the user's words into the tool's arguments and the 
 - `nothing_found`: say so and what was searched; `next_question: "search_all_airlines"` → ask whether to search all
   airlines (the user's yes is a new `travel_search` with `all_airlines: true`). `unmet` → say which criterion nothing
   met and offer to relax it.
-- `booked`: the reference exactly, the flight, the total and card, the confirmation e-mail. `not_confirmed`: the
-  booking is NOT made (say why: not approved, or no reference after the hand-back; the page stays open).
-  `handed_over`: the filled page is with the user to press Pay. `browser_use`: the booking page is open and the
-  browser-use skill is loaded — fill that one page, hand it over for Pay.
+- `not_confirmed`: the booking is NOT made (the payment was not approved). `browser_use`: the payment is approved
+  (when charged), the booking page is open and the browser-use skill is loaded — fill that one page, hand it over for
+  Pay; the reference comes from the confirmation page after the hand-back (`confirm_reference`).
 - `mailed`: say it was sent, or not and why.
 - Times are local to each airport; an arrival marked (+1) lands the next day. Never add a price, time or rule the
   result does not have.

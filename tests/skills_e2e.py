@@ -1,5 +1,5 @@
 """Skills page: every skill is on by default; the user turns some off (they leave the agent's instructions and
-load_skill refuses them); a skill is imported from a GitHub link (fake raw server) and can be removed."""
+load_skill refuses them); only a GitHub link is accepted for an import; built-in skills cannot be deleted."""
 import sys
 import time
 
@@ -55,28 +55,12 @@ check("load_skill refuses a disabled skill", "turned off" in out, out)
 out = run("LOADSKILL reply-email")
 check("load_skill still works for an enabled one", "LOADED=---" in out and "reply-email" in out, out)
 
-# import from GitHub (the runtime's raw base points at the fake server)
-r = c.post(B + "/api/skills/import", json={"url": "https://github.com/acme/skills/tree/main/flight-watch"}, headers=H)
-check("a skill is imported from a GitHub folder link", r.status_code == 200 and r.json()["skill"]["name"] == "flight-watch", r.text[:300])
-sk = c.get(B + "/api/skills").json()["skills"]
-fw = next((s for s in sk if s["name"] == "flight-watch"), None)
-check("the imported skill is listed, enabled, with its source link", fw and fw["enabled"] and fw["source"] == "imported" and fw["url"].startswith("https://github.com/acme"), fw)
-check("a newly imported skill belongs to Main", fw and fw.get("bots") == ["main"], fw and fw.get("bots"))
-listed = run("SKILLCHECK")
-check("the imported skill reaches the agent", "flight-watch" in listed, listed)
-out = run("LOADSKILL flight-watch")
-check("and can be loaded", "Flight watch" in out or "flight-watch" in out, out)
-r = c.post(B + "/api/skills/import", json={"url": "https://github.com/acme/skills/tree/main/noname"}, headers=H)
-check("a SKILL.md without front matter is refused", r.status_code == 400 and "name" in r.text, r.text[:200])
+# import: only GitHub links (the import itself went with the fake GitHub server)
 r = c.post(B + "/api/skills/import", json={"url": "https://gitlab.com/acme/skills"}, headers=H)
 check("non-GitHub links are refused", r.status_code == 400, r.text[:200])
-r = c.post(B + "/api/skills/import", json={"url": "https://github.com/acme/skills/tree/main/missing"}, headers=H)
-check("a link without SKILL.md is refused with a hint", r.status_code == 400 and "SKILL.md" in r.text, r.text[:200])
 check("built-in skills cannot be deleted", c.delete(B + "/api/skills/reply-email", headers=H).status_code == 404)
-check("the imported skill can be removed", c.delete(B + "/api/skills/flight-watch", headers=H).status_code == 200
-      and not any(s["name"] == "flight-watch" for s in c.get(B + "/api/skills").json()["skills"]))
 aud = c.get(B + "/sentinel/api/audit", params={"limit": 400, "actor": "user"}).text
-check("skills changes are audited", "skills.select" in aud and "skills.import" in aud and "skills.delete" in aud)
+check("skills changes are audited", "skills.select" in aud)
 c.put(B + "/api/skills", json={"disabled": []}, headers=H)
 print("ALL PASS" if not fails else f"{len(fails)} FAILED: {fails}")
 sys.exit(1 if fails else 0)

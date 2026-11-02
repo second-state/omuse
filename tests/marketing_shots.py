@@ -34,26 +34,11 @@ SHOW_CITY = "We're moving to Shanghai for work with two kids. Where do expat fam
 def seed():
     K.c.put(B + "api/settings", headers=K.H, json={"language": "en", "ui_language": "en", "theme": "paper",
                                                     "instance_name": "OMuse", "user_name": "Lucas"})
-    K.seed_mail([
-        ("Singapore Airlines <noreply@singaporeair.example>", "Your e-ticket: SQ 636 / SQ 637 Singapore – Tokyo Haneda",
-         "Booking ref 9QW3PL. SQ 636 SIN 10:30 → HND 18:25 on 18 Nov 2026. SQ 637 HND 11:05 → SIN on 22 Nov 2026.", 6),
-        ("Hotel Ginza Grand <reservations@ginzagrand.example>", "Booking confirmed: Hotel Ginza Grand 18–21 Nov",
-         "Confirmation 88812345. 8-7-6 Ginza, Chuo City, Tokyo. Check-in 18 Nov 15:00, check-out 21 Nov 11:00.", 5),
-        ("OpenTable <reservations@opentable.example>", "Your table at Sushi Hoshizora, Fri 20 Nov 19:00",
-         "Reservation OT-55812 for 2 guests.", 3),
-        ("Singapore Airlines <noreply@singaporeair.example>", "Your e-ticket: SQ 231 SYD-SIN",
-         "Booking ref 7HK2QL. SQ 231 departs Sydney 1 Nov 10:30, arrives Singapore 16:20.", 1),
-        ("Marina Bayfront Hotel <stay@marinabayfront.example>", "Booking confirmed: Marina Bayfront Hotel",
-         "Confirmation MB-55120. Check-in 1 Nov, 3 nights. 10 Bayfront Avenue, Singapore 018956.", 1),
-    ])
     K.c.post(K.S + "/password", headers=K.H, json={"current": "local-test", "new": "marketing-shots-1"})
-    K.connect_mail()
-    K.connect_calendar()
-    K.connect_travel()
     K.set_profile(name_en="LUCAS LU", birthday="1985-04-12", nationality="Australia", email_personal="lucas@example.com",
                   phone="+61 400 000 000")
     K.vault_item("Passport Lucas", "id_document", {"number": "E1234567X", "name": "LU LUCAS", "expiry": "2031-05-01", "country": "AU"},
-                 domains="ica.gov.sg,shop.test")
+                 domains="ica.gov.sg")
 
 
 # ------------------------------------------------------------------ screenshots

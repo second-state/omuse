@@ -1,18 +1,18 @@
-"""SG Arrival Card and an arrival card without a mailbox, with a real model, from the user's point of view (the world,
-the user's part and the checks: tests/arrival_common.py; the rule: tests/user_common.py).
+"""SG Arrival Card, and an arrival card whose trip the user did not give, with a real model, from the user's point of
+view (the install, the user's part and the checks: tests/arrival_common.py; the rule: tests/user_common.py).
+SKELETON awaiting the real official sites (TODO lines below); nothing is ever submitted.
 
-1. SG Arrival Card on ICA's site (the stand-in at https://eservices.ica.gov.sg, tests/pages/sgac.html: masked
-   DD/MM/YYYY dates, the health and declaration questions, a CAPTCHA): the user asks Main's chat to fill it in; the
-   Travel bot fills everything from the mail, the profile and the Vault with no approval dialog, leaves the CAPTCHA and
-   asks the user to take over; the user types the CAPTCHA and presses Submit; the confirmation page's address holds the
-   right values (passport expiry 01/05/2031 in the field's order, health and declarations No, next city Sydney,
-   departure = arrival + 7) and the answer quotes the DE number; the passport number never shows in the chat.
-2. No mailbox (the user removed it): asked to fill in the Thailand TDAC, the agent asks ONCE for the flight and the
-   stay (and says a connected mailbox would find them), the user answers in the chat, and the form is filled with
-   those answers and handed over as above — no second question.
+1. SG Arrival Card on ICA's site: the user asks Main's chat to fill it in (flight and hotel in the request); the Travel
+   bot fills everything from the request, the profile and the Vault with no approval dialog and asks the user to take
+   over at their own step; the handed-over form holds the right values (passport expiry, health and declarations No,
+   next city Sydney, departure = arrival + 7); the passport number never shows in the chat.
+2. No trip details: asked to fill in the Thailand TDAC without the flight or the stay, the agent asks ONCE for them, the
+   user answers in the chat, and the form is filled with those answers and handed over as above — no second question.
 
 Not in run_in_docker.sh's default list (it needs a real model, billed):
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh arrival_real"""
+# TODO real URL: https://eservices.ica.gov.sg/sgarrivalcard/
+# TODO real URL: https://tdac.immigration.go.th/arrival-card/
 import os
 import sys
 
@@ -28,17 +28,14 @@ async def main():
     async with U.User(viewport=(1440, 1500)) as u:
         await A.fill_card(u, SG, label="sgac")
 
-        A.fresh_trip([])   # a new story: no mail, nothing remembered from the Singapore trip
-        A.disconnect_mail()
-        details = (f"I arrive on {TH.flight} from Sydney on {A.ARRIVE.isoformat()}, and I'm staying at the {TH.hotel[0]}, "
-                   f"{TH.hotel[1]}. It's a holiday.")
-        answers = await A.fill_card(u, TH, label="nomail", follow_up=details)
+        A.fresh_trip()   # a new story: nothing remembered from the Singapore trip
+        answers = await A.fill_card(u, TH, label="nodetails", ask=TH.ask, follow_up=f"{TH.details()} It's a holiday.")
         first = answers[0]
         # the first turn asked (an answer with no takeover, so the user's details were needed) and the form went in
         # after the one answer: two turns, one hand-over
-        check("nomail: with no mailbox the agent first asked once (a turn with no takeover), then filled the form from the answer",
+        check("nodetails: without the trip the agent first asked once (a turn with no takeover), then filled the form from the answer",
               len(answers) == 2 and not first.takeovers and bool(answers[1].takeovers), [len(x.takeovers) for x in answers])
 
 
-A.world(SG.mail())
+A.world()
 U.run(main)

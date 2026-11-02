@@ -66,8 +66,7 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
    on each other carry the same `"parallel": "p1"` group. After repeated failures the loop re-plans on its own. A
    follow-up that acts on a result already in the conversation ("book it", "buy the second one", "send it") is never
    planned or searched again: the prompt and the booking skills send the executor straight to the action (the airline's
-   booking page with the traveller, passport and card filled, then the approval or the hand-over;
-   `tests/kiwi_flights_e2e.py`, and `travel_common.verify` for a real model).
+   booking page with the traveller, passport and card filled, then the approval or the hand-over).
 2. **Execute**: the executor model calls tools step by step. Read-only tools in one turn run concurrently; a parallel
    group runs as sub-agents (`delegate`, up to 8), each with its own browser tab ("lane", broker page
    `<task>~sub<n>`), and the executor continues when all have reported. `llm_concurrency` (Settings, default 4) caps
@@ -119,8 +118,8 @@ ONE travel search **per request and per turn** — flights, hotels, cars and pla
 counted), in code: `guards::one_search_guard` refuses a travel search when the task already ran one (a failed call, e.g.
 on a bad date, may be corrected), and within a model turn the runtime skips every travel search after the first
 (`Skip.one_search`), both naming the search that ran. A request for a flight, a hotel and a car searches the first and
-offers the next ("Shall I search the hotel now?"); the user's next message runs it (`tests/kiwi_flights_e2e.py`
-TWOSEARCH, `tests/brave_travel_e2e.py`, `agent/tests.rs`).
+offers the next ("Shall I search the hotel now?"); the user's next message runs it (`agent/tests.rs`;
+`tests/travel_brave_real.py` from the user's side).
 Google first, also beside a connector: with a SerpApi key (`/internal/catalog` → `connections.travel.google`) the
 built-in travel searches stay. Without a key they fall back (flights to Kiwi.com, hotels to a web search), so a travel
 search the user's own connector also offers (`mcp_<id>__hotels_search` beside `hotels_search`) is then the
@@ -168,8 +167,7 @@ searches again rather than presenting economy fares for a business-class request
 economy leg is kept and labelled (`tag_cabins`: `cabin_mix: "business + economy"`, `economy_legs`); it counts as the
 cabin searched. A range of departure dates is one call (`date` + `date_to`, up to 14 days) and one Kiwi.com query (`departureDateTo`;
 a round trip keeps its stay as `nights_in_dst_from` / `_to`); the result is split per day (`merge_days`): each offer's
-`date` and the cheapest per day in `by_date` — the prompt and the skills say never to plan or call per day (`tests/kiwi_flights_e2e.py`,
-`tests/travel_search_e2e.py`; the skills tell the executor to read date, cabin, stops and passengers from the request
+`date` and the cheapest per day in `by_date` — the prompt and the skills say never to plan or call per day (`tests/travel_kiwi_real.py`; the skills tell the executor to read date, cabin, stops and passengers from the request
 first, and that a cheapest-fare question is one search with no plan). Preferences: `flights_search` takes `airlines`
 (names, 2-letter codes or alliances) and `hotels_search` takes `brands` (brands or groups); both **narrow the search
 itself**, in code, and matching offers or hotels come back with `preferred: true` (`mark_preferred`),
@@ -208,8 +206,7 @@ repeated on the booking-options request), so a second call (`flight_offer` → t
 way to connect: the card (Settings → Connections → Flights & hotels) or Kiwi.com's free MCP server
 (`https://mcp.kiwi.com/`, streamable HTTP, no auth, one `search-flight` tool — the MCP card has a preset button that fills
 the add form). The travel skills name the built-in tools first, then an MCP connector's, then the browser with a one-line
-note on how to connect. `[endpoints] serpapi` points the client at `tests/fake_apps.py`'s stand-in (`/serpapi/*`);
-`tests/travel_search_e2e.py`, `tests/travel_card_ui.py`.
+note on how to connect. `tests/travel_card_ui.py` (the card before a key), `tests/travel_connect_real.py` (a real key).
 
 ## Search input validation (`omuse_apps::travel_args`, `omuse_common::util::sanitize_search_args`)
 
@@ -262,8 +259,8 @@ affordable") or `adults: 0`. Validation is code, deterministic, and runs before 
   mentions "captcha" in its scripts, so the body is not searched); neither answering → Kayak's link with a note. Compared
   on 2026-10-29 over five airports: Brave, Tavily and SerpApi's Google results had no offer for the dates and no booking
   link (SerpApi was the slowest and noisiest); Kayak's, Rentalcars' and Priceline's prefilled pages showed the live prices,
-  Expedia and Skyscanner a bot check. Endpoints `[endpoints] kayak` / `rentalcars` (tests: the fakes'
-  `/kayak`, `/rentalcars`, `tests/cars_search_e2e.py`). One car search per request and per turn, like flights and hotels.
+  Expedia and Skyscanner a bot check. Endpoints `[endpoints] kayak` / `rentalcars` (tests: `omuse_apps::cars` unit tests,
+  `tests/travel_user_real.py` and `tests/travel_brave_real.py` on the real sites). One car search per request and per turn, like flights and hotels.
 - `places_search` / `place_details`: restaurants and other places, Google Maps data with the key, else the web search
   chain the same way (`places_fallback`); `place_details` needs the key. Booking: the restaurant's own site or the
   platform the user names.
@@ -291,12 +288,9 @@ nothing downstream changes. The same `[search] serpapi_key` is the default for t
 (`travel_client`). `state::seed_default_keys` runs at startup: the first time a default appears the connection is
 switched on and its config records it (`default_key` / `default_providers` + `default_seeded`), so the policy
 (`travel` without a key) and the page (chip "server key") know; the user's own key always wins, deleting it falls back
-to the default, and switching the connection off is respected. `[endpoints] brave / tavily / serpapi` point the clients
-at `tests/fake_apps.py` (`/brave/web/search`, `/tavily/search`, `/serpapi/search.json?engine=google`).
-`tests/web_search_e2e.py`, `tests/search_card_ui.py` (the test stack ships a default Brave key in `tests/run_local.sh`, so
-the override and the fall-back to the server key are exercised). The search providers are never tools of their own: the
-model sees `web_search` (and `web_search`) and OMuse picks the provider (`tests/web_search_e2e.py` asserts no
-provider-named tool). Kiwi.com's MCP server is used the same way inside `flights_search` (`omuse_apps::kiwi`), never as a connector
+to the default, and switching the connection off is respected. `tests/search_card_ui.py` (the card before a key),
+`tests/web_search_real.py` (the real Brave and Tavily APIs). The search providers are never tools of their own: the
+model sees `web_search` and OMuse picks the provider. Kiwi.com's MCP server is used the same way inside `flights_search` (`omuse_apps::kiwi`), never as a connector
 of its own, so no Kiwi tool reaches the model (its booking links do, as each offer's `booking_url`); Exa's hosted MCP is the first link of the chain, called by Sentinel itself (two JSON-RPC calls, no connector
 registration), rather than an MCP connector of its own, which would add a provider-named tool.
 
@@ -354,12 +348,8 @@ batch, the 30-day note), `drive-video-edit` (search → download → `edit_video
 steps → upload back), `drive-photo-storybook` (photos → `file_look` → optional edits → text → one `make_pdf` with
 `![…](drive/…)` pages → upload). All three are `browser: off`.
 
-Tests: `tests/fake_apps.py` serves a Drive fake (`/drive`, `/drive-upload`: seeded folders, two real MP4 clips made with
-ffmpeg at start, three JPEG photos, big and old files with metadata only, a shared file, a trashed one; `/drive/_state`
-and `/drive/_reset` for the suites) behind the same fake Google OAuth as the calendar; `tests/drive_connect_e2e.py`
-(one sign-in connects both, a sign-in where Drive was unticked, catalog tools and permissions, disconnect one),
-and the real-model `drive_cleanup_real.py`, `drive_video_real.py`, `drive_storybook_real.py` (the user's Drive as they
-see it; photos in `tests/pages/drive/`).
+Tests: the Drive tools' unit tests; the fake Drive and its suites were removed with the fake services (2026-11-02) —
+no e2e suite has a real Google Drive account yet.
 
 ## PDF page counts
 
@@ -481,14 +471,14 @@ suite's model calls are saved as `models-<suite>.json` in `OMUSE_E2E_OUT`.
 
 ### Form functions so far (2026-10-31)
 
-| Form | Function | Mapped from | Stand-in | Notes |
-|---|---|---|---|---|
-| SG Arrival Card | `sg_arrival_card` | the live ICA form | `tests/pages/sgac.html` (landing → 3-step stepper → Review) | radios by text, split date boxes typed by key, type-and-pick lookups; stops at Review (declaration + Submit are the user's) |
-| Malaysia MDAC | `my_arrival_card` | the live form | `tests/pages/mdac.html` | read-only datepicker boxes (`date` op), order: nationality → dialling code, state → city → postcode; the slider puzzle is the user's |
-| Korea e-Arrival card | `kr_arrival_card` | the live form | `kr_landing.html` → `kr_terms.html` → `kr_arrival.html` | terms + email first; type-to-filter nationality / airline dropdowns; the address lookup popup, job and contact in Korea are left (best effort); the emailed code and Submit are the user's |
-| All Indonesia | `id_arrival_card` | the live site (every Next saves) | `id_arrival.html` (4 steps on their own paths) | Languages → English → Foreign Visitor; session-suffixed ids (prefix selectors); readonly dropdowns with a Search box; the visa question defaults to No (a visa on arrival); the certification and Submit are the user's |
-| Taiwan TWAC | `tw_arrival_card` | the live site (steps 2–4 rendered client-side) | `tw_redirect.html` → `tw_home.html` → `twac.html` | step 1 (email, Cloudflare, emailed code) is the user's: the plan `require`s the traveller form and stops until it shows; react-select comboboxes take the exact option text; visa-exempt nationalities as data (`TW_VISA_EXEMPT`) |
-| China arrival card | `cn_arrival_card` | the live site (steps 2–4) | `cn_arrival.html` | the passport-photo upload (step 1) is the user's (`require` on the Last Name field); Element UI fields found by their labels; visa-free nationalities as data (`CN_VISA_FREE`); the port by airport code; stops before the companion question |
+| Form | Function | Mapped from | Notes |
+|---|---|---|---|
+| SG Arrival Card | `sg_arrival_card` | the live ICA form | radios by text, split date boxes typed by key, type-and-pick lookups; stops at Review (declaration + Submit are the user's) |
+| Malaysia MDAC | `my_arrival_card` | the live form | read-only datepicker boxes (`date` op), order: nationality → dialling code, state → city → postcode; the slider puzzle is the user's |
+| Korea e-Arrival card | `kr_arrival_card` | the live form | terms + email first; type-to-filter nationality / airline dropdowns; the address lookup popup, job and contact in Korea are left (best effort); the emailed code and Submit are the user's |
+| All Indonesia | `id_arrival_card` | the live site (every Next saves) | Languages → English → Foreign Visitor; session-suffixed ids (prefix selectors); readonly dropdowns with a Search box; the visa question defaults to No (a visa on arrival); the certification and Submit are the user's |
+| Taiwan TWAC | `tw_arrival_card` | the live site (steps 2–4 rendered client-side) | step 1 (email, Cloudflare, emailed code) is the user's: the plan `require`s the traveller form and stops until it shows; react-select comboboxes take the exact option text; visa-exempt nationalities as data (`TW_VISA_EXEMPT`) |
+| China arrival card | `cn_arrival_card` | the live site (steps 2–4) | the passport-photo upload (step 1) is the user's (`require` on the Last Name field); Element UI fields found by their labels; visa-free nationalities as data (`CN_VISA_FREE`); the port by airport code; stops before the companion question |
 
 Still on the generic path: Thailand TDAC (behind a Cloudflare check; mapped only from its public code), Cambodia
 (a profile photo; its health questions not captured), Visit Japan Web, eTravel and the UK ETA (behind accounts and
@@ -538,7 +528,7 @@ mail's or a document's text in these machines (the old `driver::extract`, `user_
 
 Calls are `drv_<n>` / `apd_<n>`; the machines' tool calls and fetched mail are kept by the compression
 (`compress_transcript`). Tests: `driver::tests`, `apdt::tests` (arguments in, steps, Done JSON),
-`tests/arrival_*_real.py`, `tests/apdt_real.py`.
+`tests/arrival_*_real.py` (being rebuilt on the official sites; the stand-ins are gone).
 
 ## Guarantees in code (2026-11-02)
 
@@ -635,9 +625,8 @@ JSON (`json_in`, one retry, `null` = no price → a failed check that backs off)
 `observed`; `watchers::evaluate_price` compares it (first read = baseline; alert when newly below the threshold or
 lower than the last alert). `watch_create` (a code tool) does not call the model: on a model-read page the model's
 `current_price` is the baseline (required), and a price element that shows nothing switches the watch to the model
-with a note. Notifications are built from the event's fields (`seen · item`). Fake suite: `tests/e2e_0212.py`
-(`WATCHPRICE` element path, `WATCHMODEL` model path; `tests/fake_llm.py` plays the extraction); real:
-`tests/watch_real.py` (Kaya Mobile, the element path).
+with a note. Notifications are built from the event's fields (`seen · item`). Tests: `watch_price.rs` and
+`scheduler.rs` unit tests (the scripted watch cases and `watch_real` needed test pages and went with them, 2026-11-02).
 
 ### Decisions: `Runtime::decide` (`agent/decide.rs`, 2026-11-02)
 
@@ -702,9 +691,7 @@ Main's `news-research` skill turns "research the news on X" into a newspaper-sty
   `artifacts/news/….pdf|.html`). The result's `show` carries the two links, the schedule and the mail (appended by code);
   `next_question` offers the mail. The old regex guards (`news_report_action`, `news_schedule_goal`,
   `report_followup_call`, `with_report_links`) are removed.
-- Tests: `tests/news_report_real.py` (a made-up subject, Lumora, in `tests/fake_apps.py NEWS`, so every fact comes from
-  the articles read: the report, its links, "email it" landing in the SMTP sink with the PDF, a scheduled edition);
-  `tests/news_demo_real.py` is a one-off demo on the real web (not in the gate).
+- Tests: `agent/news/tests.rs`; `tests/news_report_real.py` on the real web (no fake articles, no mail sent).
 
 ## Sentinel policy
 
@@ -713,7 +700,7 @@ Main's `news-research` skill turns "research the news on X" into a newspaper-sty
 (`purchase_site`) replaces such a site with the host of the page the task has open — where the total shows and the
 card is filled — and with no page open the policy refuses it ("open the booking page first"). Before this, the
 purchase was approved for "omuse.local" and the card fill on the booking site was refused (travel_michelin_e2e,
-2026-10-30). The fake booking flow writes the stand-in's host on purpose (`tests/fake_llm.py` `travel_book`).
+2026-10-30).
 
 **The approved amount is always in the answer.** When a run had a purchase approved (`purchase_confirm` →
 `"status": "approved"`) and the final answer does not give its total (in any format: `JPY 28,000`, `¥28000`,
@@ -743,16 +730,16 @@ missing or stale translations and on mixed-language strings.
 ## Tests
 
 - Rust unit tests live next to the code (`cargo test --workspace`).
-- The end-to-end suites (`tests/*_e2e.py`, `*_ui.py`, `e2e_0*.py`) run inside the `Dockerfile.test` image: each gets a
-  fresh stack started by `tests/run_local.sh` (the binary, the scripted model `tests/fake_llm.py`, fake third-party
-  services in `tests/fake_apps.py`, an IMAP server, test pages under `tests/pages` served as `http://shop.test:8099`).
-  The scripted model plays the agent: it matches a marker in the request (`SGAC`, `ARRCARD`, `ARRNOMAIL`, …) and
-  returns the tool calls a correct agent would make, so a suite checks the tools, approvals, takeovers and the
-  rules a skill must keep.
-- The travel-skill suites share `tests/skills_common.py` (mail seeded by IMAP APPEND, calendar, travel connector,
-  profile, vault, uploads, approvals and takeover hand-backs).
-- Real-model suites (`*_real.py`, and the travel suites with `OMUSE_E2E_ENV_FILE`) go through `tests/model_proxy.py`,
-  which times model calls so the `TIMING` line reports the agent's own time.
+- The scripted (fake-model) suites (`tests/*_e2e.py`, `*_ui.py`, `e2e_0*.py`) run inside the `Dockerfile.test` image:
+  each gets a fresh stack started by `tests/run_local.sh` (the binary and the scripted model `tests/fake_llm.py` —
+  nothing else: no fake services, no stand-in pages, no mailbox; web search, travel and market data point at a port
+  nothing listens on). The scripted model plays the agent: it matches a marker in the request and returns the tool
+  calls a correct agent would make, so a suite checks the run loop, approvals, takeovers and the UI. They are fast
+  checks, never counted as e2e.
+- The skill and bot suites share `tests/skills_common.py` (profile, vault, uploads, running a task, reading its events).
+- The e2e suites (`*_real.py`, real model) run only against real sites and services (real URLs, real APIs) and stop at
+  the first step the user owns; they go through `tests/model_proxy.py`, which times model calls so the `TIMING` line
+  reports the agent's own time.
 
 ## Publishing images for Products Provisioner
 
@@ -947,8 +934,7 @@ is the bot's prompt, added to the executor prompt.
   `#bot/<id>/<conv>`. While Main waits for a bot (`WAITING_BOT`), Main's reply bubble stays: the dancing dots and a
   verb that moves with the bot's model and tool calls, then the bot's answer as it streams (`relaying`, `relayOf`:
   the bot task's `answer_delta` events are shown in Main's bubble too). It goes while the bot waits for the user.
-- Tests: `tests/bots_e2e.py`, `tests/bots_ui.py`; suites of one bot's skills set `K.BOT` (`tests/skills_common.py`) or
-  use `travel_common.BOT`.
+- Tests: `tests/bots_e2e.py`, `tests/bots_ui.py`; suites of one bot's skills set `K.BOT` (`tests/skills_common.py`).
 
 ## Skill front matter
 
@@ -977,8 +963,7 @@ seven carry it: `csr-trip-claim`, `travel-expense-report`, `travel-planning`, `d
 `web-research-compare`, `drive-cleanup`, `drive-photo-storybook`. The other 53 (the bookings, the arrival cards, the
 disruption / baggage / emergency helpers, the city guides, mail, shopping, phone and PDF skills) run from their
 sheets. A unit test (`built_in_skills_spell_the_plan_flag_as_on_and_only_the_long_ones_carry_it`) keeps the list in
-step with the files; `tests/kiwi_flights_e2e.py` checks that a flight search makes no plan and
-the real `cards_claim_real.py` covers the claim. Imported skills use the same keys.
+step with the files; the real `cards_claim_real.py` covers the claim. Imported skills use the same keys.
 
 ## City guides (`skills/<city>/SKILL.md`)
 
@@ -1001,8 +986,8 @@ or moving to <City>"), then: How to use this skill (the **No browser** rule and 
 arrival-card skill) · Orientation · Entering … and the airports · Money · Getting online and the apps · Getting around ·
 Business scene and customs · Living here · Food · What to see · Timeline · Sources to verify against · Remember what you
 learn. 14–20 KB each (CJK, Thai and Vietnamese text counts 2–3 bytes per character); `tests/city_guides_e2e.py` checks
-the shape, the hand-offs, the absence of browser tools, the dates and the size, and that a scripted answer uses only
-the guide and `market_data`.
+the front matter and the absence of browser tools, that every guide is installed, and that a browser call after a guide
+is refused.
 
 ### Refreshing a guide
 1. Work through the facts most likely to change first: visa-free lists and durations, arrival cards and entry fees,
@@ -1038,6 +1023,5 @@ page's cookies and keeps it as `downloads/<name>.pdf`; the result carries `pdf: 
 `browser_downloads`. `files_read` and `pdf_form_fields` / `pdf_form_fill` then work on it (any PDF form on the web, not
 only this one).
 
-`tests/insurance_real.py` and `tests/insurance_hk_real.py` run the three flows with a real model on stand-ins at the
-official addresses (`tests/pages/fwd_sg_*.html`, `fwd_hk.html`, a field-for-field copy of bolttech's form) and mail with
-PDF attachments (`skills_common.seed_mail` takes attachments).
+`tests/insurance_real.py` and `tests/insurance_hk_real.py` are being rebuilt on the official sites (the stand-in pages
+and the seeded mail were removed 2026-11-02).

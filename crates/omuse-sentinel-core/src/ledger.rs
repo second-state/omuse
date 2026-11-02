@@ -514,7 +514,19 @@ mod tests {
             json!({"checked": 1, "changed": []})
         );
         // a purchase task that ended without an order number
-        let r2 = add(&store, "t2", "shop.test", 5.0, "SGD", None, "", "", "", "").unwrap();
+        let r2 = add(
+            &store,
+            "t2",
+            "shop.example",
+            5.0,
+            "SGD",
+            None,
+            "",
+            "",
+            "",
+            "",
+        )
+        .unwrap();
         assert_eq!(r2["history"][0]["note"], "批准购买 approval");
         confirm(&store, "t2", "", None, None).unwrap();
         assert_eq!(

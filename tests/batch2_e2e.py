@@ -7,7 +7,6 @@ user's side by tests/memory_real.py (and tests/assistant_real.py). What stays he
   * the selection on the facts' fields (the fake model's JSON reading of the request stands in for a real one): the
     shoe size and the shop's habit for a shoe request and nothing unrelated; the trigger rule only on its phrase;
   * the executor's prompt carrying the grouped context and the don't-ask-again rule, the context_used event (internal);
-  * a site's habits shown to the model when the browser lands there (internal prompt; the fact's entity names the site);
   * a habit OMuse learned by itself waits for the user's OK but is used meanwhile (a real model learning a habit on
     its own cannot be produced on demand: forced with the scripted model);
   * the health check API."""
@@ -91,14 +90,6 @@ check("executor prompt carries the grouped context and the don't-ask-again rule"
       "[偏好 Preferences]" in sysp and "43码" in sysp and "do NOT ask the user again" in sysp, sysp[-1500:])
 ev = [e for e in t["events"] if e["type"] == "context_used"]
 check("the task shows which memories it used (timeline)", ev and any("43码" in f["fact"] for f in ev[0]["data"]["facts"]), ev)
-
-# ---- 3. site habits when the browser lands there
-tid = c.post(B + "/api/chat", json={"message": "SITECHECK open the page"}, headers=H).json()["task_id"]
-t = wait_task(tid)
-calls = c.get(LLM + "/calls_for", params={"marker": "SITECHECK"}).json()
-seen = " ".join(x["tools"] for x in calls)
-check("landing on shop.test shows what OMuse learned there", "你以前在 shop 学到的" in seen and "8 位" in seen, seen[:800])
-check("timeline records it", any(e["type"] == "context_site" for e in t["events"]))
 
 # ---- 4. learned → pending → confirmed
 n0 = len([f for f in mem()["facts"] if f["status"] == "pending"])

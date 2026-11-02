@@ -697,9 +697,9 @@ mod tests {
             ),
             fact(
                 "site",
-                "shop.test 网站支持访客结账；电话号码填 8 位，不要 +65。",
+                "shop.example 网站支持访客结账；电话号码填 8 位，不要 +65。",
                 "site",
-                "shop.test",
+                "shop.example",
                 "topic",
                 &["shopping", "forms"],
             ),
@@ -792,10 +792,10 @@ mod tests {
     #[test]
     fn selection_uses_the_structured_fields_only() {
         let facts = memory();
-        // "help me pick running shoes on shop.test": the model chose clothing + shopping and the site
+        // "help me pick running shoes on shop.example": the model chose clothing + shopping and the site
         let sel = select(
             &facts,
-            &rel(&["clothing", "shopping"], &["shop.test"]),
+            &rel(&["clothing", "shopping"], &["shop.example"]),
             &TaskData::default(),
             &[],
             12,
@@ -813,7 +813,7 @@ mod tests {
                 && !got.contains(&"trip".into())
         );
         assert_eq!(got[0], "site"); // the named site and a shared topic first
-        assert!(get_str(&sel[0], "why").contains("entity: shop.test"));
+        assert!(get_str(&sel[0], "why").contains("entity: shop.example"));
         // a site habit is not handed over when its site is not in play, even on a shared topic
         let got = ids(&select(
             &facts,
@@ -879,7 +879,7 @@ mod tests {
         assert_eq!(mei.relation, "wife");
         assert_eq!(mei.aliases, vec!["梅梅"]);
         assert!(mei.about.contains("jazz"));
-        assert!(menu.entities.iter().any(|e| e.name == "shop.test"));
+        assert!(menu.entities.iter().any(|e| e.name == "shop.example"));
         assert_eq!(menu.triggers, vec!["准备出差"]);
         assert_eq!(
             menu.unsorted,
@@ -906,12 +906,12 @@ mod tests {
     fn the_models_answer_is_checked_against_the_lists() {
         let menu = build_menu(&memory(), &[]);
         let r = parse_relevance(
-            "```json\n{\"topics\": [\"Travel\", \"weather\", \"travel\"], \"entities\": [\"shop.TEST\", \"Bob\"], \"triggers\": [\"准备出差\", \"go\"], \"facts\": [\"old\", \"pp\"]}\n```",
+            "```json\n{\"topics\": [\"Travel\", \"weather\", \"travel\"], \"entities\": [\"shop.EXAMPLE\", \"Bob\"], \"triggers\": [\"准备出差\", \"go\"], \"facts\": [\"old\", \"pp\"]}\n```",
             &menu,
         )
         .unwrap();
         assert_eq!(r.topics, vec!["travel"]);
-        assert_eq!(r.entities, vec!["shop.test"]);
+        assert_eq!(r.entities, vec!["shop.example"]);
         assert_eq!(r.triggers, vec!["准备出差"]);
         assert_eq!(r.facts, vec!["old"]); // an id that is not an unsorted choice is dropped
         assert_eq!(parse_relevance("{}", &menu), Some(Relevance::default()));
@@ -943,7 +943,7 @@ mod tests {
     fn sites_by_their_entity() {
         assert_eq!(site_name("https://www.decathlon.sg/p/123"), "decathlon");
         assert_eq!(site_name("https://www.amazon.com.sg/x"), "amazon");
-        assert_eq!(site_name("https://shop.test/"), "shop");
+        assert_eq!(site_name("https://shop.example/"), "shop");
         assert_eq!(site_name("not a url"), "");
         let facts = vec![
             fact(

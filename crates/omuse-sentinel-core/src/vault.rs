@@ -762,8 +762,8 @@ mod tests {
         assert_eq!(mask("12-3"), "•••");
         assert_eq!(mask(""), "");
         assert_eq!(
-            clean_domains(Some(&json!("https://www.Shop.test/x, b.com other"))),
-            vec!["shop.test", "b.com", "other"]
+            clean_domains(Some(&json!("https://www.Shop.example/x, b.com other"))),
+            vec!["shop.example", "b.com", "other"]
         );
         assert_eq!(
             clean_domains(Some(&json!(["bad domain", "ok.sg"]))),
@@ -913,7 +913,7 @@ mod tests {
         let store = Store::new(d.path()).unwrap();
         let it = save_item(
             &store,
-            &json!({"kind": "card", "label": "Visa", "domains": "shop.test",
+            &json!({"kind": "card", "label": "Visa", "domains": "shop.example",
                     "values": {"number": "4111 1111 1111 1234", "expiry": "12/28", "cvc": "123"}}),
             None,
         )
@@ -923,8 +923,8 @@ mod tests {
         assert_eq!(it["kind_label"], "银行卡 Card");
         assert!(!dumps(&json!(list_items(&store).unwrap())).contains("4111"));
         assert!(
-            domain_ok(&it, "www.shop.test")
-                && domain_ok(&it, "pay.shop.test")
+            domain_ok(&it, "www.shop.example")
+                && domain_ok(&it, "pay.shop.example")
                 && !domain_ok(&it, "evil.example")
         );
         assert_eq!(
@@ -944,12 +944,12 @@ mod tests {
         assert!(!snap.replace("[VAULT_VALUE]", "").contains("1234") && snap.contains("total 123"));
         assert_eq!(out["image_b64"], "4111111111111234");
 
-        note_fill("t1", "https://shop.test/pay#x");
+        note_fill("t1", "https://shop.example/pay#x");
         assert!(
-            filled_here("t1", "https://shop.test/pay")
-                && !filled_here("t1", "https://shop.test/done")
+            filled_here("t1", "https://shop.example/pay")
+                && !filled_here("t1", "https://shop.example/done")
         );
-        assert!(!filled_here("t2", "https://shop.test/pay"));
+        assert!(!filled_here("t2", "https://shop.example/pay"));
 
         let id = it["id"].as_str().unwrap().to_string();
         save_item(

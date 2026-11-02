@@ -11,10 +11,10 @@
 //! Then every step is code ([`next`]): ONE search call (on the user's travel connector when the arguments say so, the
 //! connector once more when the native search had nothing priced), the pick by rule from the structured result (the
 //! cheapest, or the criteria in the arguments, or the user's pick), the choice card with the pick shown, and — for
-//! `travel_book` / `shop_order` buy — `purchase_confirm`, the booking link, the page filled by a form function with
-//! FIXED input ids, the card from the Vault by the site's fixed labels, the hand-over for the final Pay / Confirm /
-//! Place order (the user's) and the reference read from the confirmation page's fixed pattern. A booking or checkout
-//! page with no form function here is opened and handed to the `browser-use` skill (`status: browser_use`).
+//! `travel_book` — `purchase_confirm` when money is charged and the booking link. No booking or checkout site has a
+//! form function: the page is opened and handed to the `browser-use` skill (`status: browser_use`), which fills it and
+//! hands the final Pay / Confirm / Place order to the user. `shop_order` opens the shop's page and hands it over the
+//! same way, with the ranking criteria.
 //!
 //! The machine ends with [`Step::Done`]: a JSON result (status, options, the pick and its rule, the booking, links,
 //! the mail sent, `hints` — the facts the reply must carry). The model writes the reply from it; no answer text is
@@ -31,12 +31,11 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use super::claims::{money, pick_card, vault_cards, VaultCard};
-use super::driver::{handed_back, json_of, pos, Step};
+use super::driver::{json_of, pos, Step};
 use super::show as S;
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
 use super::workflow::{self, Checked};
-use crate::forms::{self, Op};
 
 /// The skill the machine hands an unknown booking or checkout page to (a model-driven fill of that one page).
 pub const BROWSER_USE: &str = "browser-use";
@@ -205,10 +204,10 @@ booking reference (status booked) or says why not. Write the reply from it, usin
     );
     let shop = fn_(
         SHOP_ORDER,
-        "Compare, add to the cart or buy on a shop whose link the user gave. Code reads the shop's results page, ranks the \
-listings by the criteria, shows them as choice cards, and for cart / buy adds the item and fills the checkout from the \
-profile and the Vault (Place order is the user's). A shop code has no form for is opened and handed to the browser-use \
-skill (status browser_use). Write the reply from the JSON result, using its hints (code appends the facts in show to the reply).",
+        "Compare, add to the cart or buy on a shop whose link the user gave. Code opens the shop's page and hands it to \
+the browser-use skill (status browser_use) with the criteria: list the page's products as present_choices options \
+(price, stars, ratings) with these criteria as its ranking, and code ranks them; cart and checkout are filled there, \
+Place order is the user's. Write the reply from the JSON result, using its hints (code appends the facts in show to the reply).",
         json!({
             "url": {"type": "string", "description": "the shop's link the user gave in this chat (a results or product page) — the same link again when a later message asks to add to the cart or buy"},
             "action": {"type": "string", "enum": ["compare", "cart", "buy"]},
@@ -217,12 +216,7 @@ skill (status browser_use). Write the reply from the JSON result, using its hint
             "min_ratings": {"type": "integer"}, "count": {"type": "integer", "description": "how many to show"},
             "title_has": {"type": "array", "items": s.clone(), "description": "words every chosen name has, e.g. [\"case\", \"iPhone 17 Pro Max\"]"},
             "title_not": strs,
-            "pick": {"type": "string", "description": "the listing the user chose: its title exactly as the choice card listed it (the text after \"I choose: \")"},
-            "let_user_choose": {"type": "boolean", "description": "the user wants to pick from the options themselves"},
-            "colour": s.clone(),
-            "quantity": {"type": "integer"},
-            "contact": {"type": "object", "properties": {"name": s.clone(), "phone": s.clone(), "address": s.clone()}},
-            "card": s
+            "pick": {"type": "string", "description": "the listing the user chose: its title exactly as the choice card listed it (the text after \"I choose: \")"}
         }),
         &["url", "action"],
     );
@@ -251,53 +245,6 @@ pub fn ask_before_tool(events: &[Value]) -> Option<Value> {
     };
     Some(json!({"refused": "call_the_tool_first", "tool": tool,
                 "why": format!("the {} skill asks through {tool}: call it with what the user gave; its needs_input lists what only the user can give, and code fills the defaults", skill.skill)}))
-}
-
-/// The model loading `browser-use` itself while the chat's shopping runs on a shop code fills (Kaya Mobile, Stride
-/// Sports): refused, as data — that shop's cart and checkout are `shop_order`'s (shopping_real 2026-11-01: "buy it now"
-/// after a cart turn went to browser-use, the model filled the checkout and never read the order number). A page of
-/// another site opened since then, or the load code makes after a `browser_use` result (`bkg_` id), passes.
-pub fn browser_use_guard(transcript: &[Value], call: &crate::llm::ToolCall) -> Option<String> {
-    if call.name != "load_skill"
-        || sget(&call.args, "name") != BROWSER_USE
-        || super::guards::code_call(call)
-    {
-        return None;
-    }
-    let (i, args) = transcript
-        .iter()
-        .enumerate()
-        .flat_map(|(i, m)| {
-            tool_calls(m)
-                .iter()
-                .map(move |tc| (i, tc))
-                .collect::<Vec<_>>()
-        })
-        .filter_map(|(i, tc)| {
-            let (name, args) = stored_call(tc);
-            TOOLS.contains(&name.as_str()).then_some((i, name, args))
-        })
-        .next_back()
-        .filter(|(_, name, _)| name == SHOP_ORDER)
-        .map(|(i, _, a)| (i, a))?;
-    let url = sget(&args, "url");
-    if !known_shop(&url) {
-        return None;
-    }
-    let elsewhere = transcript[i..].iter().flat_map(tool_calls).any(|tc| {
-        let (name, a) = stored_call(tc);
-        name.ends_with("browser_navigate")
-            && !sget(&a, "url").is_empty()
-            && !known_shop(&sget(&a, "url"))
-    });
-    if elsewhere {
-        return None;
-    }
-    Some(
-        json!({"refused": "known_shop", "tool": SHOP_ORDER, "url": url,
-               "rule": "this shop's cart and checkout are filled by code: call shop_order with the same url (action buy to order, cart to add to the cart)"})
-        .to_string(),
-    )
 }
 
 // ---------------------------------------------------------------- validation (code, on the JSON)
@@ -729,41 +676,15 @@ fn check_shop(a: &Value) -> Checked {
             out.insert(k.into(), json!(x as u64));
         }
     }
-    match n_arg(a, "quantity") {
-        None => {
-            out.insert("quantity".into(), json!(1));
-        }
-        Some(q) if q.fract() == 0.0 && (1.0..=10.0).contains(&q) => {
-            out.insert("quantity".into(), json!(q as u32));
-        }
-        Some(q) => problems.push(format!("quantity: {q} — give 1 to 10")),
-    }
     for k in ["title_has", "title_not"] {
         let v = list_arg(a, k);
         if !v.is_empty() {
             out.insert(k.into(), json!(v));
         }
     }
-    for k in ["pick", "colour", "card"] {
-        let v = s_arg(a, k);
-        if !v.is_empty() {
-            out.insert(k.into(), json!(v));
-        }
-    }
-    if b_arg(a, "let_user_choose") {
-        out.insert("let_user_choose".into(), json!(true));
-    }
-    if let Some(c) = a.get("contact").filter(|c| c.is_object()) {
-        let mut cm = Map::new();
-        for k in ["name", "phone", "address"] {
-            let v = s_arg(c, k);
-            if !v.is_empty() {
-                cm.insert(k.into(), json!(v));
-            }
-        }
-        if !cm.is_empty() {
-            out.insert("contact".into(), Value::Object(cm));
-        }
+    let pick = s_arg(a, "pick");
+    if !pick.is_empty() {
+        out.insert("pick".into(), json!(pick));
     }
     if !problems.is_empty() {
         return Checked::Invalid(problems);
@@ -1062,11 +983,6 @@ pub struct ShopReq {
     pub action: String,
     pub ranking: crate::listings::Ranking,
     pub pick: String,
-    pub let_user_choose: bool,
-    pub colour: String,
-    pub quantity: u32,
-    pub contact: Value,
-    pub card: String,
 }
 
 impl ShopReq {
@@ -1092,20 +1008,7 @@ impl ShopReq {
                 count: n_arg(a, "count").map(|x| x as usize),
             },
             pick: s_arg(a, "pick"),
-            let_user_choose: b_arg(a, "let_user_choose"),
-            colour: s_arg(a, "colour"),
-            quantity: n_arg(a, "quantity").map(|q| q as u32).unwrap_or(1).max(1),
-            contact: a.get("contact").cloned().unwrap_or(Value::Null),
-            card: s_arg(a, "card"),
         }
-    }
-
-    fn buy(&self) -> bool {
-        self.action == "buy"
-    }
-
-    fn cart(&self) -> bool {
-        self.action == "cart" || self.buy()
     }
 }
 
@@ -2042,193 +1945,7 @@ fn ad_link(url: &str) -> bool {
         || lc.contains("ad_provider=")
 }
 
-// ---------------------------------------------------------------- the known sites: form functions with fixed ids
-
-// ---------------------------------------------------------------- the known sites: form functions with fixed ids
-
-/// The values a known site's form function gets.
-pub struct Guest<'a> {
-    pub profile: &'a Value,
-    /// dietary needs / the occasion for a restaurant's requests field
-    pub requests: &'a str,
-}
-
-impl Guest<'_> {
-    fn p(&self, k: &str) -> String {
-        get_str(self.profile, k).trim().to_string()
-    }
-    pub fn name(&self) -> String {
-        let n = self.p("name_en");
-        if n.is_empty() {
-            self.p("name")
-        } else {
-            n
-        }
-    }
-    pub fn email(&self) -> String {
-        let e = self.p("email_personal");
-        if e.is_empty() {
-            self.p("email")
-        } else {
-            e
-        }
-    }
-    pub fn phone(&self) -> String {
-        self.p("phone")
-    }
-    pub fn address(&self) -> String {
-        self.p("address_home")
-    }
-}
-
-type SiteFn = fn(&Guest) -> Vec<Op>;
-
-/// A booking or checkout page code fills: its host and path, the plan with fixed ids, the card boxes by their fixed
-/// labels (Vault field, label), the confirmation's reference.
-pub struct Site {
-    pub form: &'static str,
-    pub host: &'static str,
-    pub path: &'static str,
-    pub fill: SiteFn,
-    /// the card fields: the Vault field and the input's fixed selector
-    pub card: &'static [(&'static str, &'static str)],
-    /// the confirmation's reference element (a CSS selector, read by `browser_read_elements`)
-    pub ref_sel: &'static str,
-    /// the reference's format, checked over that element's whole value
-    pub ref_re: &'static str,
-}
-
-const TRAVELTEST_CARD: &[(&str, &str)] = &[
-    ("number", "#card_number"),
-    ("expiry", "#card_expiry"),
-    ("cvc", "#card_cvc"),
-    ("holder", "#card_name"),
-];
-
-/// TravelTest's flight booking page (`/book/flight/<offer_id>`): the traveller as in the passport, contact, the
-/// passport number from the Vault (Sentinel puts it in). The passport expiry is optional and stays empty; the card is
-/// filled by `browser_fill_secret` after `purchase_confirm`; "Pay now" is the user's.
-fn traveltest_flight(g: &Guest) -> Vec<Op> {
-    vec![
-        forms::text("full_name", "#full_name", &g.name().to_uppercase()),
-        forms::text("email", "#email", &g.email()),
-        forms::text("phone", "#phone", &g.phone()),
-        forms::vault_as("passport", "text", "#passport", "number", ""),
-    ]
-}
-
-/// TravelTest's hotel room page (`/book/hotel/<room_offer_id>`): the guest and contact; the arrival time and the
-/// special requests stay empty (none); the card only for a prepaid rate (after `purchase_confirm`).
-fn traveltest_hotel(g: &Guest) -> Vec<Op> {
-    vec![
-        forms::text("full_name", "#full_name", &g.name()),
-        forms::text("email", "#email", &g.email()),
-        forms::text("phone", "#phone", &g.phone()),
-    ]
-}
-
-/// TravelTest's restaurant slot page (`/book/restaurant/<slot_id>`): the guest, contact, and the dietary needs /
-/// occasion from the request.
-fn traveltest_restaurant(g: &Guest) -> Vec<Op> {
-    vec![
-        forms::text("full_name", "#full_name", &g.name()),
-        forms::text("email", "#email", &g.email()),
-        forms::text("phone", "#phone", &g.phone()),
-        forms::text("requests", "#requests", g.requests),
-    ]
-}
-
-/// Kaya Mobile's checkout (`/kaya_checkout.html`): the delivery name, mobile and address.
-fn kaya_checkout(g: &Guest) -> Vec<Op> {
-    vec![
-        forms::text("name", "#name", &g.name()),
-        forms::text("phone", "#phone", &g.phone()),
-        forms::text("address", "#address", &g.address()),
-    ]
-}
-
-/// Stride Sports' product page with its checkout (`/stride_*.html`): the delivery name, mobile and address.
-fn stride_checkout(g: &Guest) -> Vec<Op> {
-    vec![
-        forms::text("name", "#name", &g.name()),
-        forms::text("phone", "#phone", &g.phone()),
-        forms::text("address", "#address", &g.address()),
-    ]
-}
-
-pub const SITES: &[Site] = &[
-    Site {
-        form: "traveltest-flight",
-        host: "shop.test",
-        path: "/book/flight/",
-        fill: traveltest_flight,
-        card: TRAVELTEST_CARD,
-        ref_sel: "#booking-ref",
-        ref_re: r"\bTRV-[A-Z][A-Z0-9]{6}\b",
-    },
-    Site {
-        form: "traveltest-hotel",
-        host: "shop.test",
-        path: "/book/hotel/",
-        fill: traveltest_hotel,
-        card: TRAVELTEST_CARD,
-        ref_sel: "#booking-ref",
-        ref_re: r"\bTRV-[A-Z][A-Z0-9]{6}\b",
-    },
-    Site {
-        form: "traveltest-restaurant",
-        host: "shop.test",
-        path: "/book/restaurant/",
-        fill: traveltest_restaurant,
-        card: TRAVELTEST_CARD,
-        ref_sel: "#booking-ref",
-        ref_re: r"\bTRV-[A-Z][A-Z0-9]{6}\b",
-    },
-    Site {
-        form: "kaya-checkout",
-        host: "shop.test",
-        path: "/kaya_checkout",
-        fill: kaya_checkout,
-        card: &[("number", "#card"), ("expiry", "#exp"), ("cvc", "#cvc")],
-        ref_sel: "main p b",
-        ref_re: r"\bKM-\d{4,}\b",
-    },
-    Site {
-        form: "stride-checkout",
-        host: "shop.test",
-        path: "/stride_",
-        fill: stride_checkout,
-        card: &[("number", "#card"), ("expiry", "#exp"), ("cvc", "#cvc")],
-        ref_sel: "main p b",
-        ref_re: r"\bSR-\d{4,}\b",
-    },
-];
-
-/// The known site of a page, by its host and the start of its path: `None` for any other page (handed to
-/// `browser-use`).
-pub fn site_for(u: &str) -> Option<&'static Site> {
-    let x = url::Url::parse(u).ok()?;
-    let host = x.host_str()?.to_lowercase();
-    let path = x.path().to_lowercase();
-    SITES
-        .iter()
-        .find(|s| host == s.host && path.starts_with(s.path))
-}
-
-/// The plan for `site` as `browser_fill_form` takes it (an empty value is skipped and left for the user).
-pub fn fill_args(site: &Site, g: &Guest) -> Value {
-    let fills: Vec<Value> = (site.fill)(g).iter().filter_map(Op::to_json).collect();
-    json!({"form": site.form, "fills": fills})
-}
-
-/// The fields of the plan that had no value (named in the hand-over).
-fn blanks(site: &Site, g: &Guest) -> Vec<String> {
-    (site.fill)(g)
-        .iter()
-        .filter(|op| op.to_json().is_none() && op.field != "requests")
-        .map(|op| op.field.replace('_', " "))
-        .collect()
-}
+// ---------------------------------------------------------------- the booking page
 
 fn denied(m: &Value) -> bool {
     let c = content_of(m);
@@ -2249,13 +1966,6 @@ fn host_of(u: &str) -> String {
     url::Url::parse(u)
         .ok()
         .and_then(|x| x.host_str().map(str::to_lowercase))
-        .unwrap_or_default()
-}
-
-fn origin_of(u: &str) -> String {
-    url::Url::parse(u)
-        .ok()
-        .map(|x| x.origin().ascii_serialization())
         .unwrap_or_default()
 }
 
@@ -2295,7 +2005,7 @@ impl Ids {
 pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     let ids = Ids::new(t, m.first);
     if tool == SHOP_ORDER {
-        return next_shop(&ShopReq::from_args(args), t, m, &ids);
+        return next_shop(&ShopReq::from_args(args), t, &ids);
     }
     next_travel(&Req::from_args(args), t, m, &ids)
 }
@@ -2320,7 +2030,7 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     // from the machine's own calls, whose arguments compression never touches
     if content_of(search_msg).contains(super::guards::COMPRESSED_MARK) {
         if let Some(item) = resumed_item(t, pos(t, search_msg)) {
-            return book(spec, req, t, m, ids, &item);
+            return book(spec, req, t, ids, &item);
         }
     }
     let result = data_of(search_msg);
@@ -2708,7 +2418,7 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
         out["hints"] = json!(must);
         return Step::Done(out);
     }
-    book(spec, req, t, m, ids, &item)
+    book(spec, req, t, ids, &item)
 }
 
 /// The answer when a search limited to the preferred airlines found none of them: no second search now — the question
@@ -2796,7 +2506,7 @@ fn item_for(
             total: pick.price.map(|p| p * req.party_or(kind) as f64),
             currency: pick.currency.clone(),
             charged: true,
-            delivery: format!("E-ticket to {}", guest_profile(m.profile, &req.contact).1),
+            delivery: format!("E-ticket to {}", contact_email(m.profile, &req.contact)),
             note: pick.cancellation.clone(),
             lines: pick.details.clone(),
         },
@@ -2989,72 +2699,22 @@ fn resumed_item(t: &[Value], search_pos: usize) -> Option<Item> {
     })
 }
 
-/// The profile the form functions read, with the contact details filled where the profile has none: the profile's
-/// own, else the connected mailbox's address (`profile["mailbox"]`), else the ones the user gave (the `contact`
-/// argument). Returns the profile and the email that results.
-fn guest_profile(profile: &Value, contact: &Value) -> (Value, String) {
-    let mut p = if profile.is_object() {
-        profile.clone()
-    } else {
-        json!({})
-    };
-    let blank = |p: &Value, keys: &[&str]| keys.iter().all(|k| get_str(p, k).trim().is_empty());
-    let given = |k: &str| get_str(contact, k).trim().to_string();
-    if blank(&p, &["name_en", "name"]) && !given("name").is_empty() {
-        p["name_en"] = json!(given("name"));
-    }
-    if blank(&p, &["email_personal", "email"]) {
-        let mailbox = get_str(profile, "mailbox");
-        let email = if mailbox.trim().is_empty() {
-            given("email")
-        } else {
-            mailbox
-        };
-        if !email.is_empty() {
-            p["email_personal"] = json!(email);
-        }
-    }
-    if blank(&p, &["phone"]) && !given("phone").is_empty() {
-        p["phone"] = json!(given("phone"));
-    }
-    if blank(&p, &["address_home"]) && !given("address").is_empty() {
-        p["address_home"] = json!(given("address"));
-    }
-    let email = Guest {
-        profile: &p,
-        requests: "",
-    }
-    .email();
-    (p, email)
+/// The email the booking's confirmation goes to: the profile's own, else the connected mailbox's address
+/// (`profile["mailbox"]`), else the one the user gave (the `contact` argument).
+fn contact_email(profile: &Value, contact: &Value) -> String {
+    ["email_personal", "email", "mailbox"]
+        .iter()
+        .map(|k| get_str(profile, k).trim().to_string())
+        .chain(std::iter::once(
+            get_str(contact, "email").trim().to_string(),
+        ))
+        .find(|e| !e.is_empty())
+        .unwrap_or_default()
 }
 
-/// The booking stage, after the pick: the Vault's list, `purchase_confirm`, the booking link, then a known site's
-/// form function (fixed ids), the card by the site's labels, the hand-over and the confirmation — or, on any other
-/// site, the page handed to `browser-use` (`status: browser_use`).
-fn book(spec: &BookingSpec, req: &Req, t: &[Value], m: &Machine, ids: &Ids, item: &Item) -> Step {
-    book_with(
-        spec,
-        t,
-        m,
-        ids,
-        item,
-        &req.contact,
-        &req.card,
-        &req.requests,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn book_with(
-    spec: &BookingSpec,
-    t: &[Value],
-    m: &Machine,
-    ids: &Ids,
-    item: &Item,
-    contact: &Value,
-    card_name: &str,
-    requests: &str,
-) -> Step {
+/// The booking stage, after the pick: the Vault's list and `purchase_confirm` when money is charged, the booking link
+/// opened, then the page handed to `browser-use` (`status: browser_use`) — no booking site has a form function.
+fn book(spec: &BookingSpec, req: &Req, t: &[Value], ids: &Ids, item: &Item) -> Step {
     let card_needed = item.charged;
     let vault = calls_of(t, "vault_list")
         .last()
@@ -3064,9 +2724,8 @@ fn book_with(
     }
     let cards: Vec<VaultCard> = vault.as_deref().map(vault_cards).unwrap_or_default();
     // the card the user named (the `card` argument), else the first with its details
-    let card = pick_card(&cards, &[card_name.to_string()]);
+    let card = pick_card(&cards, std::slice::from_ref(&req.card));
     let card_ok = card.is_some_and(|c| !c.name_only);
-    let mut approved_at = 0usize;
     if card_needed {
         match calls_of(t, "purchase_confirm").last() {
             None => {
@@ -3086,10 +2745,10 @@ fn book_with(
                     "hints": []}),
                 );
             }
-            Some((_, msg)) => approved_at = pos(t, msg),
+            Some(_) => {}
         }
     }
-    // the booking link (once)
+    // the booking link (once), then the page is the browser-use skill's
     let nav = calls_of(t, "browser_navigate")
         .into_iter()
         .rfind(|(a, _)| sget(a, "url") == item.url);
@@ -3097,485 +2756,39 @@ fn book_with(
         return ids.calls("browser_navigate", json!({"url": item.url}));
     };
     let page_url = landed(&nav_args, nav_msg);
-    let Some(site) = site_for(&page_url).or_else(|| site_for(&item.url)) else {
-        // no form function knows this page: the model fills it with the browser-use skill
-        return Step::Done(
-            json!({"status": "browser_use", "url": page_url, "booking": item.to_json(),
-            "show": [S::link("Booking page (open in the browser)", "预订页面（已在浏览器中打开）", "", &page_url)],
-            "hints": []}),
-        );
-    };
-    let nav_pos = pos(t, nav_msg);
-    let (profile, email) = guest_profile(m.profile, contact);
-    let guest = Guest {
-        profile: &profile,
-        requests,
-    };
-    // the plan with fixed ids
-    let Some((_, fill_msg)) = calls_of(t, "browser_fill_form")
-        .into_iter()
-        .rfind(|(a, msg)| sget(a, "form") == site.form && pos(t, msg) > nav_pos)
-    else {
-        return ids.calls("browser_fill_form", fill_args(site, &guest));
-    };
-    let fill_pos = pos(t, fill_msg);
-    // the card: one secret fill per box, by the refs of the site's fixed inputs (a snapshot gives the page's elements
-    // their refs, then the inputs' refs are read by their selectors), after the approval
-    let mut done_pos = fill_pos;
-    if let (Some(c), true, true) = (card, card_ok, card_needed) {
-        let after = fill_pos.max(approved_at);
-        let Some((_, snap)) = calls_of(t, "browser_snapshot")
-            .into_iter()
-            .find(|(_, msg)| pos(t, msg) > after)
-        else {
-            return ids.calls("browser_snapshot", json!({"max_chars": 6000}));
-        };
-        let snap_pos = pos(t, snap);
-        let names: Vec<(String, &str)> = site
-            .card
-            .iter()
-            .map(|(f, sel)| (format!("card_{f}"), *sel))
-            .collect();
-        let Some((_, refs)) = calls_of(t, "browser_read_elements")
-            .into_iter()
-            .find(|(a, msg)| read_name(a).starts_with("card_") && pos(t, msg) > snap_pos)
-        else {
-            let items: Vec<(&str, &str)> = names.iter().map(|(n, s)| (n.as_str(), *s)).collect();
-            return ids.calls("browser_read_elements", super::confirm::refs_args(&items));
-        };
-        let filled: Vec<String> = calls_of(t, "browser_fill_secret")
-            .iter()
-            .filter(|(_, msg)| pos(t, msg) > after)
-            .map(|(a, _)| sget(a, "field"))
-            .collect();
-        for (field, _) in site.card {
-            if filled.iter().any(|f| f == field) {
-                continue;
-            }
-            if let Some(r) = super::confirm::first_value(refs, &format!("card_{field}")) {
-                return ids.calls(
-                    "browser_fill_secret",
-                    json!({"ref": r, "item_id": c.id, "field": field}),
-                );
-            }
-        }
-        done_pos = calls_of(t, "browser_fill_secret")
-            .last()
-            .map(|(_, msg)| pos(t, msg))
-            .unwrap_or(fill_pos)
-            .max(fill_pos);
-    }
-    // the hand-over: the final click is the user's
-    let takeovers: Vec<(Value, &Value)> = calls_of(t, "browser_request_takeover")
-        .into_iter()
-        .filter(|(_, msg)| pos(t, msg) > done_pos)
-        .collect();
-    let back = match takeovers.last() {
-        None => {
-            let left = blanks(site, &guest);
-            let card_part = match (card_needed, card, card_ok) {
-                (false, _, _) => String::new(),
-                (true, Some(c), true) => format!(" and your {} (Vault)", c.label),
-                (true, Some(c), false) => format!(". Your {} is in the Vault by its name only (no number, expiry or CVC): type the card yourself", c.label),
-                (true, None, _) => ". There is no card in your Vault: type the card yourself".into(),
-            };
-            let total = item
-                .total
-                .filter(|_| item.charged)
-                .map(|x| format!(", total {} {}", item.currency, money(x)))
-                .unwrap_or_default();
-            let reason = format!(
-                "The {} page is filled in from your profile{}{card_part}: {}{total}. Check it{}, press {} yourself and hand the browser back.",
-                spec.what,
-                if spec.kind == Kind::Flight { " and passport (Vault)" } else { "" },
-                item.name,
-                if left.is_empty() { String::new() } else { format!(", fill in {}", left.join(", ")) },
-                spec.button
-            );
-            return ids.calls("browser_request_takeover", json!({"reason": reason}));
-        }
-        Some((_, msg)) if handed_back(msg) => pos(t, msg),
-        Some(_) => {
-            // the user has the page and did not hand it back
-            return Step::Done(
-                json!({"status": "handed_over", "url": page_url, "booking": item.to_json(),
-                "show": [S::fact("Your step", "你的步骤", &format!("the filled {} page is with you: press {} yourself", spec.what, spec.button))],
-                "hints": []}),
-            );
-        }
-    };
-    // the confirmation's reference: the site's fixed element, its value in the site's format
-    let Some((_, read)) = last_after(t, "browser_read_elements", back) else {
-        return ids.calls(
-            "browser_read_elements",
-            super::confirm::read_args(site.ref_sel),
-        );
-    };
-    let reference = crate::outcome::reference_in(
-        &super::confirm::element_values(read, super::confirm::REFERENCE),
-        site.ref_re,
-    );
     let mut booking = item.to_json();
-    let paid_with = card
-        .filter(|_| card_ok && card_needed)
-        .map(|c| c.label.clone());
-    if let Some(c) = &paid_with {
-        booking["card"] = json!(c);
+    if let (Some(c), true, true) = (card, card_ok, card_needed) {
+        booking["card"] = json!(c.label);
     }
-    if !email.is_empty() && spec.kind != Kind::Shop {
-        booking["confirmation_to"] = json!(email);
-    }
-    let amount = item
-        .total
-        .map(|x| format!("{} {}", item.currency, money(x)))
-        .unwrap_or_default();
-    match reference {
-        Some(r) => {
-            booking["reference"] = json!(r);
-            // the facts the user must read: appended to the reply by code (agent/show.rs)
-            let mut show = vec![
-                S::reference("Booking reference", "预订编号", &r),
-                S::fact("Booked", "已预订", &item.name),
-            ];
-            if let (Some(total), false) = (item.total, amount.is_empty()) {
-                show.push(if item.charged {
-                    S::amount("Total", "总额", total, &item.currency)
-                } else {
-                    S::amount(
-                        "Total (nothing charged now)",
-                        "总额（现在不收费）",
-                        total,
-                        &item.currency,
-                    )
-                });
-            }
-            show.extend(item.lines.iter().map(|l| S::fact("", "", l)));
-            if !email.is_empty() && spec.kind != Kind::Shop {
-                show.push(S::fact("Confirmation to", "确认邮件发到", &email));
-            }
-            Step::Done(json!({"status": "booked", "booking": booking, "show": show, "hints": []}))
-        }
-        None => Step::Done(
-            json!({"status": "not_confirmed", "reason": "no_reference", "booking": booking,
-            "show": [S::fact("Not confirmed", "未确认", &format!("{} is filled in but no reference showed after the hand-back, so it is not booked; the page stays open in the browser tab", item.name))],
-            "hints": []}),
-        ),
-    }
+    Step::Done(
+        json!({"status": "browser_use", "url": page_url, "booking": booking,
+        "show": [S::link("Booking page (open in the browser)", "预订页面（已在浏览器中打开）", "", &page_url)],
+        "hints": []}),
+    )
 }
 
 // ---------------------------------------------------------------- shopping
 
-/// The element read that holds Kaya Mobile's listing cards.
-const KAYA_LISTINGS: &str = "listings";
-
-/// The arguments of `browser_read_elements` for Kaya Mobile's results page: each listing card (`.grid .card`) with its
-/// name and link (`h2 a`), its rating (`.rating`) and its price (`.price`).
-fn kaya_listings_args() -> Value {
-    json!({"read": [{"name": KAYA_LISTINGS, "sel": ".grid .card", "max": 60,
-        "fields": {"title": "h2 a", "url": {"sel": "h2 a", "attr": "href"}, "rating": ".rating", "price": ".price"}}]})
-}
-
-/// The name of the first element a `browser_read_elements` call reads (which of a machine's reads it is).
-fn read_name(a: &Value) -> String {
-    get_str(&a["read"][0], "name")
-}
-
-/// The shops the machine fills by fixed ids.
-fn known_shop(url: &str) -> bool {
-    let path = url::Url::parse(url)
-        .map(|u| u.path().to_lowercase())
-        .unwrap_or_default();
-    host_of(url) == "shop.test" && (path.starts_with("/kaya_") || path.starts_with("/stride_"))
-}
-
-/// The checkout of a shopping run on a known shop (Kaya Mobile: results → product → Add to Cart → cart → checkout;
-/// Stride Sports: the product page holds the checkout), or the shop's page handed to `browser-use` on any other site.
-fn next_shop(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
-    let spec = spec_of(Kind::Shop);
+/// A shopping run: the shop's link opened and the page handed to `browser-use` (no shop has a form function). The
+/// criteria go with the result: the model lists the page's products as `present_choices` options with their price,
+/// stars and ratings, and code ranks them by these criteria (`listings::Ranking`).
+fn next_shop(sr: &ShopReq, t: &[Value], ids: &Ids) -> Step {
     let url = sr.url.clone();
-    let lc_path = url::Url::parse(&url)
-        .map(|u| u.path().to_lowercase())
-        .unwrap_or_default();
-    let (profile, _) = guest_profile(m.profile, &sr.contact);
-    let address = get_str(&profile, "address_home");
-    let delivery = format!("Home delivery to {address}");
-    if !known_shop(&url) {
-        // any other shop: open it and hand the page to browser-use
-        let Some((a, msg)) = calls_of(t, "browser_navigate")
-            .into_iter()
-            .rfind(|(a, _)| sget(a, "url") == url)
-        else {
-            return ids.calls("browser_navigate", json!({"url": url}));
-        };
-        let page = landed(&a, msg);
-        return Step::Done(
-            json!({"status": "browser_use", "url": page, "action": sr.action,
-            "show": [S::link("The shop's page (open in the browser)", "商店页面（已在浏览器中打开）", "", &page)],
-            "hints": []}),
-        );
-    }
-    if lc_path.starts_with("/stride_") {
-        // the product page is the checkout: open it, read the item and the price, then book
-        let Some((_, msg)) = calls_of(t, "browser_navigate")
-            .into_iter()
-            .rfind(|(a, _)| sget(a, "url") == url)
-        else {
-            return ids.calls("browser_navigate", json!({"url": url}));
-        };
-        // Stride's product page by its fixed parts: the item in the <title> ("<item> — Stride Sports Singapore"),
-        // the price by its element (`.price`)
-        let nav_pos = pos(t, msg);
-        let Some((_, read)) = calls_of(t, "browser_read_elements")
-            .into_iter()
-            .find(|(a, m)| read_name(a) == "price" && pos(t, m) > nav_pos)
-        else {
-            return ids.calls(
-                "browser_read_elements",
-                json!({"read": [{"name": "price", "sel": "main .price"}]}),
-            );
-        };
-        let title = get_str(&json_of(msg), "title")
-            .split(" — ")
-            .next()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(String::from)
-            .unwrap_or_else(|| "the item".into());
-        let price = super::confirm::element_values(read, "price")
-            .first()
-            .and_then(|p| crate::listings::amount(p));
-        if !sr.buy() {
-            let price_text = price.map(|p| format!("S${}", money(p))).unwrap_or_default();
-            return Step::Done(json!({"status": "shown", "shop": "Stride Sports",
-                "options": [{"label": title, "price": price, "currency": "SGD", "price_text": price_text, "url": url}],
-                "show": [S::fact("On Stride Sports", "Stride Sports 上", &format!("{title}: {price_text}")),
-                         S::link(&title, &title, "Stride Sports", &url)],
-                "hints": []}));
-        }
-        let item = Item {
-            name: title,
-            url: url.clone(),
-            total: price.map(|p| p * sr.quantity as f64),
-            currency: "SGD".into(),
-            charged: true,
-            delivery,
-            note: String::new(),
-            lines: vec![format!("Delivery: home delivery to {address}")],
-        };
-        return book_with(spec, t, m, ids, &item, &sr.contact, &sr.card, "");
-    }
-    // Kaya Mobile: the results page's listing cards read by their elements, the listings ranked by code
-    let origin = origin_of(&url);
-    let Some((_, opened)) = calls_of(t, "browser_navigate")
+    let Some((a, msg)) = calls_of(t, "browser_navigate")
         .into_iter()
-        .find(|(a, _)| sget(a, "url") == url)
+        .rfind(|(a, _)| sget(a, "url") == url)
     else {
         return ids.calls("browser_navigate", json!({"url": url}));
     };
-    let opened_pos = pos(t, opened);
-    let Some((_, read)) = calls_of(t, "browser_read_elements")
-        .into_iter()
-        .find(|(a, m)| read_name(a) == KAYA_LISTINGS && pos(t, m) > opened_pos)
-    else {
-        return ids.calls("browser_read_elements", kaya_listings_args());
-    };
-    let mut listings: Vec<crate::listings::Listing> = Vec::new();
-    for l in super::confirm::element_fields(read, KAYA_LISTINGS)
-        .iter()
-        .filter_map(crate::listings::Listing::from_fields)
-    {
-        if !listings.iter().any(|x| x.title == l.title) {
-            listings.push(l);
-        }
+    let page = landed(&a, msg);
+    let mut out = json!({"status": "browser_use", "url": page, "action": sr.action,
+        "criteria": sr.ranking.to_json(),
+        "show": [S::link("The shop's page (open in the browser)", "商店页面（已在浏览器中打开）", "", &page)],
+        "hints": []});
+    if !sr.pick.is_empty() {
+        out["pick"] = json!(sr.pick);
     }
-    let ranked = sr.ranking.apply(&listings);
-    // the listing the user chose: its title exactly as the choice card listed it (any case)
-    let chosen = listings
-        .iter()
-        .find(|x| !sr.pick.trim().is_empty() && x.title.eq_ignore_ascii_case(sr.pick.trim()))
-        .cloned();
-    let wants_choose = sr.let_user_choose && chosen.is_none();
-    let read_pos = pos(t, read);
-    let shown = calls_of(t, "present_choices")
-        .iter()
-        .any(|(_, msg)| pos(t, msg) > read_pos);
-    let listing_json = |l: &crate::listings::Listing| {
-        json!({"label": l.title, "price": l.price, "price_text": l.price_text, "rating": l.rating_text,
-        "url": if l.url.is_empty() { url.clone() } else { l.url.clone() }})
-    };
-    let Some(top) = chosen.clone().or_else(|| ranked.first().cloned()) else {
-        return Step::Done(
-            json!({"status": "nothing_found", "shop": "Kaya Mobile", "compared": listings.len(),
-            "criteria": sr.ranking.to_json(),
-            "show": [S::fact("No match on Kaya Mobile", "Kaya Mobile 上没有符合的商品",
-                             &format!("none of the {} listings meets the criteria", listings.len()))],
-            "hints": []}),
-        );
-    };
-    if !shown && chosen.is_none() {
-        let options: Vec<Value> = ranked
-            .iter()
-            .map(|l| json!({"label": l.title, "details": [l.price_text, l.rating_text], "source_url": url}))
-            .collect();
-        let mut rk = sr.ranking.to_json();
-        rk["url"] = json!(url);
-        let mut a = json!({"question": format!("The {} listings on Kaya Mobile's page that meet your criteria ({} compared)", ranked.len(), listings.len()),
-                           "kind": "comparison", "options": options, "ranking": rk});
-        if !wants_choose {
-            a["picked"] = json!(top.title);
-        }
-        return ids.calls("present_choices", a);
-    }
-    let options: Vec<Value> = ranked.iter().map(listing_json).collect();
-    if wants_choose {
-        return Step::Done(
-            json!({"status": "shown", "shop": "Kaya Mobile", "choose": true,
-            "compared": listings.len(), "options": options,
-            "show": [S::fact("Your choice", "请你选择", &format!("the {} best matches out of {} listings are on the cards: press Choose on one", ranked.len(), listings.len()))],
-            "hints": []}),
-        );
-    }
-    let rule = if chosen.is_some() {
-        "your pick".to_string()
-    } else {
-        format!("by {}", sr.ranking.by)
-    };
-    let pick_fact = format!("{} — {} ({})", top.title, top.price_text, top.rating_text);
-    let top_url = if top.url.is_empty() {
-        url.clone()
-    } else {
-        top.url.clone()
-    };
-    if !sr.cart() {
-        return Step::Done(
-            json!({"status": "shown", "shop": "Kaya Mobile", "compared": listings.len(),
-            "options": options, "pick": {"label": top.title, "rule": rule}, "url": url,
-            "show": [S::fact("Best match on Kaya Mobile", "Kaya Mobile 上最符合的", &format!("{pick_fact}, {rule}")),
-                     S::link(&top.title, &top.title, "Kaya Mobile", &top_url)],
-            "hints": []}),
-        );
-    }
-    // the cart first: an item a previous turn put there is not added twice
-    let cart_url = format!("{origin}/kaya_cart.html");
-    let Some((_, cart_msg)) = calls_of(t, "browser_navigate")
-        .into_iter()
-        .rfind(|(a, _)| sget(a, "url") == cart_url)
-    else {
-        return ids.calls("browser_navigate", json!({"url": cart_url}));
-    };
-    let cart_opened = pos(t, cart_msg);
-    let Some((_, cart_read)) = calls_of(t, "browser_read_elements")
-        .into_iter()
-        .find(|(a, m)| read_name(a) == "cart_items" && pos(t, m) > cart_opened)
-    else {
-        return ids.calls(
-            "browser_read_elements",
-            json!({"read": [{"name": "cart_items", "sel": "#items .row span"}]}),
-        );
-    };
-    let cart_pos = pos(t, cart_read);
-    // each cart line's item element: "<title> — Colour: <colour>"
-    let in_cart = super::confirm::element_values(cart_read, "cart_items")
-        .iter()
-        .any(|line| line.split(" — Colour:").next().map(str::trim) == Some(top.title.as_str()));
-    let mut colour = String::new();
-    if !in_cart {
-        // the product from the results page, by its title (a fixed selector for Kaya's product links)
-        let Some((_, nav)) = calls_of(t, "browser_navigate")
-            .into_iter()
-            .rfind(|(a, msg)| sget(a, "url") == url && pos(t, msg) > cart_pos)
-        else {
-            return ids.calls("browser_navigate", json!({"url": url}));
-        };
-        let nav_pos = pos(t, nav);
-        let Some((_, open)) = calls_of(t, "browser_fill_form")
-            .into_iter()
-            .rfind(|(a, msg)| sget(a, "form") == "kaya-results" && pos(t, msg) > nav_pos)
-        else {
-            return ids.calls(
-                "browser_fill_form",
-                json!({"form": "kaya-results", "fills": [{"op": "click", "sel": "a[href*='kaya_item.html']", "text": top.title, "field": "product"}]}),
-            );
-        };
-        let open_pos = pos(t, open);
-        let Some((_, added)) = calls_of(t, "browser_fill_form")
-            .into_iter()
-            .rfind(|(a, msg)| sget(a, "form") == "kaya-item" && pos(t, msg) > open_pos)
-        else {
-            let mut fills: Vec<Value> = Vec::new();
-            if !sr.colour.is_empty() {
-                fills.push(
-                    json!({"op": "select", "sel": "#colour", "value": sr.colour, "field": "colour"}),
-                );
-            }
-            for _ in 0..sr.quantity {
-                fills.push(json!({"op": "click", "sel": "#add", "field": "add_to_cart"}));
-            }
-            return ids.calls(
-                "browser_fill_form",
-                json!({"form": "kaya-item", "fills": fills}),
-            );
-        };
-        // the cart count (the header's cart link) and the colour chosen, by their elements, verified on the page
-        let added_pos = pos(t, added);
-        let Some((_, after)) = calls_of(t, "browser_read_elements")
-            .into_iter()
-            .find(|(a, msg)| read_name(a) == "cart_count" && pos(t, msg) > added_pos)
-        else {
-            return ids.calls(
-                "browser_read_elements",
-                json!({"read": [{"name": "cart_count", "sel": "#cart"},
-                                {"name": "colour", "sel": "#colour option:checked", "hidden": true}]}),
-            );
-        };
-        let count: u32 = super::confirm::element_values(after, "cart_count")
-            .first()
-            .and_then(|c| crate::listings::amount(c))
-            .map_or(0, |c| c as u32);
-        colour = super::confirm::element_values(after, "colour")
-            .into_iter()
-            .next()
-            .unwrap_or_default();
-        if count == 0 {
-            return Step::Done(
-                json!({"status": "error", "reason": "cart_still_empty", "item": top.title,
-                "show": [S::fact("Cart still empty", "购物车仍是空的", &format!("Add to Cart was pressed for {} but the cart shows 0 items; the browser tab is open to check", top.title))],
-                "hints": []}),
-            );
-        }
-        if !sr.buy() {
-            return Step::Done(json!({"status": "in_cart", "shop": "Kaya Mobile",
-                "item": {"label": top.title, "colour": colour, "price_text": top.price_text, "rating": top.rating_text, "url": url},
-                "cart": {"count": count, "checked_out": false},
-                "show": [S::fact("In your Kaya Mobile cart", "已加入 Kaya Mobile 购物车", &format!("{pick_fact}{} (cart: {count} item{}; not checked out)",
-                    if colour.is_empty() { String::new() } else { format!(", {colour}") }, if count == 1 { "" } else { "s" })),
-                         S::link(&top.title, &top.title, "Kaya Mobile", &top_url)],
-                "hints": []}));
-        }
-    } else if !sr.buy() {
-        return Step::Done(
-            json!({"status": "in_cart", "shop": "Kaya Mobile", "already": true,
-            "item": {"label": top.title, "price_text": top.price_text, "url": url},
-            "cart": {"checked_out": false},
-            "show": [S::fact("Already in your Kaya Mobile cart", "已在 Kaya Mobile 购物车中", &format!("{} — {} (not checked out)", top.title, top.price_text))],
-            "hints": []}),
-        );
-    }
-    let item = Item {
-        name: if colour.is_empty() {
-            top.title.clone()
-        } else {
-            format!("{} ({colour})", top.title)
-        },
-        url: format!("{origin}/kaya_checkout.html"),
-        total: top.price.map(|p| p * sr.quantity as f64),
-        currency: currency_in(&top.price_text),
-        charged: true,
-        delivery,
-        note: String::new(),
-        lines: vec![format!("Delivery: home delivery to {address}")],
-    };
-    book_with(spec, t, m, ids, &item, &sr.contact, &sr.card, "")
+    Step::Done(out)
 }
 
 #[cfg(test)]

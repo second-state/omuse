@@ -2,9 +2,8 @@
 
 use std::time::Duration;
 
-/// `OMUSE_EXTRA_CA`: a PEM file of further trusted root certificates (a company's TLS-inspecting proxy; the test
-/// container's CA for the official sites' stand-ins), added to the bundled roots. Unset or unreadable: the bundled
-/// roots alone.
+/// `OMUSE_EXTRA_CA`: a PEM file of further trusted root certificates (a company's TLS-inspecting proxy), added to
+/// the bundled roots. Unset or unreadable: the bundled roots alone.
 fn with_extra_ca(b: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     let Ok(path) = std::env::var("OMUSE_EXTRA_CA") else {
         return b;

@@ -1,16 +1,12 @@
-"""Helpers for the insurance, claims and refunds suites with a real model (insurance_real.py, insurance_hk_real.py,
-claims_real.py, emergency_real.py, refunds_real.py), on top of tests/user_common.py. Everything here reads what the
-user sees: their mailbox as their mail app shows it (with the attachments), the answer's dates and phone numbers, the
-app's own pages (Automations, Status → Ledger) and the browser view at a takeover."""
+"""Helpers for the insurance, claims and travel suites with a real model (insurance_real.py, insurance_hk_real.py,
+claims_real.py, emergency_real.py, travel_info_real.py, travel_receipts_real.py), on top of tests/user_common.py.
+Everything here reads what the user sees: the answer's dates and phone numbers, a filled PDF form's values and the
+app's own pages (Automations, Memory)."""
 from __future__ import annotations
 
 import datetime as dt
-import email
-import email.policy
-import imaplib
 import re
 
-from tests import skills_common as K
 from tests import user_common as U
 
 PHONE = re.compile(r"\+\d{1,3}[\s-]?\(?\d{1,4}\)?(?:[\s-]?\d{2,4}){2,4}")
@@ -51,27 +47,6 @@ def phones(text: str) -> list[str]:
     return sorted({re.sub(r"\D", "", m) for m in PHONE.findall(text)})
 
 
-def mail_full(folder: str = "INBOX") -> list[dict]:
-    """The messages in a folder of the user's mailbox with their attachments, as the user's mail app shows them:
-    {"from", "to", "subject", "body", "attachments": [(filename, bytes)]}."""
-    m = imaplib.IMAP4("127.0.0.1", 1143)
-    m.login(K.USER, K.PW)
-    out = []
-    try:
-        if m.select(f'"{folder}"', readonly=True)[0] == "OK":
-            _, ids = m.search(None, "ALL")
-            for i in (ids[0] or b"").split():
-                _, d = m.fetch(i, "(RFC822)")
-                msg = email.message_from_bytes(d[0][1], policy=email.policy.default)
-                part = msg.get_body(preferencelist=("plain", "html"))
-                atts = [(a.get_filename() or "", a.get_payload(decode=True) or b"") for a in msg.iter_attachments()]
-                out.append({"from": str(msg["From"] or ""), "to": str(msg["To"] or ""), "subject": str(msg["Subject"] or ""),
-                            "body": part.get_content() if part else "", "attachments": atts})
-    finally:
-        m.logout()
-    return out
-
-
 async def page_text(u: U.User, view: str, wait: str = "main") -> str:
     """What one of the app's own pages shows (`#schedules` Automations, `#trust` Status with the ledger, …), as text."""
     pg = u.page
@@ -101,30 +76,3 @@ def pdf_values(data: bytes) -> dict[str, str]:
 
 def flat(s: str) -> str:
     return re.sub(r"\s+", "", s or "").upper()
-
-
-async def numbered_steps(u: U.User) -> int:
-    """How many numbered steps the last answer shows: the items of its numbered lists (the numbers are drawn by the
-    browser, not in the text), or lines that start with "1." "2." … when written out."""
-    n = await u.page.evaluate("() => { const b = [...document.querySelectorAll('.msg.assistant:not(.live) .bubble')].pop();"
-                              " return b ? b.querySelectorAll('ol > li').length : 0; }")
-    txt = await u.page.evaluate("() => { const b = [...document.querySelectorAll('.msg.assistant:not(.live) .bubble')].pop(); return b ? b.innerText : ''; }")
-    return max(n, len(re.findall(r"(?m)^\s*\d+[.)]\s", txt)))
-
-
-async def ledger_rows(u: U.User) -> list[str]:
-    """The rows of Status → Ledger as the user reads them (date, merchant, order number, amount, card, status, proof)."""
-    pg = u.page
-    back = pg.url
-    await pg.goto(U.APP + "#trust")
-    card = pg.locator(".card", has_text="Ledger")
-    rows: list[str] = []
-    try:
-        await card.locator("table.data, .muted").first.wait_for(timeout=20000)
-        rows = [" ".join(t.split()) for t in await card.locator("tbody tr").all_inner_texts()]
-    except Exception:   # noqa: BLE001 — no ledger card: no rows
-        pass
-    print(f"INFO ledger rows: {rows}")
-    await pg.goto(back)
-    await pg.wait_for_selector("#chatInput", timeout=20000)
-    return rows

@@ -8,8 +8,7 @@
      section (noise / dB) and still lists the models it had.
   3. later — in a new chat with Main they ask which NAS from their research runs Docker for under 1,000 dollars: the
      answer names a model that is in their report.
-The research goes to the web (the stack's search engines are stand-ins with placeholder results; the stack has network,
-so the agent reads real pages too). One TIMING line per request, and one for the research.
+A real-data suite (run_in_docker.sh REAL_DATA_SUITES): the research goes to the real web search and real pages. One TIMING line per request, and one for the research.
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh library_real"""
 import os

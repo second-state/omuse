@@ -1033,7 +1033,7 @@ mod tests {
         );
         assert!(snapshot_buttons("[e1] link \"Buy now\"").is_empty());
         let refs = vec!["e7".to_string(), "e9".to_string()];
-        let p = "https://shop.test/p/case-1";
+        let p = "https://shop.example/p/case-1";
         let mut t = step(
             "n1",
             "browser_navigate",
@@ -1044,7 +1044,7 @@ mod tests {
         t.extend(step(
             "n2",
             "browser_navigate",
-            json!({"url": "https://shop.test/search?q=case"}),
+            json!({"url": "https://shop.example/search?q=case"}),
             "{}",
         ));
         assert!(back_on_uncarted_page(&t, p, &refs));

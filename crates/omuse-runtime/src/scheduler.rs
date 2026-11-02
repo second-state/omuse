@@ -1189,11 +1189,15 @@ mod tests {
         assert_eq!(d["params"]["threshold"], "15");
         // how the price is read is decided with the spec: no known element on this page, so the model reads it
         assert_eq!(d["params"]["read"], "model");
-        let d = event_spec(&json!({"source": "web.page", "params": {"url": "http://shop.test:8099/kaya_aurora.html",
-                                   "mode": "price_below", "threshold": 20, "keyword": "Aurora"}}))
+        let d = event_spec(
+            &json!({"source": "web.page", "params": {"url": "https://www.amazon.sg/dp/B0XYZ",
+                                   "mode": "price_below", "threshold": 20, "keyword": "Aurora"}}),
+        )
         .unwrap();
         assert_eq!(d["params"]["read"], "element");
-        assert_eq!(d["params"]["price_sel"], ".a-price .a-offscreen");
+        assert!(d["params"]["price_sel"]
+            .as_str()
+            .is_some_and(|s| s.contains("corePrice")));
         assert_eq!(d["params"]["item"], "Aurora");
         for bad in [
             json!({"url": ""}),

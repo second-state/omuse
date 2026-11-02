@@ -1,6 +1,6 @@
 //! The confirmation reference after the user's hand-back, as data (docs/json-tools.md, "Facts the reply must carry").
 //!
-//! * **A known site** (`booking::SITES`, `claims::SPECS`, `driver::CARDS`, APDT): its code machine reads the
+//! * **A known site** (`claims::SPECS`, `driver::CARDS`, APDT): its code machine reads the
 //!   confirmation page's reference element by the site's fixed selector (`browser_read_elements`, [`read_args`]),
 //!   checks the value's format (`outcome::reference_in`) and puts it in its JSON result; a page without it is
 //!   `not_confirmed`. No pattern is ever tried over the page's text.
@@ -26,7 +26,7 @@ pub const CONFIRM_REFERENCE: &str = "confirm_reference";
 /// The longest reference (or label) taken.
 const MAX_LEN: usize = 40;
 /// The id prefixes of the code machines whose hand-back pages are known sites (their reference is code's).
-const MACHINE_PREFIXES: [&str; 4] = ["bkg_", "drv_", "clm_", "apd_"];
+const MACHINE_PREFIXES: [&str; 3] = ["drv_", "clm_", "apd_"];
 
 /// The catalog entry.
 pub fn schema() -> Value {
@@ -187,8 +187,8 @@ pub fn record(transcript: &[Value], args: &Value) -> Value {
            "show": [super::show::reference(&label, "", &reference)], "hints": []})
 }
 
-/// The reference in a code machine's JSON result: read at a known site's fixed label (`reference`, a booking's
-/// `booking.reference`, a bought policy's `policy_no`); none for a result that is not confirmed.
+/// The reference in a code machine's JSON result: read at a known site's fixed label (`reference`, a bought policy's
+/// `policy_no`); none for a result that is not confirmed.
 fn machine_reference(v: &Value) -> Option<String> {
     let status = get_str(v, "status");
     if matches!(status.as_str(), "not_confirmed" | "error" | "") {
@@ -196,7 +196,6 @@ fn machine_reference(v: &Value) -> Option<String> {
     }
     [
         v.get("reference"),
-        v.get("booking").and_then(|b| b.get("reference")),
         (status == "bought").then(|| v.get("policy_no")).flatten(),
     ]
     .into_iter()
@@ -358,15 +357,7 @@ mod tests {
         let n = t.len();
         t[n - 1] = tool("res_1", &json!({"status": "not_confirmed"}).to_string());
         assert_eq!(confirmed(&t), None);
-        // a booking's reference and a bought policy's number
-        t[n - 1] = tool(
-            "res_1",
-            &json!({"status": "booked", "booking": {"reference": "TRV-F1A2B3C"}}).to_string(),
-        );
-        assert_eq!(
-            confirmed(&t).map(|c| c.reference).as_deref(),
-            Some("TRV-F1A2B3C")
-        );
+        // a bought policy's number
         t[n - 1] = tool(
             "res_1",
             &json!({"status": "bought", "policy_no": "TI-SG-2026-70412"}).to_string(),

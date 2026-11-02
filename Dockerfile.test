@@ -1,4 +1,4 @@
-# The e2e test runner: Playwright's Python image (Chromium + Xvfb + Python for the fake services and the test scripts
+# The e2e test runner: Playwright's Python image (Chromium + Xvfb + Python for the scripted model and the test scripts
 # in tests/) plus the `omuse` binary. Not a deployment image.
 #   docker build -f Dockerfile.test -t omuse-test .
 #   bash tests/run_in_docker.sh            # uses omuse-test
@@ -18,12 +18,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 FROM ${TEST_BASE}
 USER root
-# the programs the binary calls (as in ./Dockerfile) plus the test-only IMAP server, process tools and certutil (the
-# HTTPS stand-ins' test CA, tests/https_standins.py)
-RUN apt-get update && apt-get install -y --no-install-recommends tini tzdata curl jq psmisc dovecot-imapd \
-      ffmpeg libheif-examples fonts-noto-cjk libnss3-tools \
+# the programs the binary calls (as in ./Dockerfile) plus process tools
+RUN apt-get update && apt-get install -y --no-install-recommends tini tzdata curl jq psmisc \
+      ffmpeg libheif-examples fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
-# the Python packages the test scripts, fake services and analysis tools import (tests/requirements.txt)
+# the Python packages the test scripts, the scripted model and analysis tools import (tests/requirements.txt)
 COPY tests/requirements.txt /tmp/req/requirements.txt
 RUN pip install --no-cache-dir --break-system-packages -r /tmp/req/requirements.txt
 COPY --from=builder /omuse-bin /opt/omuse/bin/omuse

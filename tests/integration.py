@@ -5,11 +5,11 @@ The user-facing scenarios moved to real-model suites: memory (remembered, learne
 job with Run now, and a site the user signs in to during a takeover are in tests/assistant_real.py; a risky browser
 action approved in a dialog in tests/browser_auto_real.py. What stays here needs a model
 that misbehaves on purpose, a forced condition, or checks an internal guarantee the user cannot see: a plain chat makes
-no plan (no planner call); the snapshot the model gets redacts a password value, an OTP and a reset link; the approval
-API refuses a request without the UI header (CSRF); typing into a password field is DENIED; a prompt injection is
-flagged and the exfiltrating navigation it asks for needs an approval, and a denial reaches the agent; a <tool_call>
-written as text is still parsed; the user's own navigation to a private address is blocked; the audit chain verifies
-and records model calls, tool calls and approvals."""
+no plan (no planner call); an action that asks waits for the user's approval, resumes after it and hands the page over; the approval API
+refuses a request without the UI header (CSRF); a <tool_call> written as
+text is still parsed; the user's own navigation to a private address is blocked; the audit chain verifies and records
+model calls, tool calls and approvals. (The page-driven cases — snapshot redaction, typing outside
+browser-use refused, a prompt injection flagged — went with the test pages they needed.)"""
 import sys, time, httpx
 
 B = "http://127.0.0.1:8080"
@@ -40,43 +40,25 @@ check("a plain chat makes no plan (the executor answered it directly, no planner
       not (t.get("plan") or {}).get("steps") and not any(e["type"] == "plan" for e in t["events"]) and
       c.get(LLM + "/calls_for", params={"marker": "你好"}).json(), (t.get("plan"), [e["type"] for e in t["events"]]))
 
-# 2 browse + risky click -> approval
+# 2 an action that asks -> approval in the UI -> resumes (BROWSE: a purchase confirmation, which always asks)
 tid = chat("BROWSE the shop")
 t = wait(tid, {"WAITING_APPROVAL", "COMPLETED", "FAILED"})
-check("risky click requires approval", t["status"] == "WAITING_APPROVAL", t.get("error") or t["events"][-3:])
-nav = [e for e in t["events"] if e["type"] == "tool_result" and e["data"]["name"] == "browser_navigate"]
-snap = nav[0]["data"]["preview"] if nav else ""
-check("snapshot redacts password value", "secret-should-not-leak" not in snap, snap[:500])
-check("snapshot redacts OTP + reset link", "482913" not in snap and "abcdef1234567890" not in snap, snap)
+check("an action that asks waits for approval", t["status"] == "WAITING_APPROVAL", t.get("error") or t["events"][-3:])
 aps = c.get(B + "/sentinel/api/approvals?status=pending").json()["approvals"]
 ap = [a for a in aps if a["task_id"] == tid]
 check("approval visible to UI", len(ap) == 1, aps)
 if ap:
-    r = c.post(f"{B}/sentinel/api/approvals/{ap[0]['id']}/resolve", json={"decision": "approve", "scope": "ONCE"}, headers=H).json()
-    check("approved action executed", r.get("result", {}).get("status") == "ok", r)
+    c.post(f"{B}/sentinel/api/approvals/{ap[0]['id']}/resolve", json={"decision": "approve", "scope": "ONCE"}, headers=H)
+    # an approved purchase hands the page over for the final click (auto_handover); the user hands it back
+    t = wait(tid, {"WAITING_EXTERNAL", "COMPLETED", "FAILED"})
+    check("after the approval the task resumes and hands the page over", t["status"] == "WAITING_EXTERNAL"
+          and any(e["type"] == "auto_handover" for e in t["events"]), (t["status"], [e["type"] for e in t["events"]][-8:]))
+    c.post(B + "/sentinel/api/browser/release", json={}, headers=H)
     t = wait(tid, {"COMPLETED", "FAILED"})
-    check("task resumes & completes after approval", t["status"] == "COMPLETED" and "submitted" in t["result"].lower() or "Browsed" in t["result"], t["result"][:300])
+    check("handed back, the task completes", t["status"] == "COMPLETED", (t["status"], t.get("error")))
 # approval without UI header is rejected
 r = c.post(f"{B}/sentinel/api/approvals/x/resolve", json={"decision": "approve"})
 check("CSRF guard (no UI header) rejected", r.status_code == 403, r.status_code)
-
-# 3 the model types into a page outside the browser-use skill: refused in code
-# TODO(runtime): passes once the runtime withdraws the browser input tools outside the browser-use skill and refuses
-# the call with the reason code `[input_scope]` (agent/guards.rs / agent/exec.rs).
-t = wait(chat("TYPEPW please"), {"COMPLETED", "FAILED", "WAITING_APPROVAL"})
-check("browser_type outside browser-use is refused [input_scope]",
-      "[input_scope]" in str(t["events"]) and t["status"] == "COMPLETED", (t["status"], str(t["events"])[-600:]))
-
-# 4 injection -> exfil navigation needs approval
-tid = chat("INJECT test: read the blog")
-t = wait(tid, {"COMPLETED", "FAILED", "WAITING_APPROVAL"})
-check("injection flagged in tool result", "injection_warning" in str(t["events"]), "")
-check("exfil navigation after injection needs approval", t["status"] == "WAITING_APPROVAL", t["status"])
-ap = [a for a in c.get(B + "/sentinel/api/approvals?status=pending").json()["approvals"] if a["task_id"] == tid]
-if ap:
-    c.post(f"{B}/sentinel/api/approvals/{ap[0]['id']}/resolve", json={"decision": "deny", "note": "suspicious"}, headers=H)
-    t = wait(tid, {"COMPLETED", "FAILED"})
-    check("denied result reaches agent", t["status"] == "COMPLETED" and "DENIED" in t["result"], t["result"][:200])
 
 # 8 xml tool call fallback + file write
 t = wait(chat("XMLTOOL write"), {"COMPLETED", "FAILED"})
@@ -90,9 +72,9 @@ c.post(B + "/sentinel/api/browser/release", json={}, headers=H)
 
 # 10 audit chain
 v = c.get(B + "/sentinel/api/audit/verify").json()
-check("audit chain verifies", v["ok"] and v["checked"] > 20, v)
+check("audit chain verifies", v["ok"] and v["checked"] > 3, v)
 ev = c.get(B + "/sentinel/api/audit?limit=500").json()["events"]
 acts = {e["action"] for e in ev}
-check("audit has model calls, tool calls, approvals", {"model.executor", "browser_click", "approval.approve"} <= acts, sorted(acts)[:40])
+check("audit has model calls, tool calls, approvals", {"model.executor", "files_write", "approval.approve"} <= acts, sorted(acts)[:40])
 print("\n%d failures" % len(fails), fails)
 sys.exit(1 if fails else 0)

@@ -4,13 +4,13 @@ The rule: a real-model suite does what the user does and checks facts and state 
 to verify a step (CLAUDE.md, "Skills: code decides": no natural language from the model anywhere in a decision flow).
 A check reads the answer's FACTS (a reference number, a date, an amount, a link, a file) or the WORLD: the web UI (the
 approval dialog's tool, a takeover card, the browser view's address, choice cards, file cards), the files the user
-downloads, their accounts and the sites they use (the mailbox, Drive, a website's page), and the task's record (its
-events: tool calls by name, choices, takeovers; its status). Nothing in a suite reads a sentence the model wrote to
+downloads, the sites they use (a website's page, the form handed over to them), and the task's record (its choices,
+takeovers and status). Nothing in a suite reads a sentence the model wrote to
 pick the next step or to say a step was taken.
 
-The world is set up first like any user's install (mail in the local IMAP server, the calendar, Drive, the Vault, the
-profile, Settings → Models pointed at the real model through tests/model_proxy.py); then a headless browser opens the
-app and the suite talks to it through `User`:
+The install is set up first like any user's (the Vault, the profile, Settings → Models pointed at the real model
+through tests/model_proxy.py; no fixture mail, calendar, Drive or stand-in pages: real sites and services only); then a
+headless browser opens the app and the suite talks to it through `User`:
 
     async with User() as u:
         a = await u.ask("What is the cheapest flight from Singapore to Tokyo on December 3?")
@@ -37,12 +37,16 @@ import httpx
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from playwright.async_api import Page, async_playwright  # noqa: E402
 
-from tests import skills_common as K  # noqa: E402
 from tests.show_common import shows  # noqa: E402
 from tests import travel_common as T  # noqa: E402
 
 B, H, c = T.B, T.H, T.c
 APP = B + "/"
+SENTINEL = B + "/sentinel/api"
+# the browser service (tests/run_local.sh: browser_port 8082, browser_token "bt-test"): the page handed over
+BROWSER, BT = "http://127.0.0.1:8082", {"X-Browser-Token": "bt-test"}
+_FIELD = re.compile(r'^\[(\w+)\] (\S+) "(.*?)"(.*)$')
+_FORM_ROLES = frozenset({"textbox", "combobox", "checkbox", "radio", "spinbutton", "searchbox", "listbox", "textarea", "select"})
 check = T.check
 SUITE = os.path.splitext(os.path.basename(sys.argv[0]))[0]
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
@@ -50,11 +54,6 @@ PRICE = re.compile(r"(US\$|S\$|HK\$|NT\$|A\$|\$|USD|SGD|JPY|¥|€|£)\s?\d[\d,]
 # the tools an approval dialog can be about that send something in the user's name (the user who asked for drafts
 # denies these; see `tool_of`)
 MAIL_SEND_TOOLS = frozenset({"gmail_send", "gmail_reply", "gmail_forward", "slack_send_message"})
-# the tool calls that mean the agent asked the user into the browser (a takeover card follows in the chat)
-TAKEOVER_CALLS = frozenset({"browser_request_takeover"})
-TAKEOVER_EVENTS = frozenset({"takeover", "takeover_requested", "auto_handover"})
-# the tool calls that write into a web form (the agent filled something before answering)
-FORM_CALLS = frozenset({"browser_fill_form", "browser_type", "browser_fill_secret", "browser_click", "browser_click_at", "browser_upload"})
 
 
 def tool_of(dialog: str) -> str:
@@ -66,19 +65,15 @@ if not T.REAL:
     sys.exit(1)
 
 
-def setup(*, mail: list | None = None, calendar: bool = False, travel_connector: bool = False, vault: bool = True,
-          profile: dict | None = None, language: str = "en", auto_approve: bool = True) -> None:
-    """The user's world (fixtures, not checks): mail, calendar, an optional travel MCP connector, the Vault's card and
-    passport, profile fields, Settings → Models on the real model through the timing proxy, and Settings → Agent's
-    "auto-approve browser actions" as a fresh install has it (on: nothing in the browser asks; `auto_approve=False` for
-    a user who turned it off)."""
+def setup(*, vault: bool = True, profile: dict | None = None, language: str = "en", auto_approve: bool = True) -> None:
+    """The user's install (not checks): the Vault's test card and passport, profile fields, Settings → Models on the
+    real model through the timing proxy, and Settings → Agent's "auto-approve browser actions" as a fresh install has
+    it (on: nothing in the browser asks; `auto_approve=False` for a user who turned it off). No fixture world: the
+    suites use the real web and real services only."""
     os.makedirs("/tmp/claude-0", exist_ok=True)
-    K.setup(mail=mail, calendar=calendar, language=language)
-    c.put(K.S + "/connections/browser", json={"config": {"auto_approve": auto_approve}}, headers=H)
+    c.put(SENTINEL + "/connections/browser", json={"config": {"auto_approve": auto_approve}}, headers=H)
     c.put(B + "/api/settings", json={"language": language, "ui_language": language, "profile_reminder": False}, headers=H)
     T.start_proxy()
-    if travel_connector:
-        T.connect_travel()
     if vault:
         T.seed_vault()
     for k, v in (profile or {}).items():
@@ -409,6 +404,27 @@ class User:
             await self.page.wait_for_timeout(500)
         return ""
 
+    async def view_form(self) -> list[dict]:
+        """The form fields of the page handed over (the page in the browser view, as it is at the hand-over): each
+        {"role", "label", "value", "checked"} — the text a box holds, the option a list shows, whether a box or radio is
+        ticked ("[hidden]" for a card number or another secret that is filled in). Read from the browser service's page
+        text (its snapshot), the values the user would read on the page."""
+        st = c.get(BROWSER + "/state", headers=BT).json()
+        tid = st.get("takeover_task") or st.get("view_task") or ""
+        snap = c.post(BROWSER + "/agent/snapshot", json={"task_id": tid, "max_chars": 40000}, headers=BT).json()
+        out = []
+        for line in str(snap.get("snapshot") or "").splitlines():
+            m = _FIELD.match(line.strip())
+            if not m or m.group(2) not in _FORM_ROLES:
+                continue
+            rest = m.group(4)
+            v = re.search(r' (?:value|selected)="([^"]*)"', rest)
+            value = v.group(1) if v else ("[hidden]" if " value=[hidden]" in rest else "")   # a card number: shown as filled, never read
+            checked = True if "[checked]" in rest else (False if "[unchecked]" in rest else None)
+            out.append({"role": m.group(2), "label": m.group(3), "value": value, "checked": checked})
+        print(f"INFO handed-over form ({snap.get('url')}): {[(f['label'][:30], f['value'][:30], f['checked']) for f in out][:60]}")
+        return out
+
     async def view_picture(self, path: str | None = None) -> bytes:
         """The live picture of the page as the browser view shows it (PNG), saved to `path` when given."""
         import base64
@@ -499,20 +515,6 @@ class User:
         """The tasks run for the open conversation (the bots' child tasks included), newest last."""
         return conv_tasks(await self.conv_id())
 
-    async def events(self) -> list[dict]:
-        """Every event of the open conversation's tasks (tool_call / tool_result / choices / handoff / auto_handover …),
-        the bots' child tasks included, in order."""
-        return [e for t in await self.tasks() for e in t.get("events", [])]
-
-    async def calls(self, *names: str) -> list[dict]:
-        """The tool calls of the open conversation's tasks, by name ({"name", "args", "call_id"}); all when no name."""
-        return tool_calls(await self.events(), *names)
-
-    async def takeover_happened(self) -> bool:
-        """The agent asked the user into the browser in this conversation (a takeover call or an automatic hand-over)."""
-        ev = await self.events()
-        return bool(tool_calls(ev, *TAKEOVER_CALLS)) or any(e.get("type") in TAKEOVER_EVENTS for e in ev)
-
     async def takeover_pending(self) -> bool:
         """A task of the open conversation is waiting for the user in the browser right now."""
         return any(t.get("status") == "WAITING_EXTERNAL" or (t.get("waiting") or {}).get("type") in ("takeover", "takeover_requested")
@@ -522,6 +524,46 @@ class User:
         """The choice cards the open conversation holds (present_choices, as structured data: {"question", "options":
         [{"label", "details", …}], "kind", "verified"}), oldest first."""
         return conv_choices(await self.conv_id())
+
+    async def chat_titles(self, bot_home: str = "#chat") -> list[str]:
+        """The titles in the chat list (newest first), as the user reads them."""
+        pg = self.page
+        await pg.goto(APP + bot_home)
+        await pg.wait_for_selector(".convlist", timeout=20000)
+        await pg.wait_for_timeout(1500)
+        return [" ".join(t.split()) for t in await pg.locator(".convlist .conv .ct").all_inner_texts()]
+
+    async def attach(self, *paths: str) -> list[dict]:
+        """The user clicks ＋ in the chat, picks files and waits until each chip is uploaded or failed:
+        [{"name", "bad", "text"}] as the chips show them."""
+        pg = self.page
+        async with pg.expect_file_chooser() as fc:
+            await pg.locator("button.attach").click()
+        await (await fc.value).set_files(list(paths))
+        await pg.wait_for_function("n => { const c = [...document.querySelectorAll('.chip-att')]; "
+                                   "return c.length >= n && c.every(x => !/%$/.test(x.querySelector('.small').textContent.trim())); }",
+                                   arg=len(paths), timeout=60000)
+        chips = await pg.evaluate("() => [...document.querySelectorAll('.chip-att')].map(c => ({name: c.querySelector('.nm').textContent, "
+                                  "bad: c.classList.contains('bad'), text: c.innerText.replace(/\\s+/g, ' ')}))")
+        print(f"INFO chips: {chips}")
+        return chips
+
+
+def vault_item(label: str, kind: str, values: dict, domains: str = "", country: str = "") -> str:
+    """An item the user keeps in the Vault (their own card or passport; clearly fake test values): its id."""
+    have = {i["label"]: i["id"] for i in c.get(SENTINEL + "/vault", headers=H).json().get("items", [])}
+    if label in have:
+        return have[label]
+    r = c.post(SENTINEL + "/vault", headers=H, json={"label": label, "kind": kind, "values": values, "domains": domains, "country": country})
+    return (r.json().get("item") or r.json()).get("id")
+
+
+def field(form: list[dict], pattern: str) -> str:
+    """The value of the first field of a handed-over form (`User.view_form`) whose label matches `pattern` (case
+    ignored), "" when there is none or it is empty. TODO real URL: the suites rebuilt on the real sites name the real
+    labels."""
+    rx = re.compile(pattern, re.I)
+    return next((f["value"] for f in form if rx.search(f["label"]) and f["value"]), "")
 
 
 def conv_tasks(cid: str) -> list[dict]:
@@ -553,12 +595,6 @@ def conv_tasks(cid: str) -> list[dict]:
                 queue.append(e["data"]["task_id"])
     out.sort(key=lambda t: str(t.get("created_at") or ""))
     return out
-
-
-def tool_calls(events: list[dict], *names: str) -> list[dict]:
-    """The tool_call events' data ({"name", "args", "call_id"}) with one of `names` (all when none is given)."""
-    return [e.get("data") or {} for e in events
-            if e.get("type") == "tool_call" and (not names or (e.get("data") or {}).get("name") in names)]
 
 
 def conv_choices(cid: str) -> list[dict]:
@@ -594,50 +630,6 @@ def choice_text(cards: list[dict]) -> str:
             parts.append(str(o.get("label") or ""))
             parts.extend(str(d) for d in (o.get("details") or []))
     return " ".join(parts)
-
-
-def mailbox(folder: str = "INBOX") -> list[dict]:
-    """The messages in a folder of the user's mailbox (the local IMAP account the test mail lives in: "INBOX", "Drafts",
-    "Sent", …) as their mail app shows them: {"from", "to", "subject", "body", "in_reply_to"}. A folder that does not
-    exist is empty."""
-    import email
-    import email.policy
-    import imaplib
-    m = imaplib.IMAP4("127.0.0.1", 1143)
-    m.login(K.USER, K.PW)
-    out = []
-    try:
-        if m.select(f'"{folder}"', readonly=True)[0] == "OK":
-            _, ids = m.search(None, "ALL")
-            for i in (ids[0] or b"").split():
-                _, d = m.fetch(i, "(RFC822)")
-                msg = email.message_from_bytes(d[0][1], policy=email.policy.default)
-                part = msg.get_body(preferencelist=("plain", "html"))
-                body = part.get_content() if part else ""
-                out.append({"from": str(msg["From"] or ""), "to": str(msg["To"] or ""), "subject": str(msg["Subject"] or ""),
-                            "body": body, "in_reply_to": str(msg["In-Reply-To"] or "")})
-    finally:
-        m.logout()
-    return out
-
-
-_DRIVE, _GTOKEN = "http://127.0.0.1:8094/drive", {"Authorization": "Bearer gat-1"}
-
-
-def drive_folder(name: str) -> list[dict]:
-    """The files in the user's Google Drive folder `name`, as Drive lists them (the fake Drive of tests/fake_apps.py
-    stands in for the user's Drive): {"id", "name", "mimeType", "size", "webViewLink"}; [] when there is no such folder."""
-    q = f"name contains '{name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    folders = c.get(_DRIVE + "/files", params={"q": q}, headers=_GTOKEN).json().get("files", [])
-    if not folders:
-        return []
-    files = c.get(_DRIVE + "/files", params={"q": f"'{folders[0]['id']}' in parents and trashed = false"}, headers=_GTOKEN).json()
-    return [{k: f.get(k) for k in ("id", "name", "mimeType", "size", "webViewLink")} for f in files.get("files", [])]
-
-
-def drive_file(file_id: str) -> bytes:
-    """A file's content as the user downloads it from their Drive."""
-    return c.get(f"{_DRIVE}/files/{file_id}", params={"alt": "media"}, headers=_GTOKEN).content
 
 
 def run(main: Callable[[], Awaitable[None]]) -> None:

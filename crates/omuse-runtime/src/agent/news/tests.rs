@@ -16,7 +16,7 @@ const NEWS: [(&str, u32, &str, &str, &str); 6] = [
 ];
 
 fn url(sl: &str) -> String {
-    format!("http://shop.test:8094/news/{sl}")
+    format!("https://news.example/news/{sl}")
 }
 
 fn day(ago: u32) -> String {

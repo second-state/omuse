@@ -3,12 +3,11 @@ scripted model). The use cases — a profile detail said in the chat waits under
 one-off detail goes to Recent, cards named in the chat are in the Vault by name and the typed number nowhere, the memory
 tidy preview then apply — are tested from the user's side by tests/memory_real.py. What stays here, and why it cannot
 be e2e:
-  * a Vault fill: one approval per fill, the masked value on the card, no standing grant, and the value never in the
-    agent's results, snapshot, transcript, vision or the audit (secrecy guarantees on the system's insides);
+  * the Vault API: a saved item's value is never listed back (masked), writes need the UI header (the fill itself
+    went with the test pages it needed);
   * cards: number, expiry and CVC stored as UNKNOWN, the issuing country a field of its own, no number anywhere in the
     profile, the same cards named again not added twice, vault.add audited (exact data guarantees);
   * tidy: the preview changes nothing, lists the merge and the demotion, and applies only once (exact guarantees)."""
-import json
 import sys
 import time
 
@@ -46,38 +45,13 @@ def wait(tid, states, timeout=90):
 # ------------------------------------------------------------------ vault
 for it in c.get(B + "/sentinel/api/vault", headers=H).json()["items"]:
     c.delete(B + "/sentinel/api/vault/" + it["id"], headers=H)
-r = c.post(B + "/sentinel/api/vault", headers=H, json={"kind": "membership", "label": "KrisFlyer", "domains": "shop.test",
+r = c.post(B + "/sentinel/api/vault", headers=H, json={"kind": "membership", "label": "KrisFlyer", "domains": "krisflyer.com",
                                                         "values": {"number": SECRET, "name": "LU LIANG"}})
 check("vault item saved", r.status_code == 200, r.text)
 lst = c.get(B + "/sentinel/api/vault", headers=H).text
 check("vault list never returns values", SECRET not in lst and "•••• 5678" in lst, lst[:300])
 check("vault writes need the UI header", c.post(B + "/sentinel/api/vault", json={"kind": "other", "label": "x", "values": {"value": "12345"}}).status_code == 403)
 
-tid = chat("VAULTFILL fill my membership number")
-t = wait(tid, {"WAITING_APPROVAL", "COMPLETED", "FAILED"})
-check("vault fill waits for approval", t["status"] == "WAITING_APPROVAL", t.get("error") or t["events"][-3:])
-aps = [a for a in c.get(B + "/sentinel/api/approvals?status=pending", headers=H).json()["approvals"] if a["task_id"] == tid]
-check("one approval for the fill", len(aps) == 1, aps)
-if aps:
-    ap = aps[0]
-    s = json.dumps(ap, ensure_ascii=False)
-    check("approval card shows label + masked value, not the number", "KrisFlyer" in s and "•••• 5678" in s and SECRET not in s, s[:600])
-    r = c.post(f"{B}/sentinel/api/approvals/{ap['id']}/resolve", headers=H,
-               json={"decision": "approve", "scope": "PERMANENT"}).json()   # scope is forced to ONCE
-    check("approved fill executed", (r.get("result") or {}).get("status") == "ok", r)
-    check("no standing grant for vault fills",
-          not [g for g in c.get(B + "/sentinel/api/grants", headers=H).json()["grants"] if g["tool"] == "browser_fill_secret"])
-t = wait(tid, {"COMPLETED", "FAILED"})
-check("task completes", t["status"] == "COMPLETED", t["status"])
-everything = json.dumps(t, ensure_ascii=False)
-check("the agent never saw the number (results, snapshot, transcript)", SECRET not in everything, everything[-1200:])
-look = [e for e in t["events"] if e["type"] == "tool_result" and e["data"]["name"] == "browser_look"]
-check("vision works on a page holding a vault value (the value is hidden in the picture; the number is in no result)",
-      look and look[0]["data"].get("ok") is True and SECRET not in json.dumps(look, ensure_ascii=False), look)
-audit = c.get(B + "/sentinel/api/audit?limit=300", headers=H).text
-check("audit never contains the number", SECRET not in audit)
-it = c.get(B + "/sentinel/api/vault", headers=H).json()["items"][0]
-check("use counted", it["uses"] == 1, it)
 
 # ------------------------------------------------------------------ cards named in the chat
 # credit cards named in the chat go into the Vault by name (the issuing country a field of its own, optional) —

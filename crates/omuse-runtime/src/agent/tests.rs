@@ -166,7 +166,7 @@ fn site_brand_cases() {
         ("https://m.opentable.sg/r/abc", "opentable"),
         ("opentable.sg", "opentable"),
         ("https://www.bbc.co.uk/news", "bbc"),
-        ("https://shop.test:8099/a", "shop"),
+        ("https://shop.example:8443/a", "shop"),
         ("https://www.google.com.sg/maps", "google"),
     ] {
         assert_eq!(site_brand(url), brand, "{url}");
@@ -400,21 +400,21 @@ fn search_key_ignores_order_and_case() {
 #[tokio::test]
 async fn grounded_choices() {
     let (rt, _d) = rt();
-    rt.remember("t1", "browser_navigate", &json!({"url": "https://shop.test/s?k=case", "snapshot": "Aurora Case\n  4.4 out of 5 stars\n  S$21.90\n[e9] link \"Kick\" → https://shop.test/p/7"}));
+    rt.remember("t1", "browser_navigate", &json!({"url": "https://shop.example/s?k=case", "snapshot": "Aurora Case\n  4.4 out of 5 stars\n  S$21.90\n[e9] link \"Kick\" → https://shop.example/p/7"}));
     let ok = vec![
-        json!({"label": "Aurora Case", "details": ["S$21.90"], "source_url": "https://www.shop.test/s"}),
+        json!({"label": "Aurora Case", "details": ["S$21.90"], "source_url": "https://www.shop.example/s"}),
     ];
     assert!(rt.check_choices("t1", &ok).is_empty());
-    assert!(!rt.check_choices("t1", &[json!({"label": "Aurora Case", "details": ["S$9.90"], "source_url": "https://shop.test/s"})]).is_empty());
+    assert!(!rt.check_choices("t1", &[json!({"label": "Aurora Case", "details": ["S$9.90"], "source_url": "https://shop.example/s"})]).is_empty());
     assert!(!rt.check_choices("t1", &[json!({"label": "X", "details": ["S$21.90"], "source_url": "https://elsewhere.test/"})]).is_empty());
     // a product link seen on a page that was read counts, checked against that page's text
-    assert!(rt.check_choices("t1", &[json!({"label": "Aurora Case", "details": ["4.4 out of 5 stars"], "source_url": "https://shop.test/p/7"})]).is_empty());
+    assert!(rt.check_choices("t1", &[json!({"label": "Aurora Case", "details": ["4.4 out of 5 stars"], "source_url": "https://shop.example/p/7"})]).is_empty());
     // a long product name the page shortened with "…": its first 60 characters, exactly, are enough
     let longname = "OtterBox Defender Series Pro XT Clear MagSafe Case for iPhone 17 Pro Max, Shockproof, Drop proof";
     let shown: String = longname.chars().take(88).collect();
-    rt.remember("t1", "browser_navigate", &json!({"url": "https://shop.test/s?k=otter", "snapshot": format!("[e3] link \"{}…\"\n  S$50.15", shown)}));
-    assert!(rt.check_choices("t1", &[json!({"label": longname, "details": ["S$50.15"], "source_url": "https://shop.test/s"})]).is_empty());
-    assert!(!rt.check_choices("t1", &[json!({"label": "OtterBox Commuter Series", "details": ["S$50.15"], "source_url": "https://shop.test/s"})]).is_empty());
+    rt.remember("t1", "browser_navigate", &json!({"url": "https://shop.example/s?k=otter", "snapshot": format!("[e3] link \"{}…\"\n  S$50.15", shown)}));
+    assert!(rt.check_choices("t1", &[json!({"label": longname, "details": ["S$50.15"], "source_url": "https://shop.example/s"})]).is_empty());
+    assert!(!rt.check_choices("t1", &[json!({"label": "OtterBox Commuter Series", "details": ["S$50.15"], "source_url": "https://shop.example/s"})]).is_empty());
 }
 
 #[tokio::test]
@@ -2378,7 +2378,7 @@ async fn listings_on_a_results_page_are_ranked_in_code_from_the_users_criteria()
     let (rt, _d) = rt();
     let conv = rt.store.create_conv("c", "chat", None).unwrap();
     let t = json!({"id": "t1", "conv_id": conv, "goal": "x"});
-    let url = "https://kaya.example/kaya_search.html?q=case";
+    let url = "https://shop.example/search.html?q=case";
     let page = "Sponsored\nTitan Pro Shockproof Case for iPhone 17 Pro (6.3-inch), Military Grade\n4.9 out of 5 stars · 860 ratings\nS$22.90\n\
 Camera Lens Protector for iPhone 17 Pro Max, 2-Pack\n4.8 out of 5 stars · 2,770 ratings\nS$9.90\n\
 Kickstand Case for iPhone 17 Pro Max, MagSafe Ring Stand\n4.8 out of 5 stars · 379 ratings\nS$33.90\n\
@@ -3206,10 +3206,10 @@ async fn a_deep_link_error_goes_home_and_a_product_page_gets_its_cart_click() {
         json!({"name": "online-shopping"}),
         "---",
     ));
-    shop = run(nav("s1", "https://shop.test/p/case-1"), shop).await;
+    shop = run(nav("s1", "https://shop.example/p/case-1"), shop).await;
     assert!(acts.lock().iter().all(|(n, _)| n != "browser_click")); // first visit: nothing
-    shop = run(nav("s2", "https://shop.test/search?q=case"), shop).await;
-    shop = run(nav("s3", "https://shop.test/p/case-1"), shop).await;
+    shop = run(nav("s2", "https://shop.example/search?q=case"), shop).await;
+    shop = run(nav("s3", "https://shop.example/p/case-1"), shop).await;
     assert_eq!(
         acts.lock().last().unwrap(),
         &("browser_click".to_string(), json!({"ref": "e9"}))
@@ -3253,11 +3253,11 @@ fn a_vault_listing_is_read_by_its_fixed_fields() {
 #[test]
 fn the_model_fills_no_page_outside_browser_use() {
     use super::guards::input_scope_guard;
-    let page = "<untrusted_content source=\"web page https://shop.test/x\">\n  [e3] textbox \"Search orders\"\n  [e4] checkbox \"I agree\"\n  [e5] button \"Next\"</untrusted_content>";
+    let page = "<untrusted_content source=\"web page https://shop.example/x\">\n  [e3] textbox \"Search orders\"\n  [e4] checkbox \"I agree\"\n  [e5] button \"Next\"</untrusted_content>";
     let t = tool_step(
         "n1",
         "browser_navigate",
-        json!({"url": "https://shop.test/x"}),
+        json!({"url": "https://shop.example/x"}),
         page,
     );
     for (name, args) in [
@@ -3340,7 +3340,9 @@ fn every_skill_that_fills_a_known_form_is_driven_by_code() {
 
 // ---------------------------------------------------------------- the workflow-tool protocol (agent/workflow.rs)
 
-const STRIDE: &str = "http://shop.test:8099/stride_socks.html";
+/// A flight search's arguments: the sentinel hook of `scripted_rt` answers every call with `{}`, so it finds nothing.
+const FLIGHT: &str =
+    r#"{"kind": "flight", "origin": "SIN", "destination": "TYO", "date": "2030-12-03"}"#;
 
 fn tool_msgs(body: &Value) -> Vec<Value> {
     body["messages"]
@@ -3405,9 +3407,9 @@ async fn a_workflow_call_runs_its_machine_then_the_model_words_the_result_and_co
             }
             let tools = tool_msgs(body);
             match tools.last() {
-                None => call_msg("c1", "shop_order", &json!({"url": STRIDE, "action": "compare"}).to_string()),
+                None => call_msg("c1", "travel_search", FLIGHT),
                 Some(m) if get_str(m, "tool_call_id").starts_with("res_") => {
-                    json!({"role": "assistant", "content": "Here are the socks."})
+                    json!({"role": "assistant", "content": "I found no flight."})
                 }
                 Some(m) => panic!("the model was called while the machine ran: {m}"),
             }
@@ -3415,7 +3417,12 @@ async fn a_workflow_call_runs_its_machine_then_the_model_words_the_result_and_co
         json!({"language": "en"}),
     )
     .await;
-    let (t, evs) = run_task(&rt, &format!("compare the socks at {STRIDE}")).await;
+    let (t, evs) = run_in_bot(
+        &rt,
+        "travel",
+        "flights from Singapore to Tokyo on 3 December 2030",
+    )
+    .await;
     assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
     let tr = t["transcript"].as_array().unwrap();
     // the call's result is `running`, the machine's code calls follow, then the `T_result` exchange
@@ -3431,30 +3438,27 @@ async fn a_workflow_call_runs_its_machine_then_the_model_words_the_result_and_co
         .collect();
     assert_eq!(
         names,
-        [
-            "shop_order",
-            "browser_navigate",
-            "browser_read_elements",
-            "shop_order_result"
-        ]
+        ["travel_search", "flights_search", "travel_search_result"]
     );
     let res = events_of(&evs, "workflow_result");
-    assert_eq!(res[0]["status"], "shown");
+    assert_eq!(res[0]["status"], "nothing_found");
     // ONE model turn after the result, without the workflow tools
     let ex = executor_calls(&seen);
     assert_eq!(ex.len(), 2, "{ex:?}");
-    assert!(offered(&ex[0]).contains(&"shop_order".to_string()));
+    assert!(offered(&ex[0]).contains(&"travel_search".to_string()));
     assert!(!offered(&ex[1])
         .iter()
         .any(|n| crate::agent::booking::TOOLS.contains(&n.as_str())));
-    // the reply left the shop and the link out: code appends the result's `show` after it, after a rule
+    // the reply left the search out: code appends the result's `show` after it, after a rule
     assert!(events_of(&evs, "answer_review").is_empty());
     assert_eq!(events_of(&evs, "answer_show").len(), 1);
     let answer = get_str(&t, "result");
     let (prose, block) = answer.rsplit_once("\n---\n").expect("the appended block");
-    assert_eq!(prose.trim(), "Here are the socks.");
-    assert!(block.contains("- On Stride Sports: "), "{answer}");
-    assert!(block.contains(&format!("]({STRIDE})")), "{answer}");
+    assert_eq!(prose.trim(), "I found no flight.");
+    assert!(
+        block.contains("- Nothing found: SIN to TYO on 2030-12-03"),
+        "{answer}"
+    );
 }
 
 #[tokio::test]
@@ -3462,24 +3466,24 @@ async fn bad_workflow_json_is_regenerated_by_the_planner_then_invalid_then_asked
     let (rt, _d, _seen) = scripted_rt(
         |body| {
             if system_of(body).starts_with("You write the JSON arguments") {
-                assert!(last_of(body).contains("shop_order") && last_of(body).contains("action"));
+                assert!(last_of(body).contains("travel_search") && last_of(body).contains("kind"));
                 // the planner gets it wrong too
-                return json!({"role": "assistant", "content": "{\"url\": \"http://shop.test:8099/stride_socks.html\", \"action\": \"steal\"}"});
+                return json!({"role": "assistant", "content": "{\"kind\": \"boat\"}"});
             }
             if let Some(r) = helper_reply(body) {
                 return r;
             }
             let tools = tool_msgs(body);
             match tools.len() {
-                0 => call_msg("c1", "shop_order", &json!({"url": STRIDE, "action": "grab"}).to_string()),
-                1 => call_msg("c2", "shop_order", &json!({"url": STRIDE, "action": "take"}).to_string()),
-                _ => json!({"role": "assistant", "content": "Do you want to compare, add to the cart or buy?"}),
+                0 => call_msg("c1", "travel_search", r#"{"kind": "ship"}"#),
+                1 => call_msg("c2", "travel_search", r#"{"kind": "train"}"#),
+                _ => json!({"role": "assistant", "content": "Do you want a flight, a hotel or a restaurant?"}),
             }
         },
         json!({"language": "en"}),
     )
     .await;
-    let (t, evs) = run_task(&rt, &format!("do something with {STRIDE}")).await;
+    let (t, evs) = run_in_bot(&rt, "travel", "find me a way to Tokyo").await;
     assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
     let statuses: Vec<String> = events_of(&evs, "workflow_call")
         .iter()
@@ -3500,17 +3504,21 @@ async fn the_planner_regenerates_wrong_json_and_repaired_syntax_is_reported() {
     let (rt, _d, _seen) = scripted_rt(
         |body| {
             if system_of(body).starts_with("You write the JSON arguments") {
-                return json!({"role": "assistant", "content": format!("```json\n{{\"url\": \"{STRIDE}\", \"action\": \"compare\"}}\n```")});
+                return json!({"role": "assistant", "content": format!("```json\n{FLIGHT}\n```")});
             }
             if let Some(r) = helper_reply(body) {
                 return r;
             }
             let tools = tool_msgs(body);
             match tools.last() {
-                // single quotes and a missing closing brace (repaired), the action left out (required: regenerated)
-                None => call_msg("c1", "shop_order", &format!("{{'url': '{STRIDE}'")),
+                // single quotes and a missing closing brace (repaired), the kind left out (required: regenerated)
+                None => call_msg(
+                    "c1",
+                    "travel_search",
+                    "{'origin': 'SIN', 'destination': 'TYO', 'date': '2030-12-03'",
+                ),
                 Some(m) if get_str(m, "tool_call_id").starts_with("res_") => {
-                    json!({"role": "assistant", "content": "The socks are on Stride Sports."})
+                    json!({"role": "assistant", "content": "I found no flight."})
                 }
                 Some(_) => panic!("the machine did not run"),
             }
@@ -3518,7 +3526,12 @@ async fn the_planner_regenerates_wrong_json_and_repaired_syntax_is_reported() {
         json!({"language": "en"}),
     )
     .await;
-    let (t, evs) = run_task(&rt, &format!("show me the socks at {STRIDE}")).await;
+    let (t, evs) = run_in_bot(
+        &rt,
+        "travel",
+        "flights from Singapore to Tokyo on 3 December 2030",
+    )
+    .await;
     assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
     let rep = events_of(&evs, "json_repaired");
     assert!(
@@ -3533,7 +3546,10 @@ async fn the_planner_regenerates_wrong_json_and_repaired_syntax_is_reported() {
         events_of(&evs, "workflow_call")[0]["result"]["status"],
         "running"
     );
-    assert_eq!(events_of(&evs, "workflow_result")[0]["status"], "shown");
+    assert_eq!(
+        events_of(&evs, "workflow_result")[0]["status"],
+        "nothing_found"
+    );
 }
 
 // ---------------------------------------------------------------- the news workflow tools (agent/news.rs)
@@ -3574,13 +3590,13 @@ async fn news_gather_returns_the_articles_then_the_model_publishes_them_as_json(
     .await;
     let arts = [
         (
-            "http://shop.test:8094/news/a",
+            "https://news.example/news/a",
             "Lumora switches on 40 MW tidal array",
             "Reuters",
             "Lumora Energy switched on 40 megawatts in the Pentland Firth.",
         ),
         (
-            "http://shop.test:8094/news/b",
+            "https://news.example/news/b",
             "EU awards Lumora €120m",
             "Financial Times",
             "The European Commission awarded Lumora a €120 million grant.",
@@ -3638,10 +3654,7 @@ async fn news_gather_returns_the_articles_then_the_model_publishes_them_as_json(
         .collect();
     assert_eq!(
         urls,
-        [
-            "http://shop.test:8094/news/b",
-            "http://shop.test:8094/news/a"
-        ]
+        ["https://news.example/news/b", "https://news.example/news/a"]
     );
     let res = events_of(&evs, "workflow_result");
     assert_eq!(
@@ -3804,7 +3817,7 @@ fn facts_an_approved_purchase_etias_a_delay_an_injection_and_a_notification() {
     use super::guards::{
         etias_fact, injection_fact, notification_facts, purchase_total_facts, ETIAS_STATUS_EN,
     };
-    let buy = json!({"site": "shop.test", "items": [{"name": "Kappo Yamabuki — 20 Nov 19:00, 2 guests (deposit)", "qty": 1,
+    let buy = json!({"site": "shop.example", "items": [{"name": "Kappo Yamabuki — 20 Nov 19:00, 2 guests (deposit)", "qty": 1,
                      "price": 28000}], "total": 28000, "currency": "JPY"});
     let mut t = vec![
         turn(&[("b1", "purchase_confirm", buy)]),

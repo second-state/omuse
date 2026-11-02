@@ -1,33 +1,31 @@
-"""Arrival cards with a real model, from the user's point of view: the shared world, the user's part in the browser
-view and the checks for tests/arrival_real.py and tests/arrival_cards*_real.py (see tests/user_common.py for the rule:
-only what the user sees is checked).
+"""Arrival cards with a real model, from the user's point of view: the user's install, their part in the browser view and
+the checks for tests/arrival_real.py and tests/arrival_cards*_real.py (see tests/user_common.py for the rule: only what
+the user sees is checked).
+
+SKELETON — the stand-in pages are gone; each card is to be rebuilt on its REAL official site (the `TODO real URL` line of
+each card below), stopping at the first step the user owns (sign-in, emailed code, CAPTCHA, photo, Submit / Pay).
+Nothing is ever submitted: the test never presses Submit.
 
 The user: JORDAN LU, an Australian (profile: name as on the passport, birthday, gender Female, nationality, email,
-phone, home address in Sydney); the Vault holds the passport (number and expiry, no site restriction). For each card the
-mailbox has the e-ticket of a flight arriving in two days (no return flight) and a hotel booking without a check-out
-date. The official sites are the stand-ins at their real addresses (tests/https_standins.py, tests/pages): realistic
-forms with a sex radio group, masked DD/MM/YYYY date fields, a nationality list, the trip and accommodation sections,
-health and declaration Yes/No questions, a CAPTCHA the agent cannot fill (UK ETA: a face photo instead), and a Submit
-that goes to the confirmation page with every value in the address.
+phone, home address in Sydney); the Vault holds the passport (number and expiry, no site restriction; clearly fake test
+values). No mailbox: the trip (the flight arriving in two days, no return flight, and the hotel) is in the request.
 
 What the user does and sees for a card (`fill_card`): they ask Main's chat to fill it in (holiday trip). If the answer
-asks something first, they answer once. When the agent asks them to take over, they read the request, look at the page
-in the browser view, scroll to the bottom, type the CAPTCHA, press Submit and hand the browser back (Visit Japan Web:
-they first log in to their account when asked). Checked (state and facts, never the model's words): the Travel bot did
-it; no approval dialog at all; a takeover card came and the page handed over is the official form, not its
-confirmation, with the CAPTCHA box still empty; the confirmation page's address holds the right values (name, sex from the profile, birth date,
-nationality, passport number and expiry DD/MM/YYYY from the Vault, flight, arrival date, last and next city = where the
-flight came from, departure = arrival + 7 days, the hotel, purpose, every health and declaration answer No); the final
-values the form held are read from the address the user's Submit leads to; the passport number never appears in the chat."""
+asks something first, they answer once. When the agent asks them to take over, they look at the page in the browser
+view and hand it back without pressing anything (Visit Japan Web: the hand-over is the sign-in to their own account,
+the user's step). Checked (state and facts, never the model's words): the Travel bot did it; no approval dialog at all;
+a takeover card came and the page handed over is on the official site; the values the handed-over form holds (name,
+sex from the profile, birth date, nationality, passport number and expiry from the Vault, flight, arrival date, last
+and next city = where the flight came from, departure = arrival + 7 days, the hotel, every Yes / No question answered
+No, the CAPTCHA left empty); the passport number never appears in the chat."""
 from __future__ import annotations
 
 import datetime as dt
 import os
 import re
 from dataclasses import dataclass
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
-from tests import skills_common as K
 from tests import user_common as U
 from tests.user_common import check
 
@@ -39,273 +37,117 @@ PROFILE = {"name_en": "JORDAN LU", "gender": "Female", "birthday": "1985-04-12",
            "email_personal": "jordan.lu@example.com", "phone": "+61 400 000 000",
            "address_home": "12 Harbour St, Sydney NSW 2000, Australia"}
 OUT = "/repo-out/arrival" if os.path.isdir("/repo-out") else ""
-NAME_KEYS = ("name", "full_name", "family_name", "given_name", "first_name", "middle_name", "last_name", "surname")
-
-
-def dmy(d: dt.date | str) -> str:
-    d = dt.date.fromisoformat(d) if isinstance(d, str) else d
-    return d.strftime("%d/%m/%Y")
 
 
 @dataclass
 class Card:
     key: str
-    ask: str            # what the user types into Main's chat
-    form: str           # the official form's address
-    done: str           # the confirmation page's file name
-    ref: str            # the reference the confirmation page shows
+    ask: str            # what the user types into Main's chat (the trip details follow it, see `details`)
+    form: str           # the official site (TODO real URL: confirm against the live site)
     flight: str
-    airline: str
     origin: tuple[str, str]   # (city, airport code) the flight comes from
     dest: tuple[str, str]
     hotel: tuple[str, str]    # (name, address)
-    captcha: str = ""
-    login: bool = False       # Visit Japan Web: the user logs in to their account first
-    fields_url: str = ""      # the page whose named fields the form has, when it is not `form` (Korea: the terms page first)
+    login: bool = False       # Visit Japan Web: the hand-over is the sign-in to the user's own account
     trip: bool = True         # the form has the trip and accommodation sections
+    departure: bool = True    # the form asks a departure date
 
-    def mail(self) -> list[tuple]:
-        dep = ARRIVE - dt.timedelta(days=1) if self.key == "uk" else ARRIVE
+    def flight_text(self) -> str:
         o, d = self.origin, self.dest
-        return [
-            (f"{self.airline} <noreply@{self.airline.lower().replace(' ', '')}.example>",
-             f"Your e-ticket: {self.flight} {o[1]}-{d[1]} {ARRIVE.isoformat()}",
-             f"E-ticket receipt. Booking ref 9QW3PL. Passenger: LU/JORDAN. {self.flight} departs {o[0]} ({o[1]}) "
-             f"{dep.isoformat()} 09:10, arrives {d[0]} ({d[1]}) {ARRIVE.isoformat()} 18:40. One way, economy, 30 kg baggage.", 1),
-            (f"{self.hotel[0]} <reservations@stay.example>", f"Booking confirmed: {self.hotel[0]}",
-             f"Dear Jordan Lu, your reservation is confirmed. Confirmation HB-55120. Arrival {ARRIVE.isoformat()}, "
-             f"check-in from 15:00. {self.hotel[0]}, {self.hotel[1]}. We look forward to welcoming you.", 1),
-        ]
+        return f"I fly {self.flight} from {o[0]} ({o[1]}) to {d[0]} ({d[1]}), arriving on {ARRIVE.isoformat()}, one way."
+
+    def details(self) -> str:
+        """The trip as the user tells it (no mailbox): the flight and the hotel."""
+        return f"{self.flight_text()} I'm staying at the {self.hotel[0]}, {self.hotel[1]}."
 
 
 CARDS = {
+    # TODO real URL: https://eservices.ica.gov.sg/sgarrivalcard/
     "sg": Card("sg", "Please fill in my SG Arrival Card for my trip to Singapore — it's a holiday.",
-               "https://eservices.ica.gov.sg/sgarrivalcard/", "sgac_done", "DE202611020123", "SQ 231", "Singapore Airlines",
-               ("Sydney", "SYD"), ("Singapore", "SIN"), ("Marina Bayfront Hotel", "10 Bayfront Avenue, Singapore 018956"),
-               ),   # the real ICA form (rebuilt stand-in, 2026-10-31): no CAPTCHA; the user ticks the declaration and submits
+               "https://eservices.ica.gov.sg/sgarrivalcard/", "SQ 231",
+               ("Sydney", "SYD"), ("Singapore", "SIN"), ("Marina Bayfront Hotel", "10 Bayfront Avenue, Singapore 018956")),
+    # TODO real URL: https://tdac.immigration.go.th/arrival-card/
     "th": Card("th", "Please fill in my Thailand Digital Arrival Card (TDAC) for my trip — it's a holiday.",
-               "https://tdac.immigration.go.th/", "tdac_done", "TH7D3K9Q2", "TG 476", "Thai Airways",
-               ("Sydney", "SYD"), ("Bangkok", "BKK"), ("Siam Riverside Hotel", "88 Charoen Krung Road, Bang Rak, Bangkok 10500"), "M4XP8"),
+               "https://tdac.immigration.go.th/", "TG 476",
+               ("Sydney", "SYD"), ("Bangkok", "BKK"), ("Siam Riverside Hotel", "88 Charoen Krung Road, Bang Rak, Bangkok 10500")),
+    # TODO real URL: https://imigresen-online.imi.gov.my/mdac/main
     "my": Card("my", "Please fill in my Malaysia Digital Arrival Card (MDAC) for my trip — it's a holiday.",
-               "https://imigresen-online.imi.gov.my/mdac/main", "mdac_done", "MDAC-2611-48213", "MH 122", "Malaysia Airlines",
-               ("Sydney", "SYD"), ("Kuala Lumpur", "KUL"), ("Bukit Bintang Grand Hotel", "22 Jalan Bukit Bintang, 55100 Kuala Lumpur"), "K9TW3"),   # the real MDAC ends in a slider puzzle
+               "https://imigresen-online.imi.gov.my/mdac/main", "MH 122",
+               ("Sydney", "SYD"), ("Kuala Lumpur", "KUL"), ("Bukit Bintang Grand Hotel", "22 Jalan Bukit Bintang, 55100 Kuala Lumpur")),
+    # TODO real URL: https://www.e-arrivalcard.go.kr/
     "kr": Card("kr", "Please fill in my Korea e-Arrival Card for my trip to Seoul — it's a holiday.",
-               "https://www.e-arrivalcard.go.kr/", "kr_arrival_done", "KR-EA-77120934", "KE 122", "Korean Air",
-               ("Sydney", "SYD"), ("Seoul Incheon", "ICN"), ("Hotel Namsan Gardens", "15 Toegye-ro 20-gil, Jung-gu, Seoul 04637"), "P3HN7",
-               # the real site (rebuilt stand-in, 2026-10-31): landing → terms → the form; Submit asks for the emailed code
-               fields_url="https://www.e-arrivalcard.go.kr/portal/apply/individual.do"),
+               "https://www.e-arrivalcard.go.kr/", "KE 122",
+               ("Sydney", "SYD"), ("Seoul Incheon", "ICN"), ("Hotel Namsan Gardens", "15 Toegye-ro 20-gil, Jung-gu, Seoul 04637")),
+    # TODO real URL: https://vjw-lp.digital.go.jp/
     "jp": Card("jp", "Please do my Visit Japan Web registration for my trip to Tokyo — it's a holiday.",
-               "https://vjw-lp.digital.go.jp/", "vjw_done", "JP-5521-9087", "NH 880", "ANA",
-               ("Sydney", "SYD"), ("Tokyo Haneda", "HND"), ("Shinjuku Granbell Inn", "2-14-5 Kabukicho, Shinjuku-ku, Tokyo 160-0021"), "W8FD2",
+               "https://vjw-lp.digital.go.jp/", "NH 880",
+               ("Sydney", "SYD"), ("Tokyo Haneda", "HND"), ("Shinjuku Granbell Inn", "2-14-5 Kabukicho, Shinjuku-ku, Tokyo 160-0021"),
                login=True),
+    # TODO real URL: https://s.nia.gov.cn/ArrivalCardFillingPC/
     "cn": Card("cn", "Please fill in my China online arrival card for my trip to Shanghai — it's a holiday.",
-               "https://s.nia.gov.cn/ArrivalCardFillingPC/", "cn_arrival_done", "CN-ARC-20261102-6613", "MU 562", "China Eastern",
-               ("Sydney", "SYD"), ("Shanghai Pudong", "PVG"), ("Bund Riverside Hotel", "99 Zhongshan East 1st Road, Huangpu District, Shanghai"), "T6QZ4",
-               # the real site (rebuilt stand-in, 2026-10-31): the passport-page upload is the user's ("captcha" = the
-               # document code standing in for it), then the agent fills the form; Submit is the user's
-               fields_url="https://s.nia.gov.cn/ArrivalCardFillingPC/entry-registation-form"),
+               "https://s.nia.gov.cn/ArrivalCardFillingPC/", "MU 562",
+               ("Sydney", "SYD"), ("Shanghai Pudong", "PVG"), ("Bund Riverside Hotel", "99 Zhongshan East 1st Road, Huangpu District, Shanghai"),
+               departure=False),
+    # TODO real URL: https://twac.immigration.gov.tw/
     "tw": Card("tw", "Please fill in my Taiwan Arrival Card for my trip to Taipei — it's a holiday.",
-               "https://twac.immigration.gov.tw/", "twac_done", "TWAC-90417736", "CI 52", "China Airlines",
-               ("Sydney", "SYD"), ("Taipei Taoyuan", "TPE"), ("Xinyi Park Hotel", "6 Songshou Road, Xinyi District, Taipei 110"), "H2VK9",
-               # the real TWAC (rebuilt stand-in, 2026-10-31): the user verifies their email (the code is the "captcha"),
-               # then the agent fills the form; the declaration and SUBMIT are the user's
-               fields_url="https://twac.immigration.gov.tw/submit"),
+               "https://twac.immigration.gov.tw/", "CI 52",
+               ("Sydney", "SYD"), ("Taipei Taoyuan", "TPE"), ("Xinyi Park Hotel", "6 Songshou Road, Xinyi District, Taipei 110")),
+    # TODO real URL: https://allindonesia.imigrasi.go.id/
     "id": Card("id", "Please fill in my All Indonesia arrival card for my trip to Bali — it's a holiday.",
-               "https://allindonesia.imigrasi.go.id/", "id_arrival_done", "ALLIND-332190", "GA 715", "Garuda Indonesia",
-               ("Sydney", "SYD"), ("Denpasar Bali", "DPS"), ("Seminyak Lagoon Resort", "Jl. Kayu Aya No. 8, Seminyak, Bali 80361")),   # the real site (rebuilt stand-in, 2026-10-31): no CAPTCHA, the user certifies
+               "https://allindonesia.imigrasi.go.id/", "GA 715",
+               ("Sydney", "SYD"), ("Denpasar Bali", "DPS"), ("Seminyak Lagoon Resort", "Jl. Kayu Aya No. 8, Seminyak, Bali 80361")),
+    # TODO real URL: https://etravel.gov.ph/
     "ph": Card("ph", "Please do my Philippines eTravel registration for my trip to Manila — it's a holiday.",
-               "https://etravel.gov.ph/", "etravel_done", "ETRV-PH-55820117", "PR 210", "Philippine Airlines",
-               ("Sydney", "SYD"), ("Manila", "MNL"), ("Makati Palm Suites", "1200 Ayala Avenue, Makati City, Metro Manila"), "B7JQ3"),
+               "https://etravel.gov.ph/", "PR 210",
+               ("Sydney", "SYD"), ("Manila", "MNL"), ("Makati Palm Suites", "1200 Ayala Avenue, Makati City, Metro Manila")),
+    # TODO real URL: https://arrival.gov.kh/
     "kh": Card("kh", "Please fill in my Cambodia e-Arrival Card for my trip to Phnom Penh — it's a holiday.",
-               "https://arrival.gov.kh/", "kh_arrival_done", "KH-EAC-640219", "SQ 166", "Singapore Airlines",
-               ("Singapore", "SIN"), ("Phnom Penh", "PNH"), ("Riverside Palace Hotel", "51 Sisowath Quay, Phnom Penh"), "N4CX6"),
+               "https://arrival.gov.kh/", "SQ 166",
+               ("Singapore", "SIN"), ("Phnom Penh", "PNH"), ("Riverside Palace Hotel", "51 Sisowath Quay, Phnom Penh")),
+    # TODO real URL: https://www.gov.uk/eta (the application: https://apply-for-an-eta.homeoffice.gov.uk/)
     "uk": Card("uk", "Please apply for my UK ETA for my trip to London — it's a holiday. I work as a software engineer.",
-               "https://www.gov.uk/eta", "uk_eta_done", "4402-1187-6631", "QF 1", "Qantas",
-               ("Sydney", "SYD"), ("London Heathrow", "LHR"), ("Covent Garden Court Hotel", "8 Bedford Street, London WC2E 9ED"), "",
+               "https://www.gov.uk/eta", "QF 1",
+               ("Sydney", "SYD"), ("London Heathrow", "LHR"), ("Covent Garden Court Hotel", "8 Bedford Street, London WC2E 9ED"),
                trip=False),
 }
 
 
-def world(mail: list | None) -> None:
-    """The user's install: profile, the passport in the Vault (no site restriction), the mailbox (None: no mailbox)."""
-    U.setup(mail=mail, vault=False, profile=PROFILE)
-    if mail is None:
-        disconnect_mail()
-    K.vault_item("Passport Jordan", "id_document", {"number": PASSPORT, "name": "LU JORDAN", "expiry": EXPIRY, "country": "AU"}, domains="")
+def world() -> None:
+    """The user's install: profile, the passport in the Vault (no site restriction)."""
+    U.setup(vault=False, profile=PROFILE)
+    U.vault_item("Passport Jordan", "id_document", {"number": PASSPORT, "name": "LU JORDAN", "expiry": EXPIRY, "country": "AU"})
 
 
-def disconnect_mail() -> None:
-    """The user removes their mailbox on Connections (the no-mail case)."""
-    gmail = lambda: next(x for x in K.c.get(K.S + "/connections", headers=K.H).json()["connections"] if x["name"] == "gmail")  # noqa: E731
-    for acc in gmail().get("accounts", []):
-        K.c.delete(f"{K.S}/connections/gmail/accounts/{acc['id']}", headers=K.H)
-    check("no mailbox is connected any more", not gmail().get("accounts"), gmail().get("accounts"))
-
-
-def fresh_trip(mail: list[tuple]) -> None:
-    """Between two cards of a suite (a fixture, not a check): the mailbox holds only this trip, and what the agent
-    remembered about the previous card's trip is forgotten — each card is its own user story, not a second trip on the
-    same day."""
-    K.seed_mail(mail)
-    mem = K.c.get(K.B + "/api/memory", headers=K.H).json()
+def fresh_trip() -> None:
+    """Between two cards of a suite (not a check): what the agent remembered about the previous card's trip is
+    forgotten — each card is its own user story, not a second trip on the same day."""
+    mem = U.c.get(U.B + "/api/memory", headers=U.H).json()
     ids = {f["id"] for v in mem.values() if isinstance(v, list) for f in v
            if isinstance(f, dict) and str(f.get("id", "")).startswith("fact_")}
     for fid in ids:
-        K.c.delete(f"{K.B}/api/memory/{fid}", headers=K.H)
-
-
-# ------------------------------------------------------------------ the user's hands in the browser view
-async def _img_box(u: U.User) -> tuple[dict, float]:
-    """The live picture's box in the app and the agent page's viewport height (CSS px at 1280 wide)."""
-    img = u.page.locator(".bview img")
-    # the picture is replaced as the page refreshes: measure one that has loaded (as a user's eye waits for it)
-    for _ in range(40):
-        await u.view_picture()
-        box = await img.bounding_box()
-        nat = await img.evaluate("i => [i.naturalWidth, i.naturalHeight]")
-        if box and nat[0] > 0:
-            break
-        await u.page.wait_for_timeout(250)
-    return box, nat[1] * u.VIEW[0] / max(nat[0], 1)
-
-
-async def click_at(u: U.User, x: float, y: float) -> None:
-    """The user clicks the live picture at the page's viewport point (x, y)."""
-    pg = u.page
-    box, _ = await _img_box(u)
-    k = box["width"] / u.VIEW[0]
-    vh = (pg.viewport_size or {"height": 1400})["height"]
-    if not 0 <= box["y"] + y * k <= vh - 10:   # bring that part of the picture into the window (no wheel: it goes to the page)
-        await pg.evaluate("dy => window.scrollBy(0, dy)", box["y"] + y * k - vh / 2)
-        await pg.wait_for_timeout(300)
-        box, _ = await _img_box(u)
-    await pg.mouse.click(box["x"] + x * k, box["y"] + y * k)
-    await pg.wait_for_timeout(1200)
-
-
-async def scroll_page(u: U.User, dy: float) -> None:
-    """The user turns the mouse wheel over the live picture (scrolls the agent's page)."""
-    pg = u.page
-    box, _ = await _img_box(u)
-    await pg.mouse.move(box["x"] + box["width"] / 2, box["y"] + min(box["height"], 300) / 2)
-    for _ in range(4):
-        await pg.mouse.wheel(0, dy)
-        await pg.wait_for_timeout(400)
-    await pg.wait_for_timeout(1500)
-
-
-async def where(u: U.User, url: str, selectors: dict[str, str], *, bottom: bool, vh: float) -> dict[str, tuple[float, float, float, float]]:
-    """Where each element sits in the viewport of the page at `url` (the browser view's size), scrolled to the bottom or
-    the top — the way the user's eye finds the field in the picture."""
-    ctx = await u._br.new_context(viewport={"width": u.VIEW[0], "height": int(round(vh))}, ignore_https_errors=True)
-    try:
-        p = await ctx.new_page()
-        await p.goto(url, wait_until="load", timeout=30000)
-        if bottom:
-            await p.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
-            await p.wait_for_timeout(300)
-        out = {}
-        for name, sel in selectors.items():
-            # the visible one (a multi-step form keeps the other steps' fields hidden in the page)
-            loc = p.locator(sel).locator("visible=true")
-            if await loc.count():
-                b = await loc.first.evaluate("e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }")
-                out[name] = tuple(b)
-        return out
-    finally:
-        await ctx.close()
-
-
-async def form_fields(u: U.User, url: str) -> list[str]:
-    """The named fields the official form shows (what the user can read on it)."""
-    ctx = await u._br.new_context(ignore_https_errors=True)
-    try:
-        p = await ctx.new_page()
-        await p.goto(url, wait_until="load", timeout=30000)
-        return await p.evaluate("() => [...new Set([...document.querySelectorAll('form [name]')].map(e => e.name))]")
-    finally:
-        await ctx.close()
+        U.c.delete(f"{U.B}/api/memory/{fid}", headers=U.H)
 
 
 class Takeover:
-    """The user's part when the agent asks them to take over: log in (Visit Japan Web) or check, CAPTCHA and Submit."""
+    """The user's part when the agent asks them to take over: look at the page handed over (its URL and the values its
+    form holds) and hand it back — never pressing Submit."""
 
     def __init__(self, u: U.User, card: Card, label: str):
         self.u, self.card, self.label = u, card, label
         self.requests: list[str] = []
         self.form_url = ""
-        self.after_submit = ""
-        self.logged_in = False
-        self.captcha_ink: float | None = None   # how much was written in the CAPTCHA box when the page was handed over
+        self.form: list[dict] = []
 
     async def __call__(self, pg, request: str) -> None:
-        u, card = self.u, self.card
         self.requests.append(request)
-        url = await u.view_url()
+        url = await self.u.view_url()
         print(f"INFO {self.label} takeover: {request!r} url {url!r}")
-        await u.take_over()
-        _, vh = await _img_box(u)
-        if card.login and urlsplit(url).path in ("", "/", "/vjw.html") and "vjw-lp.digital.go.jp" in url:
-            await scroll_page(u, -3000)
-            at = await where(u, url, {"email": "#email", "password": "#password", "login": "button[type=submit]"}, bottom=False, vh=vh)
-            for k, text in (("email", PROFILE["email_personal"]), ("password", "Sakura-Blossom-26")):
-                x, y, w, h = at[k]
-                await click_at(u, x + w / 2, y + h / 2)
-                # the agent may have filled the email already: the user types over what is there
-                await pg.keyboard.press("Control+a")
-                await pg.keyboard.press("Backspace")
-                await pg.keyboard.type(text, delay=30)
-                await pg.wait_for_timeout(800)
-            x, y, w, h = at["login"]
-            await click_at(u, x + w / 2, y + h / 2)
-            for _ in range(10):
-                if "vjw_entry" in await u.view_url():
-                    self.logged_in = True
-                    break
-                await pg.wait_for_timeout(1000)
-            print(f"INFO {self.label} logged in: {self.logged_in} url {await u.view_url()!r}")
-            return
-        if card.done in url:   # already the confirmation: nothing for the user to do
-            self.form_url = self.form_url or url
+        if self.form_url:   # a later hand-over in the same run: the first one is the one checked
             return
         self.form_url = url
+        self.form = await self.u.view_form()
         if OUT:
-            await u.view_picture(os.path.join(OUT, f"{U.SUITE}-{card.key}-handed-over.png"))
-        await scroll_page(u, 3000)
-        at = await where(u, url, {"captcha": "input[name=captcha]", "submit": "button[type=submit]",
-                                  "declaration": "input[name=declaration], input[name=declarationCheck]"}, bottom=True, vh=vh)
-        if "declaration" in at:   # the declaration the user reads and ticks before Submit (the SG Arrival Card)
-            x, y, w, h = at["declaration"]
-            await click_at(u, x + w / 2, y + h / 2)
-            await pg.wait_for_timeout(500)
-        if card.captcha and "captcha" in at:
-            x, y, w, h = at["captcha"]
-            try:   # the CAPTCHA box as handed over: empty (left for the user), or written in
-                self.captcha_ink = (await u.view_ink({"captcha": at["captcha"]}))["captcha"]
-            except Exception as e:   # noqa: BLE001 — the picture was being replaced: nothing measured
-                print(f"INFO {self.label} CAPTCHA box not measured: {e!r}")
-            await click_at(u, x + w / 2, y + h / 2)
-            await pg.keyboard.press("Control+a")
-            await pg.keyboard.press("Backspace")
-            await pg.keyboard.type(card.captcha, delay=40)
-            await pg.wait_for_timeout(1500)
-        if OUT:
-            await u.view_picture(os.path.join(OUT, f"{U.SUITE}-{card.key}-before-submit.png"))
-        if "submit" in at:
-            x, y, w, h = at["submit"]
-            await click_at(u, x + w / 2, y + h / 2)
-        for i in range(12):
-            self.after_submit = await u.view_url()
-            if card.done in self.after_submit:
-                break
-            if i == 5 and card.captcha and "captcha" in at:   # the click missed: Enter in the code field submits too
-                x, y, w, h = at["captcha"]
-                await click_at(u, x + w / 2, y + h / 2)
-                await pg.keyboard.press("Enter")
-            await pg.wait_for_timeout(1000)
-        if OUT:
-            await u.view_picture(os.path.join(OUT, f"{U.SUITE}-{card.key}-after-submit.png"))
-        print(f"INFO {self.label} after Submit the URL bar shows {self.after_submit!r}")
+            await self.u.view_picture(os.path.join(OUT, f"{U.SUITE}-{self.card.key}-handed-over.png"))
 
 
 # fields with a default the agent never asks about — checked on a choice card's structured question and options
@@ -317,117 +159,83 @@ def norm(s: str) -> str:
     return re.sub(r"[\s-]", "", s or "").upper()
 
 
-def check_values(label: str, card: Card, q: dict, fields: list[str], *, flight: str | None = None, hotel: str | None = None,
-                 accom: tuple[str, ...] = ("HOTEL",)) -> None:
-    """The confirmation page's address: what the form held when the user pressed Submit. A field the agent left blank
-    is the user's to fill in before submitting (they review the page anyway): it counts as filled with the user's own
-    value and is listed, and only a wrong value — or a form left mostly blank — fails."""
-    has = set(fields)
-    city, code = card.origin if card.trip else ("", "")
-    mine = {"name": "JORDAN LU", "full_name": "JORDAN LU", "family_name": "LU", "last_name": "LU", "surname": "LU", "given_name": "JORDAN", "given_names": "JORDAN",
-            "first_name": "JORDAN", "sex": "F", "dob": "12/04/1985", "passport_no": PASSPORT, "passport_expiry": dmy(EXPIRY),
-            "nationality": "AUS", "passport_country": "AUS", "country_residence": "AUS", "email": PROFILE["email_personal"],
-            "phone": "+61 400 000 000", "flight_no": flight or card.flight, "mode": "AIR", "arrival_date": dmy(ARRIVE),
-            "last_city": city, "next_city": city, "departure_date": dmy(DEPART), "accommodation": hotel or (card.hotel[0] if card.trip else ""),
-            "accom_type": accom[0], "purpose": "HOLIDAY", "home_address": "12 Harbour St", "occupation": "engineer"}
-    mine.update({k: "No" for k in fields if k.startswith(("h_", "d_"))})
-    blank = [k for k in fields if k in mine and mine[k] and not str(q.get(k, "")).strip()]
-    print(f"INFO {label}: left blank for the user to fill in before submitting: {blank}")
-    check(f"{label}: at most 3 fields left blank for the user ({len(blank)})", len(blank) <= 3, blank)
-    q = {**q, **{k: mine[k] for k in blank}}
-    names = [k for k in NAME_KEYS if k in has]
-    joined = " ".join(q.get(k, "") for k in names).upper()
-    fam = next((q.get(k, "") for k in ("family_name", "last_name", "surname") if k in has), None)
-    check(f"{label}: the form held the name as on the passport (from the profile)",
-          "JORDAN" in joined and re.search(r"\bLU\b", joined) is not None and (fam is None or fam.strip().upper() == "LU"),
-          {k: q.get(k) for k in names})
-    check(f"{label}: sex = Female (from the profile), birth date 12/04/1985 in the field's DD/MM/YYYY order",
-          q.get("sex") == "F" and q.get("dob") == "12/04/1985", {k: q.get(k) for k in ("sex", "dob")})
-    check(f"{label}: the passport number and its expiry (01/05/2031, DD/MM/YYYY) from the Vault",
-          norm(q.get("passport_no", "")) == PASSPORT and ("passport_expiry" not in has or q.get("passport_expiry") == dmy(EXPIRY)),
-          {"passport_no": "(right)" if norm(q.get("passport_no", "")) == PASSPORT else q.get("passport_no"), "passport_expiry": q.get("passport_expiry")})
-    nat = [k for k in ("nationality", "passport_country", "country_residence") if k in has]
-    check(f"{label}: nationality / country of issue = Australia; email and phone from the profile",
-          all(q.get(k) == "AUS" for k in nat) and q.get("email", "").lower() == PROFILE["email_personal"]
-          and ("phone" not in has or re.sub(r"\D", "", q.get("phone", "")).endswith("400000000")),   # Korea asks no phone
-          {k: q.get(k) for k in (*nat, "email", "phone")})
+def date_forms(d: dt.date | str) -> set[str]:
+    """The ways a form writes a date: ISO, DD/MM/YYYY, MM/DD/YYYY, YYYY/MM/DD, 12 Apr 1985, Apr 12, 1985 …"""
+    d = dt.date.fromisoformat(d) if isinstance(d, str) else d
+    return {d.isoformat(), f"{d:%d/%m/%Y}", f"{d:%m/%d/%Y}", f"{d:%Y/%m/%d}", f"{d:%d-%m-%Y}", f"{d:%d.%m.%Y}", f"{d:%Y.%m.%d}",
+            f"{d.day} {d:%b} {d.year}", f"{d.day} {d:%B} {d.year}", f"{d:%b} {d.day}, {d.year}", f"{d:%B} {d.day}, {d.year}",
+            f"{d:%d %b %Y}", f"{d:%d-%b-%Y}"}
+
+
+def has_date(values: list[str], d: dt.date | str) -> bool:
+    forms = {f.upper() for f in date_forms(d)}
+    return any(v.strip().upper() in forms for v in values)
+
+
+def check_values(label: str, card: Card, form: list[dict], *, hotel: str | None = None) -> None:
+    """The values the handed-over form holds (what the user reviews before their own Submit). TODO real URL: tune the
+    field lookups to the real form's labels once the card runs on its official site."""
+    values = [f["value"] for f in form if f["value"]]
+    ticked = [f["label"] for f in form if f["checked"]]
+    joined = " ".join(values + ticked).upper()
+    print(f"INFO {label}: the form holds {len(values)} values; ticked: {ticked[:20]}")
+    check(f"{label}: the form was filled (several values at the hand-over)", len(values) >= 5, values[:20])
+    check(f"{label}: the name as on the passport (from the profile)", "JORDAN" in joined and re.search(r"\bLU\b", joined) is not None, values[:12])
+    check(f"{label}: sex = Female (from the profile)", re.search(r"\bFEMALE\b|\bF\b", joined) is not None, (values[:12], ticked))
+    check(f"{label}: the birth date 1985-04-12 (in the field's own format)", has_date(values, PROFILE["birthday"]), values[:20])
+    check(f"{label}: the passport number from the Vault", any(norm(v) == PASSPORT for v in values),
+          "(right)" if any(norm(v) == PASSPORT for v in values) else "(missing)")
+    check(f"{label}: the passport expiry 2031-05-01 from the Vault (in the field's own format)", has_date(values, EXPIRY), values[:20])
+    check(f"{label}: nationality = Australia", re.search(r"AUSTRALIA|\bAUS\b|\bAU\b", joined) is not None, values[:20])
     if card.trip:
-        fl = norm(flight or card.flight)
-        check(f"{label}: the flight, mode Air and arrival date ({dmy(ARRIVE)}) from the e-ticket",
-              norm(q.get("flight_no", "")) == fl and q.get("mode") == "AIR" and q.get("arrival_date") == dmy(ARRIVE),
-              {k: q.get(k) for k in ("flight_no", "mode", "arrival_date")})
+        check(f"{label}: the flight ({card.flight}) and the arrival date ({ARRIVE.isoformat()}) from the request",
+              any(norm(v) == norm(card.flight) for v in values) and has_date(values, ARRIVE), values[:30])
         city, code = card.origin
-        here = lambda v: city.upper() in (v or "").upper() or code in (v or "").upper()   # noqa: E731
-        if "last_city" in has:   # some forms ask only for the country (MDAC)
-            check(f"{label}: last city = {city}, where the flight came from",
-                  here(q.get("last_city")), q.get("last_city"))
-        if "next_city" in has:
-            check(f"{label}: next city = {city} too (the city the flight came from, no onward flight)",
-                  here(q.get("next_city")), q.get("next_city"))
-        if "departure_date" in has:   # China's card asks none unless a departure is confirmed
-            check(f"{label}: departure date = arrival + 7 days ({dmy(DEPART)}), no return flight in the mail",
-                  q.get("departure_date") == dmy(DEPART), q.get("departure_date"))
+        check(f"{label}: last / next city = {city}, where the flight came from", city.upper() in joined or re.search(rf"\b{code}\b", joined) is not None,
+              values[:30])
+        if card.departure:
+            check(f"{label}: departure date = arrival + 7 days ({DEPART.isoformat()}), no return flight",
+                  has_date(values, DEPART), values[:30])
         h = hotel or card.hotel[0]
-        word = max(h.split(), key=len).lower()
-        check(f"{label}: the accommodation is {h}, type {' or '.join(accom)}, purpose Holiday",
-              word in q.get("accommodation", "").lower() and ("accom_type" not in has or q.get("accom_type") in accom)
-              and ("purpose" not in has or q.get("purpose") == "HOLIDAY"),   # some forms ask no purpose (MDAC)
-              {k: q.get(k) for k in ("accommodation", "accom_type", "purpose")})
+        word = max(h.split(), key=len).upper()
+        check(f"{label}: the accommodation is {h}", word in joined, values[:30])
     else:
         check(f"{label}: home address from the profile, occupation from the request",
-              "harbour" in q.get("home_address", "").lower() and "engineer" in q.get("occupation", "").lower(),
-              {k: q.get(k) for k in ("home_address", "occupation")})
-    health = [k for k in fields if k.startswith("h_")]
-    decl = [k for k in fields if k.startswith("d_")]
-    if health:
-        check(f"{label}: every health question answered No without asking", all(q.get(k) == "No" for k in health),
-              {k: q.get(k) for k in health})
-    if decl:   # some forms ask none (MDAC)
-        check(f"{label}: every declaration question answered No without asking", all(q.get(k) == "No" for k in decl),
-              {k: q.get(k) for k in decl})
-    if card.captcha:
-        check(f"{label}: the CAPTCHA is the one the user typed", q.get("captcha", "").upper() == card.captcha, q.get("captcha"))
+              "HARBOUR" in joined and "ENGINEER" in joined, values[:30])
+    yes = [f["label"] for f in form if f["role"] == "radio" and f["checked"] and re.fullmatch(r"\s*yes\s*", f["label"], re.I)]
+    check(f"{label}: every Yes / No question answered No without asking (no Yes ticked)", not yes, yes)
+    captcha = [f["value"] for f in form if re.search(r"captcha|verification code", f["label"], re.I) and f["value"]]
+    check(f"{label}: the CAPTCHA was left empty for the user", not captcha, captcha)
 
 
-async def fill_card(u: U.User, card: Card, *, label: str = "", ask: str = "", flight: str | None = None,
-                    hotel: str | None = None, follow_up: str = "", accom: tuple[str, ...] = ("HOTEL",)) -> list[U.Answer]:
-    """One card from the user's side (module doc): ask, answer one question if any, take over, submit, check."""
+async def fill_card(u: U.User, card: Card, *, label: str = "", ask: str = "", hotel: str | None = None,
+                    follow_up: str = "") -> list[U.Answer]:
+    """One card from the user's side (module doc): ask, answer one question if any, look at the page handed over,
+    check — never Submit."""
     label = label or card.key
     to = Takeover(u, card, label)
-    fields = await form_fields(u, card.fields_url or card.form.replace("vjw-lp.digital.go.jp/", "vjw-lp.digital.go.jp/vjw_entry.html"))
-    a = await u.ask(ask or card.ask, label=label, on_takeover=to, timeout=1500)
+    a = await u.ask(ask or f"{card.ask} {card.details()}", label=label, on_takeover=to, timeout=1500)
     approvals, answers = list(a.approvals), [a]
     if not to.form_url and not a.timed_out:
         # the first turn ended with no hand-over: the agent asked something first (state: no takeover card, no
         # takeover call). The user answers once, in the same chat.
         cards = await u.choices()
-        check(f"{label}: the first turn asked (an answer with no takeover) before the form was handed over",
-              not a.takeovers and not await u.takeover_happened(), (a.takeovers, a.text[:300]))
         if cards:   # a choice card: its question and options are structured — none of them a field with a default
             check(f"{label}: the choice card did not ask for anything that has a default (health, declarations, sex, passport)",
                   not ASKED_DEFAULTS.search(U.choice_text(cards)), U.choice_text(cards)[:500])
-        a = await u.ask(follow_up or "It's a holiday, travelling alone. My e-ticket and hotel booking are in my email — please take "
-                        "everything else from there and from my profile, and go ahead and fill in the form.",
-                        label=f"{label} follow-up", new_chat=False, on_takeover=to, timeout=1500)
+        a = await u.ask(follow_up or "It's a holiday, travelling alone. Please take everything else from my profile and go ahead and "
+                        "fill in the form.", label=f"{label} follow-up", new_chat=False, on_takeover=to, timeout=1500)
         approvals += a.approvals
         answers.append(a)
     check(f"{label}: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
     check(f"{label}: the Travel bot did it (the link to continue in Travel)", "Travel" in (answers[0].bot_link or a.bot_link),
           [x.bot_link for x in answers])
     check(f"{label}: no approval dialog at all (browser auto-approve, the passport fill included)", not approvals, approvals)
-    if card.login:
-        check(f"{label}: the user was asked to take over to log in to their account, and they did (the account page was reached)",
-              to.logged_in, (to.logged_in, to.requests))
-    check(f"{label}: the user was asked to take over to finish the form (a takeover card whose page is the form)",
-          bool(to.form_url) and bool(to.requests), to.requests)
-    if card.captcha and to.captcha_ink is not None:
-        check(f"{label}: the CAPTCHA box was empty when the page was handed over (left for the user)", to.captcha_ink < 0.01, to.captcha_ink)
-    host = urlsplit(card.form).hostname
-    check(f"{label}: the page handed over is the official form ({host}), not its confirmation (the agent did not submit)",
-          host in to.form_url and card.done not in to.form_url, to.form_url)
-    if card.done in to.after_submit:
-        q = {k: v[0] for k, v in parse_qs(urlsplit(to.after_submit).query, keep_blank_values=True).items()}
-        check_values(label, card, q, fields, flight=flight, hotel=hotel, accom=accom)
+    host = urlsplit(card.form).hostname or ""
+    check(f"{label}: the user was asked to take over on the official site ({host})",
+          bool(to.requests) and host in to.form_url, (to.requests, to.form_url))
+    if not card.login and to.form_url:   # Visit Japan Web stops at the user's own sign-in: no form yet
+        check_values(label, card, to.form, hotel=hotel)
     shown = await u.thread_text() + " " + " ".join(approvals) + " " + " ".join(to.requests)
     check(f"{label}: the passport number never appears in the chat (messages, cards, requests, the answer)",
           PASSPORT not in shown and PASSPORT not in a.text, [m.start() for m in re.finditer(PASSPORT, shown)][:3])
@@ -435,36 +243,26 @@ async def fill_card(u: U.User, card: Card, *, label: str = "", ask: str = "", fl
 
 
 def run_cards(keys: list[str]) -> None:
-    """A suite of cards: one chat per card, the mailbox holding that trip's e-ticket and hotel booking."""
+    """A suite of cards: one chat per card."""
     # OMUSE_E2E_ONLY=kr (run_in_docker.sh): only these cards, to rerun one with its trace
     only = os.environ.get("OMUSE_E2E_ONLY", "").strip()
     if only:
         keys = [k for k in keys if k in only.split(",")]
-    world(CARDS[keys[0]].mail())
+    world()
 
     async def main():
         async with U.User(viewport=(1440, 1500)) as u:
             for i, key in enumerate(keys):
                 if i:
-                    fresh_trip(CARDS[key].mail())
+                    fresh_trip()
                 await fill_card(u, CARDS[key])
 
     U.run(main)
 
 
-PARIS = ARRIVE + dt.timedelta(days=30)
-EU_MAIL = [
-    ("Qantas <noreply@qantas.example>", f"Your e-ticket: QF 33 SYD-CDG {PARIS.isoformat()}",
-     f"E-ticket receipt. Booking ref 7XK2LM. Passenger: LU/JORDAN. QF 33 departs Sydney (SYD) {(PARIS - dt.timedelta(days=1)).isoformat()} "
-     f"21:40, arrives Paris (CDG) {PARIS.isoformat()} 07:15. One way, economy.", 1),
-    ("Hôtel Rive Gauche <reservations@stay.example>", "Booking confirmed: Hôtel Rive Gauche",
-     f"Dear Jordan Lu, your reservation is confirmed. Arrival {PARIS.isoformat()}. Hôtel Rive Gauche, 12 Rue Jacob, 75006 Paris.", 1),
-]
-
-
 async def etias(u: U.User) -> None:
     """EU / Schengen: nothing to fill while ETIAS is not live — the agent checks the official status and says so."""
-    fresh_trip(EU_MAIL)
+    fresh_trip()
     a = await u.ask("I'm flying to Paris next month. Do I need to fill in an arrival card or ETIAS or anything before the trip?",
                     label="etias", timeout=900)
     t = a.text
@@ -472,6 +270,5 @@ async def etias(u: U.User) -> None:
     check("etias: the Travel bot answered (the link to continue in Travel)", "Travel" in a.bot_link, a.bot_link)
     check("etias: the block code appends after the answer says ETIAS is not in operation yet, nothing to apply for now",
           a.shows("ETIAS is not in operation yet"), (a.block, t[:300]))
-    check("etias: it explains EES (registration at the border, no form)", re.search(r"\bEES\b|Entry/?Exit System", t, re.I) is not None, t[:700])
     check("etias: the block code appends after the answer points to the official EU site", a.shows("europa.eu"), (a.block, a.block_links))
     check("etias: no form, no takeover and no approval dialog", not a.takeovers and not a.approvals, (a.takeovers, a.approvals))
