@@ -190,7 +190,10 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
     Tavily keys; the browser's engines switched off for it), `travel_info_real` (official entry links, JR East fares,
     reminders), `emergency_real`, `tax_refund_real`, `market_real`, `research_real`, `library_real` (about 22 min),
     `cards_real`, `cards_markets_real` (issuers' sites), `news_report_real` (a real subject on the real web),
-    `travel_ask_real`, `stream_real`, `bots_real` (routing).
+    `travel_ask_real`, `stream_real`, `bots_real` (routing), `shopping_real` (the Shopping bot on Shopify's real
+    Global Catalog with `OMUSE_E2E_SHOPIFY_CLIENT_ID` / `_SECRET` from the env file — written into `[shopping]` by
+    `tests/run_local.sh` in real mode: a Singapore profile's request gets a choice card of offers that ship to SG,
+    priced in SGD; the map of the APIs is `docs/sites/shopify.md`).
   - `REAL_APP_SUITES` (the app with the real model and media provider, nothing outside faked): `assistant_real`,
     `automations_real`, `memory_real`, `chat_real`, `docs_real`, `chart_real`, `media_real`, `attach_media_real`,
     `travel_receipts_real`.
@@ -203,8 +206,8 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
     not even a test card goes into a real payment form. Checked: the choice card, the hand-over on the real site, no
     card number or secret in the page, the appended block (booking link, amount), nothing booked. A site that blocks
     automation is handed over at the block — never get around bot protection. `travel_book_real` (a Kiwi.com flight
-    without a key, then a Google Hotels hotel with the SerpApi key), `shop_real` (Allbirds' Shopify store: compare a
-    collection ranked by code, then buy a size up to the checkout).
+    without a key, then a Google Hotels hotel with the SerpApi key). (Shopping has no browser path: the Shopping bot
+    searches by API only, `shopping_real`.)
     The arrival cards are in `REAL_SITES` too (`arrival_real`, `arrival_cards_real` … `arrival_cards4_real`,
     `arrival_address_real`, `arrival_address2_real`): each opens the official government site, the card's form function
     (`forms.rs`, mapped from the live sites 2026-11-02) fills what it can reach and the hand-over is at the first user

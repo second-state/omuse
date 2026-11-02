@@ -1,0 +1,293 @@
+{
+ "jsonrpc": "2.0",
+ "id": 7,
+ "result": {
+  "content": [
+   {
+    "type": "text",
+    "text": "{\"ucp\":{\"version\":\"2026-08-25\",\"status\":\"success\",\"services\":{\"dev.ucp.shopping\":[]},\"capabilities\":{\"dev.ucp.shopping.checkout\":[{\"version\":\"2026-08-25\",\"spec\":\"https://ucp.dev/2026-08-25/specification/shopping/checkout/\",\"schema\":\"https://ucp.dev/2026-08-25/schemas/shopping/checkout.json\"}],\"dev.ucp.shopping.fulfillment\":[{\"version\":\"2026-08-25\",\"spec\":\"https://ucp.dev/2026-08-25/specification/shopping/extensions/fulfillment/\",\"schema\":\"https://ucp.dev/2026-08-25/schemas/shopping/fulfillment.json\",\"extends\":[\"dev.ucp.shopping.checkout\",\"dev.ucp.shopping.cart\"],\"requires\":{\"protocol\":{\"min\":\"2026-08-25\"}},\"config\":{\"multi_destination\":[],\"method_combinations\":[[\"shipping\"]]}}],\"dev.ucp.shopping.buyer_consent\":[{\"version\":\"2026-08-25\",\"spec\":\"https://ucp.dev/2026-08-25/specification/shopping/extensions/buyer-consent/\",\"schema\":\"https://ucp.dev/2026-08-25/schemas/shopping/buyer_consent.json\",\"extends\":[\"dev.ucp.shopping.cart\",\"dev.ucp.shopping.checkout\"],\"requires\":{\"protocol\":{\"min\":\"2026-08-25\"}}}],\"dev.ucp.shopping.discount\":[{\"version\":\"2026-08-25\",\"spec\":\"https://ucp.dev/2026-08-25/specification/shopping/extensions/discount/\",\"schema\":\"https://ucp.dev/2026-08-25/schemas/shopping/discount.json\",\"extends\":[\"dev.ucp.shopping.checkout\",\"dev.ucp.shopping.cart\"],\"requires\":{\"protocol\":{\"min\":\"2026-08-25\"}}}],\"dev.ucp.shopping.cart\":[{\"version\":\"2026-08-25\",\"spec\":\"https://ucp.dev/2026-08-25/specification/shopping/cart/\",\"schema\":\"https://ucp.dev/2026-08-25/schemas/shopping/cart.json\"}],\"dev.ucp.shopping.order\":[{\"version\":\"2026-08-25\",\"spec\":\"https://ucp.dev/2026-08-25/specification/shopping/order/\",\"schema\":\"https://ucp.dev/2026-08-25/schemas/shopping/order.json\"}],\"dev.ucp.shopping.catalog.search\":[{\"version\":\"2026-08-25\",\"spec\":\"https://ucp.dev/2026-08-25/specification/shopping/catalog/\",\"schema\":\"https://ucp.dev/2026-08-25/schemas/shopping/catalog_search.json\"}],\"dev.ucp.shopping.catalog.lookup\":[{\"version\":\"2026-08-25\",\"spec\":\"https://ucp.dev/2026-08-25/specification/shopping/catalog/\",\"schema\":\"https://ucp.dev/2026-08-25/schemas/shopping/catalog_lookup.json\"}],\"dev.shopify.catalog\":[{\"version\":\"2026-08-25\",\"spec\":\"https://shopify.dev/docs/agents/catalog/storefront-catalog\",\"schema\":\"https://shopify.dev/ucp/schemas/2026-08-25/shopify_catalog.json\",\"extends\":[\"dev.ucp.shopping.catalog.search\",\"dev.ucp.shopping.catalog.lookup\"],\"requires\":{\"protocol\":{\"min\":\"2026-08-25\"}}}],\"dev.ucp.common.location.search\":[{\"version\":\"2026-08-25\",\"spec\":\"https://ucp.dev/2026-08-25/specification/common/location/search\",\"schema\":\"https://ucp.dev/2026-08-25/schemas/common/location_search.json\"}],\"dev.ucp.common.location.lookup\":[{\"version\":\"2026-08-25\",\"spec\":\"https://ucp.dev/2026-08-25/specification/common/location/lookup\",\"schema\":\"https://ucp.dev/2026-08-25/schemas/common/location_lookup.json\"}]},\"payment_handlers\":{\"dev.shopify.card\":[{\"id\":\"shopify.card\",\"version\":\"2026-01-15\",\"spec\":\"https://shopify.dev/ucp/card-payment-handler/2026-01-15/spec.md\",\"schema\":\"https://shopify.dev/ucp/card-payment-handler/2026-01-15/schema.json\",\"config\":{\"payment_methods\":[{\"type\":\"card\",\"enabled_card_brands\":[\"visa\",\"master\",\"american_express\",\"discover\",\"diners_club\",\"elo\",\"jcb\",\"unionpay\"]}]}}],\"dev.shopify.shop_pay\":[{\"id\":\"shop_pay\",\"version\":\"2026-01-23\",\"spec\":\"https://shopify.dev/ucp/shop-pay-handler/2026-04-08/spec.md\",\"schema\":\"https://shopify.dev/ucp/shop-pay-handler/2026-04-08/schema.json\",\"config\":{\"shop_id\":\"11044168\"}}]}},\"id\":\"gid://shopify/Checkout/hWNIfvVeLmOO9mSVaX0RYEC1?key=c739d0d45193fc4443738b55c9d1c628\",\"currency\":\"USD\",\"buyer\":{\"email\":\"omuse.e2e.tester@example.com\",\"consent\":{\"dev.ucp.consent.analytics\":{\"granted\":false,\"source\":\"business\",\"description\":\"Analytics and performance measurement\"},\"dev.ucp.consent.preferences\":{\"granted\":false,\"source\":\"business\",\"description\":\"Remember preferences and personalize your shopping experience\"},\"dev.ucp.consent.sale_or_sharing\":{\"granted\":true,\"source\":\"business\",\"description\":\"Sale or sharing of personal data with third parties\"},\"dev.ucp.consent.marketing\":{\"granted\":false,\"source\":\"business\",\"description\":\"Marketing communications\",\"segments\":{\"dev.ucp.consent.marketing.email\":{\"granted\":true,\"source\":\"business\",\"description\":\"Promotional emails\"},\"dev.ucp.consent.marketing.sms\":{\"granted\":false,\"source\":\"business\",\"description\":\"Marketing text messages\"}}}}},\"line_items\":[{\"id\":\"gid://shopify/CartLine/464d3919-4f2a-4323-93aa-5dd473f811ea?cart=hWNIfvVeLmOO9mSVaX0RYEC1\",\"item\":{\"id\":\"gid://shopify/ProductVariant/41243609661520\",\"title\":\"Women's Wool Cruiser - Natural Grey (Natural White Sole) - 5\",\"price\":10500,\"image_url\":\"https://cdn.shopify.com/s/files/1/1104/4168/files/A11724_25Q3_Wool-Cruiser-Natural-Grey-Natural-White-Sole_PDP_LEFT__1_d5b7101e-dcbb-4bbf-a3e4-d691971cf3ec.png?v=1754504857\"},\"quantity\":1,\"totals\":[{\"type\":\"subtotal\",\"amount\":10500,\"display_text\":\"Subtotal\"},{\"type\":\"total\",\"amount\":10500,\"display_text\":\"Total\"}]}],\"discounts\":{\"codes\":[],\"applied\":[]},\"totals\":[{\"type\":\"subtotal\",\"amount\":10500,\"display_text\":\"Subtotal\"},{\"type\":\"tax\",\"amount\":656,\"display_text\":\"Tax\"},{\"type\":\"total\",\"amount\":11156,\"display_text\":\"Total\"}],\"fulfillment\":{\"methods\":[]},\"expires_at\":\"2026-12-02T08:16:02Z\",\"links\":[{\"type\":\"refund_policy\",\"title\":\"Refund Policy\",\"url\":\"https://www.allbirds.com/11044168/policies/19013255.html?locale=en-US\"},{\"type\":\"privacy_policy\",\"title\":\"Privacy Policy\",\"url\":\"https://www.allbirds.com/11044168/policies/19013319.html?locale=en-US\"},{\"type\":\"terms_of_service\",\"title\":\"Terms of Service\",\"url\":\"https://www.allbirds.com/11044168/policies/19013383.html?locale=en-US\"},{\"type\":\"shipping_policy\",\"title\":\"Shipping Policy\",\"url\":\"https://www.allbirds.com/11044168/policies/23614652496.html?locale=en-US\"}],\"payment\":{\"instruments\":[]},\"messages\":[{\"type\":\"error\",\"content_type\":\"plain\",\"code\":\"extension_interaction_required\",\"content\":\"An extension interaction is required to complete the checkout.\",\"severity\":\"requires_buyer_input\"},{\"type\":\"error\",\"content_type\":\"plain\",\"code\":\"delivery_address_required\",\"content\":\"A destination address is required in order to continue.\",\"severity\":\"recoverable\"},{\"type\":\"error\",\"content_type\":\"plain\",\"code\":\"delivery_no_delivery_available\",\"content\":\"Your cart has been updated and the items you added can\u2019t be shipped to your address. Remove the items to complete your order.\",\"severity\":\"recoverable\"}],\"status\":\"requires_escalation\",\"continue_url\":\"https://weareallbirds.myshopify.com/cart/c/hWNIfvVeLmOO9mSVaX0RYEC1?key=6VlwpKH7bnXmYf9kmz3MSy7QujznkhbUuLmWjUDjzmbcM3Squ-lYn1FvdbkFcTxw-SnRucyZ0OVsDPODgKSlDGHST02ldiXEALNTHC2pfNRfXCmSkPlTSSxpdVFU58TEODwtW0dlIG997an751i19w%3D%3D\"}"
+   }
+  ],
+  "isError": false,
+  "structuredContent": {
+   "ucp": {
+    "version": "2026-08-25",
+    "status": "success",
+    "services": {
+     "dev.ucp.shopping": []
+    },
+    "capabilities": {
+     "dev.ucp.shopping.checkout": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/checkout/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/checkout.json"
+      }
+     ],
+     "dev.ucp.shopping.fulfillment": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/extensions/fulfillment/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/fulfillment.json",
+       "extends": [
+        "dev.ucp.shopping.checkout",
+        "dev.ucp.shopping.cart"
+       ],
+       "requires": {
+        "protocol": {
+         "min": "2026-08-25"
+        }
+       },
+       "config": {
+        "multi_destination": [],
+        "method_combinations": [
+         [
+          "shipping"
+         ]
+        ]
+       }
+      }
+     ],
+     "dev.ucp.shopping.buyer_consent": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/extensions/buyer-consent/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/buyer_consent.json",
+       "extends": [
+        "dev.ucp.shopping.cart",
+        "dev.ucp.shopping.checkout"
+       ],
+       "requires": {
+        "protocol": {
+         "min": "2026-08-25"
+        }
+       }
+      }
+     ],
+     "dev.ucp.shopping.discount": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/extensions/discount/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/discount.json",
+       "extends": [
+        "dev.ucp.shopping.checkout",
+        "dev.ucp.shopping.cart"
+       ],
+       "requires": {
+        "protocol": {
+         "min": "2026-08-25"
+        }
+       }
+      }
+     ],
+     "dev.ucp.shopping.cart": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/cart/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/cart.json"
+      }
+     ],
+     "dev.ucp.shopping.order": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/order/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/order.json"
+      }
+     ],
+     "dev.ucp.shopping.catalog.search": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/catalog/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/catalog_search.json"
+      }
+     ],
+     "dev.ucp.shopping.catalog.lookup": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/catalog/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/catalog_lookup.json"
+      }
+     ],
+     "dev.shopify.catalog": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://shopify.dev/docs/agents/catalog/storefront-catalog",
+       "schema": "https://shopify.dev/ucp/schemas/2026-08-25/shopify_catalog.json",
+       "extends": [
+        "dev.ucp.shopping.catalog.search",
+        "dev.ucp.shopping.catalog.lookup"
+       ],
+       "requires": {
+        "protocol": {
+         "min": "2026-08-25"
+        }
+       }
+      }
+     ],
+     "dev.ucp.common.location.search": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/common/location/search",
+       "schema": "https://ucp.dev/2026-08-25/schemas/common/location_search.json"
+      }
+     ],
+     "dev.ucp.common.location.lookup": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/common/location/lookup",
+       "schema": "https://ucp.dev/2026-08-25/schemas/common/location_lookup.json"
+      }
+     ]
+    },
+    "payment_handlers": {
+     "dev.shopify.card": [
+      {
+       "id": "shopify.card",
+       "version": "2026-01-15",
+       "spec": "https://shopify.dev/ucp/card-payment-handler/2026-01-15/spec.md",
+       "schema": "https://shopify.dev/ucp/card-payment-handler/2026-01-15/schema.json",
+       "config": {
+        "payment_methods": [
+         {
+          "type": "card",
+          "enabled_card_brands": [
+           "visa",
+           "master",
+           "american_express",
+           "discover",
+           "diners_club",
+           "elo",
+           "jcb",
+           "unionpay"
+          ]
+         }
+        ]
+       }
+      }
+     ],
+     "dev.shopify.shop_pay": [
+      {
+       "id": "shop_pay",
+       "version": "2026-01-23",
+       "spec": "https://shopify.dev/ucp/shop-pay-handler/2026-04-08/spec.md",
+       "schema": "https://shopify.dev/ucp/shop-pay-handler/2026-04-08/schema.json",
+       "config": {
+        "shop_id": "11044168"
+       }
+      }
+     ]
+    }
+   },
+   "id": "gid://shopify/Checkout/hWNIfvVeLmOO9mSVaX0RYEC1?key=c739d0d45193fc4443738b55c9d1c628",
+   "currency": "USD",
+   "buyer": {
+    "email": "omuse.e2e.tester@example.com",
+    "consent": {
+     "dev.ucp.consent.analytics": {
+      "granted": false,
+      "source": "business"
+     },
+     "dev.ucp.consent.preferences": {
+      "granted": false,
+      "source": "business"
+     },
+     "dev.ucp.consent.sale_or_sharing": {
+      "granted": true,
+      "source": "business"
+     },
+     "dev.ucp.consent.marketing": {
+      "granted": false,
+      "source": "business",
+      "segments": {
+       "dev.ucp.consent.marketing.email": {
+        "granted": true,
+        "source": "business"
+       },
+       "dev.ucp.consent.marketing.sms": {
+        "granted": false,
+        "source": "business"
+       }
+      }
+     }
+    }
+   },
+   "line_items": [
+    {
+     "id": "gid://shopify/CartLine/464d3919-4f2a-4323-93aa-5dd473f811ea?cart=hWNIfvVeLmOO9mSVaX0RYEC1",
+     "item": {
+      "id": "gid://shopify/ProductVariant/41243609661520",
+      "title": "Women's Wool Cruiser - Natural Grey (Natural White Sole) - 5",
+      "price": 10500,
+      "image_url": "https://cdn.shopify.com/s/files/1/1104/4168/files/A11724_25Q3_Wool-Cruiser-Natural-Grey-Natural-White-Sole_PDP_LEFT__1_d5b7101e-dcbb-4bbf-a3e4-d691971cf3ec.png?v=1754504857"
+     },
+     "quantity": 1,
+     "totals": [
+      {
+       "type": "subtotal",
+       "amount": 10500,
+       "display_text": "Subtotal"
+      },
+      {
+       "type": "total",
+       "amount": 10500,
+       "display_text": "Total"
+      }
+     ]
+    }
+   ],
+   "discounts": {
+    "codes": [],
+    "applied": []
+   },
+   "totals": [
+    {
+     "type": "subtotal",
+     "amount": 10500,
+     "display_text": "Subtotal"
+    },
+    {
+     "type": "tax",
+     "amount": 656,
+     "display_text": "Tax"
+    },
+    {
+     "type": "total",
+     "amount": 11156,
+     "display_text": "Total"
+    }
+   ],
+   "fulfillment": {
+    "methods": []
+   },
+   "expires_at": "2026-12-02T08:16:02Z",
+   "payment": {
+    "instruments": []
+   },
+   "messages": [
+    {
+     "type": "error",
+     "content_type": "plain",
+     "code": "extension_interaction_required",
+     "content": "An extension interaction is required to complete the checkout.",
+     "severity": "requires_buyer_input"
+    },
+    {
+     "type": "error",
+     "content_type": "plain",
+     "code": "delivery_address_required",
+     "content": "A destination address is required in order to continue.",
+     "severity": "recoverable"
+    },
+    {
+     "type": "error",
+     "content_type": "plain",
+     "code": "delivery_no_delivery_available",
+     "content": "Your cart has been updated and the items you added can\u2019t be shipped to your address. Remove the items to complete your order.",
+     "severity": "recoverable"
+    }
+   ],
+   "status": "requires_escalation",
+   "continue_url": "https://weareallbirds.myshopify.com/cart/c/hWNIfvVeLmOO9mSVaX0RYEC1?key=6VlwpKH7bnXmYf9kmz3MSy7QujznkhbUuLmWjUDjzmbcM3Squ-lYn1FvdbkFcTxw-SnRucyZ0OVsDPODgKSlDGHST02ldiXEALNTHC2pfNRfXCmSkPlTSSxpdVFU58TEODwtW0dlIG997an751i19w%3D%3D"
+  }
+ }
+}

@@ -120,6 +120,7 @@ outlook_imap = ""          # tests: Outlook's IMAP server as "host:port:security
 outlook_smtp = ""          # tests: Outlook's SMTP server as "host:port:security" ("" = smtp-mail.outlook.com)
 shopify_auth = "https://api.shopify.com"          # Shopify's token endpoint (/auth/access_token)
 shopify_catalog = "https://catalog.shopify.com"   # Shopify's Global Catalog (/api/ucp/mcp, search_catalog)
+shopify_agent_profile = "https://shopify.dev/ucp/agent-profiles/examples/2026-08-25/valid-with-capabilities.json"   # meta.ucp-agent.profile of every UCP request
 
 [search]                   # the server's default keys for web search (web_search) and Flights & hotels; a key the
                            # user enters in Settings → Connections wins per provider. Web search tries Exa's free MCP,
@@ -130,9 +131,9 @@ exa_key = ""               # OMUSE_EXA_KEY
 free_exa = true            # Exa's public MCP server (no key, rate-limited) as the first choice of the chain
 serpapi_key = ""           # OMUSE_SERPAPI_KEY — flights, hotels and restaurants only (Google Flights / Hotels / Maps), never web search
 
-[shopping]                 # the server's default Shopify credentials (Dev Dashboard → your app); the ones the user
-                           # enters in Settings → Connections win. Product search uses Shopify's Global Catalog with a token
-                           # these are exchanged for (60 minutes); checkout is the merchant's page, the final click the user's.
+[shopping]                 # the server's Shopify credentials (Dev Dashboard → your app). Product search uses Shopify's
+                           # Global Catalog with a token these are exchanged for (60 minutes); the checkout is built on the
+                           # merchant's UCP Checkout MCP by API and the user pays on its prefilled checkout link.
 shopify_client_id = ""     # OMUSE_SHOPIFY_CLIENT_ID
 shopify_client_secret = "" # OMUSE_SHOPIFY_CLIENT_SECRET — never shown in Settings
 

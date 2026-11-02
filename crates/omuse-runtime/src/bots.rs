@@ -282,7 +282,10 @@ mod tests {
     #[test]
     fn built_in_bots_parse_with_main_first_and_known_skills() {
         let ids: Vec<&str> = all().iter().map(|b| b.id.as_str()).collect();
-        assert_eq!(ids, ["main", "travel", "insurance", "cards", "photos"]);
+        assert_eq!(
+            ids,
+            ["main", "travel", "insurance", "cards", "photos", "shopping"]
+        );
         for b in all() {
             assert!(
                 !b.name.is_empty()
