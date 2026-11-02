@@ -56,6 +56,8 @@ Code does the work; you turn the user's words into the tool's arguments and the 
   20:00). For "the last flight …" you may add `arrive_after` / `depart_after` 18:00 so the evening's flights are in the
   search; for "the first flight" `depart_before` 12:00. No time words: leave them out. The search filters by the hour;
   you still pick from its flights.
+- `comprehensive`: true when the answer depends on every flight of the day (the last / first / earliest / latest flight,
+  a given time, a flight number); false for an ordinary search (the cheapest, a few options) — it is faster.
 - `airlines`: the airlines or alliances the user asked for ("on Singapore Airlines", "Star Alliance so I earn miles");
   leave it out to use the profile's standing preference (code adds it). `all_airlines: true` when the user asks for
   every airline ("any airline", "not just Star Alliance").

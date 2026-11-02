@@ -105,6 +105,12 @@ pub fn time_window(a: &Value) -> TimeWindow {
     }
 }
 
+/// SerpApi's deep search for a flight search (every flight Google Flights' own page lists; slower): unless the
+/// model's `comprehensive` is false — an ordinary search gets the faster, shorter list.
+pub fn deep_search(a: &Value) -> bool {
+    a.get("comprehensive").and_then(Value::as_bool) != Some(false)
+}
+
 /// The window as Google Flights' `outbound_times` (SerpApi: two or four comma-separated hours, each the beginning of an
 /// hour — `4,18` = departing 4:00 AM–7:00 PM, `4,18,3,19` adds arriving 3:00 AM–8:00 PM): the start's hour, and the
 /// hour the end falls in (an end on the hour, the hour before). `None` without a window.
@@ -1263,9 +1269,12 @@ impl SerpApi {
             ("currency", currency.clone()),
             ("hl", "en".to_string()),
             ("sort_by", sort.to_string()),
-            // every flight Google Flights' own page lists for the day (SerpApi's deep search), not a shorter list
-            ("deep_search", "true".to_string()),
         ];
+        // every flight Google Flights' own page lists for the day (SerpApi's deep search, slower) when the request
+        // depends on all of them — the model's `comprehensive` (absent: complete); else the faster, shorter list
+        if deep_search(a) {
+            params.push(("deep_search", "true".to_string()));
+        }
         if let Some(st) = stops_param(a) {
             params.push(("stops", st.to_string()));
         }
@@ -1781,6 +1790,14 @@ mod tests {
         assert_eq!(m["by_date"][2]["count"], 0);
         assert_eq!(m["searched"]["dates"], "2026-12-01 to 2026-12-03 (3 days)");
         assert_eq!(m["searched"]["cabin"], "business");
+    }
+
+    #[test]
+    fn deep_search_follows_the_models_comprehensive_flag() {
+        assert!(deep_search(&json!({"comprehensive": true})));
+        assert!(!deep_search(&json!({"comprehensive": false})));
+        // without the flag: complete, as before
+        assert!(deep_search(&json!({})));
     }
 
     #[test]

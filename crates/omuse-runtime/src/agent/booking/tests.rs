@@ -2488,6 +2488,24 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
 }
 
 #[test]
+fn how_complete_a_flight_search_is_is_the_models_flag() {
+    // the user, 2026-11-02: the model decides from the request whether the search must list every flight (SerpApi's
+    // deep search); Kiwi.com ignores it
+    let p = profile();
+    for (given, want) in [(Some(true), true), (Some(false), false), (None, true)] {
+        let mut args =
+            json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03"});
+        if let Some(g) = given {
+            args["comprehensive"] = json!(g);
+        }
+        let a = valid(TRAVEL_SEARCH, args, "flights to Singapore tomorrow", &p);
+        assert_eq!(a["comprehensive"], want, "{a}");
+        let req = Req::from_args(&a);
+        assert_eq!(req.search_args(Kind::Flight)["comprehensive"], want);
+    }
+}
+
+#[test]
 fn a_time_window_must_be_hh_mm_and_belongs_to_flights_only() {
     let p = profile();
     let texts: Vec<String> = Vec::new();

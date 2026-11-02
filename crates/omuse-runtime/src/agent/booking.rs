@@ -190,6 +190,7 @@ pub fn tool_schemas() -> Vec<Value> {
     travel["depart_after"] = json!({"type": "string", "description": "flight: HH:MM local at the departure airport — copy the user's own time limit (\"after 6 pm\" → 18:00); empty when the user gave none"});
     travel["depart_before"] = json!({"type": "string", "description": "flight: HH:MM local at the departure airport — the user's limit (\"leave before noon\" → 12:00); empty when none"});
     travel["arrive_after"] = json!({"type": "string", "description": "flight: HH:MM local at the arrival airport — the user's limit; for \"the last flight …\" you may narrow the search to the evening (18:00) so the last ones are in it; empty when none"});
+    travel["comprehensive"] = json!({"type": "boolean", "description": "flight: true when the answer depends on seeing EVERY flight of the day — the last / first / earliest / latest flight, a flight at a given time, a flight number — a slower, complete search; false for an ordinary search (the cheapest, a few options)"});
     travel["arrive_before"] = json!({"type": "string", "description": "flight: HH:MM local at the arrival airport — the user's limit (\"lands before midnight\" → 23:59, \"by 8 pm\" → 20:00); empty when none. The search filters by the hour; the pick from its flights (travel_pick) is yours"});
     let search = fn_(
         TRAVEL_SEARCH,
@@ -474,6 +475,14 @@ fn check_travel(a: &Value, cx: &Ctx, book: bool) -> Checked {
                 )),
             }
             out.insert("nonstop".into(), json!(b_arg(a, "nonstop")));
+            // how complete the search must be (the model's judgement of the request): without it, complete
+            out.insert(
+                "comprehensive".into(),
+                json!(a
+                    .get("comprehensive")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)),
+            );
             // the user's local time window: HH:MM (24-hour), passed to the search's own time filter
             for k in TIME_KEYS {
                 let v = s_arg(a, k);
@@ -1179,6 +1188,8 @@ pub struct Req {
     pub book: bool,
     /// a flight's local time window as given ((`depart_after` …, HH:MM)), passed to the search's own time filter
     pub times: Vec<(String, String)>,
+    /// a flight search that must list every flight of the day (the model's `comprehensive`; SerpApi's deep search)
+    pub comprehensive: bool,
 }
 
 impl Req {
@@ -1226,6 +1237,10 @@ impl Req {
             pick: s_arg(a, "pick"),
             next: list_arg(a, "next"),
             book: b_arg(a, "book"),
+            comprehensive: a
+                .get("comprehensive")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
             times: TIME_KEYS
                 .iter()
                 .map(|k| (k.to_string(), s_arg(a, k)))
@@ -1270,6 +1285,7 @@ impl Req {
                 for (k, v) in &self.times {
                     a[k.as_str()] = json!(v);
                 }
+                a["comprehensive"] = json!(self.comprehensive);
                 a
             }
             Kind::Hotel => {
