@@ -7,8 +7,7 @@ tests/shop_common.py): memory and a scheduled job.
    about running shoes. Checked: within two minutes the Memory page shows the shoe size that OMuse picked up by itself.
 3. schedule — "Every weekday at 8 am, summarise my new emails for me." Checked: Automations lists the job at 08:00 on
    weekdays; the user presses "Run now" and "Results". The Tasks tab lists the job with its next run and a link to its
-   chat; after the user deletes that chat, the next run's message is in a chat again at the same link; Delete on the
-   Tasks tab removes the job. (What the run says is the model's and the mailbox's, not checked.)
+   chat; deleting that chat removes the job from the Tasks tab. (What the run says is the model's and the mailbox's, not checked.)
 One TIMING line per request.
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh assistant_real"""
@@ -88,8 +87,7 @@ async def main():
             await u.page.goto(U.APP + "#chat")
             await u.page.wait_for_selector("#chatInput")
 
-        # ---- 3b. the Tasks tab: the job, its next run and its chat; the chat deleted comes back with the next run;
-        # Delete removes the job
+        # ---- 3b. the Tasks tab: the job, its next run and its chat; deleting the chat removes the job
         if card:
             pg = u.page
             accept = lambda d: asyncio.ensure_future(d.accept())   # noqa: E731 — the user confirms the browser's dialog
@@ -108,26 +106,16 @@ async def main():
             await pg.wait_for_timeout(2500)
             chat = " ".join((await pg.locator(".thread").inner_text()).split())
             check("tasks tab: the link opens the job's chat with the run in it", re.search(r"Scheduled run", chat), chat[:400])
-            # the user deletes that chat (🗑 in its header), then the job runs again
+            # the user deletes that chat (🗑 in its header): the job goes with it — stopped and gone from the Tasks tab
+            # (0.6.1, the user's rule)
             pg.once("dialog", accept)
             await pg.locator(".thread button", has_text="🗑").first.click()
-            await pg.wait_for_timeout(1500)
-            await S.press_on_card(u, "8", "Run now")
-            await pg.wait_for_timeout(3000)
-            await pg.goto(U.APP + "#chat/" + cid)
-            await pg.wait_for_timeout(3000)
-            chat = " ".join((await pg.locator(".thread").inner_text()).split())
-            check("tasks tab: after the chat was deleted, the next run's message is in a chat again (same link)",
-                  re.search(r"Scheduled run", chat), chat[:400])
-            # Delete on the Tasks tab
-            await pg.goto(U.APP + "#timers")
             await pg.wait_for_timeout(2500)
-            pg.once("dialog", accept)
-            await pg.locator("#view .card", has_text=re.compile("email", re.I)).first.locator("button", has_text="Delete").click()
+            await pg.goto(U.APP + "#timers")
             await pg.wait_for_timeout(2500)
             tasks = " ".join((await pg.locator("#view").inner_text()).split())
             left = await pg.locator("#view .card", has_text=re.compile("email", re.I)).count()
-            check("tasks tab: Delete removes the job", left == 0, tasks[:400])
+            check("tasks tab: deleting the job's chat removes the job", left == 0, tasks[:400])
             await pg.goto(U.APP + "#chat")
             await pg.wait_for_selector("#chatInput")
 

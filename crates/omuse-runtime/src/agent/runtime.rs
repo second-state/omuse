@@ -2853,8 +2853,11 @@ yourself; ask_bot is not available for it."
             let mut turn_text = resp.content.clone();
             // the compulsory workflow call (agent/required.rs): a loaded skill that asks through a workflow tool gets
             // that call before a final answer — the answer without it is not taken; the model is asked once more with
-            // the provider's forced tool choice, and its call goes through the JSON layer like any workflow call
-            if calls.is_empty() && !force_final && unmet.is_none() {
+            // the provider's forced tool choice, and its call goes through the JSON layer like any workflow call. A
+            // question to the user in place of the call is the same: what the call needs from the user, the tool asks
+            // itself (`needs_input`) — arrival_cards4_real 2026-11-02: asked for an arrival date that
+            // entry_requirements does not need
+            if super::required::only_questions(&calls) && !force_final && unmet.is_none() {
                 if let Some(need) = super::required::pending(&transcript) {
                     let offered: Vec<Value> = tools
                         .as_deref()

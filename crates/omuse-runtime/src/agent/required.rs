@@ -129,6 +129,12 @@ pub fn pending(transcript: &[Value]) -> Option<Need> {
     (!called).then_some(need)
 }
 
+/// A turn that gives no workflow call: no call at all, or only questions to the user (`ask_user`). Either way a
+/// loaded skill's workflow call is still owed: the tool asks the user what it needs itself (`needs_input`).
+pub fn only_questions(calls: &[crate::llm::ToolCall]) -> bool {
+    calls.iter().all(|c| c.name == "ask_user")
+}
+
 /// The provider's `tool_choice` for the forced call: the one tool by name, or `required` (one of the tools offered).
 pub fn tool_choice(tools: &[&str]) -> Value {
     match tools {
@@ -185,6 +191,21 @@ mod tests {
     }
     fn tool(id: &str, content: &str) -> Value {
         json!({"role": "tool", "tool_call_id": id, "content": content})
+    }
+
+    #[test]
+    fn a_question_in_place_of_the_call_still_owes_it() {
+        // arrival_cards4_real 2026-11-02: entry-requirements loaded, then ask_user for an arrival date the tool does
+        // not need — no call, the user asked
+        let tc = |name: &str| crate::llm::ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            args: json!({}),
+        };
+        assert!(only_questions(&[]));
+        assert!(only_questions(&[tc("ask_user")]));
+        assert!(!only_questions(&[tc("entry_requirements")]));
+        assert!(!only_questions(&[tc("ask_user"), tc("web_search")]));
     }
 
     #[test]
