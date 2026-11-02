@@ -5,10 +5,17 @@ and check the catalog on the way (duplicate cards, missing fields, unknown categ
     python3 skills/credit-card-picker/build_cards.py            # rebuild cards/*.md, exit 1 on a catalog problem
     python3 skills/credit-card-picker/build_cards.py --import ../personal_finance/crates/card_rewards/card_catalog.json
                                                                 # merge that catalog's cards (by issuer + product) first
+    python3 skills/credit-card-picker/build_cards.py --fx fx-us.json fx-hk.json …
+                                                                # merge researched foreign transaction fees: a JSON array
+                                                                # of {issuer, product, region, fx_fee_pct, source, checked}
+
+Every card carries its foreign transaction fee as data (`fx_fee_pct`, 0 = none, null = not known) with where and when it
+was read (`fx_source`, `fx_checked`): OMuse warns about a fee abroad from it in code (guards::with_fx_fees).
 
 The JSON is the source of truth; never edit the .md files by hand. See KNOWLEDGE.md at the repository root."""
 import datetime as dt
 import json
+import re
 import os
 import sys
 
@@ -17,10 +24,24 @@ CATALOG = os.path.join(HERE, "cards", "catalog.json")
 CATEGORIES = ["dining", "travel", "transit", "groceries", "gas", "online_retail", "streaming", "entertainment", "drugstore",
               "utilities", "insurance", "foreign", "other"]
 STALE_DAYS = 400
+# discontinued cards: never imported again (issuer, product, region)
+RETIRED = {("wells fargo", "bilt mastercard", "US")}   # ended 2026-02-06; holders moved to the new Bilt cards
 
 
 def key(c):
     return (c["issuer"].strip().lower(), c["product"].strip().lower(), c.get("region", "").upper())
+
+
+def card_id(c):
+    """The card's stable id: market, issuer and product as one slug ("sg-dbs-altitude-visa-signature"). The Vault keeps
+    it with a card the user holds (vault_add_card's card_id), so code finds the catalog row by id, never by name."""
+    words = re.sub(r"[^a-z0-9]+", "-", f"{c['issuer']} {c['product']}".lower()).strip("-")
+    return f"{c.get('region', '').lower()}-{words}"
+
+
+def with_ids(cat):
+    for c in cat["cards"]:
+        c["id"] = card_id(c)
 
 
 def trim(src):
@@ -30,6 +51,7 @@ def trim(src):
         "region": src.get("region") or "US", "currency": src.get("currency") or "USD", "network": src.get("network") or "",
         "unit": src.get("unit") or "points", "point_value_cents": src.get("point_value_cents"),
         "annual_fee_cents": src.get("annual_fee_cents"), "fx_fee_pct": src.get("fx_fee_pct"),
+        "fx_source": src.get("fx_source") or "", "fx_checked": src.get("fx_checked") or "",
         "rules": src.get("rules") or {}, "caps": src.get("caps") or {},
         "merchant_rules": [{"keywords": m.get("keywords") or [], "earn_rate": m.get("earn_rate"), "end_date": m.get("end_date"),
                             "notes": (m.get("notes") or "")[:160]} for m in (src.get("merchant_rules") or [])],
@@ -45,18 +67,23 @@ def load():
 
 
 def check(cat):
-    problems, seen = [], set()
+    problems, seen, ids = [], set(), set()
     for c in cat["cards"]:
         k = key(c)
         if k in seen:
             problems.append(f"duplicate card {c['issuer']} {c['product']} ({c.get('region')})")
         seen.add(k)
+        if c.get("id") in ids:
+            problems.append(f"duplicate id {c.get('id')}")
+        ids.add(c.get("id"))
         for f in ("issuer", "product", "region", "currency", "unit", "rules"):
             if not c.get(f):
                 problems.append(f"{c.get('issuer')} {c.get('product')}: missing {f}")
         for cat_name in c.get("rules", {}):
             if cat_name not in CATEGORIES:
                 problems.append(f"{c['issuer']} {c['product']}: unknown category {cat_name}")
+        if not c.get("fx_checked"):
+            problems.append(f"{c['issuer']} {c['product']} ({c.get('region')}): foreign transaction fee never researched (fx_checked)")
         if c.get("verified") and c.get("verified_at"):
             try:
                 age = (dt.date.today() - dt.date.fromisoformat(c["verified_at"][:10])).days
@@ -85,7 +112,7 @@ def row(c):
     fx = f"{c['fx_fee_pct']:g}%" if isinstance(c.get("fx_fee_pct"), (int, float)) else "?"
     ver = c["verified_at"][:10] if c.get("verified") and c.get("verified_at") else "UNVERIFIED (seed)"
     name = c["product"] + (f" ({', '.join(c['aliases'][:2])})" if c.get("aliases") else "")
-    return f"| {c['issuer']} | {name} | {c.get('network') or '?'} | {unit} | {money(c.get('annual_fee_cents'), c['currency'])} | {fx} | {rates or '—'} | {caps} | {merch} | {ver} |"
+    return f"| {c['id']} | {c['issuer']} | {name} | {c.get('network') or '?'} | {unit} | {money(c.get('annual_fee_cents'), c['currency'])} | {fx} | {rates or '—'} | {caps} | {merch} | {ver} |"
 
 
 def build(cat):
@@ -98,9 +125,12 @@ def build(cat):
                  "Earn rates are per canonical category (dining, travel, transit, groceries, gas, online_retail, streaming, "
                  "entertainment, drugstore, utilities, insurance, foreign, other); caps and merchant rules override them; "
                  "a row marked UNVERIFIED is a seed from general knowledge — verify on the issuer's page before relying on it. "
-                 "Point values are cents per point at a plain redemption. Generated by build_cards.py from cards/catalog.json — do not edit.", "",
-                 "| Issuer | Card (aliases) | Network | Unit | Annual fee | FX fee | Earn rates | Caps | Merchant rules | Verified |",
-                 "|---|---|---|---|---|---|---|---|---|---|"]
+                 "Point values are cents per point at a plain redemption. FX fee = the foreign transaction fee (each researched "
+                 "with its source in catalog.json; ? = not known); OMuse adds it to an answer in code when a card is used "
+                 "outside its home market. ID = the card's catalog id: pass it as card_id to vault_add_card for a card the user "
+                 "holds. Generated by build_cards.py from cards/catalog.json — do not edit.", "",
+                 "| ID | Issuer | Card (aliases) | Network | Unit | Annual fee | FX fee | Earn rates | Caps | Merchant rules | Verified |",
+                 "|---|---|---|---|---|---|---|---|---|---|---|"]
         lines += [row(c) for c in cards]
         notes = []
         for c in cards:
@@ -123,7 +153,12 @@ def main():
         for s in src["cards"]:
             t = trim(s)
             k = key(t)
+            if k in RETIRED:
+                continue
             if k in have:
+                old = cat["cards"][have[k]]
+                if t.get("fx_fee_pct") is None and old.get("fx_checked"):   # keep the researched fee
+                    t.update({f: old.get(f) for f in ("fx_fee_pct", "fx_source", "fx_checked")})
                 cat["cards"][have[k]] = t
                 n_upd += 1
             else:
@@ -133,6 +168,28 @@ def main():
         cat["note"] = "Imported from personal_finance card_catalog.json and hand-maintained; see KNOWLEDGE.md."
         json.dump(cat, open(CATALOG, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         print(f"imported: {n_new} new, {n_upd} updated")
+    if "--fx" in sys.argv:
+        have = {key(c): c for c in cat["cards"]}
+        n = 0
+        for path in sys.argv[sys.argv.index("--fx") + 1:]:
+            if path.startswith("--"):
+                break
+            for r in json.load(open(path, encoding="utf-8")):
+                c = have.get(key(r))
+                if c is None:
+                    print("PROBLEM fx for an unknown card:", r.get("issuer"), r.get("product"), r.get("region"))
+                    continue
+                fee = r.get("fx_fee_pct")
+                c["fx_fee_pct"] = float(fee) if isinstance(fee, (int, float)) else None
+                c["fx_source"] = r.get("source") or ""
+                c["fx_checked"] = r.get("checked") or dt.date.today().isoformat()
+                n += 1
+        json.dump(cat, open(CATALOG, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        print(f"fx: {n} cards updated")
+    before = json.dumps(cat, ensure_ascii=False, sort_keys=True)
+    with_ids(cat)
+    if json.dumps(cat, ensure_ascii=False, sort_keys=True) != before:
+        json.dump(cat, open(CATALOG, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     problems = check(cat)
     for p in problems:
         print("PROBLEM", p)

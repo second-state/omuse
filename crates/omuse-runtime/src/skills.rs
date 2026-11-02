@@ -97,7 +97,17 @@ pub fn front_matter(text: &str) -> HashMap<String, String> {
     for line in m[1].lines() {
         if let Some((k, v)) = line.split_once(':') {
             let k = k.trim();
-            if matches!(k, "name" | "description" | "browser" | "plan") {
+            if matches!(
+                k,
+                "name"
+                    | "description"
+                    | "browser"
+                    | "plan"
+                    | "steps"
+                    | "form"
+                    | "form_kind"
+                    | "profile"
+            ) {
                 out.insert(
                     k.to_string(),
                     v.trim().trim_matches(|c| c == '"' || c == '\'').to_string(),
@@ -438,10 +448,12 @@ mod tests {
         assert_eq!(fm.get("name").unwrap(), "Flight-Watch");
         assert_eq!(fm.get("description").unwrap(), "Watch a flight");
         assert!(!fm.contains_key("other"));
-        let fm = front_matter("---\nname: y\nbrowser: off\nplan: on\nprofile: x\n---\n");
+        let fm = front_matter("---\nname: y\nbrowser: off\nplan: on\nsteps: 70\nprofile: nationality\ncolor: x\n---\n");
         assert_eq!(fm.get("browser").unwrap(), "off");
+        assert_eq!(fm.get("steps").unwrap(), "70");
         assert_eq!(fm.get("plan").unwrap(), "on");
-        assert!(!fm.contains_key("profile"), "unknown keys are ignored");
+        assert_eq!(fm.get("profile").unwrap(), "nationality");
+        assert!(!fm.contains_key("color"), "unknown keys are ignored");
         assert!(front_matter("# No front matter\n").is_empty());
         assert!(front_matter("---\nname: x\n").is_empty());
         let fm = front_matter("---\nname: x\n---");

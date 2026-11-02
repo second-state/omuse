@@ -136,15 +136,19 @@ check("en: planner told to plan in English", (t.get("plan") or {}).get("objectiv
 # a Chinese message in English mode still gets the English rule (the setting decides, not the message)
 check("en: setting wins over a Chinese request", "SYS_CJK=0" in res)
 
-# the model answers in Chinese anyway (memory says the user likes Chinese) -> OMuse asks once for an English rewrite
+# the model answers in Chinese anyway (memory says the user likes Chinese) -> the final review (the model, given the
+# language setting) finds the reply against the rule and the model writes it again in English
+cjk = lambda x: any("一" <= ch <= "鿿" for ch in x or "")   # noqa: E731
 r = c.post(B + "/api/chat", json={"message": "ZHANSWER 帮我看看最重要的邮件"}, headers=H).json()
 t = wait(r["task_id"])
-check("en: a Chinese final answer is rewritten in English", (t.get("result") or "").startswith("Here is the most important email")
-      and any(e["type"] == "language_fixed" for e in t["events"]), t.get("result"))
+# the outcome: the language_fixed event, and the answer the user gets holds no Chinese
+check("en: a Chinese final answer is fixed to English (language_fixed event; no Chinese in the result)",
+      any(e["type"] == "language_fixed" for e in t["events"]) and bool((t.get("result") or "").strip()) and not cjk(t.get("result")), t.get("result"))
 c.put(B + "/api/settings", json={"language": "zh"}, headers=H)
 r = c.post(B + "/api/chat", json={"message": "ZHANSWER 帮我看看最重要的邮件"}, headers=H).json()
 t = wait(r["task_id"])
-check("zh: Chinese answers are left alone", (t.get("result") or "").startswith("最重要的邮件"), t.get("result"))
+check("zh: Chinese answers are left alone (no language_fixed event; the result is Chinese)",
+      not any(e["type"] == "language_fixed" for e in t["events"]) and cjk(t.get("result")), t.get("result"))
 
 # 0.2.29: Settings → Reply language = "match": each request is answered in the language it was written in
 c.put(B + "/api/settings", json={"language": "zh", "reply_language": "match"}, headers=H)
@@ -158,11 +162,13 @@ check("match: a Chinese request gets the Chinese rule", "RULE=语言：简体中
 c.put(B + "/api/settings", json={"language": "en", "reply_language": "match"}, headers=H)
 t, res = langcheck()
 check("match + English UI: a Chinese request is answered in Chinese", "RULE=语言：简体中文" in res, res)
-# 0.2.34: English app, but a Chinese request for text to use as written (a poem) runs in Chinese
+# 0.2.34: English app, but a Chinese request for text to use as written (a poem): the poem the user gets is Chinese —
+# the model's language rule (the system prompt's exceptions line) decides, and the review leaves it (no code guess)
 c.put(B + "/api/settings", json={"language": "en", "reply_language": ""}, headers=H)
-r = c.post(B + "/api/chat", json={"message": "LANGCHECK 帮我写一首关于新加坡雨季的现代诗"}, headers=H).json()
+r = c.post(B + "/api/chat", json={"message": "ZHPOEM 帮我写一首关于新加坡雨季的现代诗"}, headers=H).json()
 t = wait(r["task_id"])
-check("en app + Chinese poem request: the task runs in Chinese", "RULE=语言：简体中文" in (t.get("result") or ""), t.get("result"))
+check("en app + Chinese poem request: the poem comes out in Chinese (and is not rewritten)",
+      cjk(t.get("result")) and not any(e["type"] == "language_fixed" for e in t["events"]), t.get("result"))
 t, res = langcheck()
 check("en app + ordinary Chinese request: still English", "RULE=LANGUAGE: ENGLISH" in res, res)
 c.put(B + "/api/settings", json={"language": "zh", "reply_language": ""}, headers=H)

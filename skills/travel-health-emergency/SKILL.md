@@ -8,6 +8,15 @@ Calm, numbered, specific. Life-threatening → the local emergency number first 
 Verify any phone number or address you did not read on an official page (browser_read, date checked); never give a
 number from a web search snippet as an emergency line.
 
+**First, in ONE turn, before any web search**: `emergency_contacts` (country, city, the emergency: illness_or_injury or
+lost_or_stolen_documents — the official medical line, or the consular line and the embassy, from checked tables; its
+code appends its show facts to the answer), profile_get (nationality — it decides which embassy) and gmail_search
+`insurance (policy OR certificate OR assistance OR travel)` (the 24-hour assistance line and what the policy pays). Then
+find the official page of **that country's** embassy in the city (web_search "<nationality> embassy <city> lost passport"
+or "<nationality> embassy <city> medical") and browser_read it. Never answer "contact your embassy" without naming it:
+the answer carries the embassy's hours, what to bring and its phone / emergency line as read on its page, and the
+insurer's assistance line from the policy.
+
 ## 1. Emergency numbers (checked Oct 2026 — still verify when it matters)
 Japan 110 police / 119 fire & ambulance · Korea 112 / 119 · Mainland China 110 / 120 ambulance / 119 fire · Hong Kong
 999 · Taiwan 110 / 119 · Singapore 999 / 995 · Malaysia 999 · Thailand 191 police / 1669 ambulance / 1155 tourist
@@ -23,7 +32,9 @@ hotel front desk can call too.
 - Where to go: the embassy's list of English-speaking hospitals / clinics (browser_read the embassy page for the
   city), international clinics in big cities, hotel doctors; pharmacies: Japan (drugstores, pharmacist for some
   medicines), Korea (약국), Thailand (pharmacies sell many medicines over the counter), Singapore (Guardian, Watsons,
-  polyclinics). Say what you found with the date; don't rank hospitals by quality from memory.
+  polyclinics). Say what you found with the date; don't rank hospitals by quality from memory. Name at least one
+  clinic or hospital with its address and **its phone number as the page you read gives it** (the user calls it to
+  book or check opening hours), plus the local ambulance number for an emergency.
 - Medication: bring prescriptions in generic names; Japan's import rules (1-month supply, banned stimulants, Yakkan
   Shoumei for more) are in `entry-requirements`; some drugs legal at home are controlled in Japan, Korea, Singapore,
   Thailand, UAE transit.
@@ -34,12 +45,17 @@ hotel front desk can call too.
 ## 3. Lost or stolen passport
 1. Police report at the nearest station (needed for the replacement and the insurance; in Japan at a kōban).
 2. The user's embassy / consulate in that city: browser_read its page for emergency travel documents, hours and what
-   to bring (photos, the police report, a copy of the old passport — memory_search / files_search "passport copy",
-   proof of travel); many issue an emergency passport in a day or two; appointments online.
+   to bring; many issue an emergency passport in a day or two; appointments online. The answer always gives **the
+   embassy's phone number and its 24-hour consular emergency line exactly as its page lists them**, and lists **what to
+   bring**, spelled out even when you link the page: passport photos (the size the page gives), the police report, a
+   copy of the old passport (memory_search / files_search "passport copy"), another photo ID, proof of travel.
 3. The host country's exit requirement: a replacement visa / exit permit may be needed before departure (Japan:
    re-entry not needed for tourists; China and Vietnam usually need an exit visa from the local immigration office).
-4. Tell the airline / change flights if the dates slip (`flight-disruption`); insurance often covers the extra nights.
-5. Afterwards: report the passport number as lost to the home authority; memory_remember the new document details
+4. Tell the airline / change flights if the dates slip (`flight-disruption`).
+5. The travel insurance: a step of its own in the answer — the insurer's name, its **24-hour assistance line copied from
+   the policy email** (call it: it can help with the replacement and the extra nights), what the policy pays for a lost
+   passport and the proof it needs (usually the police report and receipts). No policy found → say so in one line.
+6. Afterwards: report the passport number as lost to the home authority; memory_remember the new document details
    only in the vault (the user adds it), never in memory or files.
 
 ## 4. Natural events and alerts

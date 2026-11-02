@@ -205,6 +205,7 @@ October 2026 and carry their date.
 - Entry: MOFA mofa.go.jp (visa exemptions), Immigration Services Agency moj.go.jp/isa, Visit Japan Web
   vjw-lp.digital.go.jp; departure tax and tax-free: Japan Tourism Agency mlit.go.jp/kankocho, customs.go.jp, nta.go.jp.
 - Travel: JNTO japan.travel, GO TOKYO gotokyo.org.
+- Narita Express departure times: `train_times` (code reads JR East's timetable for the day; code appends its show facts to the reply).
 - Transport: JR East jreast.co.jp/e, japanrailpass.net, Tokyo Metro tokyometro.jp/en, Toei kotsu.metro.tokyo.jp,
   keisei.co.jp, Keikyu, Tokyo Monorail, Narita and Haneda airport sites.
 - City facts and living: Tokyo Metropolitan Government metro.tokyo.lg.jp and toukei.metro.tokyo.lg.jp, ward office

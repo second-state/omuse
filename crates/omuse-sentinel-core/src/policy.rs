@@ -9,13 +9,14 @@ use std::sync::{Arc, LazyLock};
 
 use anyhow::Result;
 use parking_lot::RwLock;
+use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use omuse_common::pyjson::py_repr;
 use omuse_common::util::{as_f64, get_str, py_str, truthy};
 
-use crate::store::{field_f64, field_i64, field_str, Store};
+use crate::store::{field_i64, field_str, Store};
 use crate::{catalog, guard, vault};
 
 pub const ALLOW: &str = "ALLOW";
@@ -28,6 +29,57 @@ pub const PER_USE_TOOLS: &[&str] = &["browser_fill_secret", "purchase_confirm"];
 pub const BULK_MAIL: usize = 5;
 /// `app/sentinel/ical.py: READ_ONLY` — the refusal for write tools on an iCal (read-only) calendar connection.
 pub const ICAL_READ_ONLY: &str = "这是只读的 iCal 日历连接，不能新建、修改或删除日程。要写入日程，请在「连接 → Google 日历」用 Google 登录连接 (read-only iCal connection: sign in with Google to add or change events)";
+
+/// The refusal for a card whose number, expiry or CVC is still `UNKNOWN` (added by its name).
+fn card_details_missing(label: &str) -> String {
+    format!(
+        "「{label}」只有卡名，卡号、有效期和安全码还没存进保险箱：请用户在「记忆 → 保险箱」里补上，或接管浏览器自己填写。\
+ ({label} is in the Vault by its name only — its number, expiry and CVC are UNKNOWN. Ask the user to add them in \
+Memory → Vault, or to take over the browser and type them; never type UNKNOWN into a form.)"
+    )
+}
+
+/// The refusal for the last click of a purchase, booking or order change: the agent hands the filled page to the user.
+fn hand_over_click(button: &str, what: &str) -> String {
+    format!(
+        "「{button}」这一步由用户自己点：先把页面上能填的都填好（保险箱里完整的卡可以填；只有卡名、卡号未知的卡或没有卡时，卡号留给用户），\
+然后调用 browser_request_takeover，原因写「请核对页面，补上缺的内容，自己点「{button}」；完成后交回浏览器」，交回后读结果页告诉用户。\
+ (\"{button}\" {what}: that click is the user's own. Fill everything else on the page first — the card from the Vault when \
+it is complete; a card saved by name only, or no card, is left for the user — then call browser_request_takeover with the \
+reason \"Review the page, fill in what is missing and press {button} yourself; hand the browser back when it is done\", \
+and after the hand-back read the result page and tell the user.)"
+    )
+}
+
+/// Whether a click on `label` submits what the user files themselves: on an arrival card (`kind` = "arrival") a
+/// submit, send, confirm, declare or pay button; on a claim (`kind` = "claim") a submit button. Other runs: never.
+pub fn user_submit_click(kind: &str, label: &str) -> bool {
+    static ARRIVAL: LazyLock<Regex> = LazyLock::new(|| {
+        // not "Confirm": a terms page's Confirm only opens the form (cards_real 2026-10-31: Korea's e-Arrival card)
+        // nor "Declaration" (a heading or a tile: China's "Entry Declaration" opens the form)
+        Regex::new(r"(?i)\bsubmit|\bsend\b|\bpay\b|提交|递交|送出").unwrap()
+    });
+    static CLAIM: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\bsubmit|提交|递交").unwrap());
+    match kind {
+        "arrival" => ARRIVAL.is_match(label),
+        "claim" => CLAIM.is_match(label),
+        _ => false,
+    }
+}
+
+/// A passport / travel-document number or expiry box: those values come only from the Vault (arrival_cards2_real
+/// 2026-10-30: China's card got a made-up expiry typed in, "06/09/2031" for 01/05/2031).
+/// Also an identity-card number box (NRIC, HKID, FIN, national ID) and a card number / security-code box: those are
+/// Vault values too, filled with browser_fill_secret — never typed (a "last 4 digits" box is not one).
+fn passport_field(label: &str) -> bool {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)(passport|travel document|护照|证件).{0,30}(expir|valid|number|\bno\b|号码|有效期|到期)|\b(nric|hkid|fin)\b|identity card|national id|身份证|身份證|(credit |debit )?card ?(number|no\b|号)|卡号|\bcv[cv2]\b|security code|安全码").unwrap()
+    });
+    static LAST4: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)last (4|four)|后四位|後四位").unwrap());
+    RE.is_match(label) && !LAST4.is_match(label)
+}
 
 /// `RISK_ORDER` (unknown risks rank lowest).
 pub fn risk_order(risk: &str) -> i64 {
@@ -91,16 +143,19 @@ impl Decision {
         self.decision == ASK
     }
 
-    /// Whether "auto-approve browser actions" may approve this ASK on the user's behalf: a browser tool, not a
-    /// vault fill or an upload (the user's own information leaving the machine), not a per-use decision (money,
-    /// order changes) and not after a suspected prompt injection. Logins and takeovers never come through here.
+    /// Whether "auto-approve browser actions" (on by default; off only when the user turns it off in Settings) approves
+    /// this ASK on the user's behalf: with it on, nothing in the browser asks — page loads, clicks, typing, vault fills
+    /// (a passport number into an arrival card), uploads, the purchase confirmation and the pay / order-change clicks,
+    /// also after a suspected prompt injection (user, 2026-10-30: "with auto approve, it should not ask permission at
+    /// any time"). Each one is still recorded as an approval decided by "auto" and audited. A takeover (sign-in, the
+    /// user's own Submit) is a hand-over, not an approval, and never comes through here.
+    /// Since 2026-10-31 it covers every action that would ask, not only the browser's (user: "make sure that we
+    /// automatically approve everything by default. Only ask the user to do the final submission or payment") — mail,
+    /// calendar, Drive, phone calls, connectors too. Refusals (DENY: Vault secrets, blocked sites, the final submit /
+    /// pay click that is handed over) are untouched.
     pub fn browser_auto_ok(&self, tool: &str) -> bool {
+        let _ = tool;
         self.decision == ASK
-            && tool.starts_with("browser_")
-            && tool != "browser_fill_secret"
-            && tool != "browser_upload"
-            && !self.per_use
-            && !self.injected
     }
 
     /// `dataclasses.asdict(d)`.
@@ -451,10 +506,13 @@ pub fn decide(
                     && guard::named_in_request(&store.user_request(task_id)?, &dom))
             {
                 bump(&mut risk, "high");
-                reasons.push(
-                    "本任务已读取机密数据，且此网址带有参数，可能造成数据外泄 (data egress check)"
-                        .into(),
-                );
+                // the address is named: a read has no open page, so the dialog's Site / Page would show nothing
+                // (browser_auto_real 2026-10-31: "Site — Page —" for the Google Maps search it was approving)
+                reasons.push(format!(
+                    "本任务已读取机密数据，且此网址带有参数，可能造成数据外泄：{} (data egress check: {})",
+                    omuse_common::util::take_chars(u, 160),
+                    omuse_common::util::take_chars(u, 160)
+                ));
                 break;
             }
             if !injection.is_empty()
@@ -514,7 +572,7 @@ pub fn decide(
         bump(&mut risk, "high");
         reasons.push("无法确认这个位置上是什么元素 (can't tell what is at this position)".into());
     }
-    let mut per_use = false;
+    let per_use = false;
     if tool == "purchase_confirm" {
         let raw = get_str(args, "site");
         let raw = raw.trim();
@@ -525,21 +583,34 @@ pub fn decide(
         if site.is_empty() || total <= 0.0 || !truthy(&args["items"]) {
             return Ok(Decision::new(DENY, "high", "purchase_confirm 需要 site、items 和页面上的总价 total (site, items and the page total are required)"));
         }
-        if truthy(&args["card_item_id"])
-            && vault::item(store, &get_str(args, "card_item_id"))?.is_none()
-        {
-            return Ok(Decision::new(
-                DENY,
-                "high",
-                "保险箱里没有这张卡，请先用 vault_list 查看 (unknown vault item)",
-            ));
+        if site.ends_with("omuse.local") {
+            // a link's stand-in host and no page open to take the real site from (routes::act::purchase_site)
+            return Ok(Decision::new(DENY, "high", "先打开显示总价的预订/结账页面，再在那个页面上调用 purchase_confirm (open the booking or checkout page that shows the total first, then call purchase_confirm on it)"));
+        }
+        if truthy(&args["card_item_id"]) {
+            let Some(card) = vault::item(store, &get_str(args, "card_item_id"))? else {
+                return Ok(Decision::new(
+                    DENY,
+                    "high",
+                    "保险箱里没有这张卡，请先用 vault_list 查看 (unknown vault item)",
+                ));
+            };
+            // a card added by its name: nothing to pay with until the user adds its number, expiry and CVC
+            if !vault::item_missing(&card).is_empty() {
+                return Ok(Decision::new(
+                    DENY,
+                    "high",
+                    card_details_missing(&field_str(&card, "label")),
+                ));
+            }
         }
         return Ok(Decision::with_dest(
             ASK,
             "high",
             format!(
-                "确认这次购买：{site}，总价 {} {total:.2}；批准后本网站这笔订单的结账、填卡、下单不再逐个审批（30 分钟内，金额不超过这个总价） (one approval for the whole purchase)",
-                get_str(args, "currency")
+                "确认这次购买：{site}，总价 {cur} {total:.2}，批准后本网站这笔订单的结账、填卡、下单不再逐个审批（30 分钟内，金额不超过这个总价） \
+                 (confirm this purchase on {site}, total {cur} {total:.2} — one approval for the whole order, for 30 min and up to this total)",
+                cur = get_str(args, "currency")
             ),
             &site,
         ));
@@ -548,54 +619,59 @@ pub fn decide(
     if injection.is_empty() && page.is_some() && (is_click || tool == "browser_fill_secret") {
         purchase = store.active_purchase(task_id, &guard::domain_of(&page_url))?;
     }
+    // the last click of a purchase, a booking or an order change is always the user's (user, 2026-10-30): the agent
+    // fills the page, then hands it over — whatever the approval settings say. The Vault rarely holds a complete card,
+    // and paying or cancelling is the user's own act.
+    // an arrival card's or a claim's Submit is the user's (the runtime marks those runs: `user_submits` on the click),
+    // judged from the element's own label as the browser describes it — never from a snapshot in the transcript,
+    // which may be cut short (cards_interruption_real 2026-10-31: the "Submit claim" line fell off a long snapshot and
+    // the agent's click went through)
+    // (a button that submits — a link is navigation: Taiwan's home page tile "Submit Arrival Card" opens the form)
+    let is_link = elem.is_some_and(|e| {
+        get_str(e, "role").eq_ignore_ascii_case("link")
+            || get_str(e, "tag").eq_ignore_ascii_case("a")
+    });
+    if is_click
+        && elem.is_some()
+        && !is_link
+        && user_submit_click(&get_str(args, "user_submits"), &elem_name)
+    {
+        return Ok(Decision::new(
+            DENY,
+            "high",
+            hand_over_click(&elem_name, "submits the user's own declaration or claim"),
+        ));
+    }
     if is_click && elem.is_some() && guard::order_change_click(&elem_name) {
-        bump(&mut risk, "high");
-        per_use = true;
-        reasons.push(format!(
-            "「{elem_name}」会取消/退掉一个订单或预订，撤不回来：每次都要你单独批准，请先核对页面上的订单号 (changes an order — approved one by one; check the order number on this page: {})",
-            opt_str(page, "title")
+        return Ok(Decision::new(
+            DENY,
+            "high",
+            hand_over_click(&elem_name, "changes an order or a booking"),
         ));
     }
     let checkout_step = is_click
         && elem.is_some()
-        && !per_use
         && guard::checkout_step_click(&elem_name)
         && store.count_done(task_id, &["browser_fill_secret"])? == 0;
+    // ticking a box or picking an option ("I agree to a processing fee of up to HK$18") pays nothing: only a button or a
+    // link that pays is the user's click (app.apdtrefund.hk, 2026-10-30)
+    let tick = elem.is_some_and(|e| {
+        let role = opt_str(Some(e), "role").to_lowercase();
+        let itype = opt_str(Some(e), "input_type").to_lowercase();
+        ["checkbox", "radio", "switch", "option"].contains(&role.as_str())
+            || ["checkbox", "radio"].contains(&itype.as_str())
+    });
     if is_click
         && elem.is_some()
-        && !per_use
         && !checkout_step
+        && !tick
         && guard::money_click(&elem_name, &opt_str(elem, "input_type"), &page_url)
     {
-        bump(&mut risk, "high");
-        per_use = true;
-        reasons.push(format!(
-            "「{elem_name}」会花钱或确认付款：每次都要你单独批准，任何长期授权都不覆盖 (spends money — approved one by one, never by a standing grant)"
+        return Ok(Decision::new(
+            DENY,
+            "high",
+            hand_over_click(&elem_name, "pays or confirms a purchase / booking"),
         ));
-        if let Some(p) = purchase
-            .as_ref()
-            .filter(|p| field_i64(p, "clicks_left") > 0)
-        {
-            let shown = guard::page_total(&opt_str(page, "text"));
-            let max_total = field_f64(p, "max_total");
-            let limit = max_total * 1.02 + 0.5;
-            match shown {
-                Some(s) if s > limit => reasons.push(format!(
-                    "页面显示的总价 {s:.2} 超过了你确认的 {max_total:.2}，需要重新确认 (page total {s:.2} exceeds the confirmed {max_total:.2})"
-                )),
-                _ => {
-                    let pid = field_str(p, "id");
-                    store.use_purchase(&pid, "click")?;
-                    return Ok(Decision::with_dest(
-                        ALLOW,
-                        "high",
-                        format!("已在购买确认 {pid} 中批准 (covered by the purchase you confirmed)"),
-                        &dest,
-                    )
-                    .grant(&pid));
-                }
-            }
-        }
     }
     if let Some(e) = elem.filter(|_| is_click && !per_use && !checkout_step) {
         // a <button> reports type "submit" by default; outside a <form> it submits nothing (chat launchers, menus)
@@ -606,9 +682,16 @@ pub fn decide(
             String::new()
         };
         let cart_edit = guard::cart_edit_click(&elem_name, &page_url);
+        // the user asked for this very click: the model's `user_asked` (JSON), honoured on a browser_click only, only
+        // while the task has read nothing that looks like an injection, and never for a money / send / booking / terms
+        // label — the user's words are never read here
+        let user_asked = tool == "browser_click"
+            && args.get("user_asked").and_then(Value::as_bool) == Some(true)
+            && injection.is_empty()
+            && guard::click_skip_allowed(&elem_name);
         if !cart_edit
             && guard::click_is_risky(&get_str(e, "role"), &elem_name, &itype)
-            && !guard::user_named_click(&store.user_request(task_id)?, &elem_name)
+            && !user_asked
         {
             bump(&mut risk, "high");
             reasons.push(format!(
@@ -621,6 +704,14 @@ pub fn decide(
             return Ok(Decision::new(DENY, "high", "Agent 不能输入密码。请调用 browser_request_takeover 让用户接管输入 (use takeover for passwords)"));
         }
         let text = get_str(args, "text");
+        if !text.trim().is_empty() && passport_field(&elem_name) {
+            return Ok(Decision::new(DENY, "medium", format!(
+                "「{elem_name}」是证件或银行卡的号码、有效期或安全码：只能用 browser_fill_secret 从保险箱填，不要自己输入；保险箱里没有就留空，\
+在 browser_request_takeover 的原因里写明留给用户。 (\"{elem_name}\" is an ID document's or a card's number, expiry or \
+security code: fill it from the Vault with browser_fill_secret, never type it; if the Vault does not have it, leave it \
+for the user and say so in the takeover reason.)"
+            )));
+        }
         let is_search = elem.is_some_and(searchy);
         if truthy(&args["submit"]) && !is_search && !guard::filter_submit(elem, &text, &page_url) {
             bump(&mut risk, "high");
@@ -684,6 +775,9 @@ pub fn decide(
         };
         let fields = vault::item_fields(&it);
         let label = field_str(&it, "label");
+        if vault::item_missing(&it).contains(&field) {
+            return Ok(Decision::new(DENY, "high", card_details_missing(&label)));
+        }
         if !fields.contains(&field) {
             return Ok(Decision::new(
                 DENY,
@@ -738,8 +832,15 @@ pub fn decide(
             let doms = str_list(it.get("domains")).join(", ");
             return Ok(Decision::new(DENY, "high", format!("「{label}」只允许在 {doms} 使用，当前网站是 {host} (item restricted to other sites)")));
         }
-        if field_str(&it, "kind") == "card" && purchase.is_none() && injection.is_empty() {
-            // 2026-10-06 golden G04: the card was filled before the purchase was confirmed, so the user would get a
+        // a page that pays the user (a tax refund's "refund method", a payout) takes the card to receive money: no
+        // purchase to confirm there (app.apdtrefund.hk, 2026-10-30)
+        let receives = omuse_common::guard::refund_page(&page_url);
+        if field_str(&it, "kind") == "card"
+            && purchase.is_none()
+            && injection.is_empty()
+            && !receives
+        {
+            // 2026-10-06: the card was filled before the purchase was confirmed, so the user would get a
             // card-fill approval and then the purchase card. One card for the whole purchase: confirm first.
             return Ok(Decision::new(DENY, "high", "填银行卡之前先调用 purchase_confirm：在显示最终总价的页面写清商品、运费、总价、送货方式和这张卡（card_item_id）。用户批准这一张卡之后，填卡和下单都不用再单独批准。 (Call purchase_confirm first, on the page that shows the final total; once the user approves it, the card fills and the order click go through without more approvals.)"));
         }
@@ -765,14 +866,17 @@ pub fn decide(
         }
     }
     if tool == "browser_upload" {
+        // the user attached this file and asked for it to be uploaded on this very site: the model's `user_asked`
+        // (JSON), honoured only for an attached file, while the task has read no injection, on the site the user's
+        // message names (an exact substring check of the page's domain, as for the egress check)
+        let dom = guard::domain_of(&page_url);
         if page.is_some()
-            && guard::user_asked_upload(
-                &store.user_request(task_id)?,
-                &page_url,
-                &get_str(args, "path"),
-            )
+            && args.get("user_asked").and_then(Value::as_bool) == Some(true)
+            && injection.is_empty()
+            && guard::attached_file(&get_str(args, "path"))
+            && guard::named_in_request(&store.user_request(task_id)?, &dom)
         {
-            risk = "medium".to_string(); // the user attached this file and asked for it to be uploaded on this very site
+            risk = "medium".to_string();
         } else {
             reasons.push("上传本地文件到网站 (uploads a local file)".into());
         }
@@ -1094,6 +1198,18 @@ fn decide_mcp(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_arrival_cards_or_a_claims_submit_is_the_users() {
+        assert!(user_submit_click("claim", "Submit claim"));
+        assert!(user_submit_click("arrival", "Submit"));
+        assert!(user_submit_click("arrival", "Confirm and pay"));
+        assert!(!user_submit_click("arrival", "Confirm")); // a terms page's Confirm opens the form
+        assert!(!user_submit_click("arrival", "Entry Declaration")); // China's tile opens the form
+        assert!(!user_submit_click("claim", "Save draft"));
+        assert!(!user_submit_click("claim", "Next"));
+        assert!(!user_submit_click("", "Submit claim")); // not an arrival or claim run
+    }
     use crate::store::Audit;
 
     fn store() -> (tempfile::TempDir, Store) {
@@ -1341,7 +1457,7 @@ mod tests {
                 Some(page.clone())
             )
             .decision,
-            ASK
+            DENY // the user's own click: the agent hands the page over
         );
         assert_eq!(
             dec(
@@ -1532,24 +1648,151 @@ mod tests {
         store
             .set_user_request("tu", "请在 shop.com 上传我刚附上的文件")
             .unwrap();
-        assert_eq!(
+        let up = |args: Value, task: &str| {
             dec(
                 &store,
                 "browser_upload",
-                json!({"ref": "e1", "path": "uploads/a.pdf"}),
-                "tu",
+                args,
+                task,
                 None,
-                Some(page.clone())
+                Some(page.clone()),
             )
-            .decision,
+            .decision
+        };
+        // the request's words alone decide nothing: the model's `user_asked` does
+        assert_eq!(up(json!({"ref": "e1", "path": "uploads/a.pdf"}), "tu"), ASK);
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "uploads/a.pdf", "user_asked": false}),
+                "tu"
+            ),
+            ASK
+        );
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "uploads/a.pdf", "user_asked": true}),
+                "tu"
+            ),
             ALLOW
         );
+        // only an attached file, only on the site the message names
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "out/report.pdf", "user_asked": true}),
+                "tu"
+            ),
+            ASK
+        );
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "uploads/../secrets.txt", "user_asked": true}),
+                "tu"
+            ),
+            ASK
+        );
+        store.set_user_request("tn", "上传我刚附上的文件").unwrap();
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "uploads/a.pdf", "user_asked": true}),
+                "tn"
+            ),
+            ASK
+        );
+        // never after the task read something that looks like an injection
+        store
+            .set_user_request("ti", "请在 shop.com 上传我刚附上的文件")
+            .unwrap();
+        store
+            .update_task_ctx("ti", None, Some(&["hidden instruction".to_string()]), None)
+            .unwrap();
+        assert_eq!(
+            up(
+                json!({"ref": "e1", "path": "uploads/a.pdf", "user_asked": true}),
+                "ti"
+            ),
+            ASK
+        );
+    }
+
+    #[test]
+    fn a_click_the_user_asked_for_is_the_models_json_field() {
+        let (_t, store) = store();
+        // the request names the button, but its words decide nothing (they were read by user_named_click before)
+        store
+            .set_user_request("tk", "click Remove on that record")
+            .unwrap();
+        let page = json!({"url": "https://records.example.com/list", "title": "Records"});
+        let rm = json!({"tag": "button", "role": "button", "name": "Remove", "input_type": "", "in_form": false});
+        let click = |tool: &str, args: Value, task: &str, elem: &Value| {
+            dec(
+                &store,
+                tool,
+                args,
+                task,
+                Some(elem.clone()),
+                Some(page.clone()),
+            )
+            .decision
+        };
+        assert_eq!(click("browser_click", json!({"ref": "e3"}), "tk", &rm), ASK);
+        assert_eq!(
+            click(
+                "browser_click",
+                json!({"ref": "e3", "user_asked": false}),
+                "tk",
+                &rm
+            ),
+            ASK
+        );
+        assert_eq!(
+            click(
+                "browser_click",
+                json!({"ref": "e3", "user_asked": true}),
+                "tk",
+                &rm
+            ),
+            ALLOW
+        );
+        // a string is not the flag
+        assert_eq!(
+            click(
+                "browser_click",
+                json!({"ref": "e3", "user_asked": "true"}),
+                "tk",
+                &rm
+            ),
+            ASK
+        );
+        // never a send / pay / booking / terms label, whatever the model says
+        let send = json!({"tag": "button", "role": "button", "name": "Send", "input_type": "", "in_form": false});
+        assert_eq!(
+            click(
+                "browser_click",
+                json!({"ref": "e4", "user_asked": true}),
+                "tk",
+                &send
+            ),
+            ASK
+        );
+        // never after an injection was read in the task
+        store
+            .update_task_ctx("tk", None, Some(&["hidden instruction".to_string()]), None)
+            .unwrap();
+        let r = dec(
+            &store,
+            "browser_click",
+            json!({"ref": "e3", "user_asked": true}),
+            "tk",
+            Some(rm.clone()),
+            Some(page.clone()),
+        );
+        assert_eq!(r.decision, ASK);
     }
 
     #[test]
     fn standing_click_grant_never_covers_payment() {
         let (_t, store) = store();
-        // 2026-10-04: PERMANENT browser_click grant on amazon.sg + "Place your order" -> must still ask, every time
+        // 2026-10-04: PERMANENT browser_click grant on amazon.sg + "Place your order" -> never covered: the user's click
         store
             .add_grant(
                 "browser_click",
@@ -1571,7 +1814,7 @@ mod tests {
             Some(pay),
             Some(page),
         );
-        assert_eq!(r.decision, ASK);
+        assert_eq!(r.decision, DENY);
         assert!(r.grant_id.is_empty());
         let ok = json!({"tag": "a", "role": "link", "name": "Your Orders", "input_type": "", "in_form": false});
         assert_eq!(
@@ -1645,10 +1888,12 @@ mod tests {
             Some(btn),
             Some(page),
         );
-        assert_eq!(r.decision, ASK);
-        assert!(r.grant_id.is_empty());
+        // the user presses it themselves: the agent hands the page over
+        assert_eq!(r.decision, DENY);
         assert!(
-            r.reason.contains("changes an order") && r.reason.contains("Cancel items 503-4373109")
+            r.reason.contains("changes an order")
+                && r.reason.contains("Request cancellation")
+                && r.reason.contains("browser_request_takeover")
         );
     }
 
@@ -1693,12 +1938,37 @@ mod tests {
         assert_eq!(r.destination, "decathlon.sg");
         assert!(r
             .reason
-            .starts_with("确认这次购买：decathlon.sg，总价 SGD 13.99；"));
+            .starts_with("确认这次购买：decathlon.sg，总价 SGD 13.99，"));
         let mut bad = args.clone();
         bad["card_item_id"] = json!("v9");
         assert_eq!(
-            dec(&store, "purchase_confirm", bad, "tp", None, None).decision,
+            dec(&store, "purchase_confirm", bad.clone(), "tp", None, None).decision,
             DENY
+        );
+        // a card in the Vault by its name only (number, expiry, CVC UNKNOWN): no purchase on it, and the refusal says
+        // how the user completes it
+        // a site written from a link's stand-in, with no page open to take the real one from
+        let mut linked = json!({"site": "link.omuse.local", "items": [{"name": "x", "qty": 1, "price": 5}], "total": 5, "currency": "SGD"});
+        let d = dec(&store, "purchase_confirm", linked.clone(), "tp", None, None);
+        assert!(
+            d.decision == DENY && d.reason.contains("open the booking"),
+            "{}",
+            d.reason
+        );
+        linked["site"] = json!("https://link.omuse.local/");
+        assert_eq!(
+            dec(&store, "purchase_confirm", linked, "tp", None, None).decision,
+            DENY
+        );
+        let (named, _) = vault::add_card(&store, "Citi Prestige", "USA").unwrap();
+        bad["card_item_id"] = named["id"].clone();
+        let d = dec(&store, "purchase_confirm", bad, "tp", None, None);
+        assert!(
+            d.decision == DENY
+                && d.reason.contains("Memory → Vault")
+                && d.reason.contains("UNKNOWN"),
+            "{}",
+            d.reason
         );
         assert_eq!(
             dec(
@@ -1724,8 +1994,8 @@ mod tests {
                 Some(page.clone())
             )
             .decision,
-            ASK
-        ); // not confirmed yet
+            DENY
+        ); // the user's own click, confirmed purchase or not
         let pid = store
             .add_purchase("tp", "decathlon.sg", &v1, 13.99, "SGD", &json!({}))
             .unwrap();
@@ -1737,8 +2007,10 @@ mod tests {
             Some(pay.clone()),
             Some(page.clone()),
         );
-        assert_eq!(r.decision, ALLOW);
-        assert_eq!(r.grant_id, pid);
+        assert_eq!(r.decision, DENY);
+        assert!(r.reason.contains("Place Order") && r.reason.contains("browser_request_takeover"));
+        // the confirmed purchase still lets the card from the Vault go into the page
+        let _ = pid;
         let box_ = json!({"tag": "input", "role": "textbox", "name": "Card number", "input_type": "text", "in_form": true});
         assert_eq!(
             dec(
@@ -1774,10 +2046,7 @@ mod tests {
             Some(pay.clone()),
             Some(dear),
         );
-        assert_eq!(r.decision, ASK); // total went up
-        assert!(r
-            .reason
-            .contains("page total 48.00 exceeds the confirmed 13.99"));
+        assert_eq!(r.decision, DENY); // the user's click, whatever the total
         let other = json!({"url": "https://www.lazada.sg/checkout", "title": "x", "text": ""});
         assert_eq!(
             dec(
@@ -1789,7 +2058,7 @@ mod tests {
                 Some(other)
             )
             .decision,
-            ASK
+            DENY
         ); // other site
         assert_eq!(
             dec(
@@ -1801,7 +2070,7 @@ mod tests {
                 Some(page.clone())
             )
             .decision,
-            ASK
+            DENY
         ); // other task
         let cancel = json!({"tag": "button", "role": "button", "name": "Request cancellation", "input_type": "submit", "in_form": true});
         assert_eq!(
@@ -1814,8 +2083,40 @@ mod tests {
                 Some(page)
             )
             .decision,
-            ASK
-        ); // never covered
+            DENY
+        ); // never covered: the user's click
+    }
+
+    #[test]
+    fn ticking_a_fee_agreement_is_not_a_payment() {
+        let (_t, store) = store();
+        let page = json!({"url": "https://app.apdtrefund.hk/hkTaxMobile/apdt_refund.html", "title": "Refund of air passenger departure tax (APDT)"});
+        let tick = json!({"tag": "input", "role": "checkbox", "name": "By selecting credit / debit card for my refund, I agree to a processing fee of up to HK$18, including platform and payment provider charges", "input_type": "checkbox", "in_form": true});
+        assert_ne!(
+            dec(
+                &store,
+                "browser_click",
+                json!({"ref": "e15"}),
+                "tf",
+                Some(tick),
+                Some(page.clone())
+            )
+            .decision,
+            DENY
+        );
+        let pay = json!({"tag": "button", "role": "button", "name": "Pay HK$18", "input_type": "submit", "in_form": true});
+        assert_eq!(
+            dec(
+                &store,
+                "browser_click",
+                json!({"ref": "e16"}),
+                "tf",
+                Some(pay),
+                Some(page)
+            )
+            .decision,
+            DENY
+        ); // a button that pays is still the user's
     }
 
     #[test]
@@ -1873,7 +2174,7 @@ mod tests {
             .decision,
             ALLOW
         );
-        // once a card detail has been filled, the same buttons can pay: approval (or a purchase confirmation) again
+        // once a card detail has been filled, the same buttons can pay: that click is the user's (hand-over)
         store
             .audit(
                 "sentinel",
@@ -1896,7 +2197,7 @@ mod tests {
                 Some(co)
             )
             .decision,
-            ASK
+            DENY
         );
     }
 
@@ -2060,7 +2361,7 @@ mod tests {
     #[test]
     fn vault_fill_policy() {
         let (_t, store) = store();
-        let it = card(&store, "Visa", "shop.test");
+        let it = card(&store, "Visa", "shop.example");
         let args = json!({"ref": "e1", "item_id": it, "field": "number"});
         let el = json!({"tag": "input", "input_type": "text", "name": "Card number"});
         let r = dec(
@@ -2069,11 +2370,11 @@ mod tests {
             args.clone(),
             "t1",
             Some(el.clone()),
-            Some(json!({"url": "https://shop.test/pay", "title": ""})),
+            Some(json!({"url": "https://shop.example/pay", "title": ""})),
         );
         assert_eq!(r.decision, DENY); // a card needs the purchase confirmed first (0.2.68)
         assert!(r.reason.contains("purchase_confirm"));
-        let mem = vault::save_item(&store, &json!({"kind": "membership", "label": "KrisFlyer", "domains": "shop.test",
+        let mem = vault::save_item(&store, &json!({"kind": "membership", "label": "KrisFlyer", "domains": "shop.example",
                                                   "values": {"number": "8800 1111 2222 1234", "name": "LU LIANG"}}), None).unwrap();
         let margs = json!({"ref": "e1", "item_id": mem["id"], "field": "number"});
         let mel = json!({"tag": "input", "input_type": "text", "name": "Membership number"});
@@ -2083,7 +2384,7 @@ mod tests {
             margs.clone(),
             "t1",
             Some(mel.clone()),
-            Some(json!({"url": "https://shop.test/pay", "title": ""})),
+            Some(json!({"url": "https://shop.example/pay", "title": ""})),
         );
         assert_eq!(r.decision, ASK);
         assert!(r.reason.contains("•••• 1234") && !r.reason.contains("8800"));
@@ -2096,7 +2397,7 @@ mod tests {
             Some(json!({"url": "https://evil.example/pay"})),
         );
         assert_eq!(r.decision, DENY);
-        assert_eq!(r.reason, "「Visa」只允许在 shop.test 使用，当前网站是 evil.example (item restricted to other sites)");
+        assert_eq!(r.reason, "「Visa」只允许在 shop.example 使用，当前网站是 evil.example (item restricted to other sites)");
         // a site under a two-label suffix (gov.sg, com.sg, co.uk): matched by the whole host name
         let pp = vault::save_item(
             &store,
@@ -2137,7 +2438,7 @@ mod tests {
                 args.clone(),
                 "t1",
                 Some(json!({"tag": "input", "input_type": "password"})),
-                Some(json!({"url": "https://shop.test/"}))
+                Some(json!({"url": "https://shop.example/"}))
             )
             .decision,
             DENY
@@ -2150,7 +2451,7 @@ mod tests {
             pin,
             "t1",
             Some(el.clone()),
-            Some(json!({"url": "https://shop.test/"})),
+            Some(json!({"url": "https://shop.example/"})),
         );
         assert_eq!(r.decision, DENY);
         assert_eq!(
@@ -2176,7 +2477,7 @@ mod tests {
                 args,
                 "t1",
                 Some(json!({"tag": "div", "name": "Card number"})),
-                Some(json!({"url": "https://shop.test/"}))
+                Some(json!({"url": "https://shop.example/"}))
             )
             .decision,
             DENY
@@ -2199,7 +2500,7 @@ mod tests {
                 margs.clone(),
                 "t1",
                 Some(mel.clone()),
-                Some(json!({"url": "https://shop.test/pay"}))
+                Some(json!({"url": "https://shop.example/pay"}))
             )
             .decision,
             ASK
@@ -2210,9 +2511,9 @@ mod tests {
             margs,
             "t1",
             Some(mel),
-            Some(json!({"url": "http://shop.example/pay"})),
+            Some(json!({"url": "http://other.example/pay"})),
         );
-        assert_eq!(r.decision, DENY); // restricted to shop.test
+        assert_eq!(r.decision, DENY); // restricted to shop.example
         let any = vault::save_item(
             &store,
             &json!({"kind": "other", "label": "Code", "values": {"value": "abcdef123"}}),
@@ -2515,15 +2816,59 @@ mod browser_auto_tests {
             d.injected = injected;
             d.browser_auto_ok(tool)
         };
+        // with auto-approve on, nothing in the browser asks
         assert!(ask("browser_click", false, false));
         assert!(ask("browser_navigate", false, false));
         assert!(ask("browser_type", false, false));
-        assert!(!ask("browser_fill_secret", true, false));
-        assert!(!ask("browser_upload", false, false));
-        assert!(!ask("browser_click", true, false)); // pay / cancel-order clicks
-        assert!(!ask("browser_click", false, true)); // after a suspected prompt injection
-        assert!(!ask("gmail_send", false, false));
-        assert!(!ask("purchase_confirm", true, false));
+        assert!(ask("browser_fill_secret", true, false)); // the passport into an arrival card
+        assert!(ask("browser_upload", false, false));
+        assert!(ask("browser_click", true, false)); // pay / cancel-order clicks
+        assert!(ask("purchase_confirm", true, false));
+        assert!(ask("browser_click", false, true)); // after a suspected prompt injection too
+                                                    // since 2026-10-31 every action that would ask is approved too (mail, calendar, Drive …); an allowed call
+                                                    // needs none, and a refusal stays a refusal
+        assert!(ask("gmail_send", false, false));
+        assert!(ask("calendar_create_event", true, false));
         assert!(!Decision::new(ALLOW, "low", "").browser_auto_ok("browser_click"));
+        assert!(!Decision::new(DENY, "high", "").browser_auto_ok("browser_click"));
+    }
+}
+
+#[cfg(test)]
+mod passport_field_tests {
+    use super::passport_field;
+
+    #[test]
+    fn passport_boxes_are_recognised() {
+        for l in [
+            "Date of passport expiry *",
+            "Passport number",
+            "Passport No.",
+            "护照有效期",
+            "证件号码",
+            "Travel document expiry date",
+        ] {
+            assert!(passport_field(l), "{l}");
+        }
+        for l in [
+            "NRIC / FIN",
+            "HKID number",
+            "Card number",
+            "CVV",
+            "Security code",
+            "身份证号码",
+        ] {
+            assert!(passport_field(l), "{l}");
+        }
+        for l in [
+            "Card expiry",
+            "Date of birth",
+            "Flight number",
+            "Intended date of departure",
+            "Last 4 digits of the card",
+            "Name on card",
+        ] {
+            assert!(!passport_field(l), "{l}");
+        }
     }
 }

@@ -1,4 +1,11 @@
-//! Daily memory housekeeping: prune → drop sensitive → merge duplicates → LLM review → report.
+//! Daily memory housekeeping: prune → drop sensitive → merge exact duplicates → LLM review (merges, rewrites, tiers,
+//! profile suggestions) → sort facts that have no structured fields yet ([`classify`]) → report.
+//!
+//! Natural language is the model's (CLAUDE.md): code merges only facts whose text is the same after normalisation
+//! (case, spaces, punctuation — [`norm_fact`]); facts that say the same thing in other words are the LLM review's to
+//! merge. One documented safety exception reads text in code: [`looks_sensitive`] (card / ID-shaped numbers and the
+//! words password / 密码 / CVV) drops a fact that would put a secret in memory — a backstop behind the model's own
+//! instruction never to write one, kept because a secret must never survive a missed instruction.
 //!
 //! Safety rules
 //! * The profile is never changed here: profile details found in facts only become pending suggestions.
@@ -22,10 +29,14 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use crate::llm::{extract_json, ChatOpts, Llm};
-use crate::store::{looks_sensitive, norm_fact, profile_key, profile_value_ok, Store, RECENT_DAYS};
+use crate::store::{
+    looks_sensitive, norm_fact, profile_key, profile_value_ok, unsorted, FactOpts, Store,
+    RECENT_DAYS,
+};
 
 pub const BATCH: usize = 60;
-pub const NEAR_DUP: f64 = 0.93;
+/// Facts per sorting call ([`classify`]).
+pub const SORT_BATCH: usize = 40;
 
 pub const TIDY_PROMPT: &str = r#"You are tidying a personal assistant's long-term memory about its user. Below are memory facts, one per line as `id | tier | category | entity | uses | fact`.
 tier "long" = kept for good; tier "recent" = one-off detail that expires after 30 days.
@@ -35,7 +46,7 @@ Return ONLY JSON with these optional lists (use ids exactly as given, never inve
  "rewrite": [{"id": "<id>", "fact": "<clearer, shorter sentence with the same meaning>"}],
  "demote":  [{"id": "<id>", "reason": "<why it is one-off / outdated / not about the user>"}],
  "promote": [{"id": "<id>", "reason": "<why this recent fact is durable>"}],
- "profile": [{"field": "<name_zh|name_en|preferred_name|phone|email_personal|email_work|address_home|address_work|address:<label>|company|job_title|birthday|nationality>", "value": "<value>", "ids": ["<id>"], "reason": "<short>"}]}
+ "profile": [{"field": "<name_zh|name_en|preferred_name|phone|email_personal|email_work|address_home|address_work|address:<label>|home_city|home_country|address_country:<label>|company|job_title|birthday|nationality>", "value": "<value>", "ids": ["<id>"], "reason": "<short>"}]}
 
 Rules:
 - merge: facts that say the same thing or are clearly about one subject and read better as one sentence. Keep every detail.
@@ -117,127 +128,6 @@ pub fn counts(store: &Store) -> Result<Value> {
     }))
 }
 
-const FILLER_WORDS: [&str; 3] = ["a", "an", "the"];
-const FILLER_CJK: &str = "的了地得之着";
-
-fn is_filler(w: &str) -> bool {
-    if FILLER_WORDS.contains(&w) {
-        return true;
-    }
-    let mut cs = w.chars();
-    matches!((cs.next(), cs.next()), (Some(c), None) if FILLER_CJK.contains(c))
-}
-
-fn tokens_of(text: &str) -> Vec<String> {
-    static RX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"[A-Za-z0-9']+|[^\sA-Za-z0-9'\W]").unwrap());
-    let low = text.to_lowercase();
-    RX.find_iter(&low)
-        .map(|m| {
-            let w = m.as_str();
-            if w.chars().all(|c| c.is_ascii_lowercase()) && w.len() > 3 {
-                // seat / seats
-                if let Some(s) = w.strip_suffix("es") {
-                    return s.to_string();
-                }
-                if let Some(s) = w.strip_suffix('s') {
-                    return s.to_string();
-                }
-            }
-            w.to_string()
-        })
-        .collect()
-}
-
-/// `difflib.SequenceMatcher(None, a, b, autojunk=False).find_longest_match`.
-fn longest_match(
-    a: &[String],
-    b2j: &HashMap<&str, Vec<usize>>,
-    alo: usize,
-    ahi: usize,
-    blo: usize,
-    bhi: usize,
-) -> (usize, usize, usize) {
-    let (mut besti, mut bestj, mut bestsize) = (alo, blo, 0usize);
-    let mut j2len: HashMap<usize, usize> = HashMap::new();
-    for (i, ai) in a.iter().enumerate().take(ahi).skip(alo) {
-        let mut newj2len: HashMap<usize, usize> = HashMap::new();
-        if let Some(js) = b2j.get(ai.as_str()) {
-            for &j in js {
-                if j < blo {
-                    continue;
-                }
-                if j >= bhi {
-                    break;
-                }
-                let k = j2len.get(&(j.wrapping_sub(1))).copied().unwrap_or(0) + 1;
-                newj2len.insert(j, k);
-                if k > bestsize {
-                    besti = i + 1 - k;
-                    bestj = j + 1 - k;
-                    bestsize = k;
-                }
-            }
-        }
-        j2len = newj2len;
-    }
-    (besti, bestj, bestsize)
-}
-
-/// `SequenceMatcher.get_matching_blocks()` without the terminal sentinel (sorted by position in `a`).
-fn matching_blocks(a: &[String], b: &[String]) -> Vec<(usize, usize, usize)> {
-    let mut b2j: HashMap<&str, Vec<usize>> = HashMap::new();
-    for (j, w) in b.iter().enumerate() {
-        b2j.entry(w.as_str()).or_default().push(j);
-    }
-    let mut queue = vec![(0usize, a.len(), 0usize, b.len())];
-    let mut blocks = Vec::new();
-    while let Some((alo, ahi, blo, bhi)) = queue.pop() {
-        let (i, j, k) = longest_match(a, &b2j, alo, ahi, blo, bhi);
-        if k > 0 {
-            blocks.push((i, j, k));
-            if alo < i && blo < j {
-                queue.push((alo, i, blo, j));
-            }
-            if i + k < ahi && j + k < bhi {
-                queue.push((i + k, ahi, j + k, bhi));
-            }
-        }
-    }
-    blocks.sort();
-    blocks
-}
-
-/// The same sentence up to articles, plurals or 的/了 ("an aisle seat" / "aisle seats").
-/// A different word, name, number or a negation is never a duplicate.
-pub fn near_dup(a: &str, b: &str) -> bool {
-    let (ta, tb) = (tokens_of(a), tokens_of(b));
-    let total = ta.len() + tb.len();
-    let rqr = if total > 0 {
-        2.0 * ta.len().min(tb.len()) as f64 / total as f64
-    } else {
-        1.0
-    };
-    if rqr < NEAR_DUP - 0.1 {
-        return false;
-    }
-    let (mut i, mut j) = (0usize, 0usize);
-    let mut blocks = matching_blocks(&ta, &tb);
-    blocks.push((ta.len(), tb.len(), 0));
-    for (bi, bj, bk) in blocks {
-        if ta[i..bi]
-            .iter()
-            .chain(tb[j..bj].iter())
-            .any(|w| !is_filler(w))
-        {
-            return false;
-        }
-        i = bi + bk;
-        j = bj + bk;
-    }
-    true
-}
-
 /// `RStore._live(row)`: not expired by `expires_at` or `ttl_days`.
 fn live(r: &Value) -> bool {
     let now = now_ts();
@@ -298,7 +188,7 @@ fn plan_local(store: &Store) -> Result<Value> {
     }
     let gone: HashSet<String> = sensitive.iter().map(|x| get_str(x, "id")).collect();
     live_rows.retain(|f| !gone.contains(&get_str(f, "id")));
-    // duplicates: same normalised text, or nearly the same within one entity/category
+    // duplicates: the same text up to case, spaces and punctuation (other wordings are the LLM review's to merge)
     live_rows.sort_by(|a, b| {
         let ka = (
             -uses_of(a),
@@ -331,11 +221,7 @@ fn plan_local(store: &Store) -> Result<Value> {
             if taken.contains(&bid) {
                 continue;
             }
-            let mut same = norms[&aid] == norms[&bid];
-            if !same && get_str(a, "entity") == get_str(b, "entity") {
-                same = near_dup(&get_str(a, "fact"), &get_str(b, "fact"));
-            }
-            if same {
+            if norms[&aid] == norms[&bid] {
                 group.push(bid.clone());
                 taken.insert(bid);
             }
@@ -587,9 +473,178 @@ pub async fn plan(store: &Store, llm: &Llm) -> Result<Value> {
                 .map(str::to_string),
         );
     }
-    let (llm_plan, errors) = plan_llm(store, llm, &skip).await?;
+    let (mut llm_plan, mut errors) = plan_llm(store, llm, &skip).await?;
     // don't let the LLM act on facts the local pass already handles
+    let (sorted, sort_errors) = plan_classify(store, llm, None, &skip).await?;
+    llm_plan["classify"] = json!(sorted);
+    errors.extend(sort_errors);
     Ok(json!({"local": local, "llm": llm_plan, "errors": errors}))
+}
+
+// ------------------------------------------------------------------ sorting (the model gives a fact its fields)
+fn sort_line(f: &Value) -> String {
+    static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+    let fact = WS.replace_all(&get_str(f, "fact"), " ").into_owned();
+    format!(
+        "{} | {} | {} | {}",
+        get_str(f, "id"),
+        get_str(f, "domain"),
+        take_chars(&get_str(f, "entity"), 40).replace('|', "/"),
+        take_chars(&fact, 300).replace('|', "/")
+    )
+}
+
+/// The sorting the model proposes for facts that have no structured fields yet (the given `ids`, else every unsorted
+/// long-term or recent fact; `skip` left out): `[{id, fact, domain, topics, scope, trigger, kind, entity, relation}]`,
+/// each field validated against its enum ([`FactOpts::with_model_fields`]); a fact the model gave nothing usable for
+/// stays unsorted. Reads only.
+pub async fn plan_classify(
+    store: &Store,
+    llm: &Llm,
+    ids: Option<&[String]>,
+    skip: &HashSet<String>,
+) -> Result<(Vec<Value>, Vec<String>)> {
+    let facts: Vec<Value> = match ids {
+        Some(list) => list
+            .iter()
+            .filter_map(|i| store.fact(i).ok().flatten())
+            .collect(),
+        None => store.unsorted_facts(5000)?,
+    }
+    .into_iter()
+    .filter(|f| !skip.contains(&get_str(f, "id")))
+    .collect();
+    let mut out: Vec<Value> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for (bi, chunk) in facts.chunks(SORT_BATCH).enumerate() {
+        let byid: HashMap<String, &Value> = chunk.iter().map(|f| (get_str(f, "id"), f)).collect();
+        let prompt = format!(
+            "{}{}",
+            crate::prompts::MEMORY_SORT,
+            chunk.iter().map(sort_line).collect::<Vec<_>>().join("\n")
+        );
+        let opts = ChatOpts {
+            temperature: Some(0.0),
+            max_tokens: Some(3000),
+            purpose: "memory".into(),
+            task_id: String::new(),
+            model: None,
+            no_think: true,
+            stream_to: None,
+        };
+        let data = match llm
+            .chat(&[json!({"role": "user", "content": prompt})], None, &opts)
+            .await
+        {
+            Ok(r) => extract_json(&r.content).unwrap_or_else(|| json!({})),
+            Err(e) => {
+                errors.push(format!(
+                    "sorting batch {}: {}",
+                    bi + 1,
+                    take_chars(&e.to_string(), 160)
+                ));
+                continue;
+            }
+        };
+        for item in arr(&data, "facts") {
+            let id = get_str(item, "id");
+            let Some(f) = byid.get(&id) else {
+                continue;
+            };
+            let o = FactOpts::default().with_model_fields(item);
+            if o.scope.is_empty() {
+                continue;
+            }
+            let entity = get_str(item, "entity").trim().to_string();
+            let entity = if (2..=60).contains(&entity.chars().count()) && !entity.contains('@') {
+                entity
+            } else {
+                String::new()
+            };
+            out.push(json!({"id": id, "fact": get_str(f, "fact"), "domain": o.domain, "topics": o.topics,
+                            "scope": o.scope, "trigger": o.trigger, "kind": o.kind, "entity": entity,
+                            "relation": o.relation}));
+        }
+    }
+    Ok((out, errors))
+}
+
+/// Write a sorting ([`plan_classify`]): the fields on each fact that is still unsorted (or, with `force`, on the
+/// facts named anyway — the user edited their text). A domain or entity already there stays (the user may have
+/// picked it). Returns how many facts were sorted.
+pub fn apply_classify(store: &Store, items: &[Value], force: bool) -> Result<usize> {
+    let mut n = 0;
+    for it in items {
+        let id = get_str(it, "id");
+        let Some(f) = store.fact(&id)? else {
+            continue;
+        };
+        if !force && !unsorted(&f) {
+            continue;
+        }
+        let mut kw = Map::new();
+        for k in ["scope", "trigger", "kind"] {
+            kw.insert(k.into(), json!(get_str(it, k)));
+        }
+        kw.insert(
+            "topics".into(),
+            it.get("topics").cloned().unwrap_or_else(|| json!([])),
+        );
+        let dom = get_str(it, "domain");
+        if get_str(&f, "domain").is_empty() && !dom.is_empty() {
+            kw.insert("domain".into(), json!(dom));
+        }
+        let ent = get_str(it, "entity");
+        if get_str(&f, "entity").trim().is_empty() && !ent.is_empty() {
+            kw.insert("entity".into(), json!(ent));
+        }
+        store.update_fact(&id, &Value::Object(kw))?;
+        let rel = get_str(it, "relation");
+        let name = store
+            .fact(&id)?
+            .map(|f| get_str(&f, "entity"))
+            .unwrap_or_default();
+        if !rel.is_empty() && !name.is_empty() {
+            store.set_relation_if_unset(&name, &rel)?;
+        }
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Sort facts now: the given ids (`force`: even when they were sorted before), else every unsorted fact.
+pub async fn classify(store: &Store, llm: &Llm, ids: Option<&[String]>) -> Result<usize> {
+    let (items, _) = plan_classify(store, llm, ids, &HashSet::new()).await?;
+    apply_classify(store, &items, ids.is_some())
+}
+
+static SORTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SORT_TRIED: LazyLock<parking_lot::Mutex<f64>> =
+    LazyLock::new(|| parking_lot::Mutex::new(0.0));
+
+/// Sort the unsorted facts in the background (a fact written before 0.6.0, typed on the Memory page, or written by
+/// the model without its fields): at most one run at a time, and not again within 10 minutes of the last try.
+pub fn classify_in_background(store: Arc<Store>, llm: Arc<Llm>) {
+    {
+        let mut last = SORT_TRIED.lock();
+        if now_ts() - *last < 600.0 {
+            return;
+        }
+        if SORTING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        *last = now_ts();
+    }
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        SORTING.store(false, std::sync::atomic::Ordering::SeqCst);
+        return;
+    };
+    handle.spawn(async move {
+        if let Err(e) = classify(&store, &llm, None).await {
+            eprintln!("[memory sort] {e:?}");
+        }
+        SORTING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
 }
 
 // ------------------------------------------------------------------ applying a plan
@@ -615,6 +670,7 @@ pub fn apply(store: &Store, p: &Value) -> Result<Value> {
         "demoted",
         "promoted",
         "profile_suggestions",
+        "sorted",
         "skipped",
     ] {
         done.insert(k.into(), json!(0));
@@ -643,7 +699,7 @@ pub fn apply(store: &Store, p: &Value) -> Result<Value> {
     for s in arr(local, "sensitive") {
         let sid = get_str(s, "id");
         if store.fact(&sid)?.is_some() {
-            store.delete_fact(&sid)?;
+            store.forget_fact(&sid)?; // and every episode that might quote the secret
             bump(&mut done, "sensitive", 1);
         }
     }
@@ -711,6 +767,8 @@ pub fn apply(store: &Store, p: &Value) -> Result<Value> {
         }
         store.update_fact(keep, &Value::Object(upd))?;
         for o in &others {
+            // the episodes that used a merged-away fact now use the one kept
+            store.relink_fact(&get_str(o, "id"), keep)?;
             store.delete_fact(&get_str(o, "id"))?;
         }
         Ok(true)
@@ -769,6 +827,8 @@ pub fn apply(store: &Store, p: &Value) -> Result<Value> {
             }
         }
     }
+    let sorted = apply_classify(store, arr(llm, "classify"), false)?;
+    bump(&mut done, "sorted", sorted as i64);
     for s in arr(llm, "profile") {
         let reason = get_str(s, "reason");
         let reason = if reason.is_empty() {
@@ -817,6 +877,7 @@ pub fn summary_lines(
             "demoted": arr(llm, "demote").len(),
             "promoted": arr(local, "auto_promote").len() + arr(llm, "promote").len(),
             "profile_suggestions": arr(llm, "profile").len(),
+            "sorted": arr(llm, "classify").len(),
         }),
         Some(d) => d.clone(),
     };
@@ -863,6 +924,12 @@ pub fn summary_lines(
                 n_of(&n, "profile_suggestions")
             ));
         }
+        if n_of(&n, "sorted") != 0 {
+            lines.push(format!(
+                "Sorted (domain, topics, when it applies): {}",
+                n_of(&n, "sorted")
+            ));
+        }
     } else {
         lines.push(format!(
             "长期 {} 条 · 近期 {} 条 · 经历 {} 条{}",
@@ -903,6 +970,12 @@ pub fn summary_lines(
             lines.push(format!(
                 "有 {} 条档案修改建议等你确认（记忆页）",
                 n_of(&n, "profile_suggestions")
+            ));
+        }
+        if n_of(&n, "sorted") != 0 {
+            lines.push(format!(
+                "归类（域、主题、适用范围）：{} 条",
+                n_of(&n, "sorted")
             ));
         }
     }
@@ -1137,7 +1210,6 @@ pub fn start(rt: Arc<dyn TidyRuntime>, dry_run: bool, kind: &str, from_run: Opti
 mod tests {
     use super::*;
     use crate::llm::{HttpRequest, HttpResponse, LlmTransport, SettingsFn};
-    use crate::store::FactOpts;
     use omuse_common::Config;
     use parking_lot::Mutex;
 
@@ -1220,23 +1292,7 @@ mod tests {
     }
 
     #[test]
-    fn near_duplicates() {
-        assert!(near_dup(
-            "The user prefers aisle seats on flights.",
-            "The user prefers an aisle seat on flights."
-        ));
-        assert!(!near_dup(
-            "The user is a vegetarian",
-            "The user is not a vegetarian"
-        ));
-        assert!(near_dup(
-            "Lucas likes quiet hotels!",
-            "Lucas likes the quiet hotels"
-        ));
-        assert!(!near_dup(
-            "The user's sister Anna lives in Tokyo",
-            "The user's sister Anna lives in Osaka"
-        ));
+    fn masked_preview() {
         assert_eq!(mask("Card 4111 1111 1111 1234"), "Card •••• •••• •••• 1234");
     }
 
@@ -1249,9 +1305,18 @@ mod tests {
             "preference",
             "",
         );
+        // the same text up to case and punctuation is the same fact already when it is written; another wording is
+        // merged only by the LLM's merge
         let b = add(
             &st,
-            "The user prefers an aisle seat on flights.",
+            "the user prefers AISLE seats on flights!",
+            "preference",
+            "",
+        );
+        assert_eq!(a, b);
+        let w = add(
+            &st,
+            "The user prefers an aisle seat when flying.",
             "preference",
             "",
         );
@@ -1269,10 +1334,17 @@ mod tests {
             "person",
             "Anna",
         );
+        st.add_episode("t9", "aisle → ok").unwrap();
+        st.note_task_memory("t9", &[], &[], std::slice::from_ref(&w))
+            .unwrap();
         let llm = fixed_llm(json!({
             "demote": [{"id": c, "reason": "log"}, {"id": "nope"}],
             "profile": [{"field": "phone", "value": "+65 9123 4567"}],
             "rewrite": [{"id": keep, "fact": "x".repeat(400)}],
+            "merge": [{"ids": [a, w], "fact": "The user prefers aisle seats on flights.", "category": "preference"}],
+            // the sorting step's answer (the same fixed reply serves every call)
+            "facts": [{"id": keep, "domain": "person", "topics": ["home", "bogus"], "scope": "topic", "entity": "Anna", "relation": "sister"},
+                      {"id": other, "scope": "nonsense"}],
         }));
         let rt = Rt {
             store: st,
@@ -1281,14 +1353,31 @@ mod tests {
         };
         let prev = run(&rt, true, "manual", None).await.unwrap();
         let st = &rt.store;
-        assert!(st.fact(&b).unwrap().is_some() && st.fact(&s).unwrap().is_some());
+        assert!(st.fact(&w).unwrap().is_some() && st.fact(&s).unwrap().is_some());
         assert!(rt.sent.lock().is_empty()); // preview changes nothing
         let prev_id = prev["id"].as_i64().unwrap();
         let done = run(&rt, false, "manual", Some(prev_id)).await.unwrap();
         assert_eq!(done["done"]["merged"], json!(1));
+        assert_eq!(done["done"]["sorted"], json!(1));
+        let k = st.fact(&keep).unwrap().unwrap();
+        assert_eq!(
+            (get_str(&k, "scope"), k["topics"].clone()),
+            ("topic".into(), json!(["home"]))
+        );
+        assert!(unsorted(&st.fact(&other).unwrap().unwrap())); // nothing usable: still unsorted
+        let anna = st
+            .entities(None)
+            .unwrap()
+            .into_iter()
+            .find(|e| e["name"] == "Anna")
+            .unwrap();
+        assert_eq!(anna["relation"], "sister");
+        // the episode that used the merged-away wording now points at the fact kept
+        assert!(st.fact(&w).unwrap().is_none());
+        assert_eq!(st.episodes(10).unwrap().len(), 1);
         assert_eq!(done["done"]["sensitive"], json!(1));
         assert_eq!(done["done"]["demoted"], json!(1));
-        assert!(st.fact(&a).unwrap().is_some() && st.fact(&b).unwrap().is_none());
+        assert!(st.fact(&a).unwrap().is_some() && st.fact(&w).unwrap().is_none());
         assert!(get_str(&st.fact(&a).unwrap().unwrap(), "history").contains("an aisle seat"));
         assert_eq!(get_str(&st.fact(&c).unwrap().unwrap(), "tier"), "recent");
         assert!(st.fact(&keep).unwrap().is_some() && st.fact(&other).unwrap().is_some());

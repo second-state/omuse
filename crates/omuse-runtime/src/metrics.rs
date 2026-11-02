@@ -1,7 +1,7 @@
 //! Trust & outcome metrics (roadmap batch 1): how often OMuse finishes what it is asked, how often it needs the user,
 //! and whether "done" is backed by proof. Computed from the task records and their events; nothing extra is logged.
 //!
-//! Definitions (finished = COMPLETED + FAILED + CANCELLED; golden test runs are left out):
+//! Definitions (finished = COMPLETED + FAILED + CANCELLED):
 //! ```text
 //!   completion_rate      COMPLETED / finished
 //!   autonomous_rate      COMPLETED with no approval, no takeover and no question back to the user / COMPLETED
@@ -119,7 +119,7 @@ fn day_of(ts: f64) -> String {
         .unwrap_or_default()
 }
 
-/// The metrics of the last `days` days (tasks created since then, golden runs left out).
+/// The metrics of the last `days` days (tasks created since then).
 pub fn compute(
     store: &crate::store::Store,
     days: i64,
@@ -135,10 +135,7 @@ pub fn compute(
     let rows: Vec<Value> = store
         .tasks(None, 2000, None)?
         .into_iter()
-        .filter(|t| {
-            t.get("created_at").and_then(as_f64).unwrap_or(0.0) >= since
-                && get_str(t, "source") != "golden"
-        })
+        .filter(|t| t.get("created_at").and_then(as_f64).unwrap_or(0.0) >= since)
         .collect();
     let mut per_day = Groups::default();
     let mut causes = Counter::default();
@@ -355,7 +352,6 @@ mod tests {
             None,
             "chat",
         );
-        task(&st, &cid, "COMPLETED", "", &[], None, "golden"); // not counted
         let m = compute(&st, 7, None, 8.0).unwrap();
         assert_eq!(m["tasks"], json!(4));
         assert_eq!(m["completed"], json!(2));

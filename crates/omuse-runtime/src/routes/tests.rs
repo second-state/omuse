@@ -700,7 +700,21 @@ async fn memory_profile_and_library_basics() {
     assert_eq!((st.as_u16(), v), (200, json!({"hits": []})));
     let (st, v) = call(&e.app, "GET", "/api/context/preview?q=seat", None, &[]).await;
     assert_eq!(st, 200);
-    assert_eq!(v["mode"], "v1");
+    assert!(v["facts"].is_array() && v["topics"].is_array());
+    // a custom field marked standing (the profile's "always use" tick)
+    let (st, v) = call(
+        &e.app,
+        "PUT",
+        "/api/profile",
+        Some(json!({"key": "custom:Star Alliance status", "value": "Gold", "standing": true})),
+        &[],
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        v["profile_standing"],
+        json!(["custom:Star Alliance status"])
+    );
 }
 
 #[test]
@@ -709,4 +723,68 @@ fn relpath_like_python() {
     assert_eq!(relpath(Path::new("/w"), Path::new("/w")), ".");
     assert_eq!(relpath(Path::new("/w/a/b"), Path::new("/w")), "a/b");
     assert_eq!(relpath(Path::new("/w2/x"), Path::new("/w")), "../w2/x");
+}
+
+#[tokio::test]
+async fn run_pending_tasks_streams_until_the_due_runs_are_done() {
+    let e = env();
+    // nothing due: the stream says so and closes
+    let (st, h, body) = raw(&e.app, "GET", "/api/run_pending_tasks", None, &[]).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(h["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("application/x-ndjson"));
+    let lines: Vec<Value> = String::from_utf8_lossy(&body)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines[0]["event"], "pending");
+    assert_eq!(lines[0]["count"], 0);
+    assert_eq!(lines.last().unwrap()["event"], "done");
+    // a task the machine slept through: run, followed to its end (the fake model fails it), then the stream closes
+    let s = crate::scheduler::create_schedule(
+        &e.state.rt.store,
+        "Daily mail",
+        "summarise my new emails",
+        "cron",
+        &json!("0 8 * * *"),
+        "UTC",
+        "",
+        "",
+    )
+    .unwrap();
+    let sid = omuse_common::util::get_str(&s, "id");
+    e.state
+        .rt
+        .store
+        .db
+        .execute(
+            "UPDATE schedules SET next_run=? WHERE id=?",
+            omuse_common::params![omuse_common::util::now_ts() - 600.0, sid.as_str()],
+        )
+        .unwrap();
+    let (_, _, body) = raw(&e.app, "GET", "/api/run_pending_tasks", None, &[]).await;
+    let lines: Vec<Value> = String::from_utf8_lossy(&body)
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|l| l["event"] != "waiting") // the heartbeat while the run works
+        .collect();
+    let events: Vec<&str> = lines.iter().filter_map(|l| l["event"].as_str()).collect();
+    assert_eq!(
+        events,
+        ["pending", "started", "finished", "done"],
+        "{lines:?}"
+    );
+    assert_eq!(lines[0]["count"], 1);
+    assert_eq!(lines[1]["schedule_id"], json!(sid));
+    let tid = lines[1]["task_id"].as_str().unwrap();
+    assert_eq!(lines[2]["task_id"], json!(tid));
+    assert!(crate::agent::is_terminal(
+        lines[2]["status"].as_str().unwrap()
+    ));
+    assert_eq!(lines[3]["started"], 1);
+    // no longer due
+    let (_, _, body) = raw(&e.app, "GET", "/api/run_pending_tasks", None, &[]).await;
+    assert!(String::from_utf8_lossy(&body).contains("\"count\": 0"));
 }

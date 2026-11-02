@@ -5,7 +5,7 @@
 //! Markdown tables, > quotes, --- rules and ![alt](workspace image) pictures (PNG/JPEG). Chinese text uses a CJK font.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::LazyLock;
 
 use fancy_regex::Regex as FRegex;
@@ -166,16 +166,11 @@ fn image(rid: &str, idx: usize, w: u32, h: u32) -> String {
     )
 }
 
-/// The workspace image an `![alt](src)` refers to, when it is a PNG/JPEG inside `base_dir`.
+/// The workspace image an `![alt](src)` refers to (`images::find_image`: as written, else the picture it slips
+/// for), when it is a PNG/JPEG inside `base_dir`, the workspace.
 fn resolve_image(base_dir: &str, src: &str) -> Option<(Vec<u8>, &'static str)> {
-    let p: PathBuf = Path::new(base_dir).join(src);
-    let p = std::fs::canonicalize(&p).ok()?;
     let base = std::fs::canonicalize(base_dir).ok()?;
-    let mut prefix = base.into_os_string();
-    prefix.push(std::path::MAIN_SEPARATOR_STR);
-    if !p.to_string_lossy().starts_with(&*prefix.to_string_lossy()) || !p.is_file() {
-        return None;
-    }
+    let p = crate::images::find_image(&base, &base, src)?;
     let ext = p
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())

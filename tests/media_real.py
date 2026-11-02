@@ -1,118 +1,119 @@
-"""One picture and one short clip with a real provider (OMUSE_E2E_REAL=1, the gateway in the e2e env file): the chat
-model goes through the timing proxy as in the travel suites, while the pictures and clips go to the SAME gateway set
-as a separate image / video endpoint with its own key (the optional fields of Settings → Models), using
-xai/grok-imagine-image and xai/grok-imagine-video. Checks: Settings → test models lists both; a natural request
-makes one picture (make_image, a PNG in the workspace, shown in the chat); a follow-up makes one clip (make_video, an
-MP4 of a few seconds, shown with a player); neither is generated twice; the browser is never used; no video or image
-request went through the chat proxy. Both calls are billed.
+"""One picture and one short clip with a real provider, from the user's point of view (tests/user_common.py). The user's
+own model set (Settings → Models) has the chat model plus a separate image and video endpoint with its own key — the
+SAME gateway as in the e2e env file, with xai/grok-imagine-image and xai/grok-imagine-video (world setup). What the
+user sees:
+  - Settings → Models → Test models: the image and the video model are both listed by the gateway (✓ … (listed)).
+  - picture — in a new chat they ask for a watercolour of a paper boat, landscape: one picture shows in the chat, it
+    loads, it is landscape (wider than tall), and it downloads as a real PNG/JPEG.
+  - edit — in the same chat: "give the boat a bright red sail": a second picture shows, it loads and downloads as a
+    real PNG/JPEG, and it is a different picture from the first.
+  - clip — in the same chat they ask for a 5-second video of that boat: a video player shows in the chat, the video
+    plays and lasts a few seconds, it downloads as a real MP4, and no second picture appeared. (The test image's
+    Chromium has no H.264 decoder: when its player cannot decode the clip, the downloaded file is read as a player would.)
+The three requests are billed. One TIMING line per request.
 
 Not in run_in_docker.sh's default list:
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh media_real"""
 import json
 import os
+import subprocess
 import sys
-import time
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tests import travel_common as T  # noqa: E402
-
-if not T.REAL:
-    print("media_real needs a real model (OMUSE_E2E_REAL=1)")
-    sys.exit(1)
+from tests import user_common as U  # noqa: E402
+from tests.user_common import check  # noqa: E402
 
 IMAGE_MODEL = os.environ.get("OMUSE_E2E_IMAGE_MODEL", "xai/grok-imagine-image")
 VIDEO_MODEL = os.environ.get("OMUSE_E2E_VIDEO_MODEL", "xai/grok-imagine-video")
 URL = os.environ["OMUSE_E2E_MODEL_URL"].rstrip("/")
-KEY = os.environ["OMUSE_E2E_MODEL_KEY"]
-c, B, H = T.c, T.B, T.H
 
 
-def trace(tid):
-    for e in T.task(tid).get("events", []):
-        d = e.get("data") or {}
-        if e["type"] == "tool_call":
-            print(f"INFO call {d.get('name')} {json.dumps(d.get('args'), ensure_ascii=False)[:200]}")
-        elif e["type"] == "tool_result":
-            print(f"INFO  -> ok={T.ok(d)} {str(d.get('preview') or d.get('error') or '')[:200]!r}")
-        elif e["type"] in ("image", "video", "waiting", "error", "retry"):
-            print(f"INFO {e['type']} {json.dumps(d, ensure_ascii=False)[:300]}")
+def probe(data: bytes) -> tuple[float, int, str]:
+    """A video file's length in seconds and width in pixels as a player reads them (0 when it does not play)."""
+    with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+        f.write(data)
+        f.flush()
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "format=duration:stream=width",
+                            "-of", "json", f.name], capture_output=True, text=True, timeout=60)
+    try:
+        j = json.loads(r.stdout)
+        return float(j["format"]["duration"]), int((j.get("streams") or [{}])[0].get("width") or 0), r.stdout[:200]
+    except (ValueError, KeyError):
+        return 0.0, 0, (r.stdout + r.stderr)[:200]
 
 
-def media_events(tid, kind):
-    return [e["data"] for e in T.task(tid).get("events", []) if e["type"] == kind]
+async def main():
+    async with U.User() as u:
+        pg = u.page
+        # Settings → Models → Test models
+        await pg.goto(U.APP + "#settings")
+        btn = pg.locator("button", has_text="Test models")
+        await btn.wait_for(timeout=20000)
+        await btn.click()
+        try:
+            await pg.wait_for_function("m => [...document.querySelectorAll('#models .small')].some(e => e.textContent.includes(m) && /[✓✕]/.test(e.textContent))",
+                                       arg=VIDEO_MODEL, timeout=120000)
+        except Exception:   # noqa: BLE001 — what the page shows then is checked below
+            pass
+        lines = [" ".join(t.split()) for t in await pg.locator("#models .small").all_inner_texts() if t.strip()[:1] in ("✓", "✕")]
+        print(f"INFO Test models: {lines}")
+        check(f"Test models: the image model {IMAGE_MODEL} is listed by the gateway", any(l.startswith("✓") and IMAGE_MODEL in l and "(listed)" in l for l in lines), lines)
+        check(f"Test models: the video model {VIDEO_MODEL} is listed by the gateway", any(l.startswith("✓") and VIDEO_MODEL in l and "(listed)" in l for l in lines), lines)
+
+        # 1. a picture
+        a = await u.ask("Please draw a watercolour picture of a small paper boat on a calm pond at sunrise, landscape format.",
+                        label="picture", timeout=400)
+        pics = [m for m in await u.media() if m["kind"] == "image"]
+        check("picture: one picture shows in the chat", len(pics) == 1, pics)
+        if pics:
+            p = pics[0]
+            check("picture: it loads, and it is landscape (wider than tall)", p["width"] > 0 and p["width"] > p["height"], p)
+            data = await u.download(p["src"])
+            check("picture: it downloads as a real PNG/JPEG", len(data) > 20000 and (data[:4] == b"\x89PNG" or data[:3] == b"\xff\xd8\xff"),
+                  (len(data), data[:8]))
+        check("picture: the answer finished", not a.timed_out, a.seconds)
+
+        # 2. the picture edited, in the same chat
+        a = await u.ask("Now give the boat a bright red sail, same scene.", new_chat=False, label="edit", timeout=400)
+        pics2 = [m for m in await u.media() if m["kind"] == "image"]
+        check("edit: a second picture shows in the chat", len(pics2) == 2, pics2)
+        if len(pics2) == 2 and pics:
+            q = pics2[-1]
+            check("edit: it loads", q["width"] > 0, q)
+            data2 = await u.download(q["src"])
+            check("edit: it downloads as a real PNG/JPEG, different from the first picture",
+                  len(data2) > 20000 and (data2[:4] == b"\x89PNG" or data2[:3] == b"\xff\xd8\xff") and data2 != data, (len(data2), data2[:8]))
+        check("edit: the answer finished", not a.timed_out, a.seconds)
+
+        # 3. a clip of the same boat, in the same chat
+        a = await u.ask("Now make a 5-second video of that paper boat drifting slowly across the pond.", new_chat=False, label="clip",
+                        timeout=900)
+        media = await u.media()
+        vids = [m for m in media if m["kind"] == "video"]
+        check("clip: one video player shows in the chat", len(vids) == 1, media)
+        if vids:
+            v = vids[0]
+            data = await u.download(v["src"])
+            check("clip: it downloads as a real MP4", len(data) > 50000 and data[4:8] == b"ftyp", (len(data), data[:12]))
+            if v["error"] == 4:
+                # the test image's Chromium cannot decode H.264 (no proprietary codecs): read the downloaded file the way the
+                # user's own browser or player would
+                secs, w, why = probe(data)
+                print(f"INFO the test browser cannot decode the clip; the downloaded file: {w} px wide, {secs:.1f} s ({why})")
+                check("clip: the video plays and lasts a few seconds (1–15 s)", w > 0 and 1 <= secs <= 15, why)
+            else:
+                check("clip: the video plays and lasts a few seconds (1–15 s)", v["width"] > 0 and 1 <= v["duration"] <= 15, v)
+        check("clip: no further picture appeared", len([m for m in media if m["kind"] == "image"]) == len(pics2), media)
+        check("clip: the answer finished", not a.timed_out, a.seconds)
 
 
-def file_card(conv_id, path):
-    conv = c.get(f"{B}/api/conversations/{conv_id}", headers=H).json()
-    return [m["content"] for m in conv["messages"] if m["role"] == "system" and '"type": "file"' in m["content"] and path in m["content"]]
-
-
-T.c.put(B + "/api/settings", json={"language": "en"}, headers=H)
-T.start_proxy()
-T.use_proxy_model()
-try:
-    # the optional image / video endpoints and keys of the user's own set: the gateway itself, bypassing the proxy
-    r = c.put(B + "/api/settings", headers=H, json={"model_override": True,
-                                                     "image_base_url": URL, "image_api_key": KEY, "image_model": IMAGE_MODEL,
-                                                     "video_base_url": URL, "video_api_key": KEY, "video_model": VIDEO_MODEL})
-    s = r.json().get("settings", {})
-    T.check("image and video endpoints and keys saved on the own model set", r.status_code == 200 and s.get("image_base_url") == URL
-            and s.get("video_base_url") == URL and s.get("image_api_key_set") and s.get("video_api_key_set"), r.text[:300])
-    r = c.post(B + "/api/settings/test-models", headers=H, json={}).json()
-    by = {x["kind"]: x for x in r["results"]}
-    T.check(f"test models: {IMAGE_MODEL} is listed by the gateway", by.get("image", {}).get("ok") is True and "(listed)" in by["image"].get("reply", ""), by.get("image"))
-    T.check(f"test models: {VIDEO_MODEL} is listed by the gateway", by.get("video", {}).get("ok") is True and "(listed)" in by["video"].get("reply", ""), by.get("video"))
-
-    # 1. a picture
-    info = T.run("Please draw a watercolour picture of a small paper boat on a calm pond at sunrise, landscape format.", timeout=400)
-    tid = info["tasks"][-1]
-    conv = info["conv_id"]
-    trace(tid)
-    t = T.task(tid)
-    calls = T.calls_of(info["tasks"])
-    names = [x["name"] for x in calls]
-    T.check("picture: the task completed", t.get("status") == "COMPLETED", (t.get("status"), t.get("error"), str(t.get("result"))[:300]))
-    T.check("picture: make_image was called exactly once, no browser", names.count("make_image") == 1 and not any(n.startswith("browser_") for n in names), names)
-    imgs = media_events(tid, "image")
-    T.check(f"picture: generated by {IMAGE_MODEL}", len(imgs) == 1 and imgs[0].get("model") == IMAGE_MODEL, imgs)
-    T.check("picture: a landscape (the gateway takes the ratio, not a size)", imgs and imgs[0].get("size") in ("16:9", "1536x1024", "1792x1024", "1344x768"), imgs)
-    path = imgs[0]["paths"][0] if imgs else ""
-    raw = c.get(B + "/api/files/raw", params={"path": path}, headers=H) if path else None
-    T.check("picture: a real PNG/JPEG in the workspace", raw is not None and raw.status_code == 200 and len(raw.content) > 20000
-            and (raw.content[:4] == b"\x89PNG" or raw.content[:3] == b"\xff\xd8\xff"), (path, raw.status_code if raw else None, len(raw.content) if raw else 0))
-    T.check("picture: shown in the chat", bool(file_card(conv, path)), path)
-    T.timing("media_real/image", info, len(calls), 0)
-
-    # 2. a clip of the same boat, in the same conversation
-    t0 = time.time()
-    r = c.post(B + "/api/chat", json={"message": "Now make a 5-second video of that paper boat drifting slowly across the pond.",
-                                      "conversation_id": conv}, headers=H).json()
-    tid2 = r["task_id"]
-    t = {}
-    while time.time() - t0 < 900:
-        t = T.task(tid2)
-        if t.get("status") in ("COMPLETED", "FAILED", "CANCELLED"):
-            break
-        time.sleep(1)
-    trace(tid2)
-    calls2 = T.calls_of([tid2])
-    names2 = [x["name"] for x in calls2]
-    T.check("clip: the task completed", t.get("status") == "COMPLETED", (t.get("status"), t.get("error"), str(t.get("result"))[:300]))
-    T.check("clip: make_video was called exactly once, no browser, no second picture",
-            names2.count("make_video") == 1 and "make_image" not in names2 and not any(n.startswith("browser_") for n in names2), names2)
-    vids = media_events(tid2, "video")
-    T.check(f"clip: generated by {VIDEO_MODEL}", len(vids) == 1 and vids[0].get("model") == VIDEO_MODEL, vids)
-    vpath = vids[0]["paths"][0] if vids else ""
-    raw = c.get(B + "/api/files/raw", params={"path": vpath}, headers=H) if vpath else None
-    T.check("clip: a real MP4 in the workspace", raw is not None and raw.status_code == 200 and len(raw.content) > 50000 and raw.content[4:8] == b"ftyp",
-            (vpath, raw.status_code if raw else None, len(raw.content) if raw else 0, raw.content[:12] if raw else b""))
-    T.check("clip: shown in the chat with a player (video/mp4)", any("video/mp4" in x for x in file_card(conv, vpath)), vpath)
-    print(f"TIMING {json.dumps({'suite': 'media_real/video', 'mode': 'real', 'video_model': VIDEO_MODEL, 'wall_s': round(time.time() - t0, 1), 'latency_s': vids[0].get('latency_s') if vids else None, 'seconds': vids[0].get('seconds') if vids else None, 'size': vids[0].get('size') if vids else None})}", flush=True)
-
-    # the media went straight to the gateway: nothing but chat requests through the proxy
-    paths = [x["path"] for x in c.get(T.PROXY + "/_intervals").json()["intervals"]]
-    T.check("no image or video request went through the chat proxy", not any("/images" in p or "/videos" in p for p in paths), paths)
-finally:
-    c.put(B + "/api/settings", headers=H, json={"model_override": True, "image_base_url": "", "image_api_key": None, "image_model": "",
-                                                "video_base_url": "", "video_api_key": None, "video_model": ""})
-    T.finish()
+U.setup(vault=False)
+# the optional image / video endpoints and keys of the user's own model set: the gateway itself (world setup)
+r = U.c.put(U.B + "/api/settings", headers=U.H, json={"model_override": True, "image_base_url": URL, "image_api_key": os.environ["OMUSE_E2E_MODEL_KEY"],
+                                                       "image_model": IMAGE_MODEL, "video_base_url": URL,
+                                                       "video_api_key": os.environ["OMUSE_E2E_MODEL_KEY"], "video_model": VIDEO_MODEL})
+s = r.json().get("settings", {})
+check("Settings → Models: the image and video endpoints and keys saved", r.status_code == 200 and s.get("image_base_url") == URL
+      and s.get("video_base_url") == URL and s.get("image_api_key_set") and s.get("video_api_key_set"), r.status_code)
+U.run(main)

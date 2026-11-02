@@ -1,8 +1,13 @@
 ---
 name: baggage-delayed-lost
 description: 托运行李延误/丢失/损坏：离开机场前先填 PIR、跟踪状态、必需品购买留收据、21 天规则与蒙特利尔公约、向航空公司索赔和保险理赔的邮件草稿与清单 Delayed, lost or damaged checked bags — the PIR before leaving the airport, tracking, essentials receipts, the 21-day rule and Montreal Convention limits, claim letters to the airline and the insurer.
+form: on
 ---
 # Baggage delayed, lost or damaged / 行李延误与丢失
+
+**First turn, in parallel**: gmail_search the flight booking and the hotel (delivery address), and gmail_search
+`insurance (policy OR certificate OR travel)` — always, even when the user only asks about the airline: the answer says
+what the policy pays for a delayed or lost bag and what it needs (section 4), or that no policy was found.
 
 ## 1. Right now (if the user is still at the airport)
 - **File the PIR** (Property Irregularity Report) at the airline's baggage desk before leaving the airport, for every
@@ -12,14 +17,20 @@ description: 托运行李延误/丢失/损坏：离开机场前先填 PIR、跟�
 - Damage: photograph the bag and the tag at the desk; airlines want damage reported within 7 days of receipt.
 
 ## 2. Track and chase
-- Most airlines show the file on their own baggage-tracing page (WorldTracer behind it): browser_read the airline's
-  "delayed baggage" page with the file reference and name; quote the status and date. Set a watch_create or a
-  schedule_create check twice a day and notify_user on change.
+- Call **bag_trace** with the PIR's `file_ref` (from the user's words or the PIR email), the passenger's `family_name`
+  when the PIR gives it, `flight_date` (the day the bag should have arrived) and `watch: true` when the user asks you to
+  keep an eye on the bag. Code opens the airline's "Manage your delayed baggage report" page on WorldTracer's passenger
+  site (mybag.aero; an airline not on it — Singapore Airlines, Cathay Pacific, United — is said so), fills the
+  reference and the family name (the form function), presses LOG IN and reads WorldTracer's answer; with watch it sets
+  a check twice a day. No reference and the mailbox connected: code reads the
+  baggage mail (result `mail_read`) — read it and call bag_trace again with the reference. `needs_input`: ask the user
+  for the reference. Its `show` (WorldTracer's answer and the 21-day date) is appended by code; never fill the
+  tracing page yourself.
 - Delayed bags are usually found within a few days. If nothing after 5 days the airline asks for a detailed
   inventory (contents, values, purchase dates) — help the user write it (make_xlsx if long).
-- **21 days**: a bag not found within 21 days of the date it should have arrived is treated as lost, and the lost-bag
-  claim starts (airline form or email) — many airlines then pay the depreciated value of the contents and the bag
-  against receipts, up to the Montreal Convention limit for international flights (about 1,519 SDR per passenger in
+- **21 days** (every answer about a delayed bag states it, with the date it falls on): a bag not found within 21 days of
+  the date it should have arrived is treated as lost, and the lost-bag claim starts (airline form or email) — many
+  airlines then pay the depreciated value of the contents and the bag against receipts, up to the Montreal Convention limit for international flights (about 1,519 SDR per passenger in
   2026 — verify the current figure and the airline's own policy page, with the date). Carriers in the same country
   may apply national rules instead; check the airline's conditions of carriage.
 
@@ -36,8 +47,8 @@ settlement letter, receipts, photos, boarding passes, bag tags). Many policies p
 claim from the airline first and keep its reply. No policy found → one line: lost and delayed luggage are among the
 most common travel claims; ask whether a credit card or an employer covers it.
 
-An FWD policy (Singapore, or a Hong Kong plan underwritten by bolttech) → load_skill("fwd-travel-insurance") for the
-claim itself: it knows FWD's claim form and bolttech's claims mailbox.
+An FWD policy (Singapore, or a Hong Kong plan underwritten by bolttech) → load_skill("fwd-travel-insurance"): the claim
+goes through claim_file (`benefit: "other"` says where an FWD baggage claim goes).
 
 ## 5. Write the letters (drafts, approved by the user)
 - To the airline: delayed-bag expenses claim (file reference, flight, bag tags, itemised receipts, bank details to be
@@ -46,7 +57,8 @@ claim itself: it knows FWD's claim form and bolttech's claims mailbox.
 - Keep every reference in memory_remember (domain=trip) so follow-ups find them.
 
 ## 6. Answer
-What to do now (numbered), the references found, the tracking status with date, what the airline and the policy owe
+What to do now (numbered), the references found, the tracking status with date (every fact of bag_trace's
+`show`), what the airline and the policy owe
 (quoted, with sources), the receipts to keep, the watch you set up, and the drafts ready to send. No guesses on
 amounts: "not found on the policy" is an answer.
 

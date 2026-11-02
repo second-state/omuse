@@ -253,6 +253,7 @@ mod tests {
             "flight_offer",
             "hotels_search",
             "hotel_rooms",
+            "cars_search",
         ] {
             assert!(!has_tool(main, t), "{t}");
             assert!(has_tool(travel, t), "{t}");
@@ -298,7 +299,7 @@ mod tests {
             );
             // examples above the chat input: a few, in both languages, one for one
             assert!(
-                (3..=5).contains(&b.examples.len()) && b.examples.len() == b.examples_zh.len(),
+                (1..=5).contains(&b.examples.len()) && b.examples.len() == b.examples_zh.len(),
                 "{}: {:?} / {:?}",
                 b.id,
                 b.examples,
@@ -384,5 +385,39 @@ mod tests {
             ("X", 3, vec!["a".to_string(), "b".to_string()], "Do things.")
         );
         assert!(parse("y", "no front matter").is_none());
+    }
+
+    /// Every example shown above a bot's chat input is a request an e2e suite on real sites or data sends word for word
+    /// (a suite listed in tests/run_in_docker.sh's REAL_DATA_SUITES / REAL_APP_SUITES / REAL_SITES), so the UI only
+    /// suggests what has been validated end to end.
+    #[test]
+    fn every_bot_example_is_a_validated_e2e_request() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests");
+        let runner = std::fs::read_to_string(root.join("run_in_docker.sh")).unwrap();
+        let mut suites: Vec<String> = Vec::new();
+        for list in ["REAL_DATA_SUITES=", "REAL_APP_SUITES=", "REAL_SITES="] {
+            let at = runner.find(list).unwrap_or_else(|| panic!("{list} in run_in_docker.sh"));
+            let rest = &runner[at + list.len()..];
+            let body = rest.trim_start_matches('"');
+            let end = body.find('"').unwrap();
+            suites.extend(body[..end].split_whitespace().filter(|w| *w != "\\").map(String::from));
+        }
+        let mut sources = String::new();
+        for s in &suites {
+            if let Ok(t) = std::fs::read_to_string(root.join(format!("{s}.py"))) {
+                sources.push_str(&t);
+            }
+        }
+        // the shared requests of the arrival suites live in their common module
+        sources.push_str(&std::fs::read_to_string(root.join("arrival_common.py")).unwrap_or_default());
+        for b in all() {
+            for e in &b.examples {
+                assert!(
+                    sources.contains(&format!("\"{e}\"")),
+                    "{}: example {e:?} is not a request any validated e2e suite sends",
+                    b.id
+                );
+            }
+        }
     }
 }

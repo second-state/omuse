@@ -547,7 +547,7 @@ impl Health {
     /// FAILED tasks grouped by cause: STREAK of the same cause within STREAK_WINDOW = an alert on "tasks"; the next
     /// task that completes clears it (the periodic checks can look fine while every chat fails).
     pub async fn on_task_finished(&self, t: &Value) -> Result<()> {
-        if !t.is_object() || get_str(t, "source") == "golden" {
+        if !t.is_object() {
             return Ok(());
         }
         let status = get_str(t, "status");
@@ -584,7 +584,6 @@ impl Health {
                     .or_else(|| as_f64(&r["updated_at"]).filter(|v| *v != 0.0))
                     .unwrap_or(0.0)
                     >= since
-                    && get_str(r, "source") != "golden"
             })
             .collect();
         let same = rows

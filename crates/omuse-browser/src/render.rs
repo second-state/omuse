@@ -199,11 +199,8 @@ pub fn img_data<'a>(
         if SCHEME.is_match(src) {
             return None;
         }
-        let p = normalize(&base_dir.join(src));
-        let ws = format!("{}/", workspace.display());
-        if !p.to_string_lossy().starts_with(&ws) || !p.is_file() {
-            return None;
-        }
+        // as written, else the workspace picture the path slips for (`images::find_image`)
+        let p = omuse_docs::images::find_image(workspace, base_dir, src)?;
         let meta = std::fs::metadata(&p).ok()?;
         if meta.len() > 10_000_000 {
             return None;
@@ -410,12 +407,24 @@ impl Renderer {
         .map_err(cdp_err)
     }
 
-    /// `_print_pdf(doc)`.
-    pub async fn print_pdf(&self, doc: &str) -> Result<Vec<u8>, ApiError> {
+    /// `_print_pdf(doc)`, at `scale` (1.0 = as written; less fits more on a page).
+    pub async fn print_pdf(&self, doc: &str, scale: f64) -> Result<Vec<u8>, ApiError> {
         let mut g = self.inner.lock().await;
         let browser = self.ensure(&mut g).await?;
         let tp = Self::render_page(browser, false, "zh-CN", 1.0, None).await?;
         let res: Result<Vec<u8>, ApiError> = async {
+            // smaller print by CSS zoom: Chrome ignores the print `scale` when the page size comes from CSS (@page)
+            let zoomed;
+            let doc = if scale < 1.0 {
+                let css = format!("<style>html {{ zoom: {scale:.2}; }}</style>");
+                zoomed = match doc.find("</head>") {
+                    Some(i) => format!("{}{css}{}", &doc[..i], &doc[i..]),
+                    None => format!("{css}{doc}"),
+                };
+                zoomed.as_str()
+            } else {
+                doc
+            };
             Self::set_content(&tp, doc).await?;
             let footer = "<div style=\"width:100%;font-size:8px;color:#9ca3af;text-align:center;font-family:sans-serif\">\
                           <span class=\"pageNumber\"></span> / <span class=\"totalPages\"></span></div>";
@@ -491,8 +500,30 @@ impl Renderer {
                 }
             };
         }
+        // pictures an HTML source names by a workspace path go in as data (the page prints with no file access); one that
+        // cannot be loaded is reported, never dropped silently (2026-10-30, drive_storybook_real: 0 pictures, "done")
+        let mut missing: Vec<String> = Vec::new();
         let doc = match ext.as_str() {
-            ".html" | ".htm" => text.clone(), // printed with JavaScript off and no network, so scripts / trackers in it do nothing
+            ".html" | ".htm" => {
+                static IMG: LazyLock<Regex> = LazyLock::new(|| {
+                    Regex::new(r#"(?i)(<img\b[^>]*?\bsrc\s*=\s*)(["'])([^"']+)(["'])"#).unwrap()
+                });
+                let resolver = img_data(ws, &base);
+                IMG.replace_all(&text, |c: &regex::Captures| {
+                    let src = &c[3];
+                    if src.starts_with("data:") {
+                        return c[0].to_string();
+                    }
+                    match resolver(src) {
+                        Some(d) => format!("{}{}{}{}", &c[1], &c[2], d, &c[4]),
+                        None => {
+                            missing.push(src.to_string());
+                            c[0].to_string()
+                        }
+                    }
+                })
+                .into_owned()
+            } // printed with JavaScript off and no network, so scripts / trackers in it do nothing
             ".md" | ".markdown" | ".txt" | "" => {
                 let body = if ext == ".txt" {
                     format!("<pre>{}</pre>", html_escape::encode_safe(&text))
@@ -530,12 +561,28 @@ impl Renderer {
             out_rel.push_str(".pdf");
         }
         let op = ws_path(ws, &out_rel)?;
-        let data = self.print_pdf(&doc).await?;
+        // the most pages the user asked for ("a one-page list"): printed smaller, step by step, until it fits — down
+        // to PDF_MIN_SCALE, below which it stays readable rather than fitting
+        let want = b.get("pages").and_then(Value::as_u64).filter(|n| *n > 0);
+        let mut scale = 1.0;
+        let mut data = self.print_pdf(&doc, scale).await?;
+        let mut pages = pdf_pages(&data);
+        while let (Some(w), Some(n)) = (want, pages) {
+            if n as u64 <= w || scale <= PDF_MIN_SCALE + 1e-9 {
+                break;
+            }
+            scale = (scale - 0.1).max(PDF_MIN_SCALE);
+            data = self.print_pdf(&doc, scale).await?;
+            pages = pdf_pages(&data);
+        }
         if let Some(d) = op.parent() {
             std::fs::create_dir_all(d).map_err(|e| browser_error(&e.to_string()))?;
         }
         std::fs::write(&op, &data).map_err(|e| browser_error(&e.to_string()))?;
-        Ok(json!({"path": rel_ws(&op, ws), "size": data.len(), "title": title}))
+        Ok(
+            json!({"path": rel_ws(&op, ws), "size": data.len(), "title": title, "pages": pages,
+                   "scale": (scale * 100.0).round() / 100.0, "missing_images": missing}),
+        )
     }
 
     /// `POST /png`: an SVG (a chart made by the runtime) to a PNG in the workspace.
@@ -770,6 +817,16 @@ html,body{{margin:0;background:#fff}}\n\
 /// `str(e)` of a CDP error, re-exported for the routes.
 pub fn cdp_text(e: &chromiumoxide::error::CdpError) -> String {
     err_text(e)
+}
+
+/// The smallest print scale for fitting a page count: 60% of the written size still reads on paper.
+const PDF_MIN_SCALE: f64 = 0.6;
+
+/// The page count of a PDF, `None` when it cannot be read.
+fn pdf_pages(data: &[u8]) -> Option<usize> {
+    lopdf::Document::load_mem(data)
+        .ok()
+        .map(|d| d.get_pages().len())
 }
 
 #[cfg(test)]

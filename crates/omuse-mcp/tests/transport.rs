@@ -1,5 +1,5 @@
-//! The two MCP transports against an in-process fake server that answers with the wire shapes of
-//! `tests/fake_mcp.py`: Streamable HTTP at `/mcp` (bearer token, `Mcp-Session-Id`, SSE reply for `tools/call`,
+//! The two MCP transports against an in-process fake server that answers with the MCP wire shapes:
+//! Streamable HTTP at `/mcp` (bearer token, `Mcp-Session-Id`, SSE reply for `tools/call`,
 //! paginated `tools/list`) and legacy HTTP+SSE at `/sse` + `/messages?sid=…`.
 
 use std::collections::HashMap;

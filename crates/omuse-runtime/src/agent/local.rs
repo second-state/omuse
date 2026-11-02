@@ -29,10 +29,6 @@ use crate::store::FactOpts;
 
 type R = Result<String, LocalErr>;
 
-static REMEMBER_ASK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)记住|记下|记得|记一下|以后|下次|从现在起|\b(remember|from now on|next time|always|note that)\b").unwrap()
-});
-
 /// `send is not False and str(send).lower() != "false"`.
 pub(crate) fn wants_send(a: &Value) -> bool {
     match a.get("send") {
@@ -101,7 +97,7 @@ request — keep it short and leave out what the request does not need. The skil
                 if txt.is_empty() {
                     String::new()
                 } else {
-                    format!("\n\n(System) {txt}\n(Follow it and mark progress with update_plan; the Status note at the end of each turn carries it.)")
+                    format!("\n\n{txt}")
                 }
             }
             None => String::new(),
@@ -207,10 +203,82 @@ request — keep it short and leave out what the request does not need. The skil
                 };
                 let txt = prompts::plan_text(&plan);
                 Ok(if txt.is_empty() {
-                    "规划模型认为不需要分步计划，直接完成并回答 (The planner found nothing to plan: do it and answer directly.)".into()
+                    "{\"plan\": []}".into()
                 } else {
-                    format!("{txt}\n(Follow it and mark progress with update_plan; the Status note at the end of each turn carries it.)")
+                    txt
                 })
+            }
+            "ask_user" => {
+                // a question only the user can answer ends the run with the question as the reply (the loop reads
+                // the structured result); a field the profile or the form's defaults already answer is refused with
+                // the value, in data
+                let fields: Vec<String> = arr(a, "fields")
+                    .iter()
+                    .map(|f| py_str(f).trim().to_lowercase())
+                    .filter(|f| !f.is_empty())
+                    .collect();
+                let question = sget(a, "question").trim().to_string();
+                if question.is_empty() {
+                    return Ok("ERROR: [empty_question] question is empty.".into());
+                }
+                let unknown: Vec<&String> = fields
+                    .iter()
+                    .filter(|f| !super::guards::ASK_FIELDS.contains(&f.as_str()))
+                    .collect();
+                if !unknown.is_empty() {
+                    return Ok(pyjson::dumps(
+                        &json!({"refused": "unknown_field", "fields": unknown,
+                        "allowed": super::guards::ASK_FIELDS}),
+                    ));
+                }
+                let profile = self.store.profile().unwrap_or_else(|_| json!({}));
+                let transcript = arr(t, "transcript");
+                // a listing searched and not shown yet: the options first, the question after
+                let events = self.store.events(&tid, 0).unwrap_or_default();
+                if let Some(refusal) = super::guards::ask_before_listing(&events)
+                    .or_else(|| super::booking::ask_before_tool(&events))
+                    .or_else(|| super::booking::ask_in_browser_use(&events))
+                    .or_else(|| super::news::ask_before_tool(&events))
+                    .or_else(|| super::claims::ask_before_tool(&events))
+                    .or_else(|| super::driver::ask_before_tool(&events))
+                    .or_else(|| super::apdt::ask_before_tool(&events))
+                {
+                    self.event(&tid, "ask_user_refused", refusal.clone()).await;
+                    return Ok(pyjson::dumps(&refusal));
+                }
+                // what the profile or the form's defaults already answer (structured data, never the user's words)
+                let known: Vec<Value> = fields
+                    .iter()
+                    .filter_map(|f| {
+                        super::guards::known_answer(f, &profile, transcript)
+                            .map(|(src, v)| json!({"field": f, "value": v, "source": src}))
+                    })
+                    .collect();
+                if !known.is_empty() {
+                    self.event(&tid, "ask_user_refused", json!({"known": known}))
+                        .await;
+                    return Ok(pyjson::dumps(&json!({"refused": "known", "known": known})));
+                }
+                self.event(
+                    &tid,
+                    "ask_user",
+                    json!({"fields": fields, "question": truncate(&question, 300)}),
+                )
+                .await;
+                // the question as a card in the chat (like a comparison's), beside the reply that carries it
+                let card = json!({"type": "ask", "fields": fields, "question": truncate(&question, 300), "task_id": tid});
+                let cid = get_str(t, "conv_id");
+                if !cid.is_empty() {
+                    let _ = self
+                        .store
+                        .add_msg(&cid, "system", &pyjson::dumps(&card), &tid, None);
+                    self.publish(json!({"kind": "conv_update", "conv_id": cid}))
+                        .await;
+                    self.mirror_to_parent(&cid, &card, &tid).await;
+                }
+                Ok(pyjson::dumps(
+                    &json!({"asked": true, "fields": fields, "question": question}),
+                ))
             }
             "files_list" => {
                 let p = self.path(&sget(a, "path"))?;
@@ -358,14 +426,20 @@ request — keep it short and leave out what the request does not need. The skil
                 } else {
                     format!("{} words", words)
                 };
-                Ok(format!("已写入 written: {} ({} bytes; {}). To make it longer, add text with append=true instead of rewriting the file.",
-                           self.rel(&p), std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0), size))
+                Ok(format!(
+                    "已写入 written: {} ({} bytes; {}).",
+                    self.rel(&p),
+                    std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0),
+                    size
+                ))
             }
             "send_file" => self.send_file(t, a).await,
+            "news_report" => self.news_report(t, a).await,
             "file_look" => Ok(self
                 .file_look(&tid, &sget(a, "path"), &sget(a, "question"))
                 .await),
             "make_pdf" => {
+                let r: R = async {
                 if !truthy(a.get("source").unwrap_or(&Value::Null))
                     && !truthy(a.get("markdown").unwrap_or(&Value::Null))
                 {
@@ -374,6 +448,13 @@ request — keep it short and leave out what the request does not need. The skil
                 let mut body = json!({"task_id": tid});
                 for k in ["source", "markdown", "output", "title"] {
                     body[k] = a.get(k).filter(|v| truthy(v)).cloned().unwrap_or(json!(""));
+                }
+                let want = a
+                    .get("pages")
+                    .and_then(omuse_common::util::as_i64)
+                    .filter(|n| (1..=50).contains(n));
+                if let Some(n) = want {
+                    body["pages"] = json!(n);
                 }
                 let r = self
                     .sentinel("POST", "/internal/render_pdf", Some(body), 180.0)
@@ -391,22 +472,57 @@ request — keep it short and leave out what the request does not need. The skil
                     .get("size")
                     .and_then(omuse_common::util::as_i64)
                     .unwrap_or(0);
-                // 2026-10-29 (docs_real): "a one-page packing list" came out as 2 pages and the answer said one — the
-                // model never saw the page count; now it does, and can shorten and render again
-                let pages = self
-                    .path(&get_str(&r, "path"))
-                    .ok()
-                    .and_then(|p| lopdf::Document::load(p).ok())
-                    .map(|d| d.get_pages().len());
-                let pages = pages.map_or_else(String::new, |n| {
+                // 2026-10-29 (docs_real): "a one-page packing list" came out as 2 pages, twice, after the model shortened
+                // it — now `pages` fits it in code (printed smaller, down to 60%) and the result says what came out
+                let pages = r
+                    .get("pages")
+                    .and_then(Value::as_u64)
+                    .map(|n| n as usize)
+                    .or_else(|| {
+                        self.path(&get_str(&r, "path"))
+                            .ok()
+                            .and_then(|p| lopdf::Document::load(p).ok())
+                            .map(|d| d.get_pages().len())
+                    });
+                let scale = r.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
+                let count = pages.map_or_else(String::new, |n| {
                     format!(", {n} page{}", if n == 1 { "" } else { "s" })
                 });
-                Ok(format!("PDF 已在本机生成 created locally: {} ({} KB{})。如果用户要这个文件，用 send_file 发给他 Use send_file to give it to the user. \
-If the user asked for a page count and this is not it, shorten or tighten the content and render it again before sending.",
-                           get_str(&r, "path"), size / 1024, pages))
+                let fit = match (want, pages) {
+                    (Some(w), Some(n)) if n as i64 <= w && scale < 1.0 => format!(
+                        " Fitted to {w} page{} as asked (printed at {:.0}%).",
+                        if w == 1 { "" } else { "s" },
+                        scale * 100.0
+                    ),
+                    (Some(w), Some(n)) if n as i64 > w => format!(
+                        " Still {n} pages at the smallest readable size (pages={w} asked)."
+                    ),
+                    _ => String::new(),
+                };
+                let missing: Vec<String> = arr(&r, "missing_images").iter().map(py_str).collect();
+                let fit = if missing.is_empty() {
+                    fit
+                } else {
+                    format!(
+                        "{fit} WARNING: these pictures are not in the workspace (no file by that name or one like it) and are \
+NOT in the PDF: {}.",
+                        missing.join(", ")
+                    )
+                };
+                Ok(format!("PDF 已在本机生成 created locally: {} ({} KB{})。{fit}",
+                           get_str(&r, "path"), size / 1024, count))
+                            }
+                .await;
+                self.auto_send(t, a, r).await
             }
-            "make_xlsx" => self.make_xlsx(a),
-            "make_docx" => self.make_docx(a),
+            "make_xlsx" => {
+                let r = self.make_xlsx(a);
+                self.auto_send(t, a, r).await
+            }
+            "make_docx" => {
+                let r = self.make_docx(a);
+                self.auto_send(t, a, r).await
+            }
             "make_chart" => self.make_chart(t, a).await,
             "make_image" => Ok(self.make_image(t, a).await),
             "make_video" => Ok(self.make_video(t, a).await),
@@ -423,6 +539,22 @@ If the user asked for a page count and this is not it, shorten or tighten the co
                     .await
                     .map_err(|e| LocalErr::other("RuntimeError", e.to_string()))?
             }
+            // the small code tools whose JSON results carry the facts the reply must carry (agent/facts.rs)
+            "emergency_contacts" | "visa_rules" => {
+                let nat = get_str(&self.store.profile().unwrap_or_default(), "nationality");
+                let zh = super::lang::agent_lang(&self.settings()) != "en";
+                let v = if name == "emergency_contacts" {
+                    super::facts::emergency_contacts(a, &nat, zh)
+                } else {
+                    super::facts::visa_rules(a, &nat, zh)
+                };
+                Ok(v.to_string())
+            }
+            "loan_payment" => {
+                let zh = super::lang::agent_lang(&self.settings()) != "en";
+                Ok(super::facts::loan_payment(a, zh).to_string())
+            }
+            "fx_convert" => Ok(self.fx_convert(&tid, a).await.to_string()),
             "calculate" => {
                 let a2 = a.clone();
                 tokio::task::spawn_blocking(move || omuse_common::calc::calculate_tool(&a2))
@@ -527,17 +659,11 @@ If the user asked for a page count and this is not it, shorten or tighten the co
             "library_get" => {
                 let want = sget(a, "subject").trim().to_lowercase();
                 let subs = self.store.subjects().map_err(stores_err)?;
-                let sub = subs
-                    .iter()
-                    .find(|x| {
-                        want == get_str(x, "slug").to_lowercase()
-                            || want == get_str(x, "title").to_lowercase()
-                    })
-                    .or_else(|| {
-                        subs.iter().find(|x| {
-                            !want.is_empty() && get_str(x, "title").to_lowercase().contains(&want)
-                        })
-                    });
+                // the subject by its slug or its whole title (the error lists them for the model to call again)
+                let sub = subs.iter().find(|x| {
+                    want == get_str(x, "slug").to_lowercase()
+                        || want == get_str(x, "title").to_lowercase()
+                });
                 let Some(sub) = sub else {
                     return Ok(format!(
                         "ERROR: 没有这个课题 unknown subject. Known: {}",
@@ -555,33 +681,48 @@ If the user asked for a page count and this is not it, shorten or tighten the co
                 })
             }
             "memory_search" => {
+                // what to look for is the model's JSON: its query words, the topics and the entities it named
                 let q = sget(a, "query");
-                let mut rows = self
+                let include_id = a.get("id_documents").and_then(Value::as_bool) == Some(true);
+                let topics = crate::store::clean_topics(a.get("topics"));
+                let entities: Vec<String> = match a.get("entities") {
+                    Some(Value::Array(v)) => v
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(|x| x.trim().to_string())
+                        .filter(|x| !x.is_empty())
+                        .collect(),
+                    Some(Value::String(x)) if !x.trim().is_empty() => vec![x.trim().to_string()],
+                    _ => vec![],
+                };
+                let rows = self
                     .store
-                    .search_facts(&q, 15, None, true)
+                    .search_facts(&crate::store::MemoryQuery {
+                        query: q.clone(),
+                        topics: topics.clone(),
+                        entities: entities.clone(),
+                        include_id,
+                        tier: None,
+                        limit: 15,
+                    })
                     .map_err(stores_err)?;
-                let mut hidden = 0;
-                if !crate::context::needs_id(&get_str(t, "goal")) {
-                    // passport / ID / birth-date facts: only for tasks that fill in a form or check a document
-                    let before = rows.len();
-                    rows.retain(|r| !crate::context::ID_DOC.is_match(&sget(r, "fact")));
-                    hidden = before - rows.len();
+                let (n_id, n_unsorted) = if include_id {
+                    (0, 0)
+                } else {
+                    self.store.hidden_fact_count().map_err(stores_err)?
+                };
+                if n_unsorted > 0 {
+                    crate::memory_tidy::classify_in_background(
+                        self.store.clone(),
+                        self.llm.clone(),
+                    );
                 }
-                let words: Vec<&str> = q
-                    .split_whitespace()
-                    .filter(|w| w.chars().count() > 1)
-                    .collect();
+                let ids: Vec<String> = rows.iter().map(|r| get_str(r, "id")).collect();
+                let _ = self.store.note_task_memory(&tid, &topics, &entities, &ids);
                 let eps: Vec<Value> = self
                     .store
-                    .episodes(200)
-                    .map_err(stores_err)?
-                    .into_iter()
-                    .filter(|e| {
-                        let s = get_str(e, "summary");
-                        words.iter().any(|w| s.contains(w))
-                    })
-                    .take(5)
-                    .collect();
+                    .episodes_for(&ids, &topics, &entities, &q, 5)
+                    .map_err(stores_err)?;
                 let mut out: Vec<String> = rows
                     .iter()
                     .map(|r| {
@@ -615,9 +756,12 @@ If the user asked for a page count and this is not it, shorten or tighten the co
                         truncate(&get_str(e, "summary"), 300)
                     )
                 }));
-                if hidden > 0 {
-                    out.push(format!("({hidden} 条证件类记忆未显示：只有填表、值机、证件到期检查等任务才使用 — {hidden} identity-document \
+                if n_id > 0 {
+                    out.push(format!("({n_id} 条证件类记忆未显示：只有填表、值机、证件到期检查等任务才使用 — {n_id} identity-document \
 facts hidden; they are only used for forms, check-in or document-expiry checks)"));
+                }
+                if n_unsorted > 0 && rows.is_empty() {
+                    out.push(format!("({n_unsorted} 条记忆还在归类，稍后再搜 — {n_unsorted} facts are still being sorted; search again later)"));
                 }
                 Ok(if out.is_empty() {
                     "没有相关记忆 no memories found".into()
@@ -627,10 +771,30 @@ facts hidden; they are only used for forms, check-in or document-expiry checks)"
             }
             "profile_get" => {
                 let prof = self.store.profile().map_err(stores_err)?;
+                // a field asked by another common name is the profile's own key (insurance_real 2026-10-31:
+                // `date_of_birth` came back empty and the application went over without the birth date)
+                // and a key written with other case or a slip ("address:singapore flat") is the profile's own
+                let keys: Vec<String> = prof
+                    .as_object()
+                    .map(|m| m.keys().cloned().collect())
+                    .unwrap_or_default();
+                let lower: Vec<String> = keys.iter().map(|k| k.to_lowercase()).collect();
                 let want: Vec<String> = arr(a, "fields")
                     .iter()
                     .filter(|x| truthy(x))
-                    .map(py_str)
+                    .map(|x| crate::store::profile_alias(&py_str(x)))
+                    .map(|w| {
+                        if w.ends_with('*') || keys.contains(&w) {
+                            return w;
+                        }
+                        omuse_common::util::nearest(
+                            &w.to_lowercase(),
+                            lower.iter().map(String::as_str),
+                        )
+                        .and_then(|l| lower.iter().position(|x| x == l))
+                        .map(|i| keys[i].clone())
+                        .unwrap_or(w)
+                    })
                     .collect();
                 let pick = |k: &str| {
                     want.is_empty()
@@ -658,8 +822,7 @@ facts hidden; they are only used for forms, check-in or document-expiry checks)"
                 self.event(&tid, "profile_read", json!({"fields": fields}))
                     .await;
                 if lines.is_empty() {
-                    return Ok("档案里还没有这些信息 — the profile has none of these yet. Ask the user for what is missing (and you can \
-profile_suggest it for them to confirm).".into());
+                    return Ok("档案里还没有这些信息 — the profile has none of these yet.".into());
                 }
                 Ok(format!("The user's profile (use only what this form / message needs; never paste it elsewhere):\n{}", lines.join("\n")))
             }
@@ -679,6 +842,52 @@ profile_suggest it for them to confirm).".into());
                 self.publish(json!({"kind": "memory_update"})).await;
                 Ok(format!("已提交，等用户在「记忆」页确认 — queued for the user to confirm on the Memory page: {} → {}", get_str(&r, "key"), get_str(&r, "value")))
             }
+            "vault_add_card" => {
+                let (name, country) = (sget(a, "name"), sget(a, "country"));
+                // the catalog id the model passed, kept only when the catalog has that row
+                let given = sget(a, "card_id").trim().to_string();
+                let card_id = if given == "none" || super::guards::catalog_card(&given).is_some() {
+                    given.clone()
+                } else {
+                    String::new()
+                };
+                let r = match self
+                    .sentinel(
+                        "POST",
+                        "/internal/vault/card",
+                        Some(json!({"name": name, "country": country, "card_id": card_id, "task_id": tid})),
+                        20.0,
+                    )
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(format!(
+                            "ERROR: 没有存入保险箱 not added to the vault: {}",
+                            super::exec::exc_msg(&e)
+                        ))
+                    }
+                };
+                let it = &r["item"];
+                let kept = match get_str(it, "card_id") {
+                    id if !id.is_empty() => format!("card_id={id}"),
+                    _ if !given.is_empty() => {
+                        format!("card_id=none — \"{given}\" is no ID of the card catalog")
+                    }
+                    _ => "card_id=none".to_string(),
+                };
+                if !get_truthy(&r, "added") {
+                    return Ok(format!(
+                        "已经在保险箱里 already in the Vault: {} (id={}, {kept})",
+                        get_str(it, "label"),
+                        get_str(it, "id")
+                    ));
+                }
+                self.publish(json!({"kind": "memory_update"})).await;
+                Ok(format!("已存入保险箱 added to the Vault: {} (id={}, {kept}) — by its name only; its number, expiry and CVC are UNKNOWN until \
+the user adds them in Memory → Vault.",
+                           get_str(it, "label"), get_str(it, "id")))
+            }
             "vault_list" => {
                 let res = match self.sentinel("GET", "/internal/vault", None, 20.0).await {
                     Ok(r) => r,
@@ -691,17 +900,42 @@ profile_suggest it for them to confirm).".into());
                 };
                 let items = arr(&res, "items");
                 if items.is_empty() {
-                    return Ok("保险箱是空的 — the vault is empty. The user can add items in Memory page → Vault (记忆 → 保险箱); otherwise ask them to fill the field themselves (browser_request_takeover).".into());
+                    return Ok(
+                        "保险箱是空的 — the vault is empty (items are added in Memory → Vault)."
+                            .into(),
+                    );
                 }
                 Ok(items
                     .iter()
                     .map(|i| {
                         let doms = arr(i, "domains");
+                        let missing: Vec<String> = arr(i, "missing").iter().map(py_str).collect();
+                        let missing = if missing.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                " · {} UNKNOWN (name only: the user adds them in Memory → Vault before it can be filled or paid with)",
+                                missing.join(", ")
+                            )
+                        };
+                        let country = get_str(i, "country");
+                        let label = if country.is_empty() {
+                            get_str(i, "label")
+                        } else {
+                            format!("{} · issued in {country}", get_str(i, "label"))
+                        };
+                        // a card's catalog id, its own field after the kind (code reads the card's terms by it)
+                        // ("none": checked, no catalog row; "unchecked": not matched to the catalog yet)
+                        let kind = match get_str(i, "card_id") {
+                            id if !id.is_empty() && get_str(i, "kind") == "card" => format!("card · card_id={id}"),
+                            _ if get_str(i, "kind") == "card" => "card · card_id=unchecked".to_string(),
+                            _ => get_str(i, "kind"),
+                        };
                         format!(
-                            "- id={} · {} · {} · {} · fields: {}{}",
+                            "- id={} · {} · {} · {} · fields: {}{}{missing}",
                             get_str(i, "id"),
-                            get_str(i, "label"),
-                            get_str(i, "kind"),
+                            label,
+                            kind,
                             get_str(i, "masked"),
                             arr(i, "fields")
                                 .iter()
@@ -727,8 +961,11 @@ profile_suggest it for them to confirm).".into());
 memory. Tell the user to add it to the vault (Memory page → Vault (记忆 → 保险箱)); you can then fill it with browser_fill_secret.".into());
                 }
                 let fact = req_str(a, "fact")?;
-                let asked = REMEMBER_ASK.is_match(&sget(t, "goal"));
+                // whether the user asked for it: the call's JSON (the model read the user's words)
+                let asked = a.get("user_asked").and_then(Value::as_bool) == Some(true);
                 let cat = sget(a, "category");
+                // the fact's structured fields are the call's JSON (domain, topics, scope, trigger, id_document,
+                // relation), validated against their enums; a fact without them is sorted in the background
                 let o = FactOpts {
                     source: if asked {
                         format!("user-request:{}", tid)
@@ -736,14 +973,21 @@ memory. Tell the user to add it to the vault (Memory page → Vault (记忆 → 
                         format!("learned:{}", tid)
                     },
                     confidence: if asked { 0.95 } else { 0.8 },
-                    domain: sget(a, "domain"),
                     status: if asked {
                         "active".into()
                     } else {
                         "pending".into()
                     },
+                    task_id: tid.to_string(),
                     ..Default::default()
-                };
+                }
+                .with_model_fields(a);
+                if o.scope.is_empty() {
+                    crate::memory_tidy::classify_in_background(
+                        self.store.clone(),
+                        self.llm.clone(),
+                    );
+                }
                 let r = self
                     .store
                     .add_fact(
@@ -774,68 +1018,94 @@ memory. Tell the user to add it to the vault (Memory page → Vault (记忆 → 
                         ))
                     }
                 };
+                // any word of the query (the shop's name, an item, the order number) against the merchant, the order
+                // number, the items and the delivery; the merchant is the site's domain, so a shop's name may only match
+                // an item — with no match, the recent orders are listed rather than none
                 let q = sget(a, "query").trim().to_lowercase();
-                let rows: Vec<&Value> = arr(&res, "orders")
-                    .iter()
-                    .filter(|o| {
-                        q.is_empty()
-                            || format!("{} {}", get_str(o, "merchant"), get_str(o, "order_number"))
-                                .to_lowercase()
-                                .contains(&q)
-                    })
+                let words: Vec<&str> = q
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|w| w.chars().count() >= 3)
                     .collect();
-                if rows.is_empty() {
-                    return Ok("账本里没有匹配的订单 — no matching order in the ledger (OMuse has not placed one). Ask the user which order they mean.".into());
+                let all = arr(&res, "orders");
+                if all.is_empty() {
+                    return Ok("账本里没有订单 — the ledger is empty (OMuse has not placed an order). Ask the user which order they mean.".into());
                 }
-                Ok(rows
+                let hay = |o: &Value| {
+                    format!(
+                        "{} {} {} {}",
+                        get_str(o, "merchant"),
+                        get_str(o, "order_number"),
+                        arr(o, "items")
+                            .iter()
+                            .map(|i| sget(i, "name"))
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        get_str(o, "delivery")
+                    )
+                    .to_lowercase()
+                };
+                let matched: Vec<&Value> = all
                     .iter()
-                    .take(20)
-                    .map(|o| {
-                        let items = arr(o, "items");
-                        let num = get_str(o, "order_number");
-                        format!(
-                            "- {} · {} · 订单号 order {} · {} {:.2} · {} · {} ({}){}",
-                            local_strftime(
-                                o.get("created_at")
+                    .filter(|o| words.is_empty() || words.iter().any(|w| hay(o).contains(w)))
+                    .collect();
+                let (rows, head) = if matched.is_empty() {
+                    (
+                        all.iter().collect::<Vec<&Value>>(),
+                        format!("没有和「{q}」直接匹配的订单，下面是最近的订单 — nothing matches \"{q}\" directly; the recent orders:\n"),
+                    )
+                } else {
+                    (matched, String::new())
+                };
+                Ok(head
+                    + &rows
+                        .iter()
+                        .take(20)
+                        .map(|o| {
+                            let items = arr(o, "items");
+                            let num = get_str(o, "order_number");
+                            format!(
+                                "- {} · {} · 订单号 order {} · {} {:.2} · {} · {} ({}){}",
+                                local_strftime(
+                                    o.get("created_at")
+                                        .and_then(omuse_common::util::as_f64)
+                                        .unwrap_or(0.0),
+                                    "%Y-%m-%d"
+                                ),
+                                get_str(o, "merchant"),
+                                if num.is_empty() {
+                                    "(无 none)".to_string()
+                                } else {
+                                    num
+                                },
+                                get_str(o, "currency"),
+                                o.get("total")
                                     .and_then(omuse_common::util::as_f64)
                                     .unwrap_or(0.0),
-                                "%Y-%m-%d"
-                            ),
-                            get_str(o, "merchant"),
-                            if num.is_empty() {
-                                "(无 none)".to_string()
-                            } else {
-                                num
-                            },
-                            get_str(o, "currency"),
-                            o.get("total")
-                                .and_then(omuse_common::util::as_f64)
-                                .unwrap_or(0.0),
-                            sget(o, "card"),
-                            get_str(o, "status_label"),
-                            get_str(o, "status"),
-                            if items.is_empty() {
-                                String::new()
-                            } else {
-                                format!(
-                                    " · items: {}",
-                                    items
-                                        .iter()
-                                        .take(3)
-                                        .filter(|i| i.is_object())
-                                        .map(|i| get_str(i, "name"))
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                )
-                            }
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"))
+                                sget(o, "card"),
+                                get_str(o, "status_label"),
+                                get_str(o, "status"),
+                                if items.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(
+                                        " · items: {}",
+                                        items
+                                            .iter()
+                                            .take(3)
+                                            .filter(|i| i.is_object())
+                                            .map(|i| get_str(i, "name"))
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    )
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"))
             }
             "memory_forget" => {
                 self.store
-                    .delete_fact(&req_str(a, "id")?)
+                    .forget_fact(&req_str(a, "id")?)
                     .map_err(stores_err)?;
                 self.publish(json!({"kind": "memory_update"})).await;
                 Ok("已删除 forgotten".into())
@@ -849,6 +1119,14 @@ memory. Tell the user to add it to the vault (Memory page → Vault (记忆 → 
 keep counters with schedule_state_set, change it with schedule_update, or schedule_delete it first if it really must be replaced.",
                         get_str(&dup, "id"), get_str(&dup, "name"), crate::scheduler::describe(&dup),
                         if own { " — it is the one running you right now" } else { "" }));
+                }
+                // "… until X" is a goal (it stops when X happens): asked in a schedule's words, made a goal in code —
+                // only for the user's own request, not inside a schedule's or goal's run
+                if get_str(t, "schedule_id").is_empty() {
+                    if let Some(success) = until_arg(a) {
+                        let ga = super::util::goal_args_from_schedule(a, &success);
+                        return self.local(t, "goal_create", &ga).await;
+                    }
                 }
                 let tz = get_str(&self.settings(), "timezone");
                 let sch = crate::scheduler::create_schedule(
@@ -877,6 +1155,16 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                 ))
             }
             "trigger_create" => {
+                // "… until X" in the user's own request is a goal (it stops when X happens), as for schedule_create:
+                // made a daily-check goal in code — only for the user's own request, not inside a schedule's or
+                // goal's run (automations_real 2026-11-01: "keep an eye on my inbox until my landlord replies"
+                // became a gmail.new_email trigger)
+                if get_str(t, "schedule_id").is_empty() {
+                    if let Some(success) = until_arg(a) {
+                        let ga = goal_args_from_trigger(a, &success);
+                        return self.local(t, "goal_create", &ga).await;
+                    }
+                }
                 let every = a
                     .get("every")
                     .filter(|v| truthy(v))
@@ -908,20 +1196,120 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                 } else {
                     "comparison"
                 };
+                // listings to rank may be many (the model's JSON of a results page); a plain card shows at most 8
+                let cap = if a.get("ranking").is_some_and(Value::is_object) {
+                    40
+                } else {
+                    8
+                };
                 let opts_: Vec<&Value> = arr(a, "options")
                     .iter()
                     .filter(|o| o.is_object())
-                    .take(8)
+                    .take(cap)
                     .collect();
                 if opts_.is_empty() {
                     return Ok("ERROR: options is empty.".into());
                 }
-                let clean: Vec<Value> = opts_.iter().map(|o| json!({
+                let mut clean: Vec<Value> = opts_.iter().map(|o| json!({
                     "label": truncate(&sget(o, "label"), 160),
                     "details": arr(o, "details").iter().map(|d| truncate(&py_str(d), 200)).take(6).collect::<Vec<_>>(),
                     "source_url": truncate(&sget(o, "source_url"), 500),
                     "note": truncate(&sget(o, "note"), 400)})).collect();
+                // listings on a results page are ranked in code from the criteria the model read off the user's words
+                let ranking = a
+                    .get("ranking")
+                    .and_then(crate::listings::Ranking::from_json);
+                let mut ranked_pick = String::new();
                 if kind == "comparison" {
+                    if let Some(r) = &ranking {
+                        let url = a
+                            .get("ranking")
+                            .map(|v| sget(v, "url"))
+                            .filter(|u| !u.trim().is_empty())
+                            .or_else(|| {
+                                clean
+                                    .iter()
+                                    .map(|o| get_str(o, "source_url"))
+                                    .find(|u| !u.trim().is_empty())
+                            })
+                            .unwrap_or_default();
+                        // the options are every listing on the page: the count is the user's (3 when not given)
+                        let r = r.clone();
+                        // the listings the model extracted into JSON (2 or more with a price, stars or ratings): code ranks
+                        // them; on anything else the model's options stand
+                        let all: Vec<crate::listings::Listing> = opts_
+                            .iter()
+                            .filter(|o| {
+                                ["price", "stars", "ratings"]
+                                    .iter()
+                                    .any(|k| o.get(*k).is_some_and(|v| !v.is_null()))
+                            })
+                            .filter_map(|o| crate::listings::Listing::from_option(o))
+                            .collect();
+                        let best = if all.len() >= 2 {
+                            r.apply(&all)
+                        } else {
+                            vec![]
+                        };
+                        if !best.is_empty() {
+                            let note_of = |title: &str| {
+                                clean
+                                    .iter()
+                                    .find(|o| {
+                                        let l = get_str(o, "label");
+                                        !l.trim().is_empty()
+                                            && title.trim().eq_ignore_ascii_case(l.trim())
+                                    })
+                                    .map(|o| get_str(o, "note"))
+                                    .unwrap_or_default()
+                            };
+                            let built: Vec<Value> = best
+                                .iter()
+                                .map(|l| {
+                                    let details: Vec<String> = [l.rating_text.clone(), l.price_text.clone()]
+                                        .into_iter()
+                                        .filter(|d| !d.is_empty())
+                                        .collect();
+                                    let src = if l.url.trim().is_empty() { &url } else { &l.url };
+                                    json!({"label": truncate(&l.title, 160), "details": details,
+                                           "source_url": truncate(src, 500), "note": note_of(&l.title)})
+                                })
+                                .collect();
+                            if !sget(a, "picked").trim().is_empty() {
+                                ranked_pick = get_str(&built[0], "label");
+                            }
+                            clean = built;
+                        }
+                    } else if !code_card_of(a) && self.unranked_listings(&tid, &opts_) {
+                        self.event(
+                            &tid,
+                            "choices_rejected",
+                            json!({"problems": ["listings without ranking"]}),
+                        )
+                        .await;
+                        return Ok("ERROR: [needs_ranking] 没有显示——这些是结果页上的商品，比较需要 ranking（用户的条件）。 Not shown: \
+these are listings from a results page, and a comparison of them takes `ranking` (the user's criteria).".into());
+                    }
+                }
+                // a card's price as the model read it off the page (`price_text`, JSON) joins its details when they do
+                // not show it yet; it is verified with them
+                if kind == "comparison" {
+                    for (o, raw) in clean.iter_mut().zip(opts_.iter()) {
+                        let p = sget(raw, "price_text").trim().to_string();
+                        if p.is_empty() || get_str(o, "label") != truncate(&sget(raw, "label"), 160)
+                        {
+                            continue;
+                        }
+                        if let Some(d) = o.get_mut("details").and_then(Value::as_array_mut) {
+                            if d.len() < 6 && !d.iter().any(|x| py_str(x).contains(&p)) {
+                                d.push(json!(p));
+                            }
+                        }
+                    }
+                }
+                // a code machine's card (agent/booking.rs) is built from the structured result it read: nothing to verify
+                let code_card = code_card_of(a);
+                if kind == "comparison" && !code_card {
                     let problems = self.check_choices(&tid, &clean);
                     if !problems.is_empty() {
                         self.event(
@@ -930,9 +1318,8 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                             json!({"problems": problems.iter().take(8).collect::<Vec<_>>()}),
                         )
                         .await;
-                        return Ok(format!("ERROR: 没有显示——以下内容在你本任务读过的页面里找不到 (not shown — not found in what you read):\n- {}\
-\nFix: copy labels/details exactly from the page text you read (e.g. from browser_find context or the \
-snapshot), or read the page first. Translations and opinions go in note.", problems.iter().take(12).cloned().collect::<Vec<_>>().join("\n- ")));
+                        return Ok(format!("ERROR: [unverified_options] 没有显示——以下内容在本任务读过的页面里找不到 (not shown — not found in what was read):\n- {}",
+                            problems.iter().take(12).cloned().collect::<Vec<_>>().join("\n- ")));
                     }
                 }
                 let verified = kind == "comparison";
@@ -944,6 +1331,8 @@ snapshot), or read the page first. Translations and opinions go in note.", probl
                     .map_err(stores_err)?;
                 self.publish(json!({"kind": "conv_update", "conv_id": cid}))
                     .await;
+                // a bot's comparison shows in Main too, where the user asked (like its approvals and takeovers)
+                self.mirror_to_parent(&cid, &info, &tid).await;
                 self.event(
                     &tid,
                     "choices",
@@ -967,9 +1356,33 @@ snapshot), or read the page first. Translations and opinions go in note.", probl
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                Ok(format!("已显示 {} 张选项卡{}。 Shown to the user as {} cards. Finish now with a short answer (the list below, plus your \
-recommendation); the user's pick will arrive as their next message.\n{}", clean.len(),
-                    if verified { "（已逐条核对原文 verified against the pages you read）" } else { "" }, clean.len(), listing))
+                // the user's request already decided (`picked`): the comparison is shown and the task goes on with it
+                // (matched in code: case, spacing and a slip of a letter or two do not make it ask again)
+                let labels: Vec<String> = clean
+                    .iter()
+                    .map(|o| get_str(o, "label").trim().to_lowercase())
+                    .collect();
+                let wanted = if ranked_pick.is_empty() {
+                    sget(a, "picked")
+                } else {
+                    ranked_pick
+                };
+                let picked = omuse_common::util::nearest(
+                    &wanted.trim().to_lowercase(),
+                    labels.iter().map(String::as_str),
+                )
+                .and_then(|l| {
+                    clean
+                        .iter()
+                        .find(|o| get_str(o, "label").trim().to_lowercase() == l)
+                })
+                .map(|o| get_str(o, "label"))
+                .unwrap_or_default();
+                // the structured result: what was shown, whether it was verified, and the pick the user's request
+                // already made (the model goes on with it; without one the user's pick is their next message)
+                let head =
+                    json!({"shown": clean.len(), "verified": verified, "picked": picked.trim()});
+                Ok(format!("{}\n{listing}", pyjson::dumps(&head)))
             }
             "watch_create" => self.watch_create(t, a).await,
             "goal_create" => {
@@ -992,6 +1405,8 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                     Ok(g) => g,
                     Err(e) => return value_msg(e),
                 };
+                crate::goals::set_ask(&self.store, &get_str(&g, "id"), &get_str(t, "goal"))
+                    .map_err(stores_err)?;
                 self.publish(json!({"kind": "goal_update", "goal_id": g.get("id")}))
                     .await;
                 self.audit(
@@ -1188,15 +1603,19 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                     && self.skills().iter().any(|s| get_str(s, "name") == want)
                 {
                     // another bot's skill: the main bot hands the request over, a specialised one points to it
-                    let owners: Vec<String> = crate::bots::owners(&want)
+                    let mut owners: Vec<String> = crate::bots::owners(&want)
                         .iter()
                         .map(|b| format!("{} ({})", b.id, b.name))
                         .collect();
-                    return Ok(if bot.is_main() {
-                        format!("ERROR: the skill {want} belongs to the bot(s) {}: hand the request over with ask_bot instead of answering yourself.", owners.join(", "))
-                    } else {
-                        format!("ERROR: the skill {want} is not one of the {} bot's: it belongs to {}. Tell the user in one line which bot handles it.", bot.name, owners.join(", "))
-                    });
+                    if owners.is_empty() {
+                        // a skill no specialised bot lists is Main's (the refusal used to name nobody)
+                        owners.push("main (Main)".to_string());
+                    }
+                    return Ok(format!(
+                        "ERROR: [other_bot] the skill {want} belongs to the bot(s) {}, not to the {} bot.",
+                        owners.join(", "),
+                        bot.name
+                    ));
                 }
                 let skills = self.bot_skills(bot);
                 if let Some(sk) = skills.iter().find(|s| get_str(s, "name") == want) {
@@ -1213,23 +1632,71 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                         // `plan: on` (long, branching or parallel skills): the planner makes the plan from the
                         // skill's own steps, once per task; every other skill is followed from its sheet
                         let plan_on = fm.get("plan").is_some_and(|v| v.eq_ignore_ascii_case("on"));
-                        {
+                        // `form: on`: a form-filling skill (its step budget below)
+                        let form = fm.get("form").is_some_and(|v| v.eq_ignore_ascii_case("on"));
+                        // `steps: N`: the skill's own step budget for this task, when above the setting's; a form
+                        // skill gets at least FORM_STEPS (cards_interruption_real 2026-10-31: a CSR claim on the
+                        // default 30 ran out of steps right after the last field)
+                        let steps = fm
+                            .get("steps")
+                            .and_then(|v| v.trim().parse::<i64>().ok())
+                            .or(form.then_some(0))
+                            .map(|n| {
+                                if form {
+                                    n.max(super::guards::FORM_STEPS)
+                                } else {
+                                    n
+                                }
+                            });
+                        if let Some(n) = steps {
                             let mut inner = self.inner.lock();
-                            if off {
-                                inner.no_browser.insert(tid.clone(), want.clone());
-                            } else {
-                                inner.no_browser.remove(&tid);
-                            }
+                            let e = inner.skill_steps.entry(tid.clone()).or_insert(0);
+                            *e = (*e).max(n.clamp(0, 120));
                         }
+                        // the browser stays on while any skill loaded in this task needs it: a guide loaded after a
+                        // skill made for websites does not switch it off; a skill made for websites lifts the policy
+                        // and says so
+                        // nor does a guide switch it off when the user's own request names a website
+                        // (browser_auto_real 2026-10-31: "look the hotel up on Google Maps" met the Tokyo guide)
+                        let off =
+                            off && a.get("user_named_site").and_then(Value::as_bool) != Some(true);
+                        let (off, lifted) = {
+                            let mut inner = self.inner.lock();
+                            if off && !inner.browser_skill.contains_key(&tid) {
+                                inner.no_browser.insert(tid.clone(), want.clone());
+                                (true, false)
+                            } else if off {
+                                (false, false)
+                            } else {
+                                inner.browser_skill.insert(tid.clone(), want.clone());
+                                (false, inner.no_browser.remove(&tid).is_some())
+                            }
+                        };
                         let plan = if plan_on {
                             self.skill_plan(&tid, &want, &text).await
                         } else {
                             String::new()
                         };
+                        // `profile: a, b`: the profile fields the skill's answers depend on, handed over with it in
+                        // code (travel_info_real 2026-10-31: "depends on the nationality on your passport, which I
+                        // don't know" while the profile had it)
+                        // — at the top of the sheet, where it is read (travel_info_real 2026-10-31: at the end of a long
+                        // sheet it was missed again)
+                        let pnote = skill_profile_note(
+                            &fm,
+                            &self.store.profile().unwrap_or_else(|_| json!({})),
+                        );
+                        let text = if pnote.is_empty() {
+                            text
+                        } else {
+                            format!("{}\n\n{text}", pnote.trim())
+                        };
+                        // the browser policy the skill set, as data (the tool list itself changes with it)
                         if off {
-                            return Ok(format!(
-                                "{text}\n\n(System) This skill answers without the browser: the browser tools and sub-agents (delegate) are off for the rest of this task. Use this sheet and data tools (market_data, connectors); a task that needs a website goes to a skill made for it.{plan}"
-                            ));
+                            return Ok(format!("{text}\n\n{{\"browser\": \"off\"}}{plan}"));
+                        }
+                        if lifted {
+                            return Ok(format!("{text}\n\n{{\"browser\": \"on\"}}{plan}"));
                         }
                         return Ok(format!("{text}{plan}"));
                     }
@@ -1339,6 +1806,8 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
                 "ERROR: 输出不能覆盖原件 output must be a new file (keep the original).".into(),
             );
         }
+        // a signature is the user's own: a /Sig field is never written (pdfforms::fill refuses it and lists the form's
+        // signature fields as left_for_the_user_to_sign), decided by the field's PDF type, never by its name
         let vals = a
             .get("values")
             .filter(|v| v.is_object())
@@ -1356,22 +1825,69 @@ recommendation); the user's pick will arrive as their next message.\n{}", clean.
         r["output"] = json!(self.rel(std::path::Path::new(&get_str(&r, "output"))));
         self.event(&tid, "pdf_filled", json!({"path": r.get("output"), "filled": arr(&r, "filled").len(),
                                                "problems": arr(&r, "problems").iter().take(5).collect::<Vec<_>>()})).await;
-        Ok(format!("已生成填好的副本 filled copy saved (original untouched): {}\nNext: send_file it so the user can check it; ask about required_still_empty / problems. Send it by email \
-only after the user has seen it (gmail_reply with attachments, which asks for approval).", pyjson::dumps(&r)))
+        Ok(format!(
+            "已生成填好的副本 filled copy saved (original untouched): {}",
+            pyjson::dumps(&r)
+        ))
+    }
+
+    /// The first read of a `web.page` watch through Sentinel (`cursor` null: the baseline), `observed` for a
+    /// model-read price watch's price.
+    async fn watch_read(&self, params: &Value, observed: Option<Value>) -> Value {
+        let mut body = json!({"source": "web.page", "params": params, "cursor": null});
+        if let Some(o) = observed {
+            body["observed"] = o;
+        }
+        match self
+            .sentinel("POST", "/internal/watch", Some(body), 120.0)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => json!({"error": e.to_string()}),
+        }
     }
 
     async fn watch_create(&self, t: &Value, a: &Value) -> R {
         let tid = get_str(t, "id");
-        let mut params = json!({"url": sget(a, "url"), "mode": if truthy(a.get("mode").unwrap_or(&Value::Null)) { sget(a, "mode") } else { "change".into() }});
-        for k in ["text", "keyword"] {
-            if truthy(a.get(k).unwrap_or(&Value::Null)) {
-                params[k] = json!(py_str(&a[k]));
-            }
+        let mode = if truthy(a.get("mode").unwrap_or(&Value::Null)) {
+            sget(a, "mode").trim().to_lowercase()
+        } else {
+            "change".into()
+        };
+        let price_mode = mode == "price_below";
+        let mut params = json!({"url": sget(a, "url"), "mode": mode});
+        if truthy(a.get("text").unwrap_or(&Value::Null)) {
+            params["text"] = json!(py_str(&a["text"]));
         }
-        if a.get("threshold")
-            .is_some_and(|v| !v.is_null() && v != &json!(""))
-        {
-            params["threshold"] = json!(py_str(&a["threshold"]));
+        let mut notes: Vec<String> = Vec::new();
+        if price_mode {
+            for k in ["item", "currency"] {
+                if truthy(a.get(k).unwrap_or(&Value::Null)) {
+                    params[k] = json!(py_str(&a[k]).trim());
+                }
+            }
+            if a.get("threshold")
+                .is_some_and(|v| !v.is_null() && v != &json!(""))
+            {
+                params["threshold"] = json!(py_str(&a["threshold"]));
+            }
+            // the model's selector is a value: kept when it is one, else dropped (and the watch reads another way)
+            let sel = sget(a, "selector");
+            if !sel.trim().is_empty() {
+                match crate::watch_price::clean_selector(&sel) {
+                    Some(sel) => {
+                        params["price_sel"] = json!(sel);
+                        if let Some(at) = crate::watch_price::clean_attr(&sget(a, "selector_attr"))
+                        {
+                            params["price_attr"] = json!(at);
+                        }
+                    }
+                    None => notes.push(format!(
+                        "the selector {:?} is not a CSS selector and was not used",
+                        truncate(&sel, 80)
+                    )),
+                }
+            }
         }
         let every = a
             .get("every_minutes")
@@ -1380,59 +1896,84 @@ only after the user has seen it (gmail_reply with attachments, which asks for ap
             .unwrap_or(60.0)
             .max(15.0);
         let then = sget(a, "then").trim().to_string();
-        let spec = json!({"source": "web.page", "params": params, "every": every, "action": if then.is_empty() { "notify" } else { "run" }});
+        let action = if then.is_empty() { "notify" } else { "run" };
         let goal = if then.is_empty() {
             format!("(notify only) {}", sget(a, "name"))
         } else {
             then.clone()
         };
-        if let Err(e) = crate::scheduler::event_spec(&json!(pyjson::dumps(&spec))) {
-            return Ok(format!("ERROR: {}", e.0));
-        }
-        // read the page once right now: the baseline, and proof that the watch can actually see what it watches
-        let base = match self
-            .sentinel(
-                "POST",
-                "/internal/watch",
-                Some(json!({"source": "web.page", "params": params, "cursor": null})),
-                120.0,
+        // the spec decides how a price is read (a known site's element, the selector given, or the model)
+        let normalized = |params: &Value| {
+            crate::scheduler::event_spec(
+                &json!({"source": "web.page", "params": params, "every": every, "action": action}),
             )
-            .await
-        {
-            Ok(b) => b,
-            Err(e) => json!({"error": e.to_string()}),
         };
-        if truthy(base.get("error").unwrap_or(&Value::Null)) {
-            return Ok(format!("ERROR: 监控没有建立 — 第一次读取页面就失败了 the watch was NOT created, the first read of the page failed: {}\n\
-Fix it and call watch_create again (e.g. a keyword that appears right before the price on the page, \
-such as a word from the product title; or the product page's own URL), or tell the user it can't be watched.", truncate(&sget(&base, "error"), 400)));
-        }
-        let cur = base
-            .get("cursor")
-            .filter(|c| c.is_object())
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+        let mut spec = match normalized(&params) {
+            Ok(s) => s,
+            Err(e) => return Ok(format!("ERROR: {}", e.0)),
+        };
         let want = match a.get("current_price") {
             Some(v) if !v.is_null() && v != &json!("") => py_str(v)
                 .replace(',', "")
                 .trim_start_matches(|c: char| "S$US$€£¥ ".contains(c))
                 .parse::<f64>()
-                .ok(),
+                .ok()
+                .filter(|w| w.is_finite() && *w > 0.0),
             _ => None,
         };
+        // read the page once right now: the baseline, and proof that the watch can actually see what it watches
+        let mut base = self.watch_read(&spec["params"], None).await;
+        if price_mode
+            && get_str(&spec["params"], "read") == "element"
+            && truthy(base.get("error").unwrap_or(&Value::Null))
+        {
+            // the price element showed no price: the price is read by the model instead (the input fixed, noted)
+            notes.push(format!("the price element `{}` showed no price ({}), so each check has the model read the price from the page",
+                get_str(&spec["params"], "price_sel"), truncate(&sget(&base, "error"), 160)));
+            params["read"] = json!("model");
+            spec = match normalized(&params) {
+                Ok(s) => s,
+                Err(e) => return Ok(format!("ERROR: {}", e.0)),
+            };
+            base = self.watch_read(&spec["params"], None).await;
+        }
+        if truthy(base.get("error").unwrap_or(&Value::Null)) {
+            return Ok(format!("ERROR: [watch_read_failed] 监控没有建立 — 第一次读取页面就失败了 the watch was NOT created, the first read of the page failed: {}", truncate(&sget(&base, "error"), 400)));
+        }
+        if let Some(page) = base.get("extract").filter(|p| p.is_object()).cloned() {
+            // a model-read price watch: the baseline is the price the model read on the page (no model call here)
+            let Some(w) = want else {
+                return Ok(format!("ERROR: [watch_needs_price] 监控没有建立 — 这个页面的价格由模型读取，需要 current_price (the watch was NOT created: this page has no known price element, so give current_price — the item's price as the page shows it now — and, if you know it, the price element's CSS selector as selector).{}",
+                    if notes.is_empty() { String::new() } else { format!(" Notes: {}", notes.join("; ")) }));
+            };
+            let obs = json!({"price": w, "currency": get_str(&spec["params"], "currency"),
+                "item": get_str(&spec["params"], "item"), "title": get_str(&page, "title"), "url": get_str(&page, "url"),
+                "read": "model"});
+            base = self.watch_read(&spec["params"], Some(obs)).await;
+            if truthy(base.get("error").unwrap_or(&Value::Null)) {
+                return Ok(format!(
+                    "ERROR: [watch_read_failed] 监控没有建立 the watch was NOT created: {}",
+                    truncate(&sget(&base, "error"), 400)
+                ));
+            }
+        }
+        let params = spec["params"].clone();
+        let cur = base
+            .get("cursor")
+            .filter(|c| c.is_object())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let low = cur.get("low").and_then(omuse_common::util::as_f64);
-        if get_str(&params, "mode") == "price_below" {
-            if let (Some(w), Some(l)) = (want.filter(|w| *w != 0.0), low) {
+        if price_mode {
+            if let (Some(w), Some(l)) = (want, low) {
                 if (l - w).abs() > 0.01f64.max(w * 0.01) {
                     let seen = if truthy(cur.get("seen").unwrap_or(&Value::Null)) {
                         sget(&cur, "seen")
                     } else {
                         fmt_g(l)
                     };
-                    return Ok(format!("ERROR: 监控没有建立 — 它在页面上读到的是 {}，不是你看到的 {}，说明它会盯错价格 \
-(the watch was NOT created: it read {}, not the {} you saw, so it would watch the wrong price). \
-Use a keyword that is in the product's own title right before its price (or the exact product URL), \
-and call watch_create again; if it still can't read the right price, tell the user this page can't be watched reliably.", seen, fmt_g(w), fmt_g(l), fmt_g(w)));
+                    return Ok(format!("ERROR: [watch_wrong_price] 监控没有建立 — 它在页面上读到的是 {}，不是 {} \
+(the watch was NOT created: it read {}, not the {} given as current_price, so it would watch the wrong price).", seen, fmt_g(w), fmt_g(l), fmt_g(w)));
                 }
             }
         }
@@ -1478,12 +2019,24 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
         } else {
             ""
         };
-        Ok(format!("已创建网页监控 watch created: id={}，每 {} 分钟检查一次。{}之后只有新变化才提醒 (only new changes alert). {}{}",
+        let read = if !price_mode {
+            String::new()
+        } else if get_str(&params, "read") == "element" {
+            format!(
+                " 价格按元素读取 price read by its element `{}`.",
+                get_str(&params, "price_sel")
+            )
+        } else {
+            " 每次检查由模型从页面读出价格 each check has the model read the price from the page."
+                .to_string()
+        };
+        Ok(format!("已创建网页监控 watch created: id={}，每 {} 分钟检查一次。{}之后只有新变化才提醒 (only new changes alert). {}{}{}{}",
             get_str(&sch, "id"), fmt_g(every),
             if seen.is_empty() { "已记录当前页面作为基准 baseline saved. ".to_string() } else {
-                format!("刚才读到 just read: 「{}」。请核对这是不是用户要盯的那个值 — check it is the value the user means (if not, tell the user and fix the keyword). ", seen)
+                format!("刚才读到 just read: 「{}」。请核对这是不是用户要盯的那个值 — check it is the value the user means (if not, tell the user and fix the selector). ", seen)
             },
-            if then.is_empty() { "触发时只发通知 notifies only." } else { "触发时会运行任务 runs a task when it fires." }, met_now))
+            if then.is_empty() { "触发时只发通知 notifies only." } else { "触发时会运行任务 runs a task when it fires." }, read, met_now,
+            if notes.is_empty() { String::new() } else { format!(" Notes: {}", notes.join("; ")) }))
     }
 
     pub(crate) fn data_query(&self, a: &Value) -> R {
@@ -1642,9 +2195,17 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             .get("images")
             .and_then(omuse_common::util::as_i64)
             .unwrap_or(0);
-        Ok(format!("Word 文档已在本机生成 created locally: {} ({} KB, {} blocks{})。用 send_file 发给用户 Use send_file to give it to the user.",
-            self.rel(&p), if kb == 0 { 1 } else { kb }, super::util::pystr_opt(info.get("paragraphs")),
-            if images != 0 { format!(", {} images", images) } else { String::new() }))
+        Ok(format!(
+            "Word 文档已在本机生成 created locally: {} ({} KB, {} blocks{})。",
+            self.rel(&p),
+            if kb == 0 { 1 } else { kb },
+            super::util::pystr_opt(info.get("paragraphs")),
+            if images != 0 {
+                format!(", {} images", images)
+            } else {
+                String::new()
+            }
+        ))
     }
 
     fn make_xlsx(&self, a: &Value) -> R {
@@ -1708,9 +2269,17 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             }
         };
         let kb = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) / 1024;
-        Ok(format!("Excel 已在本机生成 created locally: {} ({} KB, sheets: {}, {} rows)。如果用户要这个文件，用 send_file 发给他 Use send_file to give it to the user.",
-            self.rel(&p), if kb == 0 { 1 } else { kb }, arr(&info, "sheets").iter().map(py_str).collect::<Vec<_>>().join(", "),
-            super::util::pystr_opt(info.get("rows"))))
+        Ok(format!(
+            "Excel 已在本机生成 created locally: {} ({} KB, sheets: {}, {} rows)。",
+            self.rel(&p),
+            if kb == 0 { 1 } else { kb },
+            arr(&info, "sheets")
+                .iter()
+                .map(py_str)
+                .collect::<Vec<_>>()
+                .join(", "),
+            super::util::pystr_opt(info.get("rows"))
+        ))
     }
 
     /// make_chart: draw the chart as SVG here, have it rendered to PNG offline, and (by default) show it in the chat.
@@ -1843,7 +2412,12 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
         let spec = Value::Object(spec);
         let svg = match omuse_docs::charts::render(&spec) {
             Ok(s) => s,
-            Err(e) => return Ok(format!("ERROR: 图表参数有误 chart spec problem: {}. 改正参数后再调用 make_chart (fix the arguments and call make_chart again).", e.0)),
+            Err(e) => {
+                return Ok(format!(
+                    "ERROR: [chart_spec] 图表参数有误 chart spec problem: {}.",
+                    e.0
+                ))
+            }
         };
         static SLUG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\w\-一-鿿]+").unwrap());
         let title = if truthy(spec.get("title").unwrap_or(&Value::Null)) {
@@ -1904,10 +2478,37 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
                     path, sent
                 ));
             }
-            return Ok(format!("图表已生成并显示在对话里 chart saved and shown in the chat: {}。不要再用 send_file 重复发送；\
-在回答里简要说明图表要点即可。要放进 PDF 报告时，在 make_pdf 的 Markdown 里写 ![标题]({})。 Don't send it again; summarise what it shows in your answer.", path, path));
+            return Ok(format!("图表已生成并显示在对话里 chart saved and shown in the chat: {path}。 {{\"sent\": true}}"));
         }
-        Ok(format!("图表已生成 chart saved: {}（未发送 not sent）。放进 PDF：在 make_pdf 的 Markdown 里写 ![标题]({})；要给用户看就用 send_file。", path, path))
+        Ok(format!(
+            "图表已生成 chart saved: {path}（未发送 not sent）。 {{\"sent\": false}}"
+        ))
+    }
+
+    /// `fx_convert{amount, from, to}`: the codes checked, the pair's market rate fetched (Sentinel's structured result),
+    /// the figure computed in code (agent/fx.rs). Invalid arguments or no rate: a JSON status the model acts on.
+    async fn fx_convert(&self, task_id: &str, a: &Value) -> Value {
+        let (amount, from, to) = match super::fx::check(a) {
+            Ok(x) => x,
+            Err(problems) => return json!({"status": "invalid", "problems": problems}),
+        };
+        let r = self
+            .sentinel(
+                "POST",
+                "/internal/market_data",
+                Some(json!({"task_id": task_id, "symbols": super::fx::symbols(from, to), "range": "5d"})),
+                90.0,
+            )
+            .await;
+        let results = r.map(|r| arr(&r, "results").to_vec()).unwrap_or_default();
+        match super::fx::rate_in(&results, from, to) {
+            Some((rate, date)) => {
+                let zh = super::lang::agent_lang(&self.settings()) != "en";
+                super::fx::conversion(amount, from, to, rate, &date, zh)
+            }
+            None => json!({"status": "no_rate", "from": from, "to": to,
+                           "detail": "the market data had no rate for this pair now"}),
+        }
     }
 
     async fn market_data(&self, task_id: &str, a: &Value) -> R {
@@ -1943,7 +2544,7 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             } else {
                 errors.join("; ")
             };
-            return Ok(format!("ERROR: {}（检查代码，例如 0700.HK、^HSI、HKD=X；不确定代码时直接写公司全名，会自动查找 check the ticker — if unsure, pass the full company name instead and it is looked up）", e));
+            return Ok(format!("ERROR: [market_data] {}", e));
         }
         Ok(format!("{}\n来源 source: Yahoo Finance。画走势图可直接用 make_chart(type=line, symbols=[…], range=…) To chart it, call make_chart with symbols + range (it fetches the series itself).", parts.join("\n\n")))
     }
@@ -1976,7 +2577,7 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             } else {
                 errors.join("; ")
             };
-            return Ok(format!("ERROR: {}（检查代码，例如 TSLA、1211.HK；不确定代码时直接写公司全名 check the ticker — if unsure, pass the full company name instead and it is looked up）", e));
+            return Ok(format!("ERROR: [stock_fundamentals] {}", e));
         }
         Ok(format!(
             "{}\n来源 source: Yahoo Finance（数据可能有延迟 may be delayed）。",
@@ -1986,6 +2587,111 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
 
     /// Post workspace files into the conversation (images inline, video/audio players, other files as downloads)
     /// and to Telegram when the chat came from there.
+    /// `news_report`: the stories and insights the model researched, laid out in code in the news-research skill's
+    /// newspaper template — the HTML and its PDF under `artifacts/news/<subject>/`, given to the user as file cards and
+    /// served at `/artifacts/…` (Sentinel, signed in). A scheduled run also notifies the user of the new edition.
+    pub(crate) async fn news_report(&self, t: &Value, a: &Value) -> R {
+        use crate::newsreport::{paths, render, Report};
+        let r = match Report::from_args(a) {
+            Ok(r) => r,
+            Err(e) => return Ok(format!("ERROR: {e}")),
+        };
+        let template = self
+            .skills()
+            .iter()
+            .find(|s| get_str(s, "name") == "news-research")
+            .and_then(|s| {
+                std::fs::read_to_string(
+                    std::path::Path::new(&get_str(s, "path")).with_file_name("template.html"),
+                )
+                .ok()
+            })
+            .or_else(|| {
+                crate::skills::BUILTIN
+                    .get_file("news-research/template.html")
+                    .and_then(|f| f.contents_utf8())
+                    .map(str::to_string)
+            })
+            .ok_or_else(|| LocalErr::value("the news-research skill's template.html is missing"))?;
+        let now = chrono::Local::now();
+        let (mut html_rel, mut pdf_rel) = paths(&r.subject, now);
+        // a second edition in the same minute gets its own files (-2, -3 …), never overwriting the first
+        let mut n = 2;
+        while self.path(&html_rel)?.exists() {
+            let (h, p) = paths(&r.subject, now);
+            html_rel = h.replace(".html", &format!("-{n}.html"));
+            pdf_rel = p.replace(".pdf", &format!("-{n}.pdf"));
+            n += 1;
+        }
+        let html_abs = self.path(&html_rel)?;
+        if let Some(dir) = html_abs.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&html_abs, render(&template, &r, now))?;
+        let pdf = self
+            .sentinel(
+                "POST",
+                "/internal/render_pdf",
+                Some(json!({"task_id": get_str(t, "id"), "source": html_rel, "output": pdf_rel, "title": r.title})),
+                180.0,
+            )
+            .await;
+        let pdf_ok = pdf.as_ref().is_ok_and(|v| {
+            !truthy(v.get("error").unwrap_or(&Value::Null))
+                && truthy(v.get("path").unwrap_or(&Value::Null))
+        });
+        let files: Vec<&str> = if pdf_ok {
+            vec![pdf_rel.as_str(), html_rel.as_str()]
+        } else {
+            vec![html_rel.as_str()]
+        };
+        self.send_file(t, &json!({"paths": files, "note": r.title}))
+            .await?;
+        if get_str(t, "source") == "schedule" {
+            let _ = self
+                .local(
+                    t,
+                    "notify_user",
+                    &json!({"title": format!("📰 {}", r.title),
+                            "message": format!("A new edition is ready: {} stories. /{html_rel}", r.stories.len())}),
+                )
+                .await;
+        }
+        let mut out = json!({
+            "published": true, "title": r.title, "stories": r.stories.len(),
+            "html_url": format!("/{html_rel}"), "html_path": html_rel,
+        });
+        if pdf_ok {
+            out["pdf_url"] = json!(format!("/{pdf_rel}"));
+            out["pdf_path"] = json!(pdf_rel);
+        } else {
+            out["pdf_error"] = json!(match &pdf {
+                Ok(v) => err_or_repr(v),
+                Err(e) => e.to_string(),
+            });
+        }
+        Ok(omuse_common::pyjson::dumps(&out))
+    }
+
+    /// A file the run made for the user to receive (the call's `deliver_as`, the model's JSON) goes to the chat at once
+    /// (the "use send_file" note was ignored at times: travel_receipts_real, chat_real 2026-10-31): the path is read
+    /// from the result's own line.
+    async fn auto_send(&self, t: &Value, a: &Value, r: R) -> R {
+        static MADE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"created locally: (\S+?) \(").unwrap());
+        let Ok(text) = r else { return r };
+        if !super::guards::delivers(a) {
+            return Ok(text);
+        }
+        let Some(path) = MADE.captures(&text).map(|c| c[1].to_string()) else {
+            return Ok(text);
+        };
+        match self.send_file(t, &json!({"path": path})).await {
+            Ok(_) => Ok(format!("{text}\n{{\"sent\": true}}")),
+            Err(_) => Ok(text),
+        }
+    }
+
     pub(crate) async fn send_file(&self, t: &Value, a: &Value) -> R {
         let tid = get_str(t, "id");
         let raw: Vec<Value> = match a.get("paths") {
@@ -2042,7 +2748,7 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
                               "mime": mime_guess::from_path(&p).first().map(|m| m.essence_str().to_string()).unwrap_or_else(|| "application/octet-stream".into())}));
         }
         if items.is_empty() {
-            return Ok(format!("已经发过了，不用再发 Already in the chat (sent earlier in this task): {}. Do not send it again; write the final answer with the key results.", dup.join(", ")));
+            return Ok(pyjson::dumps(&json!({"already_sent": dup})));
         }
         let note = truncate(&sget(a, "note"), 300);
         let info = if items.len() == 1 {
@@ -2084,8 +2790,13 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             .map(|i| get_str(i, "path"))
             .collect::<Vec<_>>()
             .join(", ");
-        Ok(format!("已发送到对话 Sent to the chat ({} file(s)): {}.{} 图片会直接显示、视频可直接播放 Images show inline and videos play inline — no need to tell the user where to find them.",
-                   items.len(), names, extra))
+        Ok(format!(
+            "已发送到对话 Sent to the chat ({} file(s)): {}.{} {}",
+            items.len(),
+            names,
+            extra,
+            pyjson::dumps(&json!({"sent": true}))
+        ))
     }
 
     // ---------------------------------------------------------------- sub-agents
@@ -2187,7 +2898,9 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             .subagent_run(parent, role, task, &s, &catalog, lane)
             .await;
         let ok = !out.starts_with("ERROR");
-        if !step.is_empty() {
+        // stopped with its parent: recorded as such (the parent's plan is left as it was)
+        let stopped = self.is_cancelled(&pid);
+        if !step.is_empty() && !stopped {
             self.set_step_status(&pid, step, if ok { "done" } else { "failed" })
                 .await;
         }
@@ -2195,7 +2908,7 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             &pid,
             "subagent_done",
             json!({"role": role, "report": truncate(&out, 1500), "step": step, "lane": lane,
-                   "ok": ok, "secs": ((now_ts() - started) * 10.0).round() / 10.0}),
+                   "ok": ok, "cancelled": stopped, "secs": ((now_ts() - started) * 10.0).round() / 10.0}),
         )
         .await;
         // the lane's browser page is not needed any more: the broker may recycle it (best effort)
@@ -2261,11 +2974,15 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             {
                 Some(Ok(r)) => r,
                 Some(Err(e)) => return format!("ERROR: {}: {}", e.name(), e),
-                None => return "ERROR: 任务已取消 (task cancelled)".into(),
+                None => return format!("ERROR: {}", crate::llm::CANCELLED_MSG),
             };
             if !resp.tool_calls.is_empty() && !force {
                 transcript.push(assistant_with_calls(&resp.content, &resp.tool_calls));
                 for c in &resp.tool_calls {
+                    // the parent was stopped: the sub-agent's remaining calls never run
+                    if self.is_cancelled(&pid) {
+                        return format!("ERROR: {}", crate::llm::CANCELLED_MSG);
+                    }
                     let _ = self
                         .exec_call(
                             parent,
@@ -2281,6 +2998,9 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
                             },
                         )
                         .await;
+                }
+                if self.is_cancelled(&pid) {
+                    return format!("ERROR: {}", crate::llm::CANCELLED_MSG);
                 }
                 transcript = self.compress(transcript, None);
                 continue;
@@ -2319,5 +3039,131 @@ fn value_err(e: anyhow::Error) -> LocalErr {
     match e.downcast_ref::<crate::scheduler::ValueError>() {
         Some(v) => LocalErr::value(v.0.clone()),
         None => LocalErr::from(e),
+    }
+}
+
+/// The profile values a skill's front matter `profile: nationality, birthday` lists, as data on top of the
+/// load_skill result: `{"profile": {field: value | null}}` (null = not in the profile). Empty when the skill lists
+/// none.
+pub(crate) fn skill_profile_note(
+    fm: &std::collections::HashMap<String, String>,
+    profile: &Value,
+) -> String {
+    let Some(list) = fm.get("profile") else {
+        return String::new();
+    };
+    let mut m = Map::new();
+    for f in list
+        .split(',')
+        .map(|f| crate::store::profile_alias(f.trim()))
+        .filter(|f| !f.is_empty())
+    {
+        let v = profile
+            .get(&f)
+            .map(py_str)
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| json!(v.trim()))
+            .unwrap_or(Value::Null);
+        m.insert(f, v);
+    }
+    if m.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n{}",
+        pyjson::dumps(&json!({"profile": Value::Object(m)}))
+    )
+}
+
+/// The condition an "until …" schedule or trigger ends on: the call's `until` (the model read it from the user's words,
+/// "until my landlord replies about the rent renewal"), `None` for a plain recurring job.
+pub(crate) fn until_arg(a: &Value) -> Option<String> {
+    let cond = sget(a, "until");
+    let cond = cond.trim();
+    (!cond.is_empty()).then(|| cond.to_string())
+}
+
+/// The goal a `trigger_create` with an "until" condition becomes: its name and instruction, the trigger's mail
+/// query folded into the objective, checked once a day (1440 minutes) until the condition is met.
+pub(crate) fn goal_args_from_trigger(a: &Value, success: &str) -> Value {
+    let mut objective = sget(a, "goal");
+    let query = a
+        .get("params")
+        .map(|p| sget(p, "query"))
+        .unwrap_or_default();
+    if !query.trim().is_empty() {
+        objective = format!(
+            "{} (search: {})",
+            objective.trim_end_matches('.'),
+            query.trim()
+        );
+    }
+    json!({
+        "title": sget(a, "name"),
+        "objective": objective,
+        "success_criteria": success,
+        "check_kind": "interval",
+        "check_spec": "1440",
+    })
+}
+
+/// A code machine's own `present_choices` (`_code`, set only by the run loop for a `bkg_` call).
+fn code_card_of(a: &Value) -> bool {
+    a.get("_code").and_then(Value::as_bool) == Some(true)
+}
+
+/// The cards of a `vault_list` result, from the listing's fixed fields (`- id=… · <label>[ · issued in <country>] · card ·
+/// card_id=<id|none|unchecked> · …`): this tool's own output, never prose. `unchecked` is read as "".
+pub fn listed_vault_cards(text: &str) -> Vec<super::guards::SeenCard> {
+    text.lines()
+        .filter_map(|l| {
+            let parts: Vec<&str> = l.strip_prefix("- id=")?.split(" · ").collect();
+            let kind_at = parts.iter().position(|p| *p == "card")?;
+            let label = parts.get(1)?.trim().to_string();
+            let country = parts[2..kind_at]
+                .iter()
+                .find_map(|p| p.strip_prefix("issued in "))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let card_id = parts
+                .get(kind_at + 1)
+                .and_then(|p| p.strip_prefix("card_id="))
+                .filter(|id| *id != "unchecked")
+                .unwrap_or("")
+                .to_string();
+            (kind_at >= 2).then_some(super::guards::SeenCard {
+                label,
+                card_id,
+                country,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_trigger_with_until_becomes_a_daily_goal() {
+        // automations_real on b24962d: a gmail.new_email trigger instead of the landlord goal; the condition is the
+        // call's `until` (the model read it from "… until my landlord replies about the rent renewal")
+        let trigger = json!({"name": "Landlord rent-renewal reply watch", "source": "gmail.new_email",
+            "params": {"query": "rent OR renewal OR lease", "account": "tester@example.com"}, "every": 1440,
+            "until": " my landlord replies about the rent renewal ",
+            "goal": "Review each new matching email and notify the user only if it is a reply from their landlord about the rent renewal."});
+        let success = until_arg(&trigger).unwrap();
+        assert_eq!(success, "my landlord replies about the rent renewal");
+        let g = goal_args_from_trigger(&trigger, &success);
+        assert_eq!(g["title"], "Landlord rent-renewal reply watch");
+        assert_eq!(
+            (g["check_kind"].as_str(), g["check_spec"].as_str()),
+            (Some("interval"), Some("1440"))
+        );
+        assert_eq!(g["success_criteria"], success.as_str());
+        assert!(sget(&g, "objective").ends_with("(search: rent OR renewal OR lease)"));
+        // a plain trigger stays a trigger
+        assert_eq!(until_arg(&json!({"name": "x", "until": ""})), None);
     }
 }

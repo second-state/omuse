@@ -29,6 +29,50 @@ use super::{
 };
 
 /// Fields the user may edit on the approval card, per tool (Python `EDITABLE`).
+/// The end of an event whose start the user moved, keeping its length: `old_start`/`old_end` as the agent gave them,
+/// `new_start` as edited ("2026-11-03 15:30", "2026-11-03T15:30:00+08:00"…), in the new start's own format.
+fn shifted_end(old_start: &str, old_end: &str, new_start: &str) -> Option<String> {
+    use chrono::{DateTime, NaiveDateTime};
+    fn parse(s: &str) -> Option<(NaiveDateTime, Option<String>)> {
+        let s = s.trim();
+        if let Ok(d) = DateTime::parse_from_rfc3339(s) {
+            return Some((d.naive_local(), Some(d.offset().to_string())));
+        }
+        for f in [
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+        ] {
+            if let Ok(d) = NaiveDateTime::parse_from_str(s, f) {
+                return Some((d, None));
+            }
+        }
+        None
+    }
+    let (s0, _) = parse(old_start)?;
+    let (e0, _) = parse(old_end)?;
+    let (s1, off) = parse(new_start)?;
+    let len = e0 - s0;
+    if len <= chrono::Duration::zero() {
+        return None;
+    }
+    let e1 = s1 + len;
+    let t_sep = if new_start.contains('T') { "T" } else { " " };
+    let secs = new_start.trim().matches(':').count() >= 2 && off.is_none()
+        || new_start.contains(":00+")
+        || new_start.contains(":00Z");
+    let base = if secs {
+        e1.format(&format!("%Y-%m-%d{t_sep}%H:%M:%S")).to_string()
+    } else {
+        e1.format(&format!("%Y-%m-%d{t_sep}%H:%M")).to_string()
+    };
+    Some(match off {
+        Some(o) => format!("{base}{o}"),
+        None => base,
+    })
+}
+
 pub fn editable(tool: &str) -> &'static [&'static str] {
     match tool {
         "phone_call" => &["purpose"],
@@ -44,31 +88,6 @@ pub fn editable(tool: &str) -> &'static [&'static str] {
         }
         _ => &[],
     }
-}
-
-/// `DRY_RUN_CAPS` / `DRY_RUN_TOOLS`.
-const DRY_RUN_CAPS: [&str; 7] = [
-    "send", "write", "draft", "organize", "upload", "notify", "call",
-];
-const DRY_RUN_TOOLS: [&str; 3] = [
-    "purchase_confirm",
-    "browser_fill_secret",
-    "browser_request_takeover",
-];
-
-/// A call a golden (test) run must not make even when policy would allow it.
-pub fn dry_run_side_effect(tool: &str, t: &Value) -> bool {
-    if DRY_RUN_TOOLS.contains(&tool) {
-        return true;
-    }
-    if tool == "phone_call_status" || tool == "phone_hangup" {
-        return false;
-    }
-    let cap = get_str(t, "capability");
-    if get_str(t, "connector").starts_with("mcp:") {
-        return cap != "read";
-    }
-    DRY_RUN_CAPS.contains(&cap.as_str())
 }
 
 /// `_safe_args`: long strings cut for the audit log.
@@ -120,6 +139,68 @@ fn from_account(ctx: &Ctx, tool: &str, args: &Value) -> String {
 
 type Ctxs = (Option<Value>, Option<Value>);
 
+/// The address of the page a task (or a lane) has open in the broker, `""` when none.
+async fn task_page_url(ctx: &Ctx, task_id: &str) -> Result<String, ActionError> {
+    let st = deps::broker(ctx, "GET", "/state", None, 10.0).await?.json();
+    Ok(st["tasks"]
+        .as_array()
+        .and_then(|a| a.iter().find(|x| get_str(x, "task_id") == task_id))
+        .map(|x| get_str(x, "url"))
+        .unwrap_or_else(|| get_str(&st, "url")))
+}
+
+/// The host links reach the model under (`omuse_runtime::links`): the model never sees a page's real address, so a
+/// `site` it writes from a link is this host, not the shop's.
+pub const STAND_IN_HOST: &str = "link.omuse.local";
+
+/// The internal argument that carries what the open checkout page's text shows as its total, next to the model's
+/// `total` on the approval card (never set by the model: [`purchase_site`] always replaces it).
+pub const PAGE_SHOWS: &str = "_page_shows";
+
+/// `purchase_confirm`'s site is the site of the page the task has open, where the total is shown and the card is
+/// filled — never the model's copy of it (travel_michelin_e2e 2026-10-30: approved for "omuse.local", then the card
+/// fill on the booking site was refused; a model may also write "amazon.com" for www.amazon.sg). With no page open
+/// the site stays as written and the policy refuses it.
+///
+/// The total stays the model's (it read the page). What the page's text shows as a total is put next to it for the
+/// user to compare on the approval card ([`PAGE_SHOWS`]) — a security display only: an arbitrary checkout's prose
+/// never overwrites an amount (docs/json-tools.md, "Safety exceptions").
+async fn purchase_site(ctx: &Ctx, args: &mut Value, page_id: &str) {
+    if let Some(o) = args.as_object_mut() {
+        o.remove(PAGE_SHOWS);
+    }
+    if let Ok(url) = task_page_url(ctx, page_id).await {
+        let host = guard::hostname_of(&url);
+        if !host.is_empty() && !host.ends_with(STAND_IN_HOST) {
+            args["site"] = json!(host);
+        }
+    }
+    let body = json!({"task_id": page_id});
+    let Ok(r) = deps::broker(ctx, "POST", "/agent/page_text", Some(&body), 20.0).await else {
+        return;
+    };
+    if let Some(total) = omuse_common::guard::page_total(&get_str(&r.json(), "text")) {
+        args[PAGE_SHOWS] = json!((total * 100.0).round() / 100.0);
+    }
+}
+
+/// The approval card's line for what the checkout page shows next to the model's total, and a warning when the two
+/// differ: `(field value, warning)`; `None` when the page text showed no total.
+pub fn page_shows_line(args: &Value) -> Option<(String, Option<String>)> {
+    let shown = args.get(PAGE_SHOWS).and_then(Value::as_f64)?;
+    let cur = get_str(args, "currency");
+    let line = format!("{cur} {shown:.2}").trim().to_string();
+    let model = args.get("total").and_then(omuse_common::util::as_f64);
+    let warn = match model {
+        Some(t) if (t - shown).abs() < 0.005 => None,
+        _ => Some(format!(
+            "页面上显示的总价（{line}）和要批准的总价不一样，请先在页面上核对 \
+             (the page shows a total of {line}, not the amount to approve — check the page first)"
+        )),
+    };
+    Some((line, warn))
+}
+
 /// `_context_for`: ask the broker what a ref points to so the policy can judge the click/type.
 pub async fn context_for(
     ctx: &Ctx,
@@ -129,12 +210,7 @@ pub async fn context_for(
 ) -> Result<Ctxs, ActionError> {
     let page_of = |info: &Value| json!({"url": g_or(info, "page_url", json!("")), "title": g_or(info, "page_title", json!(""))});
     if tool == "browser_save_media" && !args.get("ref").is_some_and(truthy) {
-        let st = deps::broker(ctx, "GET", "/state", None, 10.0).await?.json();
-        let url = st["tasks"]
-            .as_array()
-            .and_then(|a| a.iter().find(|x| get_str(x, "task_id") == task_id))
-            .map(|x| g_or(x, "url", json!("")))
-            .unwrap_or_else(|| g_or(&st, "url", json!("")));
+        let url = task_page_url(ctx, task_id).await?;
         return Ok((None, Some(json!({"url": url, "title": ""}))));
     }
     if matches!(
@@ -407,14 +483,22 @@ pub async fn summary(
             field("商品 Items", lines.join("\n")),
             field("运费 Shipping", ship),
             field("总价 Total", total),
+        ];
+        if let Some((shown, warn)) = page_shows_line(args) {
+            fields.push(field("页面显示 Page shows", shown));
+            if let Some(w) = warn {
+                s.insert("warning".into(), json!(w));
+            }
+        }
+        fields.extend([
             field("送货方式 Delivery", s_or(args, "delivery", "")),
             field("付款卡 Card", card),
             field(
                 "批准后 After approval",
-                "30 分钟内、仅这个网站：结账、填卡、下单不再逐个审批；页面总价超过上面的金额会再问你 \
-                 (30 min, this site only; asks again if the page total is higher)",
+                "30 分钟内、仅这个网站：结账、填卡、下单不再逐个审批，页面总价超过上面的金额会再问你 \
+                 (for 30 min on this site only, checkout, the card and the order need no further approval — it asks again if the page total is higher)",
             ),
-        ];
+        ]);
         s.insert("body".into(), json!(s_or(args, "note", "")));
         s.insert("screenshot".into(), json!(true));
     } else if tool.starts_with("browser_") {
@@ -857,8 +941,10 @@ fn ledger_after(
             let mut card = String::new();
             let cid = s_opt(args, "card_item_id");
             if !cid.is_empty() {
+                // the card's name and last digits ("Visa Wei Ming · •••• 1111"), no field label: the ledger shows it as
+                // it is, in either UI language
                 card = vault::item(&ctx.store, &cid)?
-                    .map(|it| vault::summary_text(&it, "number"))
+                    .map(|it| format!("{} · {}", get_str(&it, "label"), get_str(&it, "masked")))
                     .unwrap_or_default();
             }
             let mut merchant = s_opt(result, "site");
@@ -1016,13 +1102,47 @@ pub async fn run(
 /// `POST /internal/act`: the policy gate for every tool call the agent makes.
 pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
     let b = body_obj(&body)?;
-    let tool = s_or(&b, "tool", "");
+    let mut tool = s_or(&b, "tool", "");
     let mut args = match b.get("args") {
         Some(Value::Object(m)) => Value::Object(m.clone()),
         _ => json!({}),
     };
+    // places_search without a SerpApi key reads the Google Maps page in the browser: a page load like any other, so
+    // when the egress check would stop that load for approval, the call becomes the page load itself (approved by the
+    // user, or auto-approved by the setting) — browser_auto_real 2026-10-31: the map page loaded with no card
+    if tool == "places_search" && crate::actions::serpapi_key(&ctx.st).is_empty() {
+        let query = crate::actions::places_query(&args);
+        let url = omuse_apps::serpapi::place_map_url(&query, "", "");
+        let probe = json!({"url": url});
+        let task = s_or(&b, "task_id", "");
+        if !query.is_empty()
+            && decide(
+                &ctx.store,
+                "browser_navigate",
+                &probe,
+                &task,
+                None,
+                None,
+                ctx.gmail_ready(),
+            )
+            .is_ok_and(|d| d.decision == ASK)
+        {
+            tool = "browser_navigate".into();
+            args = probe;
+        }
+    }
     // invalid numbers become what the user means: a price cap of 0 = no limit, 0 travellers = 1 (see the function)
     omuse_common::util::sanitize_search_args(&mut args);
+    // a Vault item id or field name the model mistyped becomes the Vault's own (vault::resolve_args)
+    if let Err(e) = vault::resolve_args(&ctx.store, &mut args) {
+        tracing::warn!("vault args: {e}");
+    }
+    // maps are Google Maps: a page the model opens on OpenStreetMap becomes the Google Maps search for the same query
+    if tool.starts_with("browser_") {
+        if let Some(g) = omuse_apps::serpapi::google_maps_instead(&s_or(&args, "url", "")) {
+            args["url"] = json!(g);
+        }
+    }
     let task_id = s_or(&b, "task_id", "");
     let call_id = s_or(&b, "call_id", "");
     // a sub-agent's browser lane: its own page in the broker; policy, taint and audit stay with the task
@@ -1044,6 +1164,9 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
         ));
     };
     let connector = get_str(&t, "connector");
+    if tool == "purchase_confirm" {
+        purchase_site(&ctx, &mut args, &page_id).await;
+    }
     let (mut elem, mut page) = (None, None);
     if connector == "browser" && tool != "browser_request_takeover" && tool != "browser_downloads" {
         match context_for(&ctx, &tool, &args, &page_id).await {
@@ -1128,6 +1251,22 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
         ctx.gmail_ready(),
     )
     .map_err(ierr)?;
+    // an order-change click is the user's (the policy hands it over): remember which ledger orders this page is about,
+    // so the hand-back can record the cancellation / return the user requested
+    if d.decision == DENY {
+        let name = elem.as_ref().map(|e| s_opt(e, "name")).unwrap_or_default();
+        if let Some(hits) = order_hits.as_ref().filter(|h| !h.is_empty()) {
+            if guard::order_change_click(&name) {
+                let ids: Vec<String> = hits.iter().map(|h| get_str(h, "id")).collect();
+                ctx.order_changes
+                    .lock()
+                    .insert(page_id.clone(), (ids, name));
+            }
+        }
+    }
+    // a card fill from the Vault before the purchase was confirmed is refused by the policy: the confirmation is the
+    // model's purchase_confirm with the total it read (or a machine's, from structured data) — never one made here
+    // from an arbitrary checkout page's text (it used to be, with `page_total` as the amount)
     let mut detail =
         json!({"args": safe_args(&args), "reason": d.reason, "destination": d.destination});
     if let Some(e) = elem.as_ref().filter(|e| truthy(e)) {
@@ -1145,36 +1284,6 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
     if d.decision == DENY {
         ctx.audit("sentinel", &tool, au("denied", DENY, detail));
         return Ok(Json(json!({"status": "denied", "reason": d.reason})));
-    }
-    if b.get("dry_run").is_some_and(truthy) && (d.decision == ASK || dry_run_side_effect(&tool, &t))
-    {
-        // golden (test) run: stop where a real run would act or ask — nothing is sent, bought or written
-        ctx.audit(
-            "sentinel",
-            &tool,
-            au(
-                "dry_run",
-                DENY,
-                merged(&detail, vec![("would", json!(d.decision))]),
-            ),
-        );
-        let what = if d.decision == ASK {
-            "需要你批准"
-        } else {
-            "会真正执行"
-        };
-        let title = {
-            let x = s_opt(&t, "title");
-            if x.is_empty() {
-                tool.clone()
-            } else {
-                x
-            }
-        };
-        return Ok(Json(json!({
-            "status": "denied", "dry_run": true,
-            "reason": format!("{title}：{what}（{}）", take_chars(&d.reason, 120)),
-        })));
     }
     if d.decision == ASK && b.get("no_ask").is_some_and(truthy) {
         ctx.audit(
@@ -1217,7 +1326,11 @@ pub async fn act(State(ctx): State<App>, body: Bytes) -> JsonResult {
                 let _ = std::fs::write(ctx.shots.join(format!("{aid}.jpg")), img);
             }
         }
-        if browser_auto_approve(&ctx, &tool, &d) {
+        // a purchase whose total differs from what the checkout page's text shows is never auto-approved: the user sees
+        // the two side by side on the card
+        let page_differs = tool == "purchase_confirm"
+            && page_shows_line(&args).is_some_and(|(_, warn)| warn.is_some());
+        if !page_differs && browser_auto_approve(&ctx, &tool, &d) {
             // Settings → "auto-approve browser actions": the approval exists and is resolved by "auto" at once, so the
             // chat, the approvals history and the audit show it exactly like a manual approval, and the action runs now
             ctx.audit(
@@ -1426,6 +1539,7 @@ async fn resolve_inner(ctx: &App, aid: &str, b: &Value, via: &str) -> Result<Val
         Some(Value::Object(m)) => m.clone(),
         _ => Map::new(),
     };
+    let before = args.clone();
     for k in editable(&tool) {
         match edited.get(*k) {
             Some(Value::String(v)) => {
@@ -1557,6 +1671,23 @@ async fn resolve_inner(ctx: &App, aid: &str, b: &Value, via: &str) -> Result<Val
             )
             .map_err(ierr)?;
     }
+    // the user moved only the start of an event: the end moves with it (the length stays)
+    if tool.starts_with("calendar_") && edited.contains_key("start") && !edited.contains_key("end")
+    {
+        if let Some(end) = shifted_end(
+            &s_opt(&before, "start"),
+            &s_opt(&before, "end"),
+            &s_opt(&args, "start"),
+        ) {
+            args["end"] = json!(end);
+        }
+    }
+    // what the user changed in the dialog, as applied: the agent is told, so it keeps the user's choice
+    let changed: Map<String, Value> = editable(&tool)
+        .iter()
+        .filter(|k| args.get(**k) != before.get(**k))
+        .map(|k| (k.to_string(), args[*k].clone()))
+        .collect();
     let mut keys: Vec<String> = edited.keys().cloned().collect();
     keys.sort();
     ctx.audit(
@@ -1573,10 +1704,32 @@ async fn resolve_inner(ctx: &App, aid: &str, b: &Value, via: &str) -> Result<Val
     );
     let detail = json!({"args": safe_args(&args), "approval_id": aid});
     // approvals come from the task's own page: a sub-agent lane never asks (no_ask)
-    let result = run(
+    let mut result = run(
         ctx, &tool, &args, &task_id, &task_id, &risk, &detail, "APPROVED",
     )
     .await;
+    if !changed.is_empty() && result.is_object() {
+        // 2026-10-30 gcal_real: the user moved the invite to 15:30 in the dialog; the agent, not told, moved it back
+        // or called it a mistake
+        let what: Vec<String> = changed
+            .iter()
+            .map(|(k, v)| format!("{k} = {}", py_str(v)))
+            .collect();
+        // first in the result: a long result is cut when the transcript is compressed, and these must survive it
+        // (gcal_real 2026-11-01: the calendar's long result lost them, and the answer called 15:30 the calendar's)
+        let note = format!(
+            "用户在审批时改了：{}。这是用户自己的选择，照此执行，不要改回去，也不要说是错误。 (The user changed this in the approval \
+             dialog: {} — it is the user's choice: keep it, don't change it back and don't call it a mistake.)",
+            what.join("；"),
+            what.join("; ")
+        );
+        if let Some(obj) = result.as_object_mut() {
+            let rest = std::mem::take(obj);
+            obj.insert("user_edited".into(), Value::Object(changed));
+            obj.insert("note".into(), json!(note));
+            obj.extend(rest);
+        }
+    }
     store
         .resolve_approval(aid, "approved", &scope, Some(&result), Some(&args), "user")
         .map_err(ierr)?;
@@ -1621,4 +1774,48 @@ async fn resolve_inner(ctx: &App, aid: &str, b: &Value, via: &str) -> Result<Val
 
 fn tool_opt(name: &str) -> Option<Value> {
     tool(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_moved_start_keeps_the_events_length() {
+        assert_eq!(
+            shifted_end(
+                "2026-11-03T15:00:00+08:00",
+                "2026-11-03T16:00:00+08:00",
+                "2026-11-03T15:30:00+08:00"
+            )
+            .as_deref(),
+            Some("2026-11-03T16:30:00+08:00")
+        );
+        assert_eq!(
+            shifted_end("2026-11-03 15:00", "2026-11-03 15:45", "2026-11-03 15:30").as_deref(),
+            Some("2026-11-03 16:15")
+        );
+        assert_eq!(
+            shifted_end("x", "2026-11-03 15:45", "2026-11-03 15:30"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_page_total_is_shown_next_to_the_models_never_instead() {
+        // the same amount: shown, no warning
+        let a = json!({"total": 13.99, "currency": "SGD", PAGE_SHOWS: 13.99});
+        assert_eq!(page_shows_line(&a), Some(("SGD 13.99".to_string(), None)));
+        // the page text shows more than the model's total: both on the card, and a warning; the model's total stays
+        let a = json!({"total": 9.0, "currency": "SGD", PAGE_SHOWS: 13.99});
+        let (line, warn) = page_shows_line(&a).unwrap();
+        assert_eq!(line, "SGD 13.99");
+        assert!(warn.unwrap().contains("SGD 13.99"));
+        assert_eq!(a["total"], 9.0);
+        // nothing read from the page: no line
+        assert_eq!(
+            page_shows_line(&json!({"total": 9.0, "currency": "SGD"})),
+            None
+        );
+    }
 }

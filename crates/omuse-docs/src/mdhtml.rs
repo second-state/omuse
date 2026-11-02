@@ -147,7 +147,27 @@ struct Item {
 
 /// Convert Markdown to HTML. `img` resolves image sources to `data:` URLs (see `app/browser/main.py:_img_data`).
 pub fn md_to_html(src: &str, img: Option<ImageResolver<'_>>) -> String {
-    let text = src.replace("\r\n", "\n").replace('\t', "    ");
+    // a page break: a line `\pagebreak` or `<!-- pagebreak -->` (one photo per page in a story book)
+    let html = md_to_html_inner(src, img);
+    html.replace(
+        &format!("<p>{PAGE_BREAK}</p>"),
+        "<div style=\"break-after: page; page-break-after: always\"></div>",
+    )
+}
+
+const PAGE_BREAK: &str = "@@OMUSE_PAGEBREAK@@";
+
+fn md_to_html_inner(src: &str, img: Option<ImageResolver<'_>>) -> String {
+    let src: String = src
+        .replace("\r\n", "\n")
+        .split('\n')
+        .map(|l| match l.trim() {
+            "\\pagebreak" | "<!-- pagebreak -->" | "\\newpage" => PAGE_BREAK,
+            _ => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = src.replace('\t', "    ");
     let lines: Vec<&str> = text.split('\n').collect();
     let n = lines.len();
     let mut out: Vec<String> = Vec::new();
@@ -384,6 +404,17 @@ pub fn page(title: &str, body_html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_pagebreak_line_starts_a_new_page() {
+        let h = md_to_html(
+            "# Book\n\nPage one\n\n\\pagebreak\n\nPage two\n\n<!-- pagebreak -->\n\nPage three",
+            None,
+        );
+        assert_eq!(h.matches("page-break-after: always").count(), 2, "{h}");
+        assert!(!h.contains("pagebreak") && !h.contains("OMUSE"), "{h}");
+    }
+
     use super::*;
 
     #[test]

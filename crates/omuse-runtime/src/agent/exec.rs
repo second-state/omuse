@@ -15,9 +15,10 @@ use unicode_normalization::UnicodeNormalization;
 
 use super::ext::at;
 use super::guards::*;
+use super::judgements::{page_check_for, PageCheck};
 use super::lang::agent_lang;
 use super::runtime::{Runtime, Suspend};
-use super::tools::{is_local, tool_name, DRY_RUN_LOCAL, REMAKE_TOOLS};
+use super::tools::{is_local, tool_name, REMAKE_TOOLS};
 use super::util::{arr, relpath, sget, LocalErr};
 use super::{RESULT_LIMIT, SEARCH_RESULT_LIMIT};
 use crate::llm::{ChatOpts, LlmError, ToolCall};
@@ -74,7 +75,46 @@ pub(crate) fn in_quarantine(p: &Path, trailing_sep: bool) -> bool {
     }
 }
 
+/// A result too long for the model's limit with its short top-level fields first: links, notes and ids (a fallback's
+/// `compare_url`, `hotels_fallback`) then survive the cut, which takes the bulky results and page text instead
+/// (travel_brave_real 2026-10-31: the Kayak compare link came last and was cut).
+/// The result limit of a booking machine's own calls (it parses the whole search result).
+pub(crate) const CODE_RESULT_LIMIT: usize = 40_000;
+
+pub(crate) fn short_fields_first(body: &Value, limit: usize) -> Value {
+    let Some(m) = body.as_object() else {
+        return body.clone();
+    };
+    if pyjson::dumps(body).chars().count() <= limit {
+        return body.clone();
+    }
+    let size = |v: &Value| pyjson::dumps(v).chars().count();
+    let (short, long): (Vec<_>, Vec<_>) = m.iter().partition(|(_, v)| size(v) <= 600);
+    Value::Object(
+        short
+            .into_iter()
+            .chain(long)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    )
+}
+
 impl Runtime {
+    /// The bot a Main task's `load_skill` belongs to when the skill is another bot's (`Some(bot id)`): an enabled
+    /// skill Main does not have and a specialised bot lists. `None` in a specialised bot, for Main's own skills and
+    /// for names no skill has (those get `load_skill`'s own answer).
+    pub(crate) fn skill_owner(&self, t: &Value, skill: &str) -> Option<String> {
+        let bot = self.bot_of(t);
+        let skill = skill.trim();
+        if !bot.is_main()
+            || crate::bots::has_skill(bot, skill)
+            || !self.skills().iter().any(|s| get_str(s, "name") == skill)
+        {
+            return None;
+        }
+        crate::bots::owners(skill).first().map(|b| b.id.clone())
+    }
+
     /// A workspace path; errors when it escapes the workspace.
     pub fn path(&self, rel: &str) -> Result<PathBuf, LocalErr> {
         let rel = rel.trim().trim_start_matches('/');
@@ -112,10 +152,16 @@ impl Runtime {
 
     /// The text the model gets for a Sentinel action result.
     pub fn format_external(&self, name: &str, res: &Value) -> String {
+        self.format_external_within(name, res, RESULT_LIMIT)
+    }
+
+    /// [`Self::format_external`] with the result cut at `result_limit` chars: a booking machine's search reads the
+    /// whole result (a JSON cut short reads as no offers), so its calls get [`CODE_RESULT_LIMIT`].
+    pub fn format_external_within(&self, name: &str, res: &Value, result_limit: usize) -> String {
         match res.get("status").and_then(Value::as_str) {
             Some("ok") => {
                 let body = res.get("result").cloned().unwrap_or(Value::Null);
-                let txt = pyjson::dumps(&body);
+                let txt = pyjson::dumps(&short_fields_first(&body, result_limit));
                 let untrusted = body.is_object()
                     && (get_str(&body, "trust") == "untrusted" || body.get("messages").is_some());
                 if untrusted {
@@ -136,7 +182,7 @@ impl Runtime {
                     let limit = if name == "gmail_search" {
                         SEARCH_RESULT_LIMIT
                     } else {
-                        RESULT_LIMIT
+                        result_limit
                     };
                     return format!(
                         "<untrusted_content source=\"{}\"{}>\n{}\n</untrusted_content>",
@@ -145,17 +191,14 @@ impl Runtime {
                         truncate(&txt, limit)
                     );
                 }
-                truncate(&txt, RESULT_LIMIT)
+                truncate(&txt, result_limit)
             }
             Some("denied") => {
                 let why = res
                     .get("reason")
                     .filter(|r| truthy(r))
                     .or_else(|| res.get("error"));
-                format!(
-                    "DENIED by Sentinel: {}. 不要重试相同操作 Do not retry the same action; explain to the user or choose a different approach.",
-                    super::util::pystr_opt(why)
-                )
+                format!("DENIED by Sentinel: {}.", super::util::pystr_opt(why))
             }
             Some("approved") => {
                 let r = res
@@ -172,15 +215,16 @@ impl Runtime {
                     .or_else(|| res.get("reason").filter(|r| truthy(r)))
                     .map(py_str)
                     .unwrap_or_else(|| pyjson::py_repr(res));
-                format!(
-                    "ERROR: {}. 请分析原因并换一种方法 Diagnose the cause and try a different approach (e.g. take a new snapshot).",
-                    why
-                )
+                format!("ERROR: {}.", why)
             }
         }
     }
 
     /// Run one tool call and append its result to the transcript. `Err(Suspend)` when it must wait for the user.
+    ///
+    /// A stopped task (`Runtime::cancel`) runs no call: one seen before it starts is not run, and one under way (a
+    /// page load, a sub-agent, a video job, a wait on Sentinel) is dropped the moment the task is stopped. Either way
+    /// the transcript gets a `stopped` result for it and nothing else happens.
     #[allow(clippy::too_many_arguments)]
     pub fn exec_call<'a>(
         &'a self,
@@ -194,15 +238,153 @@ impl Runtime {
     ) -> BoxFuture<'a, Result<CallOutcome, Suspend>> {
         Box::pin(async move {
             let task_id = get_str(t, "id");
-            let name = call.name.as_str();
+            let started = !self.is_cancelled(&task_id);
+            let before = transcript.len();
+            if started {
+                let run = self.exec_call_inner(
+                    t,
+                    call,
+                    &mut *transcript,
+                    catalog,
+                    remaining,
+                    allow,
+                    mode,
+                );
+                if let Some(r) = self.until_cancelled(&task_id, run).await {
+                    return r;
+                }
+            }
+            let answered = transcript[before..]
+                .iter()
+                .any(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == call.id);
+            if !answered {
+                transcript.push(json!({"role": "tool", "tool_call_id": call.id,
+                                       "content": format!("ERROR: {} — not run.", crate::llm::CANCELLED_MSG)}));
+            }
+            self.event(
+                &task_id,
+                "call_stopped",
+                json!({"call_id": call.id, "name": call.name, "started": started, "sub": mode.sub}),
+            )
+            .await;
+            Ok(CallOutcome {
+                ok: false,
+                refused: true,
+            })
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn exec_call_inner<'a>(
+        &'a self,
+        t: &'a Value,
+        call: &'a ToolCall,
+        transcript: &'a mut Vec<Value>,
+        catalog: &'a Value,
+        remaining: &'a [ToolCall],
+        allow: Option<&'a [&'a str]>,
+        mode: CallMode<'a>,
+    ) -> BoxFuture<'a, Result<CallOutcome, Suspend>> {
+        Box::pin(async move {
+            let task_id = get_str(t, "id");
+            let mut name = call.name.as_str();
             let sub = mode.sub;
             let mut args = if truthy(&call.args) {
                 call.args.clone()
             } else {
                 json!({})
             };
+            // `_code` marks a code machine's own call (its cards are built from structured results, not the model's
+            // words); never taken from the model
+            if let Some(o) = args.as_object_mut() {
+                o.remove("_code");
+                if (call.id.starts_with(super::booking::PREFIX)
+                    || call.id.starts_with(super::claims::PREFIX)
+                    || call.id.starts_with(super::driver::PREFIX))
+                    && name == "present_choices"
+                {
+                    o.insert("_code".into(), json!(true));
+                }
+            }
+            // the JSON checking layer repaired the arguments' syntax where they were read (agent/json_in.rs)
+            let repairs = super::json_in::take_repairs(&mut args);
+            if !repairs.is_empty() {
+                self.event(
+                    &task_id,
+                    "json_repaired",
+                    json!({"call_id": call.id, "name": name, "repairs": repairs}),
+                )
+                .await;
+            }
             // invalid numbers become what the user means (no budget = every price, 0 travellers = 1)
             omuse_common::util::sanitize_search_args(&mut args);
+            // the model's links, repaired where its arguments are read (crate::links): a link cut short or mistyped
+            // becomes the one a result showed — the rest of OMuse only ever sees whole, real links
+            crate::links::repair_value(&mut args, &crate::links::seen(transcript));
+            // and the other values it copies the same way (crate::ids): ids, refs, accounts, input paths, a skill's name
+            crate::ids::repair_args(name, &mut args, transcript);
+            // a click in an arrival card's or a claim's run carries the kind of form: Sentinel refuses its Submit from the
+            // element's real label and the page is handed over (`policy::user_submit_click`)
+            if name == "browser_click" {
+                let kind = if arrival_run(transcript) {
+                    "arrival"
+                } else if super::guards::claim_run(transcript) {
+                    "claim"
+                } else {
+                    ""
+                };
+                if let (false, Some(o)) = (kind.is_empty(), args.as_object_mut()) {
+                    o.insert("user_submits".into(), json!(kind));
+                }
+            }
+            // a news research run searches in the browser only (the user's rule for the skill): a web search there skips
+            // the search APIs, and a news search is the browser's news search (news_demo 2026-11-01: a site: query
+            // went to web_search)
+            if super::guards::news_research_run(transcript) {
+                if name == "web_search" {
+                    if let Some(o) = args.as_object_mut() {
+                        o.insert("browser_only".into(), json!(true));
+                    }
+                } else if name == "news_search" {
+                    name = "browser_news_search";
+                }
+            }
+            // an arrival card's hand-over: the unanswered Yes / No questions get the user's default, No, in code first
+            // (Sentinel `default_no`; arrival_cards4_real 2026-10-31: the UK ETA's declarations left blank)
+            if name == "browser_request_takeover" && arrival_run(transcript) {
+                if let Some(o) = args.as_object_mut() {
+                    o.insert("default_no".into(), json!(true));
+                }
+            }
+            // one tool for every known form: `form_fill(facts)` runs the function for the page the task has open
+            // (crate::forms, by its URL) and goes to Sentinel as `browser_fill_form` with the plan computed in code; a
+            // page no function knows gets the generic path's message instead (no call)
+            let mut form_msg: Option<String> = None;
+            // the agent's click on a box a known page always has ticked: the tick itself (idempotent), never a toggle
+            let name: &str = match super::guards::apdt_fixed_ticks(transcript, call) {
+                Some(mut f) if f["on_box"].as_bool().unwrap_or(false) => {
+                    if let Some(o) = f.as_object_mut() {
+                        o.remove("on_box");
+                    }
+                    args = f;
+                    "browser_fill_form"
+                }
+                _ => name,
+            };
+            let name: &str = if name == "form_fill" {
+                match self.form_plan(&task_id, mode.lane, &args).await {
+                    Ok(plan) => {
+                        args = plan;
+                        "browser_fill_form"
+                    }
+                    Err(msg) => {
+                        form_msg = Some(msg);
+                        name
+                    }
+                }
+            } else {
+                name
+            };
             let mut ev =
                 json!({"call_id": call.id, "name": name, "args": preview_args(&args), "sub": sub});
             if !mode.lane.is_empty() {
@@ -219,23 +401,54 @@ impl Runtime {
             let seen = self.inner.lock().seen_ids.get(&task_id).cloned();
             let st = self.store.clone();
             let tid2 = task_id.clone();
-            let repeated = invented_id_guard(transcript, call, seen.as_ref())
+            // a phone call to an emergency or short number: refused in code, its JSON result carries the fact the reply
+            // must carry (agent/facts.rs); a flight or hotel search is the booking machine's (`travel_search`), never the
+            // model's own call
+            let zh = super::lang::agent_lang(&self.settings()) != "en";
+            let repeated = super::guards::model_script_guard(call)
+                .or_else(|| super::facts::emergency_call_refusal(name, &args, zh))
+                .or_else(|| {
+                    machine_only_guard(call, crate::bots::has_tool(self.bot_of(t), "travel_search"))
+                })
+                .or_else(|| invented_id_guard(transcript, call, seen.as_ref()))
                 .or_else(|| repeat_guard(transcript, call))
                 .or_else(|| retype_guard(transcript, call))
+                .or_else(|| empty_mail_guard(call))
+                .or_else(|| arrival_submit_guard(transcript, call))
+                .or_else(|| super::guards::input_scope_guard(transcript, call))
+                .or_else(|| clear_guard(transcript, call))
+                .or_else(|| apdt_face_guard(transcript, call))
+                .or_else(|| super::guards::takeover_before_fill_guard(transcript, call))
+                .or_else(|| super::guards::user_edit_guard(transcript, call))
+                .or_else(|| super::guards::web_budget_guard(transcript, call))
+                .or_else(|| {
+                    let (st, tid) = (st.clone(), tid2.clone());
+                    one_search_guard(move || st.events(&tid, 0).unwrap_or_default(), call)
+                })
                 .or_else(|| host_guard(move || st.events(&tid2, 0).unwrap_or_default(), call));
-            let reread = if repeated.is_some() {
+            // a code machine's read is its own state (a second run reads the page again): never a pointer back
+            let reread = if repeated.is_some() || super::guards::code_call(call) {
                 None
             } else {
                 reread_guard(transcript, call)
             };
             let mut content: String;
-            let skill_off = if !super::runtime::browser_policy_allows(name) {
+            // a parked / for-sale domain the agent opened: set below, acted on after the result is recorded
+            let mut parked: Option<String> = None;
+            // a page just opened that needs one judgement (`judgements`): a deep link that was redirected, a shop's
+            // product page the agent came back to without adding to the cart — decided after the result is recorded
+            let mut page_check: Option<PageCheck> = None;
+            // a skill that turns the browser off turns it off for the model; a code machine's own page read (the
+            // timetable `train_times` opens and reads by its elements) is code's (travel_info_real 2026-11-01)
+            let skill_off = if !super::runtime::browser_policy_allows(name)
+                && !super::guards::code_call(call)
+            {
                 self.inner.lock().no_browser.get(&task_id).cloned()
             } else {
                 None
             };
             if let Some(skill) = skill_off {
-                content = format!("ERROR: 浏览器在这个任务里已关闭（技能 {skill} 只用自己的资料和数据工具）。The browser is off for this task: the {skill} skill answers from its own sheet and data tools (market_data, connectors). Answer from what you have and say which facts carry an older date.");
+                content = format!("ERROR: [browser_off] 浏览器在这个任务里已关闭（技能 {skill}）。 The browser is off for this task (the {skill} skill).");
                 ok = false;
                 refused = true;
                 self.audit(
@@ -269,6 +482,27 @@ impl Runtime {
                     "result": "repeat_blocked", "detail": {"args": preview_args(&args)}}),
                 )
                 .await;
+            } else if (super::booking::TOOLS.contains(&name)
+                || super::news::TOOLS.contains(&name)
+                || super::claims::TOOLS.contains(&name)
+                || super::driver::TOOLS.contains(&name)
+                || super::apdt::TOOLS.contains(&name)
+                || super::trains::TOOLS.contains(&name)
+                || super::flightstatus::TOOLS.contains(&name))
+                && crate::bots::has_tool(self.bot_of(t), name)
+            {
+                // a workflow tool: its arguments checked by the JSON layer (repair, schema, the tool's field checks, the
+                // planner's regeneration once); a valid call starts the machine on the next turn (agent/workflow.rs)
+                let checked = self
+                    .checked_workflow_args(&task_id, name, &args, transcript, catalog)
+                    .await;
+                content = checked.to_result().to_string();
+                self.event(
+                    &task_id,
+                    "workflow_call",
+                    json!({"tool": name, "result": checked.to_result()}),
+                )
+                .await;
             } else if args.get("_unparsed").is_some()
                 && [
                     "files_write",
@@ -281,17 +515,14 @@ impl Runtime {
                 .contains(&name)
             {
                 // 2026-10-04 V8-06: a 270-row CSV in one files_write call was cut off every time
-                content = "ERROR: 内容太长，参数被截断了，没有执行。请分几次写：每次不超过约 3000 字，第一次正常写，之后用 append=true 追加\
-（Notion 用 notion_append 分段追加）。\
- The content was too long and got cut off; nothing was written. Write it in parts of about 3,000 characters: \
-the first call normally, then append=true for the rest (notion_append for Notion).".to_string();
+                content = "ERROR: [arguments_cut] 内容太长，参数被截断了，没有执行（分段写入，每段约 3000 字）。 The content was too \
+long and the arguments were cut off; nothing was written (parts of about 3,000 characters go through).".to_string();
                 ok = false;
             } else if args.get("_unparsed").is_some() {
                 // 2026-10-04 V4-07: the model looped ("conference OR conference OR …"), the arguments weren't valid JSON, and
                 // gmail_search ran with no query at all — 50 unrelated emails, so the travel mails were "not found"
-                content = "ERROR: 这次调用的参数不是有效的 JSON（可能重复输出了同一个词或被截断），没有执行。请用简短、不重复的参数重新调用。\
- The arguments were not valid JSON (repeated words or cut off); the call was not run. Call it again \
-with short arguments and no repetition.".to_string();
+                content = "ERROR: [bad_arguments] 这次调用的参数不是有效的 JSON，没有执行。 The arguments were not valid JSON; the \
+call was not run.".to_string();
                 ok = false;
             } else if allow.is_some_and(|a| !a.contains(&name)) {
                 content = format!("ERROR: tool {} is not available to this agent.", name);
@@ -302,11 +533,11 @@ with short arguments and no repetition.".to_string();
                     .iter()
                     .map(|b| format!("{} ({})", b.id, b.name))
                     .collect();
-                content = if self.bot_of(t).is_main() {
-                    format!("ERROR: the tool {name} belongs to the bot(s) {}: hand the request over with ask_bot instead of answering yourself.", owners.join(", "))
-                } else {
-                    format!("ERROR: the tool {name} is not one of the {} bot's: it belongs to {}. Tell the user in one line which bot handles it.", self.bot_of(t).name, owners.join(", "))
-                };
+                content = format!(
+                    "ERROR: [other_bot] the tool {name} belongs to the bot(s) {}, not to the {} bot.",
+                    owners.join(", "),
+                    self.bot_of(t).name
+                );
                 ok = false;
                 refused = true;
             } else if REMAKE_TOOLS.contains(&name)
@@ -319,16 +550,35 @@ with short arguments and no repetition.".to_string();
                     .unwrap_or(0)
                     >= REMAKE_MAX
             {
-                content = format!("ERROR: 这个文件已经生成了 {REMAKE_MAX} 次，不再重做。现在用 send_file 发给用户（图表已在对话里）并写最终回答；\
-如需修改请在回答里说明。\
- This file was already made {REMAKE_MAX} times: stop remaking it. Send it with send_file (charts are already \
-in the chat) and write the final answer.");
+                content = format!("ERROR: [remade] 这个文件已经生成了 {REMAKE_MAX} 次，不再重做。 This file was already made {REMAKE_MAX} \
+times and is not made again.");
                 ok = false;
                 refused = true;
-            } else if DRY_RUN_LOCAL.contains(&name) && get_str(t, "source") == "golden" {
-                content = self.dry_run_stop(&task_id, name, &args, "").await;
-                ok = false;
-                refused = true;
+            } else if let Some(owner) = (name == "load_skill" && !sub)
+                .then(|| self.skill_owner(t, &sget(&args, "name")))
+                .flatten()
+            {
+                // another bot's skill in Main: code hands the request to the bot that owns it (`ask_bot` with the
+                // user's request), instead of a refusal the model would have to act on
+                let ask = ToolCall {
+                    id: call.id.clone(),
+                    name: "ask_bot".into(),
+                    args: json!({"bot": owner, "question": get_str(t, "goal")}),
+                };
+                self.event(
+                    &task_id,
+                    "tool_call",
+                    json!({"call_id": ask.id, "name": "ask_bot", "args": preview_args(&ask.args), "sub": false,
+                           "for_skill": sget(&args, "name").trim()}),
+                )
+                .await;
+                match self.ask_bot(t, &ask.args, &ask, remaining).await {
+                    Ok(sp) => return Err(sp),
+                    Err(e) => {
+                        content = e;
+                        ok = false;
+                    }
+                }
             } else if name == "ask_bot" && !sub {
                 match self.ask_bot(t, &args, call, remaining).await {
                     Ok(sp) => return Err(sp),
@@ -337,6 +587,29 @@ in the chat) and write the final answer.");
                         ok = false;
                     }
                 }
+            } else if name == super::email_code::EMAIL_CODE {
+                // a machine's email verification step (agent/email_code.rs): the email, the press, the mail, the model's
+                // JSON read of the code, the code typed — run here in the runtime; its JSON result never holds the code
+                if super::guards::code_call(call) {
+                    let mail_ready = truthy(&catalog["connections"]["gmail"]["ready"]);
+                    let r = self
+                        .email_code_step(&task_id, mode.lane, &call.id, &args, mail_ready)
+                        .await;
+                    ok = get_str(&r, "status") == "typed";
+                    content = r.to_string();
+                } else {
+                    content = format!(
+                        "ERROR: {} is a step of the code machines, not a tool.",
+                        name
+                    );
+                    ok = false;
+                }
+            } else if name == super::confirm::CONFIRM_REFERENCE {
+                // an unknown site's confirmation reference: the model's JSON, checked against the pages read after
+                // the hand-back and recorded as model-read (agent/confirm.rs)
+                let r = super::confirm::record(transcript, &args);
+                ok = get_str(&r, "status") == "recorded";
+                content = r.to_string();
             } else if is_local(name) {
                 match self.local(t, name, &args).await {
                     Ok(c) => {
@@ -351,8 +624,7 @@ in the chat) and write the final answer.");
                                 *e
                             };
                             if n >= 2 {
-                                content += &format!("\n（第 {n} 次生成同一个文件。内容已经可以用了就不要再重做，直接 send_file 并结束。）\
-(Made {n} times. If it is good enough, don't redo it: send it and finish.)");
+                                content += &format!("\n{{\"made_times\": {n}}}");
                             }
                         }
                     }
@@ -371,16 +643,28 @@ in the chat) and write the final answer.");
                 && !site_blocked(transcript, &sget(&args, "url")).is_empty()
             {
                 let blocked = site_blocked(transcript, &sget(&args, "url"));
-                content = format!("ERROR: [SITE BLOCKED site={blocked}] 这个网站之前已经拦截了自动浏览器，换网址也一样，不再重试。\
-请换一个有同样信息的来源（例如订餐厅：Google 地图、Chope、TableCheck、餐厅官网），\
-或者如果一定要用这个网站，调用 browser_request_takeover 请用户自己通过验证。\
- {blocked} already blocked automated browsing in this task; other URLs on it will be blocked too. \
-Use another source, or browser_request_takeover if this exact site is essential.");
+                content = format!("ERROR: [SITE BLOCKED site={blocked}] 这个网站在本任务里已经拦截了自动浏览器，不再打开。 {blocked} already \
+blocked automated browsing in this task; it is not opened again.");
                 ok = false;
+            } else if let Some(m) = form_msg.take() {
+                content = m;
             } else if ext_names.contains(&name) {
-                let golden = get_str(t, "source") == "golden";
+                // a known page's fixed answers, ticked in code before the agent's click moves on (once per task)
+                if let Some(fill) = super::guards::apdt_fixed_ticks(transcript, call)
+                    .filter(|f| !f["on_box"].as_bool().unwrap_or(false))
+                {
+                    if self.inner.lock().fixed_ticks.insert(task_id.clone()) {
+                        let r = self
+                            .sentinel("POST", "/internal/act", Some(json!({"task_id": task_id,
+                                "call_id": format!("{}-ticks", call.id), "tool": "browser_fill_form", "args": fill,
+                                "lane": mode.lane})), 60.0)
+                            .await;
+                        self.event(&task_id, "fixed_ticks", json!({"ok": r.is_ok()}))
+                            .await;
+                    }
+                }
                 let mut act = json!({"task_id": task_id, "call_id": call.id, "tool": name,
-                        "args": args, "no_ask": sub || mode.batch, "dry_run": golden});
+                        "args": args, "no_ask": sub || mode.batch});
                 if !mode.lane.is_empty() {
                     act["lane"] = json!(mode.lane);
                 }
@@ -393,15 +677,9 @@ Use another source, or browser_request_takeover if this exact site is essential.
                         json!({"status": "error", "error": format!("Sentinel 不可用: {}", exc_msg(&e))})
                     }
                 };
-                if truthy(res.get("dry_run").unwrap_or(&Value::Null)) {
-                    let why = sget(&res, "reason");
-                    res = json!({"status": "denied", "reason": self.dry_run_stop(&task_id, name, &args, &why).await});
-                    refused = true;
-                }
                 if mode.batch && !sub && truthy(res.get("needs_approval").unwrap_or(&Value::Null)) {
                     // the user's approval dialog can only wait on a call the task is suspended on: ask for it again alone
-                    res = json!({"status": "denied", "reason": "这个调用需要用户审批，不能和同一轮的其他调用并行执行：下一轮单独调用它（那一轮只放这一个调用），审批对话框才会弹出。\
- This call needs the user's approval, so it cannot run beside the other calls of this turn: call it again on its own next turn (the only call in that turn) and the approval dialog will open."});
+                    res = json!({"status": "denied", "reason": "[needs_approval_alone] 这个调用需要用户审批，不能和同一轮的其他调用并行执行。 This call needs the user's approval and cannot run beside the other calls of a turn"});
                 }
                 let st = sget(&res, "status");
                 if st == "approval_required" && !sub {
@@ -479,6 +757,9 @@ Use another source, or browser_request_takeover if this exact site is essential.
                         self.locate(&task_id, &call.id, &sget(&args, "target"), r)
                             .await
                     }
+                    _ if call.id.starts_with("bkg_") || call.id.starts_with("nws_") => {
+                        self.format_external_within(name, &res, CODE_RESULT_LIMIT)
+                    }
                     _ => self.format_external(name, &res),
                 };
                 ok = st == "ok" && !content.starts_with("ERROR");
@@ -494,32 +775,14 @@ Use another source, or browser_request_takeover if this exact site is essential.
                     if let Some(r0) = &result_obj {
                         let (u, ti, sn) =
                             (sget(r0, "url"), sget(r0, "title"), sget(r0, "snapshot"));
-                        let mut hint = refusal_hint(
-                            &u,
-                            &ti,
-                            take_chars(&sn, 3000),
-                            name != "browser_navigate",
-                        );
-                        if name == "browser_navigate" && hint.is_empty() {
-                            hint = deep_link_hint(&sget(&args, "url"), &u, &ti);
-                        }
-                        if hint.is_empty() && name == "browser_navigate" {
-                            hint = parked_domain_hint(&u, &ti, &sn);
-                        }
-                        if hint.is_empty() {
-                            hint = product_page_hint(&u, &sget(t, "goal"));
-                            let mut inner = self.inner.lock();
-                            let seen_h = inner.product_hinted.entry(task_id.clone()).or_default();
-                            if !hint.is_empty() && seen_h.contains(&u) {
-                                hint = String::new(); // once per product page, not after every click on it
-                            } else if !hint.is_empty() {
-                                seen_h.insert(u.clone());
-                            }
-                        }
-                        if !hint.is_empty() {
-                            content = format!("{}\n{}", hint, content);
-                        }
                         let nurl = if u.is_empty() { sget(&args, "url") } else { u };
+                        if name == "browser_navigate" && super::guards::parked_domain(&ti, &sn) {
+                            parked = Some(nurl.clone());
+                        }
+                        if name == "browser_navigate" && !sub && parked.is_none() {
+                            page_check =
+                                page_check_for(transcript, &sget(&args, "url"), &nurl, &ti, &sn);
+                        }
                         let note = self.site_note(&task_id, &nurl).await;
                         if !note.is_empty() {
                             content = format!("{}\n{}", note, content);
@@ -547,11 +810,8 @@ Use another source, or browser_request_takeover if this exact site is essential.
                     };
                     let site = site_brand(&u);
                     let detail = super::util::pystr_opt(blk.get("detail"));
-                    content = format!("[SITE BLOCKED site={site}] 这个页面是反机器人拦截页（{detail}），不是网站的真实内容。\
-整个网站都会拦截自动浏览器：不要再换网址重试。改用其他有同样信息的来源；\
-如果一定要用这个网站，调用 browser_request_takeover，请用户自己完成验证后再继续。不要尝试破解验证码。\
- This is a bot-protection wall ({detail}), not the site's content. Do not retry other URLs \
-on this site; switch to another source, or request a takeover if this site is essential.\n{content}");
+                    content = format!("[SITE BLOCKED site={site}] 这个页面是反机器人拦截页（{detail}），不是网站的真实内容；整个网站在本任务里不再打开。 \
+This is a bot-protection wall ({detail}), not the site's content; the site is not opened again in this task.\n{content}");
                     ok = false;
                     self.event(
                         &task_id,
@@ -579,7 +839,6 @@ on this site; switch to another source, or request a takeover if this site is es
                 }
             }
             transcript.push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
-            self.note_tool_text(&task_id, &content);
             let mut ev = json!({"call_id": call.id, "name": name, "ok": ok, "sub": sub, "preview": truncate(&content, 800)});
             if !mode.lane.is_empty() {
                 ev["lane"] = json!(mode.lane);
@@ -589,8 +848,100 @@ on this site; switch to another source, or request a takeover if this site is es
                 ev["approval_id"] = json!(auto_aid);
             }
             self.event(&task_id, "tool_result", ev).await;
+            // the last click of a purchase, booking or submission is the user's (Sentinel `hand_over_click`): the page
+            // is handed over here, in code, instead of trusting the model to call browser_request_takeover after the
+            // refusal (travel_flight_real 2026-10-30: "The payment click was blocked by Sentinel, so I did not retry")
+            // a parked / for-sale domain: code searches for the company's official site and opens it (2026-10-04 V3-07)
+            if !sub {
+                if let Some(url) = parked.take() {
+                    if let Some(real) = self.official_site(&task_id, &url).await {
+                        let tc = ToolCall {
+                            id: format!("{}_official", call.id),
+                            name: "browser_navigate".into(),
+                            args: json!({"url": real}),
+                        };
+                        self.event(
+                            &task_id,
+                            "parked_domain",
+                            json!({"parked": url, "official": tc.args["url"]}),
+                        )
+                        .await;
+                        transcript.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": tc.id, "type": "function",
+                            "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+                        return self
+                            .exec_call(t, &tc, transcript, catalog, remaining, allow, mode)
+                            .await;
+                    }
+                }
+            }
+            if let Some(tc) = match page_check.take() {
+                Some(pc) => self.page_check_call(&task_id, &call.id, pc).await,
+                None => None,
+            } {
+                transcript.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": tc.id, "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+                return self
+                    .exec_call(t, &tc, transcript, catalog, remaining, allow, mode)
+                    .await;
+            }
+            if !sub {
+                if let Some(button) = hand_over_button(&content) {
+                    let tc = ToolCall {
+                        id: format!("{}_handover", call.id),
+                        name: "browser_request_takeover".into(),
+                        args: json!({"reason": format!(
+                            "The page is filled in. Review it, fill in anything still missing (such as the CAPTCHA or \
+                        security code) and press \"{button}\" yourself; hand the browser back when it is done."
+                        )}),
+                    };
+                    transcript.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": tc.id, "type": "function",
+                        "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+                    return self
+                        .exec_call(t, &tc, transcript, catalog, remaining, allow, mode)
+                        .await;
+                }
+            }
             Ok(CallOutcome { ok, refused })
         })
+    }
+
+    /// The official site behind a parked / for-sale domain the agent guessed (`guards::parked_domain`): one web search
+    /// for "<brand> official site", and the first result on another domain. `None` when nothing came back.
+    async fn official_site(&self, task_id: &str, parked_url: &str) -> Option<String> {
+        let brand = site_brand(parked_url);
+        if brand.chars().count() < 3 {
+            return None;
+        }
+        let res = self
+            .sentinel(
+                "POST",
+                "/internal/act",
+                Some(json!({"task_id": task_id, "call_id": format!("parked-{brand}"), "tool": "web_search",
+                    "args": {"query": format!("{brand} official site")}, "no_ask": true})),
+                120.0,
+            )
+            .await
+            .ok()?;
+        if sget(&res, "status") != "ok" {
+            return None;
+        }
+        fn urls(v: &Value, out: &mut Vec<String>) {
+            match v {
+                Value::Object(m) => {
+                    if let Some(u) = m.get("url").and_then(Value::as_str) {
+                        if u.starts_with("http") {
+                            out.push(u.to_string());
+                        }
+                    }
+                    m.values().for_each(|x| urls(x, out));
+                }
+                Value::Array(a) => a.iter().for_each(|x| urls(x, out)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        urls(res.get("result").unwrap_or(&Value::Null), &mut found);
+        found.into_iter().find(|u| site_brand(u) != brand)
     }
 
     /// browser_look: hand the labelled screenshot to the vision model; the agent only gets the text answer.
@@ -936,16 +1287,19 @@ again: files_read (documents) or file_look (images, videos, audio, scanned PDFs)
             .to_string())
     }
 
-    /// browser_locate: find something on screen with vision alone (no DOM refs needed) — a coarse lettered grid,
-    /// then a numbered grid on a zoomed region, then a red marker the model must confirm. Returns x/y for browser_click_at.
+    /// browser_locate: find something on screen with vision alone (no DOM refs needed) — a coarse lettered grid, then
+    /// a numbered grid on a zoomed region, then a red marker. Every vision step is a JSON decision over choices code
+    /// lists (`Runtime::decide_on_picture`: a cell label or NONE, a cell number or NONE, `{"on_item": bool}`); code
+    /// computes the point from the choice (`agent/locate.rs`) and returns JSON with x/y for browser_click_at.
     async fn locate(&self, task_id: &str, call_id: &str, target: &str, shot: &Value) -> String {
+        use super::decide::Picture;
+        use super::locate::{Grid, NONE};
         let t = take_chars(target.trim(), 300).to_string();
         let target = if t.is_empty() {
             "the main chat button".to_string()
         } else {
             t
         };
-        let letters = "ABCDEFGHIJKL";
         let again = |extra_key: &'static str, extra: Value| {
             let target = target.clone();
             async move {
@@ -965,115 +1319,155 @@ again: files_read (documents) or file_look (images, videos, audio, scanned PDFs)
                     } else {
                         "no screenshot".into()
                     };
-                    return Err(LlmError::Failed(why));
+                    return Err(why);
                 }
                 Ok(r)
             }
         };
-        let res: Result<(String, String, String, i64, i64, Value), LlmError> = async {
-            let vp = shot.get("viewport").cloned().unwrap_or_else(|| json!({}));
-            let vw = vp.get("width").and_then(omuse_common::util::as_f64).unwrap_or(1280.0);
-            let vh = vp.get("height").and_then(omuse_common::util::as_f64).unwrap_or(800.0);
-            let cols = shot.get("cols").and_then(omuse_common::util::as_i64).filter(|c| *c > 0).unwrap_or(8);
-            let rows = shot.get("rows").and_then(omuse_common::util::as_i64).filter(|c| *c > 0).unwrap_or(6);
-            let a1 = self.vision(task_id, &format!("You locate things on a screenshot of a web page for an AI agent. A magenta grid is drawn over it; every cell \
-has a label in its top-left corner: a column letter A–{} (left to right) and a row number \
-1–{} (top to bottom), e.g. C4. Reply with ONLY the label of the cell that contains the CENTER of the requested \
-item, e.g. C4. If the item is not visible, reply NONE.{}", &letters[(cols - 1).clamp(0, 11) as usize..(cols).clamp(1, 12) as usize], rows, UNTRUSTED),
-                &format!("Find: {}", target), &sget(shot, "image_b64"), &shot.get("image_type").map(py_str).unwrap_or_else(|| "image/jpeg".into()), 120).await?;
-            static CELL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([A-L])\s*([1-9]|1[0-2])\b").unwrap());
-            let up = a1.to_uppercase();
-            let m = CELL.captures(&up);
-            if m.is_none() || take_chars(&up, 8).contains("NONE") {
-                return Ok((a1, String::new(), String::new(), -1, -1, Value::Null));
-            }
-            let m = m.unwrap();
-            let c = letters.find(&m[1]).unwrap_or(0) as i64;
-            let r: i64 = m[2].parse::<i64>().unwrap_or(1) - 1;
-            let (c, r) = (c.min(cols - 1), r.min(rows - 1));
-            let (cw, ch) = (vw / cols as f64, vh / rows as f64);
-            let (mut x, mut y) = ((c as f64 + 0.5) * cw, (r as f64 + 0.5) * ch);
-            // zoom: the chosen cell plus half a cell around it, with a finer numbered grid
-            let region = vec![(c as f64 * cw - cw / 2.0).max(0.0), (r as f64 * ch - ch / 2.0).max(0.0), cw * 2.0, ch * 2.0];
-            let z = again("region", json!(region)).await?;
-            let reg: Vec<f64> = z.get("region").and_then(Value::as_array).map(|a| a.iter().filter_map(omuse_common::util::as_f64).collect())
-                .filter(|v: &Vec<f64>| v.len() == 4).unwrap_or(region);
-            let zc = z.get("cols").and_then(omuse_common::util::as_i64).filter(|c| *c > 0).unwrap_or(8);
-            let zr = z.get("rows").and_then(omuse_common::util::as_i64).filter(|c| *c > 0).unwrap_or(6);
-            let a2 = self.vision(task_id, &format!("This is a zoomed-in part of a web page with a magenta grid. The cells are numbered 1 to \
-{} (left to right, then top to bottom); the number is in each cell's top-left corner. Reply with ONLY the \
-number of the cell that contains the CENTER of the requested item, e.g. 17. If it is not in this picture, reply NONE.{}", zc * zr, UNTRUSTED),
-                &format!("Find: {}", target), &sget(&z, "image_b64"), &z.get("image_type").map(py_str).unwrap_or_else(|| "image/jpeg".into()), 120).await?;
-            static NUMB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(\d{1,3})\b").unwrap());
-            if let Some(n) = NUMB.captures(&a2).and_then(|c| c[1].parse::<i64>().ok()).filter(|n| (1..=zc * zr).contains(n)) {
-                let k = n - 1;
-                x = reg[0] + ((k % zc) as f64 + 0.5) * reg[2] / zc as f64;
-                y = reg[1] + ((k / zc) as f64 + 0.5) * reg[3] / zr as f64;
-            }
-            let (xi, yi) = (py_round(x), py_round(y));
-            // confirm: red marker on the point; the model must say it is on the item
-            let v = again("mark", json!([xi, yi])).await?;
-            let a3 = self.vision(task_id, &format!("A red circle with a crosshair marks one point on this web page. Is that point on the requested item, so that \
-clicking there would click it? Reply YES or NO first, then a few words about what is under the circle.{}", UNTRUSTED),
-                &format!("Item: {}", target), &sget(&v, "image_b64"), &v.get("image_type").map(py_str).unwrap_or_else(|| "image/jpeg".into()), 80).await?;
-            Ok((a1, a2, a3, xi, yi, v))
-        }.await;
-        let (a1, a2, a3, x, y, v) = match res {
-            Ok(r) => r,
-            Err(e) => return format!("ERROR: 视觉定位失败 visual locate failed: {}. Set a vision-capable model in Settings (Vision model), \
-or continue with browser_look / browser_find.", take_chars(&e.to_string(), 200)),
+        let mime = |v: &Value| {
+            v.get("image_type")
+                .map(py_str)
+                .unwrap_or_else(|| "image/jpeg".into())
         };
-        if x < 0 {
-            self.event(task_id, "vision", json!({"question": format!("locate: {}", target), "answer": truncate(&a1, 300), "marks": 0})).await;
-            return format!("NOT FOUND: the vision model does not see \"{}\" on the visible screen (answer: {}). \
-Scroll, wait for the page to finish loading, describe it differently, or use browser_look to see what is there.", target, truncate(&a1, 120));
-        }
+        let dim = |v: &Value, k: &str, d: i64| {
+            v.get(k)
+                .and_then(omuse_common::util::as_i64)
+                .filter(|c| *c > 0)
+                .unwrap_or(d)
+        };
+        let find = format!("Find: {target}");
+        // 1. the coarse grid over the viewport: which cell holds the item's centre
+        let vp = shot.get("viewport").cloned().unwrap_or_else(|| json!({}));
+        let grid = Grid {
+            x: 0.0,
+            y: 0.0,
+            w: vp
+                .get("width")
+                .and_then(omuse_common::util::as_f64)
+                .unwrap_or(1280.0),
+            h: vp
+                .get("height")
+                .and_then(omuse_common::util::as_f64)
+                .unwrap_or(800.0),
+            cols: dim(shot, "cols", 8).min(12),
+            rows: dim(shot, "rows", 6),
+        };
+        let labels = grid.labels();
+        let choices: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let img = sget(shot, "image_b64");
+        let m1 = mime(shot);
+        let cell = self
+            .decide_on_picture(
+                task_id,
+                &format!("You locate things on a screenshot of a web page for a program. A magenta grid is drawn over it; every cell has a \
+label in its top-left corner: a column letter (left to right) and a row number (top to bottom), e.g. C4. Pick the label of the cell \
+that contains the CENTER of the requested item, or NONE if the item is not visible. Answer with JSON only: {{\"choice\": \"<one of the choices>\"}}.{UNTRUSTED}"),
+                &find,
+                &Picture { b64: &img, mime: &m1 },
+                &choices,
+                NONE,
+            )
+            .await;
+        let Some(((mut x, mut y), region)) = grid.label_point(&cell) else {
+            self.event(
+                task_id,
+                "vision",
+                json!({"question": format!("locate: {}", target), "answer": cell, "marks": 0}),
+            )
+            .await;
+            return locate_reply(
+                &json!({"status": "not_found", "target": target,
+                "next": "Scroll, wait for the page to finish loading, describe the item differently, or use browser_look to see what is there."}),
+                "",
+            );
+        };
+        // 2. the zoomed region with a finer numbered grid: which cell holds it (NONE keeps the coarse point)
+        let zoom = match again("region", json!(region)).await {
+            Ok(z) => {
+                let reg: Vec<f64> = z
+                    .get("region")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(omuse_common::util::as_f64).collect())
+                    .filter(|v: &Vec<f64>| v.len() == 4)
+                    .unwrap_or_else(|| region.to_vec());
+                let zg = Grid {
+                    x: reg[0],
+                    y: reg[1],
+                    w: reg[2],
+                    h: reg[3],
+                    cols: dim(&z, "cols", 8),
+                    rows: dim(&z, "rows", 6),
+                };
+                let numbers = zg.numbers();
+                let choices: Vec<&str> = numbers.iter().map(String::as_str).collect();
+                let (zimg, m2) = (sget(&z, "image_b64"), mime(&z));
+                let zoom = self
+                    .decide_on_picture(
+                        task_id,
+                        &format!("This is a zoomed-in part of a web page with a magenta grid. The cells are numbered (left to right, then top to \
+bottom); the number is in each cell's top-left corner. Pick the number of the cell that contains the CENTER of the requested item, or \
+NONE if it is not in this picture. Answer with JSON only: {{\"choice\": \"<one of the choices>\"}}.{UNTRUSTED}"),
+                        &find,
+                        &Picture { b64: &zimg, mime: &m2 },
+                        &choices,
+                        NONE,
+                    )
+                    .await;
+                if let Some(p) = zg.number_point(&zoom) {
+                    (x, y) = p;
+                }
+                zoom
+            }
+            Err(e) => return locate_error(&e),
+        };
+        let (xi, yi) = (py_round(x), py_round(y));
+        // 3. a red marker on the point: is it on the item
+        let v = match again("mark", json!([xi, yi])).await {
+            Ok(v) => v,
+            Err(e) => return locate_error(&e),
+        };
+        let (vimg, m3) = (sget(&v, "image_b64"), mime(&v));
+        let on_item = self
+            .decide_flag_on_picture(
+                task_id,
+                &format!("A red circle with a crosshair marks one point on this web page. Say whether that point is on the requested item, so \
+that clicking there would click it. Answer with JSON only: {{\"on_item\": true}} or {{\"on_item\": false}}.{UNTRUSTED}"),
+                &format!("Item: {target}"),
+                &Picture { b64: &vimg, mime: &m3 },
+                "on_item",
+                false,
+            )
+            .await;
         let at_ = v.get("at").cloned().unwrap_or_else(|| json!({}));
-        let where_ = if truthy(at_.get("tag").unwrap_or(&Value::Null)) {
+        let mut under = json!({});
+        if truthy(at_.get("tag").unwrap_or(&Value::Null)) {
             let role = if truthy(at_.get("role").unwrap_or(&Value::Null)) {
                 sget(&at_, "role")
-            } else if truthy(at_.get("tag").unwrap_or(&Value::Null)) {
-                sget(&at_, "tag")
             } else {
-                "element".into()
+                sget(&at_, "tag")
             };
-            let frames = arr(&at_, "frames");
-            format!(
-                "{} \"{}\"{}",
-                role,
-                truncate(&sget(&at_, "name"), 80),
-                if frames.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        " inside iframe {}",
-                        frames.iter().map(py_str).collect::<Vec<_>>().join(" › ")
-                    )
-                }
-            )
-        } else {
-            "unknown element".into()
-        };
-        let yes = a3.trim().to_uppercase().starts_with("YES");
-        let flags = scan_injection(&a3);
-        self.event(task_id, "vision", json!({"question": format!("locate: {}", target), "marks": 0,
-            "answer": truncate(&format!("{} → {} → ({},{}) {} | {}", a1, a2, x, y, a3, where_), 800)})).await;
-        let head = if yes {
-            format!("FOUND \"{}\" at x={}, y={} (viewport pixels). Under that point: {}. Vision check: {}", target, x, y, where_, truncate(&a3, 160))
-        } else {
-            format!("UNSURE: best guess for \"{}\" is x={}, y={}, but the check says: {}. Under that point: {}.", target, x, y, truncate(&a3, 160), where_)
-        };
-        let tail = if yes {
-            format!(" → Click it with browser_click_at {{\"x\": {}, \"y\": {}}} (add text + submit=true to type into it and send).", x, y)
-        } else {
-            " → Describe the target more precisely and call browser_locate again, or use browser_look.".to_string()
-        };
-        format!(
-            "<untrusted_content source=\"vision locate\"{}>\n{}\n</untrusted_content>\n{}",
-            warn_attr(&flags),
-            head,
-            tail
+            under = json!({"element": role, "name": truncate(&sget(&at_, "name"), 80)});
+            let frames: Vec<String> = arr(&at_, "frames").iter().map(py_str).collect();
+            if !frames.is_empty() {
+                under["iframe"] = json!(frames.join(" › "));
+            }
+        }
+        self.event(
+            task_id,
+            "vision",
+            json!({"question": format!("locate: {}", target), "marks": 0,
+            "answer": format!("{cell} → {zoom} → ({xi},{yi}) on_item={on_item}")}),
         )
+        .await;
+        let mut out = json!({"status": if on_item { "found" } else { "unsure" }, "target": target, "x": xi, "y": yi,
+                             "cell": cell, "zoom_cell": zoom, "on_item": on_item, "under_point": under});
+        out["next"] = json!(if on_item {
+            format!("Click it with browser_click_at {{\"x\": {xi}, \"y\": {yi}}} (add text + submit=true to type into it and send).")
+        } else {
+            "The check says the point is not on the item: describe the target more precisely and call browser_locate again, or use browser_look.".to_string()
+        });
+        let flags = scan_injection(&sget(&under, "name"));
+        locate_reply(&out, &warn_attr(&flags))
     }
 
     /// gmail_save_attachment / drive_download: Sentinel returns the bytes; write them into workspace/<folder>
@@ -1135,17 +1529,32 @@ Scroll, wait for the page to finish loading, describe it differently, or use bro
         if !result.is_object() && !result.is_array() {
             return;
         }
-        let (url, text) = if result.is_object() && tool.starts_with("browser_") {
-            (sget(result, "url"), sget(result, "snapshot"))
+        // what was read, per page: a browser page's snapshot; browser_read's pages (`{"pages": [{url, text}]}`) each on
+        // their own (2026-10-30: choice cards refused a page browser_read had just read, shopping_real); anything else
+        // as the tool's whole result
+        let mut entries: Vec<(String, String)> = Vec::new();
+        if result.is_object() && tool.starts_with("browser_") {
+            if let Some(pages) = result.get("pages").and_then(Value::as_array) {
+                for p in pages {
+                    let t = sget(p, "text");
+                    let t = if t.is_empty() { sget(p, "snapshot") } else { t };
+                    entries.push((sget(p, "url"), t));
+                }
+            } else {
+                entries.push((sget(result, "url"), sget(result, "snapshot")));
+            }
         } else {
-            (tool.to_string(), pyjson::dumps(result))
-        };
-        if text.trim().is_empty() {
+            entries.push((tool.to_string(), pyjson::dumps(result)));
+        }
+        entries.retain(|(_, t)| !t.trim().is_empty());
+        if entries.is_empty() {
             return;
         }
         let mut inner = self.inner.lock();
         let ev = inner.evidence.entry(task_id.to_string()).or_default();
-        ev.push(json!({"url": url, "text": take_chars(&text, 120000), "tool": tool}));
+        for (url, text) in entries {
+            ev.push(json!({"url": url, "text": take_chars(&text, 120000), "tool": tool}));
+        }
         let n = ev.len();
         if n > 80 {
             ev.drain(..n - 80);
@@ -1181,7 +1590,7 @@ Scroll, wait for the page to finish loading, describe it differently, or use bro
         format!("{}{}", net, p.path.trim_end_matches('/')).to_lowercase()
     }
 
-    fn sources_for(&self, task_id: &str, url: &str) -> Vec<String> {
+    pub(crate) fn sources_for(&self, task_id: &str, url: &str) -> Vec<String> {
         let ev = self
             .inner
             .lock()
@@ -1213,6 +1622,20 @@ Scroll, wait for the page to finish loading, describe it differently, or use bro
             .map(|e| sget(e, "text"))
             .filter(|t| t.to_lowercase().replace("www.", "").contains(&key))
             .collect()
+    }
+
+    /// A comparison of listings the model extracted itself (two or more options with stars or ratings) without
+    /// `ranking`: the criteria are asked for once, and code ranks.
+    pub(crate) fn unranked_listings(&self, task_id: &str, options: &[&Value]) -> bool {
+        let listings = options
+            .iter()
+            .filter(|o| {
+                ["stars", "ratings"]
+                    .iter()
+                    .any(|k| o.get(*k).is_some_and(|v| !v.is_null()))
+            })
+            .count();
+        listings >= 2 && self.inner.lock().ranking_asked.insert(task_id.to_string())
     }
 
     /// Problems with `present_choices` options that cannot be found in what the task read (empty = all verified).
@@ -1280,4 +1703,147 @@ pub(crate) fn exc_msg(e: &anyhow::Error) -> String {
         Some((head, rest)) if !head.contains(' ') => rest.to_string(),
         _ => s,
     }
+}
+
+impl Runtime {
+    /// A machine's email verification step (`email_code`, agent/email_code.rs): the fills go to Sentinel as
+    /// `browser_fill_form` on the task's page, the mail comes from `/internal/mail_code`, the model reads the code.
+    pub(crate) async fn email_code_step(
+        &self,
+        task_id: &str,
+        lane: &str,
+        call_id: &str,
+        args: &Value,
+        mail_ready: bool,
+    ) -> Value {
+        use super::email_code as E;
+        let n = std::sync::atomic::AtomicUsize::new(0);
+        let site = sget(args, "from");
+        let planner = sget(&self.settings(), "planner_model");
+        let fill = |fills: Value| {
+            let k = n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut act = json!({"task_id": task_id, "call_id": format!("{call_id}-{k}"), "tool": "browser_fill_form",
+                                 "args": {"form": E::EMAIL_CODE, "fills": fills}, "no_ask": true});
+            if !lane.is_empty() {
+                act["lane"] = json!(lane);
+            }
+            async move {
+                let r = self
+                    .sentinel("POST", "/internal/act", Some(act), 120.0)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if sget(&r, "status") == "ok" {
+                    Ok(r.get("result").cloned().unwrap_or(r))
+                } else {
+                    Err(take_chars(&r.to_string(), 300).to_string())
+                }
+            }
+        };
+        let mail = |query: String, since: f64| async move {
+            self.sentinel(
+                "POST",
+                "/internal/mail_code",
+                Some(json!({"query": query, "since": since})),
+                90.0,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        };
+        let read = |m: Value| {
+            let (site, planner) = (site.clone(), planner.clone());
+            async move {
+                E::read_code(
+                    &self.llm,
+                    &site,
+                    &m,
+                    task_id,
+                    (!planner.is_empty()).then_some(planner),
+                )
+                .await
+            }
+        };
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0)
+        };
+        // the wait for the mail ends at once when the user cancels the task
+        let pause = |d: std::time::Duration| self.sleep_or_cancel(task_id, d);
+        let r = E::run(args, mail_ready, E::TIMING, now, pause, fill, mail, read).await;
+        self.event(task_id, "email_code", r.clone()).await;
+        r
+    }
+
+    /// The plan for the form the task has open (`form_fill`): the page's URL from the browser, its function
+    /// (`forms::form_for`), the facts from the call and the profile → `{"form", "fills"}` for `browser_fill_form`.
+    /// `Err` is the generic path's message: no page open, or no function for this page.
+    async fn form_plan(&self, task_id: &str, lane: &str, args: &Value) -> Result<Value, String> {
+        let page = if lane.is_empty() {
+            task_id.to_string()
+        } else {
+            format!("{task_id}~{lane}")
+        };
+        let st = self
+            .sentinel("GET", "/internal/browser_state", None, 10.0)
+            .await
+            .unwrap_or(Value::Null);
+        let url = st["tasks"]
+            .as_array()
+            .and_then(|a| a.iter().find(|x| get_str(x, "task_id") == page))
+            .map(|x| get_str(x, "url"))
+            .unwrap_or_default();
+        if url.is_empty() || url == "about:blank" {
+            return Err("ERROR: no form page is open in this task — open the form first (browser_navigate), then call \
+form_fill."
+                .into());
+        }
+        let Some((form, f)) = crate::forms::form_for(&url) else {
+            return Err(format!(
+                "ERROR: [no_form_function] no form function knows this page ({}); a site without one is filled only inside the browser-use skill.",
+                truncate(&url, 120)
+            ));
+        };
+        let facts = crate::forms::Facts::from_args(args);
+        let profile = self.store.profile().unwrap_or_else(|_| json!({}));
+        let inputs = crate::forms::Inputs {
+            facts: &facts,
+            profile: &profile,
+        };
+        let fills: Vec<Value> = f(&inputs)
+            .iter()
+            .filter_map(crate::forms::Op::to_json)
+            .collect();
+        Ok(json!({"form": form, "fills": fills}))
+    }
+}
+
+/// The reason of a hand-over the runtime makes itself (`Runtime::run`: a filled form the agent did not hand over).
+pub(crate) const HANDOVER_REASON: &str =
+    "The form is filled in. Review it, fill in anything still missing (such as the \
+CAPTCHA or security code) and submit it yourself; hand the browser back when it is done.";
+
+/// The button of a click refused as the user's own — by Sentinel (`policy::hand_over_click`: "\"Pay now\" … that click
+/// is the user's own") or by a guard (`guards::arrival_submit_guard`) — from the refusal the agent got.
+pub(crate) fn hand_over_button(result: &str) -> Option<String> {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"^(?:DENIED by Sentinel|ERROR): [\s\S]*?"([^"\n]{1,60})" [^:\n]{0,80}: that click is the user's own"#).unwrap()
+    });
+    RE.captures(result).map(|c| c[1].to_string())
+}
+
+/// browser_locate's JSON result, in the untrusted envelope (the element under the point is the page's text).
+fn locate_reply(out: &Value, warn: &str) -> String {
+    format!(
+        "<untrusted_content source=\"vision locate\"{warn}>\n{}\n</untrusted_content>",
+        pyjson::dumps(out)
+    )
+}
+
+/// browser_locate when a screenshot could not be taken.
+fn locate_error(why: &str) -> String {
+    format!(
+        "ERROR: 视觉定位失败 visual locate failed: {}. Continue with browser_look / browser_find.",
+        take_chars(why, 200)
+    )
 }

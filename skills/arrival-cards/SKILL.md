@@ -1,6 +1,7 @@
 ---
 name: arrival-cards
 description: 各国电子入境卡/行前授权总览与代填：新加坡 SGAC、泰国 TDAC、马来西亚 MDAC、韩国 e-Arrival、日本 Visit Japan Web、中国在线入境卡、台湾入境卡、印尼 All Indonesia、菲律宾 eTravel、柬埔寨 e-Arrival、英国 ETA、欧盟 ETIAS/EES；按行程判断需要哪些、什么时候填，并按每个国家的技能代填 Which electronic arrival cards and travel authorisations a trip needs (Singapore SGAC, Thailand TDAC, Malaysia MDAC, Korea e-Arrival, Japan Visit Japan Web, China online arrival card, Taiwan arrival card, Indonesia All Indonesia, Philippines eTravel, Cambodia e-Arrival, UK ETA, EU ETIAS / EES), when each opens, and the per-country skill that fills it.
+profile: nationality
 ---
 # Arrival cards and travel authorisations / 电子入境卡
 
@@ -33,7 +34,8 @@ and ETIAS; any other site that charges is a scam.**
    uploaded itinerary, read with file_look) — the per-country skills ask for the hotel themselves. Each entry (including a return to the
    home country, e.g. Singapore) gets its row: needed? window opens on <date>, closes at arrival.
 2. Too early for everything → set one reminder per card (schedule_create on the day the window opens, goal "fill <card>
-   for <flight> with the <skill> skill") and say so. Inside a window → call that country's skill now.
+   for <flight> with the <skill> skill") and say so. Inside a window and the user asks for it to be filled in → load that country's skill and fill it with ONE
+   `arrival_card_fill` call (its JSON result says what was filed or what is left).
 3. Authorisations with lead time (UK ETA, K-ETA for passports not on the waiver, Vietnam e-visa, China visa, Indonesia
    e-VOA) go first; say the processing time from the official page.
 4. One line on what stays with the user: health answers, submitting (every skill stops before Submit for the user's

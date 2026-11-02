@@ -1,27 +1,31 @@
 """First login: the profile is empty, so the first chat view of a session goes straight to Memory → Profile, where an
-ID photo read by the vision model saves name, birthday and nationality to the profile and the document to the Vault (the
+ID photo read by the vision model saves name, birthday, gender and nationality to the profile and the document to the Vault (the
 photo is not kept, the number never reaches the profile); the card then lists the stored ID with "Add another ID" instead
 of asking again. Until then the chat shows a banner unless the user says "later"; a complete profile ends both."""
 import asyncio
+import io
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from PIL import Image  # noqa: E402
 from playwright.async_api import async_playwright  # noqa: E402
 
 from tests import skills_common as K  # noqa: E402
 
 B = K.B + "/"
-PNG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages", "lipstick.png")
+_buf = io.BytesIO()
+Image.new("RGB", (320, 220), (240, 240, 230)).save(_buf, "PNG")   # any real PNG: the scripted OCR model never looks at pixels
+ID_PNG = _buf.getvalue()
 K.c.put(B + "api/settings", json={"language": "en", "ui_language": "en", "profile_reminder": True}, headers=K.H)
 for k in ("name_en", "birthday", "nationality"):
     K.c.put(B + "api/profile", json={"key": k, "value": ""}, headers=K.H)
 st = K.c.get(B + "api/profile/status", headers=K.H).json()
-K.check("API: an empty profile is incomplete and the reminder is on", st == {"complete": False, "missing": ["name_en", "birthday", "nationality"], "reminder": True}, st)
-r = K.c.put(B + "api/profile/ocr", content=open(PNG_PATH, "rb").read(), headers={**K.H, "Content-Type": "image/png"})
+K.check("API: an empty profile is incomplete and the reminder is on", st == {"complete": False, "missing": ["name_en", "birthday", "gender", "nationality"], "reminder": True}, st)
+r = K.c.put(B + "api/profile/ocr", content=ID_PNG, headers={**K.H, "Content-Type": "image/png"})
 j = r.json()
 K.check("API: the ID photo is read into profile fields and a vault item proposal",
-        r.status_code == 200 and j["profile"] == {"name_en": "LU LUCAS", "birthday": "1985-04-12", "nationality": "Australia"}
+        r.status_code == 200 and j["profile"] == {"name_en": "LU LUCAS", "birthday": "1985-04-12", "gender": "Male", "nationality": "Australia"}
         and j["document"]["values"]["number"] == "E1234567X" and j["document"]["label"] == "Passport LU", j)
 K.check("API: the picture was not kept in the workspace", "lipstick" not in str(K.c.get(B + "api/files", headers=K.H).json()))
 aud = K.c.get(K.S + "/audit?limit=20", headers=K.H).json()["events"]
@@ -60,14 +64,14 @@ async def main():
         K.c.put(B + "api/settings", json={"profile_reminder": True}, headers=K.H)
         await pg.goto(B + "#memory/profile")
         await pg.wait_for_selector("#profile")
-        await pg.locator("#profile input[type=file]").set_input_files(PNG_PATH)
+        await pg.locator("#profile input[type=file]").set_input_files({"name": "passport.png", "mimeType": "image/png", "buffer": ID_PNG})
         await pg.wait_for_selector("text=saved to the Vault", timeout=15000)
         txt = await pg.locator("#profile").inner_text()
         K.check("the card says the fields were saved and the ID went to the Vault, masked, and the photo is not kept",
-                "Read and saved 3 field(s)" in txt and "••••567X" in txt and "E1234567X" not in txt and "not kept" in txt, txt[-500:])
+                "Read and saved 4 field(s)" in txt and "••••567X" in txt and "E1234567X" not in txt and "not kept" in txt, txt[-500:])
         prof = K.c.get(B + "api/memory", headers=K.H).json()["profile"]
-        K.check("name, birthday and nationality are saved to the profile (no Save press needed)",
-                (prof.get("name_en"), prof.get("birthday"), prof.get("nationality")) == ("LU LUCAS", "1985-04-12", "Australia"), prof)
+        K.check("name, birthday, gender and nationality are saved to the profile (no Save press needed)",
+                (prof.get("name_en"), prof.get("birthday"), prof.get("gender"), prof.get("nationality")) == ("LU LUCAS", "1985-04-12", "Male", "Australia"), prof)
         items = K.c.get(K.S + "/vault", headers=K.H).json().get("items", [])
         K.check("the vault item exists (number stored there only)", any(i["label"] == "Passport LU" and i["kind"] == "id_document" for i in items)
                 and "E1234567X" not in str(prof), [i["label"] for i in items])
@@ -81,7 +85,7 @@ async def main():
         K.check("after a reload the card shows Your IDs with the passport and an Add another ID button, not the upload prompt",
                 "Your IDs" in box and "Passport LU" in box and "Add another ID" in box and "Upload ID photo" not in box and "Complete your profile" not in box, box)
         # the same passport again: not stored twice
-        await pg.locator("#profile input[type=file]").set_input_files(PNG_PATH)
+        await pg.locator("#profile input[type=file]").set_input_files({"name": "passport.png", "mimeType": "image/png", "buffer": ID_PNG})
         await pg.wait_for_selector("text=already in the Vault", timeout=15000)
         items = K.c.get(K.S + "/vault", headers=K.H).json().get("items", [])
         K.check("uploading the same ID again does not add a second vault item", sum(i["label"] == "Passport LU" for i in items) == 1, [i["label"] for i in items])

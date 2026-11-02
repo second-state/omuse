@@ -1,10 +1,10 @@
 ---
 name: payments-connectivity-asia
-description: 在亚洲怎么付钱和上网：手机支付（中国支付宝/微信绑外卡、日本 PayPay、新马泰 GrabPay 等）、交通卡（Welcome Suica、八达通、T-money、EZ-Link）、现金与 ATM、汇率（market_data）、拒绝 DCC、eSIM 与漫游、银行出行报备 Paying and staying online in Asia — mobile wallets with foreign cards, transit cards, cash and ATMs, FX rates from market data, avoiding dynamic currency conversion, eSIMs and roaming, card travel notices.
+description: 在亚洲怎么付钱和上网：手机支付（中国支付宝/微信绑外卡、日本 PayPay、新马泰 GrabPay 等）、交通卡（Welcome Suica、八达通、T-money、EZ-Link）、现金与 ATM、汇率（fx_convert）、拒绝 DCC、eSIM 与漫游、银行出行报备 Paying and staying online in Asia — mobile wallets with foreign cards, transit cards, cash and ATMs, FX rates from market data (fx_convert), avoiding dynamic currency conversion, eSIMs and roaming, card travel notices.
 ---
 # Payments & connectivity in Asia / 支付与上网
 
-Mostly knowledge plus two tools: market_data for exchange rates (never from memory) and browser_read of an official
+Mostly knowledge plus two tools: fx_convert for exchange rates (never from memory) and browser_read of an official
 page when a rule or a fee must be current (say the date checked). No browsing for general advice.
 
 ## 1. Before the trip (checklist, tailored to destinations and length)
@@ -36,8 +36,8 @@ page when a rule or a fee must be current (say the date checked). No browsing fo
   modest tipping is common in Thailand, Indonesia, the Philippines, Vietnam for guides and hotel staff.
 
 ## 2. Exchange rates and budgets
-market_data with the FX pair for the user's home currency (one call for several pairs) — quote the rate and the time;
-for "how much is this in SGD" use calculate with that rate. For budgets, give per-day ranges with the assumptions.
+fx_convert for each pair from the user's home currency (amount 1 for a rate; the amount for "how much is this in
+SGD") — code appends its show facts (the figure, the rate and its date) to the answer. For budgets, give per-day ranges with the assumptions.
 
 ## 3. Problems on the road
 Card declined → try another network / insert instead of tap / tell the issuer via its app; ATM ate the card → the
@@ -47,7 +47,7 @@ home-carrier roaming, or the app's voice-call option; lost card → freeze in th
 
 ## 4. Answer
 A short per-country checklist (pay / transit card / cash / connectivity / tipping) with the dates checked for anything
-that changes, the rates from market_data, and what to set up before leaving. Say what is not verified.
+that changes, the rates from fx_convert, and what to set up before leaving. Say what is not verified.
 
 ## Remember what you learn (for next time)
 Whatever the user tells you here is worth keeping, so they are never asked twice — but each kind has its place:

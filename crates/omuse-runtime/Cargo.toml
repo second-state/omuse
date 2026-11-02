@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+omuse-apps.workspace = true
 omuse-common.workspace = true
 omuse-docs.workspace = true
 tokio.workspace = true

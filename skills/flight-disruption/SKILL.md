@@ -11,9 +11,11 @@ newer_than:60d` and calendar_list_events for the day: booking reference, passeng
 connecting flights, whether the ticket is one booking or separate tickets (matters for missed connections).
 
 ## 2. Live status (data first, browser second)
-- A connected data tool wins: the built-in `flights_search` (Kiwi.com data, then Google Flights with the key, then web search — information only for
-  information only — rebook on the airline's site, never through Kiwi), or an MCP connector's `flight_status`.
-- Else browser_read (no clicking) the airline's own flight status page, or FlightAware / Flightradar24 for the flight
+- A connected data tool wins: the built-in `flights_search` (ONE call: Google Flights with the key, else Kiwi.com — for
+  alternatives; rebook on the airline's own site), or an MCP connector's `flight_status`.
+- `flight_status{flight, date}` for an airline OMuse reads (Singapore Airlines today): code reads the airline's status
+  page and returns the scheduled and estimated times as JSON with show.
+- Else (`not_known`) browser_read (no clicking) the airline's own flight status page, or FlightAware / Flightradar24 for the flight
   number, and the airport's departures page. Quote the new time, gate, and the airline's wording ("delayed",
   "cancelled"); never estimate a new departure time yourself.
 - If the user is at the airport, also check the inbound aircraft when the page shows it (a late inbound = a later
@@ -40,8 +42,9 @@ connecting flights, whether the ticket is one booking or separate tickets (matte
 If a travel-insurance email exists (gmail_search `insurance (policy OR certificate OR travel)`), read the delay
 benefit: usually a fixed amount per block of 6 or 8 hours, or expenses up to a cap, and it needs a **delay
 certificate** from the airline (ask at the desk or via the airline's online form), boarding passes and receipts.
-An FWD policy (Singapore, or a Hong Kong plan underwritten by bolttech) → load_skill("fwd-travel-insurance") for the
-claim itself: it knows FWD's claim form and bolttech's claims mailbox.
+An FWD policy (Singapore, or a Hong Kong plan underwritten by bolttech) → load_skill("fwd-travel-insurance") and file
+the delay with claim_file (code counts the hours, the benefit and the deadline and fills FWD's form or bolttech's).
+A Chase Sapphire trip cancellation or interruption → load_skill("csr-trip-claim") and claim_file.
 Write the checklist, draft the certificate request (gmail_create_draft to the airline) and, after the trip, the
 claim email. If no policy was found, say that delays, missed connections and lost luggage are among the most common
 claims and ask whether they are covered (credit cards often include delay cover) — one line, no selling.

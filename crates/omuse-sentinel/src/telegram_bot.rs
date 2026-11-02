@@ -44,6 +44,68 @@ pub fn status_zh(s: &str) -> &str {
     }
 }
 
+/// A task status in the user's language.
+pub fn status_label(s: &str, en: bool) -> &str {
+    if !en {
+        return status_zh(s);
+    }
+    match s {
+        "CREATED" => "Created",
+        "PLANNING" => "Planning",
+        "RUNNING" => "Running",
+        "WAITING_APPROVAL" => "Waiting for your approval",
+        "WAITING_EXTERNAL" => "Waiting for you to take over the browser",
+        "PAUSED" => "Paused",
+        "COMPLETED" => "Done",
+        "FAILED" => "Failed",
+        "CANCELLED" => "Cancelled",
+        other => other,
+    }
+}
+
+/// One language of a bilingual server text ("把 2 个文件移到回收站 (moves 2 files to the bin)", "账本订单 Ledger order"): the
+/// part in brackets / after the Chinese for English, the Chinese part for Chinese; text in one language as it is.
+pub fn pick(s: &str, en: bool) -> String {
+    static CJK: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"[\p{Han}\u3000-\u303f\uff00-\uffef]").unwrap());
+    static BRACKET: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(?s)(.*\p{Han}[^()（）]*?)\s*[(（]([^()（）\p{Han}]*[A-Za-z][^()（）\p{Han}]*)[)）]\s*$").unwrap()
+    });
+    static TAIL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(?s)(.*\p{Han}[\p{Han}\p{P}\s\d]*?)\s+([A-Za-z][^\p{Han}]*)$").unwrap()
+    });
+    if !CJK.is_match(s) {
+        return s.to_string();
+    }
+    if let Some(c) = BRACKET.captures(s) {
+        return if en {
+            c[2].trim().to_string()
+        } else {
+            c[1].trim().to_string()
+        };
+    }
+    if let Some(c) = TAIL.captures(s) {
+        return if en {
+            c[2].trim().to_string()
+        } else {
+            c[1].trim().to_string()
+        };
+    }
+    s.to_string()
+}
+
+/// `/help` in the user's language.
+pub fn help_text(en: bool) -> &'static str {
+    if en {
+        "🤖 <b>OMuse on Telegram</b>\nSend a message = give OMuse a task (the same as a chat in the app).\n\n\
+/new — new conversation\n/tasks — recent tasks\n/stop — stop the running task\n/status — pending approvals &amp; browser\n\
+/help — help\n\nActions that need your approval come with ✅ Approve / ❌ Deny buttons; when a site needs you to sign \
+in or type a code, I send a link to take over the browser."
+    } else {
+        HELP
+    }
+}
+
 fn mark(s: &str) -> &'static str {
     match s {
         "pending" => "○",
@@ -57,10 +119,10 @@ fn mark(s: &str) -> &'static str {
 
 pub const HELP: &str = "🤖 <b>OMuse on Telegram</b>\n\
 直接发消息 = 给 OMuse 布置任务（和网页里的对话一样）。\n\n\
-/new — 开始新对话 new conversation\n\
-/tasks — 最近的任务 recent tasks\n\
-/stop — 停止当前任务 stop the running task\n\
-/status — 待审批 / 浏览器状态 pending approvals & browser\n\
+/new — 开始新对话\n\
+/tasks — 最近的任务\n\
+/stop — 停止当前任务\n\
+/status — 待审批 / 浏览器状态\n\
 /help — 帮助\n\n\
 需要审批的操作会带 ✅ 批准 / ❌ 拒绝 按钮；需要你登录或输入验证码时，我会发网页链接给你接管浏览器。";
 
@@ -73,6 +135,10 @@ static ITALIC: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
 static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`]+)`").unwrap());
 static LINK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\((https?://[^)\s]+)\)").unwrap());
+/// A link to a page of this app (`/artifacts/…`, `/api/files/raw?…`): no address Telegram can open, so its text and
+/// path are shown as they are.
+static APP_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\((/[^)\s]+)\)").unwrap());
 static BULLET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\s*)[-*]\s+").unwrap());
 static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
 static TAGS0: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
@@ -157,6 +223,11 @@ pub fn md_to_tg(text: &str, limit: usize) -> Vec<String> {
             continue;
         }
         flush_table(&mut table, &mut out);
+        // a rule (the line before the facts code appends to an answer) as a plain divider
+        if line.trim() == "---" {
+            out.push("———".into());
+            continue;
+        }
         let mut e = esc(line);
         if let Some(m) = HEADING.captures(&e) {
             e = format!("<b>{}</b>", &m[1]);
@@ -167,6 +238,7 @@ pub fn md_to_tg(text: &str, limit: usize) -> Vec<String> {
         e = LINK
             .replace_all(&e, "<a href=\"${2}\">${1}</a>")
             .into_owned();
+        e = APP_LINK.replace_all(&e, "${1} (${2})").into_owned();
         e = BULLET.replace(&e, "${1}• ").into_owned();
         out.push(e);
     }
@@ -236,6 +308,8 @@ pub struct TelegramBot {
     client: reqwest::Client,
     tasks: parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     rejected_log: parking_lot::Mutex<f64>,
+    /// the app's language (Settings): every message in that one language (`refresh_lang`)
+    en: std::sync::atomic::AtomicBool,
 }
 
 impl TelegramBot {
@@ -263,6 +337,36 @@ impl TelegramBot {
             client,
             tasks: parking_lot::Mutex::new(Vec::new()),
             rejected_log: parking_lot::Mutex::new(0.0),
+            en: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    /// Whether the messages are in English (the app's language; Chinese only when set).
+    pub fn en(&self) -> bool {
+        self.en.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// `zh` or `en` by the app's language.
+    fn l<'a>(&self, zh: &'a str, en: &'a str) -> &'a str {
+        if self.en() {
+            en
+        } else {
+            zh
+        }
+    }
+
+    /// Read the app's language (Settings → language) before speaking.
+    async fn refresh_lang(&self) {
+        if let Ok(v) = self.rt("GET", "/api/settings", None).await {
+            let st = v.get("settings").unwrap_or(&v);
+            let lang = [get_str(st, "ui_language"), get_str(st, "language")]
+                .into_iter()
+                .find(|x| !x.is_empty())
+                .unwrap_or_default();
+            self.en.store(
+                !lang.starts_with("zh"),
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
     }
 
@@ -615,6 +719,7 @@ impl TelegramBot {
 
     /// Handle one update from the owner's chat (others are rejected and audited).
     pub async fn handle(&self, up: &Value, chat: &str) -> anyhow::Result<()> {
+        self.refresh_lang().await;
         if let Some(cq) = up.get("callback_query") {
             let frm = cq
                 .get("message")
@@ -657,7 +762,7 @@ impl TelegramBot {
             .trim()
             .to_string();
         if text.is_empty() {
-            self.say("暂时只支持文字消息 (text only for now) 🙏")
+            self.say(self.l("暂时只支持文字消息 🙏", "Text messages only for now 🙏"))
                 .await?;
             return Ok(());
         }
@@ -674,20 +779,26 @@ impl TelegramBot {
         };
         match cmd.as_str() {
             "/start" | "/help" => {
-                self.say(HELP).await?;
+                self.say(help_text(self.en())).await?;
             }
             "/new" => {
                 self.store.kv_set("tg_conv", &json!(""))?;
-                self.say("🆕 已开始新对话 New conversation. 直接发消息布置任务吧。")
-                    .await?;
+                self.say(self.l(
+                    "🆕 已开始新对话。直接发消息布置任务吧。",
+                    "🆕 New conversation. Send a message to give me a task.",
+                ))
+                .await?;
             }
             "/tasks" => self.cmd_tasks().await?,
             "/stop" => self.cmd_stop().await?,
             "/status" => self.cmd_status().await?,
             "" => self.new_task(&text).await?,
             _ => {
-                self.say("未知命令 unknown command。发送 /help 查看用法。")
-                    .await?;
+                self.say(self.l(
+                    "未知命令。发送 /help 查看用法。",
+                    "Unknown command. Send /help to see what I can do.",
+                ))
+                .await?;
             }
         }
         Ok(())
@@ -753,7 +864,9 @@ impl TelegramBot {
                 ..Default::default()
             },
         );
-        let mid = self.say("🤖 收到，开始处理… <i>Working on it</i>").await?;
+        let mid = self
+            .say(self.l("🤖 收到，开始处理…", "🤖 Working on it…"))
+            .await?;
         self.tracked
             .lock()
             .insert(tid, json!({"msg_id": mid, "last": ""}));
@@ -766,7 +879,7 @@ impl TelegramBot {
             .cloned()
             .unwrap_or_default();
         if ts.is_empty() {
-            self.say("还没有任务。").await?;
+            self.say(self.l("还没有任务。", "No tasks yet.")).await?;
             return Ok(());
         }
         let lines: Vec<String> = ts
@@ -782,7 +895,7 @@ impl TelegramBot {
                 };
                 format!(
                     "{icon} <b>{}</b> · {}",
-                    status_zh(&s),
+                    status_label(&s, self.en()),
                     esc(take_chars(&get_str(t, "goal"), 60))
                 )
             })
@@ -791,10 +904,14 @@ impl TelegramBot {
         let tail = if link.is_empty() {
             String::new()
         } else {
-            format!("\n\n<a href=\"{link}\">在网页中查看</a>")
+            format!(
+                "\n\n<a href=\"{link}\">{}</a>",
+                self.l("在网页中查看", "Open in the app")
+            )
         };
         self.say(&format!(
-            "📋 <b>最近任务 Recent tasks</b>\n{}{tail}",
+            "📋 <b>{}</b>\n{}{tail}",
+            self.l("最近任务", "Recent tasks"),
             lines.join("\n")
         ))
         .await?;
@@ -817,7 +934,8 @@ impl TelegramBot {
             })
             .collect();
         if active.is_empty() {
-            self.say("当前没有正在执行的任务。").await?;
+            self.say(self.l("当前没有正在执行的任务。", "No task is running."))
+                .await?;
             return Ok(());
         }
         for t in &active {
@@ -828,16 +946,25 @@ impl TelegramBot {
             )
             .await?;
         }
-        self.say(&format!("⏹ 已停止 {} 个任务 stopped.", active.len()))
-            .await?;
+        let n = active.len();
+        self.say(&if self.en() {
+            format!("⏹ Stopped {n} task{}.", if n == 1 { "" } else { "s" })
+        } else {
+            format!("⏹ 已停止 {n} 个任务。")
+        })
+        .await?;
         Ok(())
     }
 
     async fn cmd_status(&self) -> anyhow::Result<()> {
         let pend = self.store.approvals(Some("pending"), 20)?;
-        let mut lines = vec![format!("🛡 待审批 Pending approvals: <b>{}</b>", pend.len())];
+        let mut lines = vec![format!(
+            "🛡 {}: <b>{}</b>",
+            self.l("待审批", "Pending approvals"),
+            pend.len()
+        )];
         for a in pend.iter().take(5) {
-            lines.push(format!("  • {}", esc(&summary_title(a))));
+            lines.push(format!("  • {}", esc(&pick(&summary_title(a), self.en()))));
         }
         self.say(&lines.join("\n")).await?;
         for a in pend.iter().take(5) {
@@ -848,9 +975,9 @@ impl TelegramBot {
 
     // ------------------------------------------------------------ progress tracking
     /// The progress message of a task.
-    pub fn progress_text(t: &Value) -> String {
+    pub fn progress_text(t: &Value, en: bool) -> String {
         let status = get_str(t, "status");
-        let st = status_zh(&status);
+        let st = status_label(&status, en);
         let plan = t
             .get("plan")
             .filter(|p| truthy(p))
@@ -878,7 +1005,11 @@ impl TelegramBot {
             lines.push(format!("{} {}", mark(&ss), esc(take_chars(&desc, 90))));
         }
         if status == "WAITING_APPROVAL" {
-            lines.push("\n🛡 需要你批准，见下一条消息 ⬇️".into());
+            lines.push(if en {
+                "\n🛡 Your approval is needed — see the next message ⬇️".into()
+            } else {
+                "\n🛡 需要你批准，见下一条消息 ⬇️".into()
+            });
         }
         lines.join("\n")
     }
@@ -896,7 +1027,7 @@ impl TelegramBot {
                 let Ok(t) = self.rt("GET", &format!("/api/tasks/{tid}"), None).await else {
                     continue;
                 };
-                let txt = Self::progress_text(&t);
+                let txt = Self::progress_text(&t, self.en());
                 let msg_id = tr.get("msg_id").and_then(Value::as_i64).filter(|m| *m != 0);
                 if txt != get_str(&tr, "last")
                     && msg_id.is_some()
@@ -916,10 +1047,11 @@ impl TelegramBot {
 
     /// The final message of a task (head line, then the result as Telegram HTML).
     pub async fn send_result(&self, t: &Value) -> anyhow::Result<()> {
+        self.refresh_lang().await;
         let head = match get_str(t, "status").as_str() {
-            "COMPLETED" => "✅ 完成 Done",
-            "FAILED" => "⚠️ 失败 Failed",
-            "CANCELLED" => "⏹ 已取消 Cancelled",
+            "COMPLETED" => self.l("✅ 完成", "✅ Done"),
+            "FAILED" => self.l("⚠️ 失败", "⚠️ Failed"),
+            "CANCELLED" => self.l("⏹ 已取消", "⏹ Cancelled"),
             _ => "",
         };
         let body = t
@@ -946,16 +1078,22 @@ impl TelegramBot {
             .filter(|s| truthy(s))
             .cloned()
             .unwrap_or(json!({}));
+        self.refresh_lang().await;
+        let en = self.en();
         let mut lines = vec![
-            "🛡 <b>需要你批准 Approval needed</b>".to_string(),
+            format!("🛡 <b>{}</b>", self.l("需要你批准", "Approval needed")),
             format!(
-                "<b>{}</b> · 风险 {}",
-                esc(&summary_title(ap)),
+                "<b>{}</b> · {} {}",
+                esc(&pick(&summary_title(ap), en)),
+                self.l("风险", "risk"),
                 esc(&get_str(ap, "risk"))
             ),
         ];
         if let Some(r) = ap.get("reason").filter(|r| truthy(r)) {
-            lines.push(format!("<i>{}</i>", esc(take_chars(&py_str(r), 300))));
+            lines.push(format!(
+                "<i>{}</i>",
+                esc(take_chars(&pick(&py_str(r), en), 300))
+            ));
         }
         for f in s
             .get("fields")
@@ -971,7 +1109,7 @@ impl TelegramBot {
             if truthy(v) {
                 lines.push(format!(
                     "{}: <code>{}</code>",
-                    esc(&py_str(k)),
+                    esc(&pick(&py_str(k), en)),
                     esc(take_chars(&py_str(v), 200))
                 ));
             }
@@ -1000,7 +1138,11 @@ impl TelegramBot {
                 ));
             }
             if items.len() > 15 {
-                lines.push(format!("… 共 {} 封", items.len()));
+                lines.push(if en {
+                    format!("… {} in all", items.len())
+                } else {
+                    format!("… 共 {} 封", items.len())
+                });
             }
         }
         if let Some(b) = s.get("body").filter(|b| truthy(b)) {
@@ -1009,11 +1151,11 @@ impl TelegramBot {
         let link = self.public_url("chat");
         let aid = get_str(ap, "id");
         let mut rows = vec![json!([
-            {"text": "✅ 批准 Approve", "callback_data": format!("ap:{aid}:y")},
-            {"text": "❌ 拒绝 Deny", "callback_data": format!("ap:{aid}:n")},
+            {"text": self.l("✅ 批准", "✅ Approve"), "callback_data": format!("ap:{aid}:y")},
+            {"text": self.l("❌ 拒绝", "❌ Deny"), "callback_data": format!("ap:{aid}:n")},
         ])];
         if !link.is_empty() {
-            rows.push(json!([{"text": "🌐 在网页中查看/修改", "url": link}]));
+            rows.push(json!([{"text": self.l("🌐 在网页中查看/修改", "🌐 View or change in the app"), "url": link}]));
         }
         self.send(
             &lines.join("\n"),
@@ -1026,6 +1168,7 @@ impl TelegramBot {
 
     /// The button opens that task's browser tab (not just the Browser page): with several tasks the right one shows.
     pub async fn send_takeover(&self, reason: &str, task_id: &str) -> anyhow::Result<()> {
+        self.refresh_lang().await;
         let link = self.public_url(&if task_id.is_empty() {
             "browser".to_string()
         } else {
@@ -1035,7 +1178,7 @@ impl TelegramBot {
             None
         } else {
             Some(
-                json!({"inline_keyboard": [[{"text": "🖐 打开浏览器接管 Take over", "url": link}]]}),
+                json!({"inline_keyboard": [[{"text": self.l("🖐 打开浏览器接管", "🖐 Take over the browser"), "url": link}]]}),
             )
         };
         let mid = if link.is_empty() {
@@ -1044,10 +1187,17 @@ impl TelegramBot {
             format!("{}\n\n", esc(&link))
         };
         self.send(
-            &format!(
-                "🙋 <b>需要你接管浏览器</b>\n{}\n\n{mid}完成后在网页里点「交还给 Agent」。",
-                esc(take_chars(reason, 300))
-            ),
+            &if self.en() {
+                format!(
+                    "🙋 <b>Please take over the browser</b>\n{}\n\n{mid}When you are done, press \"Hand back\" in the app.",
+                    esc(take_chars(&pick(reason, true), 300))
+                )
+            } else {
+                format!(
+                    "🙋 <b>需要你接管浏览器</b>\n{}\n\n{mid}完成后在网页里点「交还给 Agent」。",
+                    esc(take_chars(&pick(reason, false), 300))
+                )
+            },
             markup,
             true,
         )
@@ -1089,7 +1239,7 @@ impl TelegramBot {
             None => Err("'NoneType' object is not callable".into()),
         };
         let outcome = match res {
-            Ok(_) if !yes => "❌ 已拒绝 Denied".to_string(),
+            Ok(_) if !yes => self.l("❌ 已拒绝", "❌ Denied").to_string(),
             Ok(r) => {
                 let status = get_str(&r, "status");
                 let result = r
@@ -1098,7 +1248,8 @@ impl TelegramBot {
                     .cloned()
                     .unwrap_or(json!({}));
                 if status == "approved" && get_str(&result, "status") == "ok" {
-                    "✅ 已批准并执行 Approved & executed".to_string()
+                    self.l("✅ 已批准并执行", "✅ Approved & executed")
+                        .to_string()
                 } else if status == "approved" {
                     let what = result
                         .get("error")
@@ -1106,7 +1257,14 @@ impl TelegramBot {
                         .or_else(|| result.get("status"))
                         .map(py_str)
                         .unwrap_or_else(|| "None".into());
-                    format!("⚠️ 已批准，但执行结果：{}", esc(take_chars(&what, 200)))
+                    if self.en() {
+                        format!(
+                            "⚠️ Approved, but the result: {}",
+                            esc(take_chars(&what, 200))
+                        )
+                    } else {
+                        format!("⚠️ 已批准，但执行结果：{}", esc(take_chars(&what, 200)))
+                    }
                 } else {
                     let what = r
                         .get("reason")
@@ -1180,6 +1338,14 @@ mod tests {
             md_to_tg("*it* [l](https://a.b)", 3900),
             vec!["<i>it</i> <a href=\"https://a.b\">l</a>"]
         );
+        // the facts code appends to an answer (agent/show.rs): the rule, a reference, a link into the app
+        assert_eq!(
+            md_to_tg(
+                "Done.\n\n---\n\n- Confirmation number: **TH7D3K9Q2**\n- PDF edition: [The Ledger](/artifacts/a.pdf)",
+                3900
+            ),
+            vec!["Done.\n\n———\n\n• Confirmation number: <b>TH7D3K9Q2</b>\n• PDF edition: The Ledger (/artifacts/a.pdf)"]
+        );
         let code = md_to_tg("```\n<a>\n```", 3900);
         assert_eq!(code, vec!["<pre>\n&lt;a&gt;\n</pre>"]);
     }
@@ -1219,8 +1385,32 @@ mod tests {
     fn progress_text_marks_steps() {
         let t = json!({"status": "WAITING_APPROVAL", "goal": "g <x>", "plan": {"steps": [{"status": "done", "description": "a"}, {"description": "b"}]}});
         assert_eq!(
-            TelegramBot::progress_text(&t),
+            TelegramBot::progress_text(&t, false),
             "🤖 <b>等待审批</b> · g &lt;x&gt;\n✓ a\n○ b\n\n🛡 需要你批准，见下一条消息 ⬇️"
         );
+        // in English, English only
+        assert_eq!(
+            TelegramBot::progress_text(&t, true),
+            "🤖 <b>Waiting for your approval</b> · g &lt;x&gt;\n✓ a\n○ b\n\n🛡 Your approval is needed — see the next message ⬇️"
+        );
+    }
+
+    #[test]
+    fn bilingual_server_text_in_one_language() {
+        let r = "把 2 个文件移到 Google Drive 回收站，30 天内可恢复 (moves 2 files to the Drive bin; recoverable for 30 days)";
+        assert_eq!(
+            pick(r, true),
+            "moves 2 files to the Drive bin; recoverable for 30 days"
+        );
+        assert_eq!(
+            pick(r, false),
+            "把 2 个文件移到 Google Drive 回收站，30 天内可恢复"
+        );
+        assert_eq!(pick("账本订单 Ledger order", true), "Ledger order");
+        assert_eq!(pick("账本订单 Ledger order", false), "账本订单");
+        assert_eq!(pick("Send email", true), "Send email");
+        assert!(!help_text(true)
+            .chars()
+            .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)));
     }
 }

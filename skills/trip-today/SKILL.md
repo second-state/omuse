@@ -16,7 +16,8 @@ Run these together — they are independent (same-turn calls run at the same tim
   `(restaurant OR table OR 订位 OR 予約)`, `(ticket OR admission OR tour OR Klook OR KKday OR GetYourGuide)`,
   `(visa OR arrival card OR SGAC OR TDAC OR MDAC)`, plus cancellations: `(cancelled OR canceled OR delayed OR rescheduled OR schedule change)`.
   Use max_results 30 and the mailbox's own language too (日本語 / 中文 subjects).
-- calendar_list_events for the same window (if the calendar is connected).
+- calendar_list_events for the same window (if the calendar is connected), **without a query**: the query is a plain
+  text match (no OR), and a meeting in the destination rarely names the city — read every event in the window.
 - memory_search "trip", "hotel", "airline", "seat", "loyalty" for preferences and known bookings.
 Read the full message (gmail_get_message) only for hits that look like confirmations; the metadata is enough to
 discard newsletters. A later email about the same booking wins (change, cancellation, new time).
@@ -24,7 +25,9 @@ discard newsletters. A later email about the same booking wins (change, cancella
 ## 2. Build the timeline
 One row per item: local date & time (in the place where it happens — flights in the airport's time zone, with the
 time zone named), what, reference/booking number, place or route, status (confirmed / changed / cancelled / unpaid),
-source (mail subject + date). Sort by time. Mark items that also exist in the calendar, and those that exist only in
+source (mail subject + date). Calendar events come in the calendar's own time zone (the result's `time_zone`), not
+the zone of the place: convert an event in another city to that city's local time (e.g. a Tokyo meeting from a
+Singapore calendar is one hour later in JST) before comparing it with flight times, and name the zone. Sort by time. Mark items that also exist in the calendar, and those that exist only in
 mail (offer to add them: calendar_create_event, after the user says yes).
 
 ## 3. Check for gaps and conflicts (say them first)

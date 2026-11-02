@@ -36,7 +36,10 @@ pub static SOURCES: LazyLock<Value> = LazyLock::new(|| {
                      "params": {"url": "要监控的网页 page to watch",
                                 "mode": "change（内容有变化）| text（出现某段文字）| price_below（价格低于阈值）",
                                 "text": "mode=text 时要等待出现的文字", "threshold": "mode=price_below 时的价格阈值，如 15",
-                                "keyword": "可选：只看这个词附近的价格/文字 (e.g. the product name)"}},
+                                "item": "mode=price_below：商品名 the item whose price is watched",
+                                "price_sel": "可选：价格元素的 CSS 选择器 (optional: the price element's CSS selector)",
+                                "price_attr": "可选：价格在元素的这个属性里 (optional: the attribute holding the price)",
+                                "read": "element（按元素读）| model（模型从页面读出 JSON）— 建立监控时决定"}},
     })
 });
 pub const MAX_EVENTS: usize = 20;
@@ -347,10 +350,6 @@ fn result(mut events: Vec<Value>, cursor: Value) -> Value {
 
 static REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[(?:f\d+)?e\d+\]\s*").unwrap());
 static ARROW_URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s→\s\S+").unwrap());
-static PRICE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:S\$|US\$|HK\$|A\$|C\$|RM|SGD|USD|HKD|RMB|CNY|¥|￥|€|£|\$)\s?(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)")
-        .unwrap()
-});
 static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 
 /// The words a person reads on the page: drop element refs and link targets so layout churn doesn't count.
@@ -367,92 +366,76 @@ pub fn page_text(snapshot: &str) -> String {
     lines.join("\n")
 }
 
-const CUR: &str = r"(?:S\$|US\$|HK\$|A\$|C\$|RM|SGD|USD|HKD|RMB|CNY|¥|￥|€|£|\$)";
-// shops often draw a price as separate pieces ("S$ 31 . 43", "S$31\n.43", Amazon's "S$ 31 43"): glue them back
-static SPLIT: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
-    fancy_regex::Regex::new(&format!(
-        r"(?i)({CUR}\s?\d{{1,3}}(?:,\d{{3}})*|{CUR}\s?\d+)(?:\s+\.\s*|\s*\.\s+|\s+)(\d{{2}})(?![\d.,%])"
-    ))
-    .unwrap()
-});
-pub const KEYWORD_WINDOW: usize = 600;
-pub const HEADING_WINDOW: usize = 3500;
-
-fn glue(text: &str) -> String {
-    SPLIT.replace_all(text, "${1}.${2}").into_owned()
+/// A price element's value as `(amount, currency)`: "S$25.00", "$1,299", "25,00 €", "SGD 31.43", "1299.00". The value
+/// was read by its element (a known site's or the model's selector), so it already is a price: this only checks its
+/// shape — one number with at most one currency of up to four characters before or after it. `None` for anything
+/// else ("From S$25", two prices in one element, words).
+pub fn parse_amount(value: &str) -> Option<(f64, String)> {
+    let t = value.trim();
+    let start = t.find(|c: char| c.is_ascii_digit())?;
+    let end = t.rfind(|c: char| c.is_ascii_digit())? + 1;
+    let (pre, num, post) = (t[..start].trim(), &t[start..end], t[end..].trim());
+    if !num
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == ',' || c == '.')
+    {
+        return None;
+    }
+    let currency = match (pre.is_empty(), post.is_empty()) {
+        (true, true) => "",
+        (false, true) => pre,
+        (true, false) => post,
+        (false, false) => return None,
+    };
+    if char_len(currency) > 4
+        || currency
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_ascii_digit())
+    {
+        return None;
+    }
+    let (commas, dots) = (num.matches(',').count(), num.matches('.').count());
+    let plain = match (commas, dots) {
+        (0, 0) => num.to_string(),
+        (_, 0) => {
+            // one comma with one or two digits after it is a decimal comma ("25,00"); otherwise thousands
+            let tail = num.rsplit(',').next().unwrap_or("");
+            if commas == 1 && (1..=2).contains(&tail.len()) {
+                num.replace(',', ".")
+            } else {
+                num.replace(',', "")
+            }
+        }
+        (0, 1) => num.to_string(),
+        (0, _) => num.replace('.', ""),
+        _ => {
+            // both: the one that comes last is the decimal mark
+            if num.rfind(',') > num.rfind('.') {
+                num.replace('.', "").replace(',', ".")
+            } else {
+                num.replace(',', "")
+            }
+        }
+    };
+    let v: f64 = plain.parse().ok()?;
+    (v.is_finite() && v > 0.0).then(|| (v, currency.to_string()))
 }
 
-fn hits(span: &str, first_only: bool) -> Vec<(f64, String)> {
-    let n = char_len(span);
-    let mut out = Vec::new();
-    for m in PRICE.captures_iter(span) {
-        let whole = m.get(0).unwrap();
-        if first_only
-            && n >= KEYWORD_WINDOW.min(HEADING_WINDOW)
-            && char_len(&span[..whole.end()]) + 3 >= n
-        {
-            break; // cut off at the window's edge: don't read "31.4" out of "31.43"
-        }
-        let Ok(v) = m[1].replace(',', "").parse::<f64>() else {
-            continue;
-        };
-        out.push((v, whole.as_str().trim().to_string()));
-        if first_only {
-            break;
-        }
+/// A price as the notification and the watch card show it: "S$25.00", "€9.50", "SGD 31.43", "25.00".
+pub fn show_price(currency: &str, price: f64) -> String {
+    let cur = currency.trim();
+    if cur.is_empty() {
+        format!("{price:.2}")
+    } else if cur.chars().all(|c| c.is_ascii_alphabetic()) {
+        format!("{cur} {price:.2}")
+    } else {
+        format!("{cur}{price:.2}")
     }
-    out
-}
-
-/// (value, what was read) for the prices on the page. With a keyword: only THE price of that item — the first
-/// price after the first mention of the keyword that has one (later mentions are usually "related products").
-pub fn price_hits(text: &str, keyword: &str) -> Vec<(f64, String)> {
-    let text = glue(text);
-    if keyword.is_empty() {
-        return hits(&text, false);
-    }
-    let low = text.to_lowercase();
-    let kw = regex::escape(&keyword.to_lowercase());
-    // a product page: the price that follows the page's own title (a heading naming the item) is the item's price, even
-    // when colour swatches and bullet points sit between them (Amazon's buy box comes ~2000 characters after the title)
-    let heading = Regex::new(&format!(r"(?m)^#{{1,3}} [^\n]*{kw}")).expect("heading regex");
-    for m in heading.find_iter(&low) {
-        let ci = char_len(&low[..m.start()]);
-        let got = hits(slice_chars(&text, ci, ci + HEADING_WINDOW), true);
-        if !got.is_empty() {
-            return got;
-        }
-    }
-    let plain = Regex::new(&kw).expect("keyword regex");
-    for m in plain.find_iter(&low) {
-        let ci = char_len(&low[..m.start()]);
-        let got = hits(slice_chars(&text, ci, ci + KEYWORD_WINDOW), true);
-        if !got.is_empty() {
-            return got;
-        }
-    }
-    vec![]
-}
-
-/// The price values of [`price_hits`].
-pub fn prices(text: &str, keyword: &str) -> Vec<f64> {
-    price_hits(text, keyword)
-        .into_iter()
-        .map(|(v, _)| v)
-        .collect()
 }
 
 /// Python `str.find` as a character index.
 fn find_chars(hay: &str, needle: &str) -> Option<usize> {
     hay.find(needle).map(|b| char_len(&hay[..b]))
-}
-
-fn around(text: &str, needle: &str, before: usize, after: usize) -> String {
-    let Some(i) = find_chars(text, needle) else {
-        return String::new();
-    };
-    let s = slice_chars(text, i.saturating_sub(before), i + char_len(needle) + after);
-    WS.replace_all(s, " ").trim().to_string()
 }
 
 /// Python `format(v, "g")`.
@@ -545,78 +528,12 @@ pub fn evaluate(
             }
         }
     } else if mode == "price_below" {
-        let raw = sarg(params, "threshold").replace(',', "");
-        let limit: f64 = raw
-            .trim_start_matches(['$', 'S'])
-            .trim()
-            .parse()
-            .map_err(|_| WatchError("mode=price_below 需要数字阈值 threshold, e.g. 15".into()))?;
-        let kw = sarg(params, "keyword").trim().to_string();
-        let got = price_hits(text, &kw);
-        if got.is_empty() {
-            let mut other: Vec<f64> = price_hits(text, "").into_iter().map(|(v, _)| v).collect();
-            other.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            other.dedup();
-            other.truncate(8);
-            if !kw.is_empty() {
-                let tail = if other.is_empty() {
-                    "；整个页面都没有价格（可能缺货、需要选款式，或网站换了页面）no price anywhere on the page".to_string()
-                } else {
-                    format!(
-                        "；页面上的其他价格 other prices on the page: {}",
-                        other
-                            .iter()
-                            .map(|v| fmt_g(*v))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                };
-                return Err(WatchError(format!(
-                    "页面上“{kw}”附近没找到价格 (no price found after '{kw}'){tail}"
-                )));
-            }
-            return Err(WatchError("页面上没找到价格（可能缺货、需要先选款式，或网站换了页面）no price found on the page".into()));
-        }
-        let found: Vec<f64> = got.iter().map(|(v, _)| *v).collect();
-        let low = found.iter().cloned().fold(f64::INFINITY, f64::min);
-        let glued = glue(text);
-        let read = got
-            .iter()
-            .min_by(|a, b| {
-                a.0.partial_cmp(&b.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.1.cmp(&b.1))
-            })
-            .map(|x| x.1.clone())
-            .unwrap_or_default();
-        let shown = WS.replace_all(&read, "").into_owned();
-        let ctx = around(&glued, &read, 60, 0);
-        let extra = if !kw.is_empty() && ctx.ends_with(&read) {
-            let head = slice_chars(&ctx, 0, char_len(&ctx) - char_len(&read)).trim();
-            let n = char_len(head);
-            format!(" · …{}", slice_chars(head, n.saturating_sub(60), n))
-        } else {
-            String::new()
-        };
-        cur["seen"] = json!(shown + &extra);
-        let met = low < limit;
-        cur["low"] = json!(low);
-        cur["met"] = json!(met);
-        let alerted = prev
-            .get("alerted")
-            .filter(|a| !a.is_null())
-            .and_then(Value::as_f64);
-        if met && cursor.is_some() && (!prev_met || alerted.is_some_and(|a| low < a)) {
-            cur["alerted"] = json!(low);
-            let mut uniq = found.clone();
-            uniq.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            uniq.dedup();
-            uniq.truncate(10);
-            events.push(json!({"url": url, "title": title, "condition": format!("price {} < {}", fmt_g(low), fmt_g(limit)),
-                "prices_seen": uniq, "excerpt": around(&glued, &read, 110, 0)}));
-        } else if met {
-            cur["alerted"] = json!(alerted.unwrap_or(low));
-        }
+        // a price is never looked for in the page's text: it is read by its element or by the model
+        // (`poll_web`), then compared in `evaluate_price`
+        return Err(WatchError(
+            "mode=price_below 的价格由元素或模型读取 (a price watch is compared by evaluate_price)"
+                .into(),
+        ));
     } else if let Some(prev_hash) = prev.get("hash").filter(|h| truthy(h)) {
         if cursor.is_some() && prev_hash.as_str() != Some(h.as_str()) {
             let old: Vec<String> = prev
@@ -639,6 +556,69 @@ pub fn evaluate(
     Ok((events, cur))
 }
 
+/// The threshold of a price watch (a number the model or the user gave, possibly with its currency: "20", "S$20").
+fn threshold(params: &Value) -> Result<f64, WatchError> {
+    parse_amount(&sarg(params, "threshold"))
+        .map(|(v, _)| v)
+        .ok_or_else(|| WatchError("mode=price_below 需要数字阈值 threshold, e.g. 15".into()))
+}
+
+/// Compare a price watch's observation with the previous one (the cursor). `observed` is structured:
+/// `{price, currency, item, seen?, title?, url?, read}` — read by the price's element or extracted by the model, never
+/// found in the page's text here. Only a price newly below the threshold (or lower again than the last alert) fires;
+/// the first observation only saves the baseline.
+pub fn evaluate_price(
+    params: &Value,
+    observed: &Value,
+    cursor: Option<&Value>,
+) -> Result<(Vec<Value>, Value), WatchError> {
+    let cursor = cursor.filter(|c| !c.is_null());
+    let limit = threshold(params)?;
+    let price = observed
+        .get("price")
+        .and_then(Value::as_f64)
+        .filter(|p| p.is_finite() && *p > 0.0)
+        .ok_or_else(|| WatchError("没有读到价格 no price was read".into()))?;
+    let currency = get_str(observed, "currency");
+    let item = {
+        let i = get_str(observed, "item");
+        if i.is_empty() {
+            sarg(params, "item")
+        } else {
+            i
+        }
+    };
+    let seen = {
+        let s = get_str(observed, "seen");
+        if s.is_empty() {
+            show_price(&currency, price)
+        } else {
+            s
+        }
+    };
+    let (title, url) = (get_str(observed, "title"), get_str(observed, "url"));
+    let empty = json!({});
+    let prev = cursor.unwrap_or(&empty);
+    let prev_met = prev.get("met").is_some_and(truthy);
+    let met = price < limit;
+    let mut cur = json!({"low": price, "met": met, "currency": take_chars(&currency, 8),
+        "item": take_chars(&item, 120), "seen": take_chars(&seen, 200), "read": get_str(observed, "read"),
+        "title": take_chars(&title, 200)});
+    let alerted = prev
+        .get("alerted")
+        .filter(|a| !a.is_null())
+        .and_then(Value::as_f64);
+    let mut events = Vec::new();
+    if met && cursor.is_some() && (!prev_met || alerted.is_some_and(|a| price < a)) {
+        cur["alerted"] = json!(price);
+        events.push(json!({"url": url, "title": title, "condition": format!("price {} < {}", fmt_g(price), fmt_g(limit)),
+            "price": price, "currency": currency, "item": item, "seen": seen}));
+    } else if met {
+        cur["alerted"] = json!(alerted.unwrap_or(price));
+    }
+    Ok((events, cur))
+}
+
 /// `s` cut to `n` characters with "…".
 pub fn truncate_line(s: &str, n: usize) -> String {
     if char_len(s) <= n {
@@ -648,12 +628,71 @@ pub fn truncate_line(s: &str, n: usize) -> String {
     }
 }
 
-/// Watch a web page through the browser broker (`web.page`).
+/// The price of a price watch read by its element (`price_sel`, optional `price_attr`: a known site's rule or the
+/// model's selector, decided when the watch was made) through the browser service's `read_elements`: the first match
+/// whose value is a price (`parse_amount`).
+async fn read_price_element(st: &AppState, tid: &str, params: &Value) -> Result<Value, WatchError> {
+    let sel = sarg(params, "price_sel").trim().to_string();
+    let attr = sarg(params, "price_attr").trim().to_string();
+    let mut rule = json!({"name": "price", "sel": sel, "max": 5});
+    if !attr.is_empty() {
+        rule["attr"] = json!(attr);
+    }
+    let res = actions::broker(
+        st,
+        "POST",
+        "/agent/read_elements",
+        Some(&json!({"task_id": tid, "read": [rule]})),
+        60.0,
+    )
+    .await
+    .map_err(|e: ActionError| werr(e))?;
+    let values: Vec<String> = res["elements"]["price"]
+        .as_array()
+        .map(|a| a.iter().map(py_str).collect())
+        .unwrap_or_default();
+    let Some((raw, (price, currency))) = values
+        .iter()
+        .find_map(|v| parse_amount(v).map(|p| (v.clone(), p)))
+    else {
+        return Err(WatchError(format!(
+            "价格元素没有读到价格 (the price element `{sel}` shows no price: {})",
+            if values.is_empty() {
+                "no such element on the page".to_string()
+            } else {
+                take_chars(&values.join(" | "), 120).to_string()
+            }
+        )));
+    };
+    let (seen, _) = guard::redact_secrets(&WS.replace_all(&raw, " "));
+    Ok(
+        json!({"price": price, "currency": currency, "seen": seen.trim(), "read": "element",
+              "title": sarg(&res, "title"), "url": sarg(&res, "url"), "item": sarg(params, "item")}),
+    )
+}
+
+/// Watch a web page through the browser broker (`web.page`). A price watch (`mode=price_below`) reads its price by
+/// the element rule it was made with (`read=element`); one made to be read by the model (`read=model`) answers
+/// `{"extract": {text, title, url}}` with the page's text — the runtime has the model extract `{price, currency, item}`
+/// into JSON and calls again with that as `observed`, which is compared here without loading the page again.
 pub async fn poll_web(
     st: &AppState,
     params: &Value,
     cursor: Option<&Value>,
+    observed: Option<&Value>,
 ) -> Result<Value, WatchError> {
+    let price_mode = sarg(params, "mode")
+        .trim()
+        .eq_ignore_ascii_case("price_below");
+    if let Some(obs) = observed.filter(|o| o.is_object()) {
+        if !price_mode {
+            return Err(WatchError(
+                "observed 只用于价格监控 (observed is for price watches)".into(),
+            ));
+        }
+        let (events, cur) = evaluate_price(params, obs, cursor)?;
+        return Ok(result(events, cur));
+    }
     let mut url = sarg(params, "url").trim().to_string();
     if !url.is_empty() && !url.contains("://") {
         url = format!("https://{url}");
@@ -689,15 +728,33 @@ pub async fn poll_web(
             "网站拦截了自动浏览器 (bot wall: {detail})"
         )));
     }
-    let (text, _) = guard::redact_secrets(&page_text(&sarg(&snap, "snapshot")));
     let snap_url = sarg(&snap, "url");
-    let (events, cur) = evaluate(
-        params,
-        &text,
-        &sarg(&snap, "title"),
-        if snap_url.is_empty() { &url } else { &snap_url },
-        cursor,
-    )?;
+    let page_url = if snap_url.is_empty() {
+        url.clone()
+    } else {
+        snap_url
+    };
+    let title = sarg(&snap, "title");
+    if price_mode {
+        if !sarg(params, "price_sel").trim().is_empty() && sarg(params, "read") != "model" {
+            let mut obs = read_price_element(st, &tid, params).await?;
+            if get_str(&obs, "title").is_empty() {
+                obs["title"] = json!(title);
+            }
+            if get_str(&obs, "url").is_empty() {
+                obs["url"] = json!(page_url);
+            }
+            let (events, cur) = evaluate_price(params, &obs, cursor)?;
+            return Ok(result(events, cur));
+        }
+        let (text, _) = guard::redact_secrets(&page_text(&sarg(&snap, "snapshot")));
+        return Ok(
+            json!({"extract": {"text": take_chars(&text, 20000), "title": title, "url": page_url},
+                         "events": [], "cursor": cursor.cloned().unwrap_or(Value::Null)}),
+        );
+    }
+    let (text, _) = guard::redact_secrets(&page_text(&sarg(&snap, "snapshot")));
+    let (events, cur) = evaluate(params, &text, &title, &page_url, cursor)?;
     Ok(result(events, cur))
 }
 
@@ -706,60 +763,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_price_elements_value_is_checked_not_searched() {
+        assert_eq!(parse_amount("S$25.00"), Some((25.0, "S$".into())));
+        assert_eq!(parse_amount(" $1,299.00 "), Some((1299.0, "$".into())));
+        assert_eq!(parse_amount("25,00 €"), Some((25.0, "€".into())));
+        assert_eq!(parse_amount("1.299,50 €"), Some((1299.5, "€".into())));
+        assert_eq!(parse_amount("SGD 31.43"), Some((31.43, "SGD".into())));
+        assert_eq!(parse_amount("1299"), Some((1299.0, String::new())));
+        assert_eq!(parse_amount("¥12,800"), Some((12800.0, "¥".into())));
+        // not one price: words around it, two prices, nothing
+        for bad in [
+            "From S$25.00",
+            "S$25.00 S$19.99",
+            "Price: 25",
+            "out of stock",
+            "",
+            "S$0.00",
+            "25 . 00",
+        ] {
+            assert_eq!(parse_amount(bad), None, "{bad}");
+        }
+        assert_eq!(show_price("S$", 25.0), "S$25.00");
+        assert_eq!(show_price("SGD", 31.43), "SGD 31.43");
+        assert_eq!(show_price("", 9.5), "9.50");
+    }
+
+    #[test]
+    fn a_price_watch_compares_the_structured_price() {
+        let p = json!({"mode": "price_below", "threshold": "20", "item": "Aurora case"});
+        let obs = |price: f64| json!({"price": price, "currency": "S$", "read": "model", "url": "u", "title": "t"});
+        // the first observation is the baseline, even below the threshold
+        let (ev, c) = evaluate_price(&p, &obs(18.0), None).unwrap();
+        assert!(ev.is_empty() && c["met"] == true);
+        assert_eq!(c["seen"], "S$18.00");
+        assert_eq!(c["item"], "Aurora case");
+        let (ev, c) = evaluate_price(&p, &obs(25.0), Some(&c)).unwrap();
+        assert!(ev.is_empty() && c["met"] == false);
+        let (ev, c) = evaluate_price(&p, &obs(18.0), Some(&c)).unwrap();
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0]["condition"], "price 18 < 20");
+        assert_eq!(ev[0]["price"], 18.0);
+        assert_eq!(ev[0]["seen"], "S$18.00");
+        // the same price again: nothing; lower again: a new alert
+        let (ev, c) = evaluate_price(&p, &obs(18.0), Some(&c)).unwrap();
+        assert!(ev.is_empty());
+        let (ev, _) = evaluate_price(&p, &obs(16.0), Some(&c)).unwrap();
+        assert_eq!(ev[0]["condition"], "price 16 < 20");
+        // an element's own text is what the card shows
+        let el = json!({"price": 25.0, "currency": "S$", "seen": "S$25.00", "read": "element"});
+        let (_, c) = evaluate_price(&p, &el, None).unwrap();
+        assert_eq!(
+            (c["seen"].as_str(), c["read"].as_str()),
+            (Some("S$25.00"), Some("element"))
+        );
+        // no price, a bad threshold: errors, never a guess
+        assert!(evaluate_price(&p, &json!({"price": null}), None).is_err());
+        assert!(evaluate_price(&json!({"threshold": "cheap"}), &obs(1.0), None).is_err());
+        assert!(evaluate_price(&json!({"threshold": "S$20"}), &obs(1.0), None).is_ok());
+    }
+
+    #[test]
     fn web_watch_evaluate() {
-        assert_eq!(
-            prices(
-                "Aurora Case\nPrice: S$18.00\nOther: Basic S$12.90",
-                "aurora"
-            ),
-            vec![18.0]
-        );
-        assert_eq!(prices("A $1,299.00 B S$15.50", ""), vec![1299.0, 15.5]);
-        assert_eq!(prices("Price: S$ 31 . 43 x", ""), vec![31.43]);
-        assert_eq!(prices("S$31\n.43", ""), vec![31.43]);
-        let amz = format!(
-            "# SUPFINE Case {}\nVisit the SUPFINE Store\n4.6\nS$31.43\n## Related\nSUPFINE Clear S$19.99",
-            "x".repeat(200)
-        );
-        assert_eq!(prices(&amz, "supfine"), vec![31.43]);
-        let page = format!(
-            "Customers also viewed\nSUPFINE Clear S$19.99\n# SUPFINE Magnetic Case Deep Blue\nColour Name: Deep Blue\n{}\nS$31.43\n## Related\nSUPFINE Stand S$29.18",
-            "bullet ".repeat(300)
-        );
-        assert_eq!(prices(&page, "SUPFINE"), vec![31.43]);
-        assert_eq!(
-            prices(&format!("SUPFINE {}S$31.43", "y".repeat(587)), "SUPFINE"),
-            Vec::<f64>::new()
-        );
+        assert!(!page_text("[e3] link \"Buy\" → https://x.test/a\n# Title").contains("[e3]"));
+        // a price watch is never evaluated over the page's text
         assert!(evaluate(
-            &json!({"mode": "price_below", "threshold": "20", "keyword": "zebra"}),
-            "Aurora S$18",
+            &json!({"mode": "price_below", "threshold": "20"}),
+            "S$18",
             "t",
             "u",
             None
         )
         .is_err());
-        let (_ev, c) = evaluate(
-            &json!({"mode": "price_below", "threshold": "20", "keyword": "aurora"}),
-            "Aurora case S$18",
-            "t",
-            "u",
-            None,
-        )
-        .unwrap();
-        assert!(get_str(&c, "seen").contains("S$18"));
-        assert!(!page_text("[e3] link \"Buy\" → https://x.test/a\n# Title").contains("[e3]"));
-        let p = json!({"mode": "price_below", "threshold": "20"});
-        let (ev, c) = evaluate(&p, "S$18", "t", "u", None).unwrap();
-        assert!(ev.is_empty() && c["met"] == true);
-        let (_ev, c) = evaluate(&p, "S$25", "t", "u", Some(&c)).unwrap();
-        let (ev, c) = evaluate(&p, "S$18", "t", "u", Some(&c)).unwrap();
-        assert_eq!(ev.len(), 1);
-        assert_eq!(ev[0]["condition"], "price 18 < 20");
-        assert!(evaluate(&p, "S$18", "t", "u", Some(&c))
-            .unwrap()
-            .0
-            .is_empty());
         let (_ev, c) = evaluate(&json!({"mode": "change"}), "a\nb", "t", "u", None).unwrap();
         let (ev, _c) = evaluate(&json!({"mode": "change"}), "a\nb\nc", "t", "u", Some(&c)).unwrap();
         assert_eq!(ev[0]["added_lines"], json!(["c"]));

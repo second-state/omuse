@@ -4,6 +4,7 @@
 pub mod charts;
 pub mod dataq;
 pub mod docx_writer;
+pub mod images;
 pub mod mdhtml;
 pub mod xlsx;
 

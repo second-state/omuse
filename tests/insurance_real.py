@@ -1,110 +1,143 @@
-"""FWD travel insurance with a real model (tests/real_common.py): a plain request to Main to buy FWD travel insurance, the
-trip in mail. FWD Singapore's site is the stand-in served inside the test container at its real address
-(tests/https_standins.py: https://www.fwd.com.sg, tests/pages/fwd_sg_*.html). Main must
-hand it to the Travel insurance bot, which loads fwd-travel-insurance, takes the trip from mail with the profile, gets
-the quote, compares the plans, confirms the purchase (purchase_confirm with the Vault card), fills the application —
-card and passport only through the Vault — and hands over for Pay, never pressing it; after the user hands the
-browser back (without paying), the answer compares the plans with their premiums. If the bot asks for a missing detail
-before opening the quote page, one follow-up answers it in the same conversation. One TIMING line per request.
+"""FWD travel insurance in Singapore with a real model, on FWD Singapore's REAL site, from the user's point of view
+(tests/user_common.py, tests/claims_common.py). The test stops at the first step that is the user's and never presses
+it: nothing is paid, declared or submitted. The profile has the user's name, birthday and contact; the Vault has their
+NRIC (for fwd.com.sg; clearly fake test values: S1234567D is the well-known dummy NRIC). "Auto-approve browser actions"
+is on (a fresh install).
 
-Not in run_in_docker.sh's default list (it needs a real model, billed):
-    OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh insurance_real"""
+1. buy — the user asks Main's chat for the cheapest FWD plan with at least SGD 10,000 trip cancellation for next month's
+   Tokyo trip (the flights in the request); Pay is theirs. On the real site code fills the quote (Vuetify selects by
+   label, the date pickers), reads the plans from the summary, picks one by the rule and presses its button; FWD then
+   asks its eligibility statements — the user's. Checked from the user's side: the Insurance & claims bot answers; the
+   user is asked to take over on FWD's quote page; the block code appends lists the plans FWD quoted (real prices) and the
+   chosen one is the cheapest of those with at least SGD 10,000 trip cancellation (checked against the same block's
+   figures, which are the live page's); the NRIC never shows in the chat; afterwards the browser view is still on FWD's
+   site (Pay never pressed).
+2. claim — the user gives the policy number (PNTR20…, FWD's format; fake) and the delay (SQ 636 two days ago, 10:30 →
+   17:45) and asks to claim it. On the real site code fills step 1 of FWD's online claim (no sign-in) and hands it over:
+   "next" checks the policy on FWD's server, so the rest is the user's. Checked: the takeover on FWD's claim page
+   (nothing submitted; no per-field value checks on the handed-over page); the block gives the delay (7 h 15 min), the amount (SGD 100) and FWD's 30-day deadline as
+   a date; the NRIC never shows in the chat.
+One TIMING line per request; the live pictures go to OMUSE_E2E_OUT when it is set. In run_in_docker.sh's REAL_SITES
+(one at a time).
+
+    OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh insurance_real"""
 import datetime as dt
-import json
-import re
 import os
+import re
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tests import real_common as R  # noqa: E402
-from tests import skills_common as K  # noqa: E402
+from tests import claims_common as C  # noqa: E402
+from tests import user_common as U  # noqa: E402
+from tests.user_common import check  # noqa: E402
 
-D1 = (dt.date.today() + dt.timedelta(days=24)).isoformat()
-D2 = (dt.date.today() + dt.timedelta(days=31)).isoformat()
-PASSPORT_NO, CARD_NO = "K1234567Z", ("4111 1111 1111 1111", "4111111111111111")
-MAIL = [("Singapore Airlines <noreply@singaporeair.example>", f"Booking confirmed — SQ 636 Singapore to Tokyo, {D1}",
-         f"Passenger TAN WEI MING. SQ 636 SIN 10:30 → HND 18:25 on {D1}; SQ 637 HND → SIN on {D2}. Booking reference 7XKQ2P.", 5)]
-
-
-def events(info: dict) -> list[dict]:
-    return [e for x in info["tasks"] for e in R.task(x).get("events", [])]
-
-
-def typed(info: dict) -> str:
-    return " | ".join(str((x.get("args") or {}).get("text")) for x in info["calls"] if x["name"] == "browser_type")
+TODAY = dt.date.today()
+D1, D2 = (TODAY + dt.timedelta(days=24)).isoformat(), (TODAY + dt.timedelta(days=31)).isoformat()
+INC = TODAY - dt.timedelta(days=2)
+D30 = INC + dt.timedelta(days=30)
+POLICY = "PNTR20123456"
+NRIC = "S1234567D"
+OUT = "/repo-out" if os.path.isdir("/repo-out") else ""
+FWD = "fwd.com.sg"
 
 
-R.setup(mail=MAIL, vault=False, profile={"name_en": "TAN WEI MING", "birthday": "1985-04-12", "email_personal": "weiming@example.com",
-                                         "phone": "+65 9123 4567", "address_home": "10 Anson Road, Singapore 079903"})
-CARD = K.vault_item("Visa Wei Ming", "card", {"number": CARD_NO[0], "expiry": "12/29", "cvc": "123", "holder": "TAN WEI MING"},
-                    domains="fwd.com.sg")
-PASSPORT = K.vault_item("Passport Wei Ming", "id_document", {"number": PASSPORT_NO, "name": "TAN WEI MING", "expiry": "2031-05-01",
-                                                             "country": "SG"}, domains="fwd.com.sg")
-
-first = R.ask("I need travel insurance from FWD for my trip next month, just me — the flight booking is in my email. "
-              "Get me the cheapest plan with at least SGD 10,000 trip cancellation "
-              "and fill in the application with my card from the Vault; I'll press Pay myself.", timeout=1500)
-R.timing("fwd", first)
-info = first
-if not first["takeover"] and not [n for n in first["names"] if n.startswith("browser_")]:
-    # the bot asked something before opening the quote page: answer once, in the same conversation, and let it go on
-    R.routed("fwd question", first, "insurance")
-    info = R.ask("Everything is in my email (the Singapore Airlines booking) and my profile (name, birthday, contact). "
-                 "Only the flights are paid so far, no pre-existing conditions. Please go ahead.", conv=first["conv_id"], timeout=1500)
-    R.timing("fwd follow-up", info)
-    for k in ("calls", "names", "approvals", "tasks"):
-        info[k] = first[k] + info[k]
-R.routed("fwd", info, "insurance")
-R.finished("fwd", info, takeover=True)
-end = info["kid"] or info["main"]
-R.check("fwd: the fwd-travel-insurance skill was loaded",
-        any(x["name"] == "load_skill" and "fwd-travel-insurance" in json.dumps(x.get("args")) for x in info["calls"]), info["names"])
-R.check("fwd: the trip looked up in mail", R.used(info, "gmail_search"), info["names"])
-R.check("fwd: the quote page typed with the trip dates from mail", D1 in typed(info) and D2 in typed(info), typed(info))
-pc = [a for a in info["approvals"] if a["tool"] == "purchase_confirm"]
-R.check("fwd: purchase_confirm for the Business plan (SGD 47) with the Vault card", pc and abs(float((pc[0]["args"] or {}).get("total") or 0) - 47) < 0.01
-        and (pc[0]["args"] or {}).get("card_item_id") == CARD, pc)
-fills = [(x.get("args") or {}).get("item_id") for x in info["calls"] if x["name"] == "browser_fill_secret"]
-R.check("fwd: card and passport filled only through the Vault, never typed", CARD in fills and PASSPORT in fills
-        and PASSPORT_NO not in typed(info) and not any(n in typed(info).replace(" ", "") for n in ("4111111111111111", "1111111111")),
-        (fills, typed(info)))
+def quoted_plans(block: str) -> dict[str, tuple[float, float]]:
+    """The plans the block code appended lists ("Plans quoted: Premium — SGD 42.52 (medical SGD 200,000, cancellation
+    SGD 7,500, …); …"): plan → (premium, trip cancellation)."""
+    line = next((ln for ln in block.splitlines() if "Plans quoted:" in ln), "")
+    out = {}
+    for part in line.split("Plans quoted:", 1)[-1].split(";"):
+        m = re.search(r"(\w+) — SGD ([\d,]+\.\d\d)", part)
+        c = re.search(r"cancellation SGD ([\d,]+)", part)
+        if m and c:
+            out[m.group(1)] = (float(m.group(2).replace(",", "")), float(c.group(1).replace(",", "")))
+    return out
 
 
-def pay_pressed() -> list:
-    pages = [p.get("url", "") for p in R.c.get(R.B + "/sentinel/api/browser/state", headers=R.H).json().get("tasks", [])]
-    done = [e["data"].get("name") for e in events(info) if e["type"] == "tool_result" and "fwd_sg_done" in str((e["data"] or {}).get("preview"))]
-    print(f"INFO pages {pages}")
-    return [u for u in pages if "fwd_sg_done" in u] + done
+async def buy(u: U.User) -> None:
+    seen = {"url": ""}
+
+    async def look_then_hand_back(pg, request: str) -> None:
+        # the user reads the request and looks at FWD's page; they answer no statement and press nothing
+        seen["url"] = await u.view_url()
+        await u.view_picture(os.path.join(OUT, "insurance_quote.png") if OUT else None)
+        print(f"INFO takeover: {request!r} url {seen['url']!r}")
+
+    a = await u.ask(f"I need travel insurance from FWD for my trip to Tokyo next month, just me: SQ 636 Singapore to Tokyo Haneda on {D1}, "
+                    f"back on SQ 637 on {D2}. Get me the cheapest plan with at least SGD 10,000 trip cancellation; "
+                    "I'll answer FWD's questions and pay myself.",
+                    label="buy", on_takeover=look_then_hand_back, timeout=1200)
+    answers = [a]
+    if not a.takeovers and not a.timed_out:
+        # the answer asked something before opening the quote page: the user answers once, in the same chat
+        a = await u.ask("Everything else is in my profile (name, birthday, contact). Only the flights are paid so far. Please go ahead.",
+                        label="buy follow-up", new_chat=False, on_takeover=look_then_hand_back, timeout=1200)
+        answers.append(a)
+    takeovers = [t for x in answers for t in x.takeovers]
+    check("buy: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
+    check("buy: the Insurance & claims bot did it (the link to continue in it)", any("nsurance" in x.bot_link for x in answers),
+          [x.bot_link for x in answers])
+    check("buy: the user was asked to take over the browser on FWD's quote page (the statements and Pay are theirs)",
+          bool(takeovers) and f"{FWD}/travel-insurance/online-quote" in seen["url"], (takeovers, seen["url"]))
+    block = "\n".join(x.block for x in answers)
+    plans = quoted_plans(block)
+    chosen = re.search(r"Chosen: (\w+): SGD ([\d,]+\.\d\d)", block)
+    print(f"INFO buy: plans {plans}; chosen {chosen.group(0) if chosen else None}")
+    check("buy: the block lists the plans FWD quoted, with their prices and trip cancellation", len(plans) >= 2, block)
+    ok = [p for p, (_, c) in plans.items() if c >= 10_000]
+    best = min(ok, key=lambda p: plans[p][0]) if ok else ""
+    check("buy: the chosen plan is the cheapest quoted with at least SGD 10,000 trip cancellation (its price as quoted)",
+          bool(chosen) and chosen.group(1) == best and float(chosen.group(2).replace(",", "")) == plans[best][0],
+          (chosen.group(0) if chosen else None, plans))
+    everything = await u.thread_text()
+    check("buy: the NRIC never appears in the chat", NRIC not in everything, "")
+    # afterwards the user opens the browser view: still FWD's page, Pay never pressed
+    await u.page.goto(U.APP + "#browser")
+    await u.page.wait_for_selector(".bview", timeout=20000)
+    await u.page.wait_for_timeout(2500)
+    now = await u.view_url()
+    print(f"INFO browser view afterwards: url {now!r}")
+    check("buy: the browser view is still on FWD's site afterwards (Pay never pressed)", FWD in now, now)
 
 
-R.check("fwd: Pay never pressed (no page or tool result reached the done page)", not pay_pressed())
-reason = str((end.get("waiting") or {}).get("reason") or "")
-print(f"INFO takeover reason {reason[:300]!r}")
-R.check("fwd: handed over for Pay (takeover), or the answer leaves Pay to the user",
-        (info["takeover"] is not None and R.mentions(reason, "pay")) or (end.get("status") == "COMPLETED" and R.mentions(info["result"], "pay")),
-        (end.get("status"), reason, info["result"][:400]))
-final = info["result"]
-if info["takeover"]:
-    # the user looks at the application and hands the browser back without pressing Pay; the bot then answers
-    K.hand_back()
-    deadline = time.time() + 600
-    while time.time() < deadline and R.task((info["kid"] or info["main"])["id"]).get("status") not in R.TERMINAL:
-        R._approve(set(info["tasks"]), info["approvals"], info["excluded"])
-        time.sleep(0.5)
-    kid = R.task(info["kid"]["id"]) if info["kid"] else R.task(info["main"]["id"])
-    final = str(kid.get("result") or "")
-    print(f"INFO answer after the hand-back ({kid.get('status')}): {final[:900]!r}")
-    R.check("fwd: after the hand-back the bot finished with an answer", kid.get("status") == "COMPLETED" and final.strip(),
-            (kid.get("status"), kid.get("error")))
-    R.check("fwd: still no Pay after the hand-back", not pay_pressed())
-# the comparison: a present_choices card, the answer, or the bot's messages carry the plans with their premiums
-choices = json.dumps([x.get("args") for x in info["calls"] if x["name"] == "present_choices"], ensure_ascii=False)
-msgs = json.dumps(R.c.get(f"{R.B}/api/conversations/{info['kid_conv']}", headers=R.H).json().get("messages", []),
-                  ensure_ascii=False) if info["kid_conv"] else ""
-seen = [p for p in ("34", "47", "68") if re.search(rf"SGD\s*{p}(\.00)?\b", choices + final + msgs)]
-R.check("fwd: the plans compared with their premiums from the page (at least two of three)", len(seen) >= 2, (seen, choices[:600]))
-blob = final + str(info["main"].get("result") or "") + json.dumps(events(info), ensure_ascii=False) + msgs
-R.check("fwd: no passport or card number in the answer or the trace", PASSPORT_NO not in blob and not any(n in blob for n in CARD_NO),
-        [ln[:200] for ln in blob.splitlines() if PASSPORT_NO in ln or CARD_NO[0] in ln][:2])
-R.finish()
+async def claim(u: U.User) -> None:
+    seen = {"url": ""}
+
+    async def look_then_hand_back(pg, request: str) -> None:
+        # the user reads the request and looks at the filled-in step 1; "next" and Submit are theirs, never pressed here
+        seen["url"] = await u.view_url()
+        await u.view_picture(os.path.join(OUT, "insurance_claim.png") if OUT else None)
+        print(f"INFO takeover: {request!r} url {seen['url']!r}")
+
+    a = await u.ask(f"My flight SQ 636 to Tokyo on {INC} was scheduled at 10:30 and left at 17:45. Please claim the delay on my FWD travel "
+                    f"insurance, policy {POLICY} (SGD 100 for every 6 hours of delay; claims within 30 days). Fill in FWD's claim form; "
+                    "I'll check it and submit it myself.", label="claim", on_takeover=look_then_hand_back, timeout=1200)
+    answers = [a]
+    if not a.takeovers and not a.timed_out:
+        a = await u.ask("All the other details are in my profile; nothing else to add. Please go ahead and fill in the claim form.",
+                        label="claim follow-up", new_chat=False, on_takeover=look_then_hand_back, timeout=1200)
+        answers.append(a)
+    takeovers = [t for x in answers for t in x.takeovers]
+    check("claim: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
+    check("claim: the Insurance & claims bot did it", any("nsurance" in x.bot_link for x in answers), [x.bot_link for x in answers])
+    check("claim: the user was asked to take over the browser on FWD's claim page (next and Submit are theirs)",
+          bool(takeovers) and f"{FWD}/claim-online/" in seen["url"], (takeovers, seen["url"]))
+    block = "\n".join(x.block for x in answers)
+    check("claim: the block code appends after the answer gives the delay (7 h 15 min) and the amount (SGD 100)",
+          "delayed 7 h 15 min" in block and "Claim amount: SGD 100.00" in block, (block, a.text[:300]))
+    check("claim: the block code appends after the answer gives FWD's 30-day deadline as a date",
+          C.date_in(block, D30), (D30, block))
+    everything = await u.thread_text()
+    check("claim: the NRIC never appears in the chat", NRIC not in everything, "")
+
+
+async def main():
+    async with U.User() as u:
+        await buy(u)
+        await claim(u)
+
+
+U.setup(vault=False, profile={"name_en": "TAN WEI MING", "birthday": "1985-04-12", "email_personal": "weiming@example.com",
+                              "phone": "+65 9123 4567", "address_home": "10 Anson Road, Singapore 079903"})
+U.vault_item("NRIC Wei Ming", "id_document", {"number": NRIC, "name": "TAN WEI MING", "country": "SG"}, domains=FWD)
+U.run(main)

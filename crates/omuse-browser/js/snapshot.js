@@ -145,9 +145,11 @@
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
       const ty = (el.type || 'text').toLowerCase();
       if (ty === 'checkbox' || ty === 'radio') line += el.checked ? ' [checked]' : ' [unchecked]';
-      else if (ty === 'password') line += ' (password field — agent must NOT type here)';
+      else if (ty === 'password') line += ' (password field — only the user types it, in a takeover)';
       else if (ty === 'file') line += ' (file upload)';
-      else if (!['button', 'submit', 'reset', 'image'].includes(ty)) line += sensitive(el) ? ' value=[hidden]' : ` value="${cut(el.value, 80)}"`;
+      // a secret's value is never shown — only whether the box holds one (an empty card box reads empty, so a page
+      // handed over shows what is left for the user: shop_real 2026-11-02, empty Shopify card boxes read as filled)
+      else if (!['button', 'submit', 'reset', 'image'].includes(ty)) line += sensitive(el) ? (el.value ? ' value=[hidden]' : ' value=""') : ` value="${cut(el.value, 80)}"`;
       if (ty === 'submit') line += ' (submit)';
     } else if (el.tagName === 'SELECT') {
       const opts = Array.from(el.options).slice(0, 12).map(o => cut(o.text, 30));
@@ -155,7 +157,9 @@
     } else if (el.isContentEditable) {
       line += ` value="${cut(el.innerText, 80)}"`;
     }
-    if (el.tagName === 'IMG') line += ' (photo)';
+    // a photo — also one inside a link or a button (a shop's product card: <a><img alt="Glow serum"></a>), or role=img
+    if (el.tagName === 'IMG' || el.getAttribute('role') === 'img'
+        || ((el.tagName === 'A' || el.tagName === 'BUTTON') && el.querySelector('img, picture'))) line += ' (photo)';
     if (el.tagName === 'VIDEO') line += ' (video)';
     if (el.getAttribute('aria-checked')) line += ` [${el.getAttribute('aria-checked') === 'true' ? 'checked' : 'unchecked'}]`;
     if (el.getAttribute('aria-expanded')) line += ` [expanded=${el.getAttribute('aria-expanded')}]`;

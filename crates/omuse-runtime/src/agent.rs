@@ -10,36 +10,62 @@
 //! * [`tools`] — the local tool schema (`LOCAL_TOOLS`) and the tool-name sets.
 //! * [`lang`] — the agent's language (`agent_lang`) with the per-task overrides the Python kept in contextvars.
 //! * [`runtime`] — the [`Runtime`] itself: Sentinel client, events, task lifecycle and the planner/executor loop.
+//! * [`decide`] — the decision API: a question and a JSON array of choices, the model answers one (`Runtime::decide`).
+//! * [`judgements`] — the judgements the run still asks the model, each a decision and a fixed code action.
 //! * [`bots`] — the bot of a task (its skills and prompt) and the hand-off from the main bot (`ask_bot`).
 //! * [`exec`] — one tool call: guards, Sentinel `/internal/act`, result formatting, vision helpers, evidence.
 //! * [`local`] — the local tools (files, documents, data, memory, schedules, goals, choices, …).
 //! * [`images`] — `make_image` / `edit_image` / `vary_image` / `caption_image` / `upscale_image`.
 //! * [`videos`] — `make_video` (a short clip from an AI video model through `videogen`).
 //! * [`market_text`] — the text the agent gets for `market_data` / `stock_fundamentals` (Sentinel's `market.describe*`).
+//! * [`json_in`] — the one checking layer for the model's JSON: syntax repair, schema conformance, the planner's
+//!   regeneration prompt.
+//! * [`workflow`] — the workflow-tool protocol: a tool call with JSON arguments, validated in code, runs a code
+//!   machine whose JSON result (`T_result`) the model words as the reply (docs/json-tools.md).
 //! * [`ext`] — thin adapters to the sibling runtime modules (context, library, skills, imagegen, attachments, goals,
 //!   scheduler, outcome), kept in one place.
 //!
 //! Every user-facing and model-facing string is byte-identical to the Python source: the scripted model of the
 //! end-to-end suites (`tests/fake_llm.py`) matches on them.
 
+pub mod apdt;
+pub mod bagtrace;
+pub mod booking;
 pub mod bots;
+pub mod card_ids;
+pub mod claims;
+pub mod confirm;
+pub mod decide;
+pub mod driver;
+pub mod email_code;
 pub mod exec;
 pub mod ext;
+pub mod facts;
+pub mod flightstatus;
+pub mod fx;
 pub mod guards;
 pub mod images;
+pub mod json_in;
+pub mod judgements;
 pub mod lang;
 pub mod local;
+pub mod locate;
 pub mod market_text;
+pub mod news;
+pub mod places_fill;
 pub mod runtime;
+pub mod show;
 pub mod tools;
+pub mod trains;
 pub(crate) mod util;
 pub mod videos;
+pub mod workflow;
 
 #[cfg(test)]
 mod tests;
 
 pub use guards::*;
-pub use lang::{agent_lang, request_lang};
+pub use lang::agent_lang;
 pub use runtime::{Publish, Runtime, Suspend};
 pub use tools::*;
 

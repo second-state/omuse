@@ -1,26 +1,24 @@
-"""Shared driver for the travel-skill suites (trip_today_e2e.py, sgac_e2e.py, …): the scripted model (tests/fake_llm.py)
-plays the agent, the stack's own services play the world — mail in the local IMAP server (Dovecot on 1143, as
-mail_generic_e2e.py), an iCal calendar and the travel data connector from tests/fake_apps.py / fake_travel.py, pages
-under tests/pages (http://shop.test:8099/…), uploads through /api/upload. Each suite checks which tools the skill made
-the agent use and the rules it must keep (no browser where a data source exists, secrets only through the vault, …)."""
+"""Shared driver for the scripted (fake-model) suites that run a skill or a bot (bots_e2e.py, city_guides_e2e.py, the
+card UIs, …): the scripted model (tests/fake_llm.py) plays the agent against the app itself; uploads go through
+/api/upload. Each suite checks which tools the skill made the agent use and the rules it must keep (no browser where a
+data source exists, secrets only through the vault, …). No fake services: nothing here seeds a mailbox, a calendar or
+a connector."""
 from __future__ import annotations
 
-import base64
-import email.utils
-import imaplib
 import json
 import sys
 import time
 
 import httpx
-import os
+
+try:
+    from show_common import appended_block, shows, shows_items  # noqa: F401  (shows: for the suites)
+except ImportError:  # imported as tests.skills_common
+    from tests.show_common import appended_block, shows, shows_items  # noqa: F401
 
 B = "http://127.0.0.1:8080"
 S = B + "/sentinel/api"
-TRAVEL = "http://127.0.0.1:8097"
-PAGES = "http://shop.test:8099"
 H = {"X-Persona-UI": "1"}
-USER, PW = "tester@example.com", "secretpass123"
 c = httpx.Client(timeout=90, trust_env=False)
 fails: list[str] = []
 
@@ -36,76 +34,17 @@ def finish():
     sys.exit(1 if fails else 0)
 
 
-# ------------------------------------------------------------------ the world
-def seed_mail(messages: list[tuple]) -> None:
-    """(from, subject, body, age_days[, [(filename, bytes), …]]) → INBOX, replacing whatever an earlier suite left
-    there; the optional fifth item attaches files (PDFs)."""
-    m = imaplib.IMAP4("127.0.0.1", 1143)
-    m.login(USER, PW)
-    m.select("INBOX")
-    try:
-        m.store("1:*", "+FLAGS", "(\\Deleted)")
-        m.expunge()
-    except Exception:
-        pass
-    for i, (frm, subject, body, age, *rest) in enumerate(messages):
-        when = time.time() - (age or 0) * 86400
-        head = (f"From: {frm}\r\nTo: {USER}\r\nSubject: {subject}\r\nDate: {email.utils.formatdate(when, localtime=True)}\r\n"
-                f"Message-ID: <skill{i}{int(when)}@example.com>\r\nMIME-Version: 1.0\r\n")
-        files = rest[0] if rest else []
-        if not files:
-            raw = (head + "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
-                   + f"{body}\r\n").encode("utf-8")
-        else:
-            b = f"=_skill{i}"
-            parts = [f"--{b}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n{body}\r\n"]
-            for name, data in files:
-                b64 = base64.encodebytes(data).decode().replace("\n", "\r\n")
-                parts.append(f"--{b}\r\nContent-Type: application/pdf; name=\"{name}\"\r\nContent-Transfer-Encoding: base64\r\n"
-                             f"Content-Disposition: attachment; filename=\"{name}\"\r\n\r\n{b64}")
-            raw = (head + f"Content-Type: multipart/mixed; boundary=\"{b}\"\r\n\r\n" + "".join(parts) + f"--{b}--\r\n").encode("utf-8")
-        m.append("INBOX", None, imaplib.Time2Internaldate(when), raw)
-    m.logout()
-
-
-def connect_mail() -> None:
-    accs = c.get(S + "/connections", headers=H).json()["connections"]
-    gm = next(x for x in accs if x["name"] == "gmail")
-    if any(a.get("email") == USER and a.get("ready") for a in gm.get("accounts", [])):
-        return
-    body = {"provider": "custom", "email": USER, "app_password": PW, "display_name": "Tester",
-            "imap_host": "127.0.0.1", "imap_port": 1143, "imap_security": "none",
-            "smtp_host": "127.0.0.1", "smtp_port": 1025, "smtp_security": "none"}
-    r = c.post(S + "/connections/gmail/credential", json=body, headers=H)
-    check("mailbox connected (local IMAP)", r.status_code == 200, r.text[:300])
-
-
-def connect_calendar() -> None:
-    r = c.post(S + "/connections/calendar/ical", json={"url": "http://127.0.0.1:8094/ics/private-ok/basic.ics",
-                                                         "time_zone": "Asia/Singapore"}, headers=H)
-    check("calendar connected (iCal, read-only)", r.status_code == 200 and r.json().get("ok"), r.text[:300])
-
-
-def connect_travel() -> None:
-    c.post(TRAVEL + "/_reset")
-    for s in c.get(S + "/mcp/servers", headers=H).json().get("servers", []):
-        if s.get("id") == "travel":
-            c.delete(S + "/mcp/servers/travel", headers=H)
-    r = c.post(S + "/mcp/servers", headers=H, json={"name": "Travel", "url": TRAVEL + "/mcp", "auth_type": "bearer",
-                                                     "token": "test-travel-token", "data_class": "PUBLIC"})
-    check("travel data connector added", r.status_code == 200 and len(r.json().get("tools", [])) == 6, r.text[:300])
-
-
+# ------------------------------------------------------------------ the user's data
 def set_profile(**fields) -> None:
     for k, v in fields.items():
         c.put(B + "/api/profile", json={"key": k, "value": v}, headers=H)
 
 
-def vault_item(label: str, kind: str, values: dict, domains: str = "") -> str:
+def vault_item(label: str, kind: str, values: dict, domains: str = "", country: str = "") -> str:
     have = {i["label"]: i["id"] for i in c.get(S + "/vault", headers=H).json().get("items", [])}
     if label in have:
         return have[label]
-    r = c.post(S + "/vault", headers=H, json={"label": label, "kind": kind, "values": values, "domains": domains})
+    r = c.post(S + "/vault", headers=H, json={"label": label, "kind": kind, "values": values, "domains": domains, "country": country})
     return (r.json().get("item") or r.json()).get("id")
 
 
@@ -113,9 +52,6 @@ def upload(name: str, data: bytes) -> dict:
     r = c.put(f"{B}/api/upload", params={"name": name}, content=data, headers=H)
     r.raise_for_status()
     return r.json()
-
-
-PNG = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages", "lipstick.png"), "rb").read()   # any real PNG: the scripted vision model never looks at pixels
 
 
 # ------------------------------------------------------------------ running a task
@@ -163,17 +99,42 @@ def wait_end(tid: str, timeout: float = 90) -> dict:
     return t
 
 
-def hand_back() -> None:
-    """The user hands the browser back after a takeover (without pressing anything)."""
-    c.post(S + "/browser/release", json={}, headers=H)
-
-
 def calls(t: dict, sub: bool = False) -> list[dict]:
     return [e["data"] for e in t.get("events", []) if e["type"] == "tool_call" and bool((e["data"] or {}).get("sub")) == sub]
 
 
 def names(t: dict) -> list[str]:
     return [x["name"] for x in calls(t)]
+
+
+WORKFLOW_TOOLS = ("travel_search", "travel_book", "shop_order")
+
+
+def work(t: dict) -> list[str]:
+    """The calls of the run without the skill load and the workflow tool calls: the code machine's steps."""
+    return [n for n in names(t) if n != "load_skill" and n not in WORKFLOW_TOOLS]
+
+
+def workflow(t: dict) -> list[dict]:
+    """The workflow tool calls of the run as the model made them (`workflow_call` events: the tool and its result)."""
+    return [e["data"] for e in t.get("events", []) if e["type"] == "workflow_call"]
+
+
+def result(t: dict) -> dict:
+    """The JSON result of the run's (last) workflow machine (`workflow_result` event), {} when none ran."""
+    r = [e["data"]["result"] for e in t.get("events", []) if e["type"] == "workflow_result"]
+    return r[-1] if r else {}
+
+
+def says_all(t: dict) -> bool:
+    """The answer's block that code appends after the reply (tests/show_common.py) carries every `show` item of the
+    machine's result — the facts the user must read; the model's own words are not checked."""
+    return shows_items(t.get("result") or "", result(t).get("show") or [])
+
+
+def block(t: dict) -> str:
+    """The block code appended after the reply (the "- Label: value" lines), "" when there is none."""
+    return appended_block(t.get("result") or "")
 
 
 def results(t: dict, name: str) -> list[dict]:
@@ -212,12 +173,5 @@ def trace(t: dict) -> None:
             print(f"INFO {e['type']} {json.dumps(d, ensure_ascii=False)[:200]}")
 
 
-def setup(*, mail: list | None = None, calendar: bool = False, travel: bool = False, language: str = "en") -> None:
+def setup(*, language: str = "en") -> None:
     c.put(B + "/api/settings", json={"language": language}, headers=H)
-    if mail is not None:
-        seed_mail(mail)
-        connect_mail()
-    if calendar:
-        connect_calendar()
-    if travel:
-        connect_travel()

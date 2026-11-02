@@ -1,72 +1,138 @@
 #!/bin/bash
-# Run the local e2e suites (integration.py, *_e2e.py, *_ui.py, ...) inside a container of the test image
+# Run the scripted suites (integration.py, *_e2e.py, *_ui.py, ...) and the e2e suites (*_real.py) inside a container of the test image
 # (Dockerfile.test: Playwright's Python image + the `omuse` binary), so they need nothing on the host but Docker.
-# Each suite gets a freshly started stack (tests/run_local.sh: fake LLM + all services), because several suites
-# expect a fresh install.
+# Each suite gets a freshly started stack (tests/run_local.sh: the scripted model + the app; no fake services, no stand-in
+# pages), because several suites expect a fresh install.
 #   bash tests/run_in_docker.sh                 # every suite
-#   bash tests/run_in_docker.sh e2e_027 mcp_e2e # only these
+#   bash tests/run_in_docker.sh e2e_027 stuck_e2e # only these
 #   bash tests/run_in_docker.sh real            # the real-model suites (REAL_SUITES below; billed), with the env file
 #                                                 OMUSE_E2E_ENV_FILE (default ~/.config/omuse/e2e.env)
+#   bash tests/run_in_docker.sh realdata        # only the e2e suites that run on the real services now (REAL_DATA_SUITES)
+#   bash tests/run_in_docker.sh realsites       # the bookings and orders on the real booking sites and shops (REAL_SITES),
+#                                                 always one at a time (-j 1)
 # OMUSE_IMAGE picks the image (default: omuse-test, built from Dockerfile.test when missing). Exit code 1 if a suite fails.
 # docker_browser_e2e.py is not part of this: it needs a real model (see its docstring).
 set -u
+# the e2e suites (real model, real sites and services only — no fake servers, stand-in pages or fixture data); each needs
+# OMUSE_E2E_REAL (OMUSE_E2E_ENV_FILE)
+# REAL_DATA_SUITES: read-only use cases on the real web and the real APIs (search, flights/hotels/cars, market data, …)
+REAL_DATA_SUITES=" travel_user_real travel_kiwi_real travel_brave_real travel_connect_real web_search_real travel_info_real \
+emergency_real tax_refund_real market_real research_real library_real cards_real cards_markets_real news_report_real \
+travel_ask_real stream_real bots_real "
+# the other e2e suites: the app with the real model and the real image / video provider, nothing outside faked
+REAL_APP_SUITES="assistant_real automations_real memory_real chat_real docs_real chart_real media_real attach_media_real \
+travel_receipts_real"
+# REAL_SITES: bookings and orders on the real booking sites and shops — code searches and picks, opens the real booking
+# page and hands it to browser-use, which fills it with the profile's fake data and hands over at the first step that is
+# the user's (sign-in, CAPTCHA, Pay); no card in the Vault, nothing paid. Run one at a time (`realsites` forces -j 1):
+# a real site sees one session at a time, never a burst.
+# The arrival cards (arrival_*_real) are here too: each opens the official government site, code fills what its form
+# function maps and hands over at the first user step (Cloudflare check, sign-in, passport photo, emailed code, Submit);
+# the Taiwan and UK ETA suites connect the test inbox (OMUSE_E2E_IMAP_*) to read the emailed code. Not in `real`: a
+# government site sees these runs only when `realsites` is asked for, never on every gate
+# The insurance, claims, baggage and departure-tax suites too: FWD Singapore's quote and claim, bolttech's PDF, Card
+# Claim Center's sign-in, WorldTracer's mybag.aero and the APDT platform, each stopped at the first user step.
+REAL_SITES="travel_book_real shop_real arrival_real arrival_cards_real arrival_cards2_real arrival_cards3_real \
+arrival_cards4_real arrival_address_real arrival_address2_real insurance_real insurance_hk_real claims_real \
+cards_claim_real cards_interruption_real apdt_real"
+REAL_SUITES="$REAL_DATA_SUITES $REAL_APP_SUITES"
+
+# bash reads a script as it runs: a copy keeps a run going while the file is edited (another suite added to the lists)
+if [ -z "${OMUSE_RUNNER_COPY:-}" ] && [ "${1:-}" != "--inside" ]; then
+  cp "$0" "${TMPDIR:-/tmp}/omuse_run_in_docker.$$.sh"
+  OMUSE_RUNNER_COPY="$(cd "$(dirname "$0")/.." && pwd)" exec bash "${TMPDIR:-/tmp}/omuse_run_in_docker.$$.sh" "$@"
+fi
+if [ "${1:-}" = "-j" ]; then
+  # -j N: the suites spread over N containers at once (each has its own stack and browser), then one
+  # summary; e.g. `bash tests/run_in_docker.sh -j 4 real`
+  JOBS="$2"; shift 2
+  cd "$OMUSE_RUNNER_COPY"
+  if [ "$*" = real ] || [ "$*" = realdata ] || [ "$*" = realsites ]; then
+    export OMUSE_E2E_ENV_FILE="${OMUSE_E2E_ENV_FILE:-$HOME/.config/omuse/e2e.env}"
+    case "$*" in real) ALL="$REAL_SUITES" ;; realdata) ALL="$REAL_DATA_SUITES" ;; *) ALL="$REAL_SITES"; JOBS=1 ;; esac
+  elif [ $# -gt 0 ]; then
+    ALL="$*"
+  else
+    ALL="integration $(ls tests | grep -E '(_e2e|_ui)\.py$|^e2e_0|^takeover_burst|^i18n_check' | sed 's/\.py$//' | grep -v docker_browser_e2e)"
+  fi
+  # one build for all the groups
+  if [ -z "${OMUSE_IMAGE:-}" ]; then docker build -q -f Dockerfile.test -t omuse-test . >/dev/null || exit 1; export OMUSE_IMAGE=omuse-test; fi
+  TMPD=$(mktemp -d)
+  k=0
+  for f in $ALL; do echo "$f" >> "$TMPD/group$((k % JOBS))"; k=$((k + 1)); done
+  for g in "$TMPD"/group*; do
+    bash "$0" $(tr '\n' ' ' < "$g") > "$g.out" 2>&1 &
+  done
+  wait
+  failed=""
+  for g in "$TMPD"/group*.out; do
+    # byte-safe (a suite's output may hold any bytes): macOS sed / grep stop at an illegal byte sequence otherwise
+    LC_ALL=C grep -a -v -E '^(ALL SUITES PASS$|FAILED SUITES:)' "$g"
+    failed="$failed $(LC_ALL=C sed -n 's/^FAILED SUITES://p' "$g")"
+  done
+  rm -rf "$TMPD"
+  failed=$(echo $failed)
+  [ -z "$failed" ] && echo "ALL SUITES PASS" || { echo "FAILED SUITES: $failed"; exit 1; }
+  exit 0
+fi
 if [ "${1:-}" != "--inside" ]; then
-  cd "$(dirname "$0")/.."
-  if [ "${1:-}" = real ] && [ -z "${OMUSE_E2E_ENV_FILE:-}" ]; then
+  cd "$OMUSE_RUNNER_COPY"
+  if { [ "${1:-}" = real ] || [ "${1:-}" = realdata ] || [ "${1:-}" = realsites ]; } && [ -z "${OMUSE_E2E_ENV_FILE:-}" ]; then
     OMUSE_E2E_ENV_FILE="$HOME/.config/omuse/e2e.env"
     [ -f "$OMUSE_E2E_ENV_FILE" ] || { echo "real: needs OMUSE_E2E_ENV_FILE (the model endpoint, key and names)"; exit 1; }
   fi
   IMAGE="${OMUSE_IMAGE:-omuse-test}"
-  docker image inspect "$IMAGE" >/dev/null 2>&1 || docker build -f Dockerfile.test -t "$IMAGE" . || exit 1
-  # root: Dovecot. shop.test / opentable.test: the hostnames the test pages are served under. eservices.ica.gov.sg and
-  # www.fwd.com.sg: the official sites' stand-ins (tests/https_standins.py), so a real model sees the real site names.
-  # OMUSE_E2E_ENV_FILE: real-model runs of the travel suites (endpoint, key and model names; the key stays in that file).
+  # built from the working tree on every run (cached: seconds when nothing changed); OMUSE_IMAGE names a ready image
+  if [ -z "${OMUSE_IMAGE:-}" ]; then docker build -q -f Dockerfile.test -t "$IMAGE" . >/dev/null || exit 1; fi
+  # OMUSE_E2E_ENV_FILE: real-model runs (endpoint, key and model names; the key stays in that file).
   # OMUSE_E2E_EXECUTOR / OMUSE_E2E_PLANNER set on the command line override that file's model names.
   # OMUSE_E2E_OUT: a writable host directory, mounted at /repo-out (suite logs, TIMING lines, screenshots_real.py pictures).
   EXTRA=()
-  # OMUSE_E2E_{BRAVE,TAVILY,SERPAPI}_EP: the real search endpoints instead of the fakes (web_search_real.py).
-  [ -n "${OMUSE_E2E_ENV_FILE:-}" ] && EXTRA+=(--env-file "$OMUSE_E2E_ENV_FILE" -e OMUSE_E2E_REAL=1 -e OMUSE_E2E_MODELS ${OMUSE_E2E_EXECUTOR:+-e OMUSE_E2E_EXECUTOR} ${OMUSE_E2E_PLANNER:+-e OMUSE_E2E_PLANNER} -e OMUSE_E2E_BRAVE_EP -e OMUSE_E2E_TAVILY_EP -e OMUSE_E2E_EXA_EP -e OMUSE_E2E_EXA_MCP_EP -e OMUSE_E2E_KIWI_MCP_EP -e OMUSE_E2E_SERPAPI_EP ${OMUSE_E2E_SEARCH_ENGINES+-e OMUSE_E2E_SEARCH_ENGINES} ${SEARCH_TIMING_BURST:+-e SEARCH_TIMING_BURST})
+  [ -n "${OMUSE_E2E_ENV_FILE:-}" ] && EXTRA+=(--env-file "$OMUSE_E2E_ENV_FILE" -e OMUSE_E2E_REAL=1 -e OMUSE_E2E_MODELS ${OMUSE_E2E_EXECUTOR:+-e OMUSE_E2E_EXECUTOR} ${OMUSE_E2E_PLANNER:+-e OMUSE_E2E_PLANNER} ${OMUSE_E2E_SEARCH_ENGINES+-e OMUSE_E2E_SEARCH_ENGINES} ${OMUSE_E2E_KEEP:+-e OMUSE_E2E_KEEP} ${SEARCH_TIMING_BURST:+-e SEARCH_TIMING_BURST})
+  # OMUSE_E2E_SKILLS_DIR=1: the skills come from the working tree (mounted at /repo) instead of the binary, so a skill
+  # edit is tested without rebuilding the image (bots stay compiled in)
+  [ -n "${OMUSE_E2E_SKILLS_DIR:-}" ] && EXTRA+=(-e OMUSE_E2E_SKILLS_DIR=/repo/skills)
   [ -n "${OMUSE_E2E_OUT:-}" ] && { mkdir -p "$OMUSE_E2E_OUT"; EXTRA+=(-v "$(cd "$OMUSE_E2E_OUT" && pwd)":/repo-out); }
+  # OMUSE_E2E_ONLY=kr: a suite that runs several cases runs only these (comma-separated keys), e.g. one arrival card
+  [ -n "${OMUSE_E2E_ONLY:-}" ] && EXTRA+=(-e "OMUSE_E2E_ONLY=$OMUSE_E2E_ONLY")
   exec docker run --rm --user 0 ${EXTRA[@]+"${EXTRA[@]}"} ${OMUSE_TEST_NAME:+--name "$OMUSE_TEST_NAME"} \
-    --add-host shop.test:127.0.0.1 --add-host opentable.test:127.0.0.1 \
-    --add-host eservices.ica.gov.sg:127.0.0.1 --add-host www.fwd.com.sg:127.0.0.1 \
-    -v "$PWD":/repo:ro --entrypoint bash "$IMAGE" /repo/tests/run_in_docker.sh --inside "$@"
+    -v "$PWD":/repo:ro --entrypoint bash "$IMAGE" \
+    -c 'cp /repo/tests/run_in_docker.sh /tmp/run_in_docker.sh && exec bash /tmp/run_in_docker.sh --inside "$@"' _ "$@"
 fi
 shift
 
 # a writable copy of the tests (suites write next to themselves); the repo stays mounted read-only
-mkdir -p /src && cp -r /repo/tests /repo/web /src/ && cd /src
-# test-only services baked into the image: IMAP server for the mail suites
-mkdir -p /tmp/claude-0 /srv/dove/run /srv/dove/mail
-cp tests/dovecot.conf /srv/dove/; cp tests/dovecot-oauth2.conf /srv/dove/oauth2.conf
-echo "tester@example.com:{PLAIN}secretpass123" > /srv/dove/users; chown -R nobody:nogroup /srv/dove/mail
-dovecot -c /srv/dove/dovecot.conf || echo "WARNING: dovecot did not start"
+# (retried: Docker's file sharing can report a file "replaced while being copied", and a failed copy ran the suite from /)
+mkdir -p /src && for i in 1 2 3 4 5; do cp -r /repo/tests /repo/web /src/ && break; sleep 1; done; cd /src || exit 2
+mkdir -p /tmp/claude-0
 export PYTHONPATH=/src
-# the stand-ins' test CA, trusted by this container's Chromium only (its NSS database); started per suite by run_local.sh
-export OMUSE_STANDINS=1
-python3 -c "from tests.https_standins import certificate; certificate()" \
-  && mkdir -p "$HOME/.pki/nssdb" && { [ -f "$HOME/.pki/nssdb/cert9.db" ] || certutil -d "sql:$HOME/.pki/nssdb" -N --empty-password; } \
-  && certutil -d "sql:$HOME/.pki/nssdb" -A -t "C,," -n omuse-standins -i /tmp/claude-0/standins/ca.pem \
-  || echo "WARNING: the HTTPS stand-ins' CA is not trusted"
+# the suites on the app's timezone (tests/run_local.sh: Asia/Singapore): they say the same "today" as the app
+export TZ=Asia/Singapore
 
-# the real-model suites: plain requests to Main (tests/real_common.py) and the older real ones; each needs OMUSE_E2E_REAL
-REAL_SUITES="bots_real arrival_real insurance_real cards_real photos_real mail_real calendar_real research_real docs_real \
-travel_ask_real travel_flight_e2e travel_hotel_e2e travel_michelin_e2e city_guides_real browser_auto_real stream_real"
-if [ "$*" = real ]; then
+if [ "$*" = real ] || [ "$*" = realdata ] || [ "$*" = realsites ]; then
   [ -n "${OMUSE_E2E_REAL:-}" ] || { echo "real: OMUSE_E2E_REAL is not set (pass OMUSE_E2E_ENV_FILE)"; exit 1; }
-  SUITES="$REAL_SUITES"
+  case "$*" in real) SUITES="$REAL_SUITES" ;; realdata) SUITES="$REAL_DATA_SUITES" ;; *) SUITES="$REAL_SITES" ;; esac
 elif [ $# -gt 0 ]; then
   SUITES="$*"
 else
-  SUITES="integration $(ls tests | grep -E '(_e2e|_ui)\.py$|^e2e_0|^browser_parallel|^popup_takeover|^takeover_burst|^i18n_check' | sed 's/\.py$//' | grep -v docker_browser_e2e)"
+  SUITES="integration $(ls tests | grep -E '(_e2e|_ui)\.py$|^e2e_0|^takeover_burst|^i18n_check' | sed 's/\.py$//' | grep -v docker_browser_e2e)"
 fi
 failed=""
 for f in $SUITES; do
   f="${f%.py}"
-  bash tests/stop_local.sh >/dev/null 2>&1; pkill -f "uvicorn|http.server|https_standins|chrome|omuse" >/dev/null 2>&1; sleep 1
-  bash tests/run_local.sh > /tmp/up.log 2>&1 < /dev/null
-  for i in $(seq 1 20); do
-    curl -s -o /dev/null http://127.0.0.1:8082/ && curl -sf -o /dev/null http://127.0.0.1:8080/sentinel/api/health && break
+  bash tests/stop_local.sh >/dev/null 2>&1; pkill -f "uvicorn|chrome|omuse" >/dev/null 2>&1; sleep 1
+  REALDATA=()
+  # web_search_real reaches the search APIs: the browser's own engines are switched off for it (nothing listens there)
+  [ -n "${OMUSE_E2E_REAL:-}" ] && [ "$f" = web_search_real ] && REALDATA=("OMUSE_E2E_SEARCH_ENGINES=off=http://127.0.0.1:9/?q=")
+  # a suite's own settings for the stack: "# run_local: NAME=value …" lines in its file
+  SUITEENV=($(grep -h '^# run_local: ' "tests/$f.py" 2>/dev/null | sed 's/^# run_local: //'))
+  env ${REALDATA[@]+"${REALDATA[@]}"} ${SUITEENV[@]+"${SUITEENV[@]}"} bash tests/run_local.sh > /tmp/up.log 2>&1 < /dev/null
+  # up to a minute: with several suites starting at once (-j) a stack can take longer than 20 s
+  # every service of the stack answers (any HTTP status): the scripted model, the browser and Sentinel
+  for i in $(seq 1 60); do
+    up=1
+    curl -s -o /dev/null "http://127.0.0.1:8090/" || up=0
+    [ $up = 1 ] && curl -s -o /dev/null http://127.0.0.1:8082/ && curl -sf -o /dev/null http://127.0.0.1:8080/sentinel/api/health && break
     sleep 1
   done
   # a fresh install nudges the user to complete the profile (the first chat view opens Memory → Profile); the suites
@@ -75,10 +141,11 @@ for f in $SUITES; do
   t0=$(date +%s)
   rm -f /tmp/claude-0/travel_last.json
   # real-model runs take longer
-  timeout "${OMUSE_SUITE_TIMEOUT:-$([ -n "${OMUSE_E2E_REAL:-}" ] && echo 1800 || echo 420)}" python3 "tests/$f.py" > "/tmp/out-$f.log" 2>&1; rc=$?
-  # every suite: no search ran with a price cap ≤ 0 or fewer than 1 traveller, no skill was refused as another bot's
+  timeout "${OMUSE_SUITE_TIMEOUT:-$([ -n "${OMUSE_E2E_REAL:-}" ] && echo 1800 || echo 420)}" env ${REALDATA[@]+"${REALDATA[@]}"} python3 "tests/$f.py" > "/tmp/out-$f.log" 2>&1; rc=$?
+  # every suite: no tool call ran with a price cap ≤ 0 or fewer than 1 traveller, no skill was refused as another bot's
   # (tests/args_guard.py)
-  if ! python3 tests/args_guard.py > "/tmp/guard-$f.log" 2>&1; then
+  # (scripted-model suites only: a real-model suite checks only what the user sees, tests/user_common.py)
+  if [ -z "${OMUSE_E2E_REAL:-}" ] && ! python3 tests/args_guard.py > "/tmp/guard-$f.log" 2>&1; then
     rc=1
     sed 's/^GUARD /FAIL args guard: /' "/tmp/guard-$f.log" | grep '^FAIL' >> "/tmp/out-$f.log"
   fi
@@ -86,6 +153,8 @@ for f in $SUITES; do
   grep '^TIMING ' "/tmp/out-$f.log" | sed 's/^/  /'
   if [ -d /repo-out ]; then
     cp "/tmp/out-$f.log" /repo-out/
+    # every model call of the suite (model, purpose, start / end), from the timing proxy of a real-model run
+    [ -n "${OMUSE_E2E_REAL:-}" ] && curl -s -m 5 http://127.0.0.1:8098/_intervals > "/repo-out/models-$f.json" 2>/dev/null
     if [ -n "${OMUSE_E2E_REAL:-}" ] && [ -f /tmp/claude-0/travel_last.json ]; then
       # the task record (events, outcome) for reading the run afterwards
       for tid in $(jq -r '.tasks[]? | if type == "object" then .id else . end' /tmp/claude-0/travel_last.json); do
@@ -101,4 +170,6 @@ for f in $SUITES; do
     tail -2 "/tmp/out-$f.log" | cut -c1-300 | sed 's/^/  /'
   fi
 done
+# OMUSE_E2E_KEEP=<seconds>: the last suite's stack stays up that long afterwards, to read its tasks and events
+[ -n "${OMUSE_E2E_KEEP:-}" ] && { echo "KEEPING the stack for ${OMUSE_E2E_KEEP}s"; sleep "$OMUSE_E2E_KEEP"; }
 [ -z "$failed" ] && echo "ALL SUITES PASS" || { echo "FAILED SUITES:$failed"; exit 1; }

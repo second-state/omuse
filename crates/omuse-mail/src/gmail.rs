@@ -1310,6 +1310,44 @@ impl Gmail {
         Ok(info)
     }
 
+    /// The newest message matching `query` dated `since` (epoch seconds) or later, with its body as plain text —
+    /// NOT redacted: only for the runtime's email verification step (Sentinel's `/internal/mail_code`, whose answer goes
+    /// to one extraction call and never into the agent's transcript). `None` when no such message has come yet.
+    pub async fn code_mail(&mut self, query: &str, since: f64) -> R<Option<Value>> {
+        let found = self.search(query, 5).await?;
+        let Some(hit) = found
+            .into_iter()
+            .filter(|m| mime::date_key(&vs(m, "date")) >= since)
+            .max_by(|a, b| {
+                mime::date_key(&vs(a, "date"))
+                    .partial_cmp(&mime::date_key(&vs(b, "date")))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        else {
+            return Ok(None);
+        };
+        let id = vs(&hit, "id");
+        let mut m = self.imap().await?;
+        let res = async {
+            let uid = self.locate(&mut m, &id, true).await?;
+            let r = m.c.uid("FETCH", &[&uid, "(BODY.PEEK[])"], None).await?;
+            Ok::<Vec<u8>, GmailError>(
+                r.data
+                    .iter()
+                    .find_map(|d| d.literal())
+                    .unwrap_or(b"")
+                    .to_vec(),
+            )
+        }
+        .await;
+        Self::logout(m).await;
+        let (body, _) = body_text(&res?);
+        Ok(Some(json!({
+            "id": id, "from": vs(&hit, "from"), "subject": vs(&hit, "subject"), "date": vs(&hit, "date"),
+            "body": take_chars(&body, 6000),
+        })))
+    }
+
     /// The messages of a thread (oldest first, at most 15, bodies cut to 6000 characters).
     pub async fn get_thread(&mut self, thread_id: &str) -> R<Vec<Value>> {
         if !self.is_gm().await? {

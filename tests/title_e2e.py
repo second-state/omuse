@@ -1,5 +1,10 @@
-"""Chat titles: the list used to show the truncated first question; now a finished task gives the conversation a short
-title that summarises it (fake LLM: "Topic: <first word>"), kept within the UI's limit."""
+"""Chat titles: the guarantees a real-model run cannot see (local stack, scripted model: "Topic: <first word>"). The use
+case — a finished chat shows a short title in the chat list that says what it was about, not the first words of the
+message — is tested from the user's side by tests/memory_real.py. What stays here, and why it cannot be e2e:
+  * until the first task ends the title is the question cut to the UI's limit (the exact placeholder);
+  * a follow-up re-titles the chat after its task (the scripted model's titles differ by design; a real model may
+    rightly keep the same title);
+  * re-titling does not reorder the list: updated_at stays the last message's (an internal guarantee)."""
 import sys
 import time
 
@@ -43,8 +48,7 @@ cid = r["conversation_id"]
 check("a new chat starts with the question as its title", title_of(cid) == q[:40], title_of(cid))
 wait_done(r["task_id"])
 t = title_of(cid, want=lambda x: x.startswith("Topic"))
-check("after the task the chat is named after its content", t == "Topic: Helsinki", t)
-check("the title fits the list (UI limit)", t and len(t) <= 40, t)
+check("(setup) after the task the chat is named after its content", t == "Topic: Helsinki", t)
 
 # a follow-up in the same chat re-titles it after the new task
 r2 = c.post(B + "/api/chat", json={"message": "Also compare hotel prices there", "conversation_id": cid}, headers=H).json()

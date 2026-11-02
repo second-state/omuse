@@ -6,3 +6,4 @@ __pycache__/
 .cache/
 /target
 /config.toml
+.claude/worktrees/

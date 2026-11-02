@@ -66,8 +66,7 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
    on each other carry the same `"parallel": "p1"` group. After repeated failures the loop re-plans on its own. A
    follow-up that acts on a result already in the conversation ("book it", "buy the second one", "send it") is never
    planned or searched again: the prompt and the booking skills send the executor straight to the action (the airline's
-   booking page with the traveller, passport and card filled, then the approval or the hand-over;
-   `tests/kiwi_flights_e2e.py`, and `travel_common.verify` for a real model).
+   booking page with the traveller, passport and card filled, then the approval or the hand-over).
 2. **Execute**: the executor model calls tools step by step. Read-only tools in one turn run concurrently; a parallel
    group runs as sub-agents (`delegate`, up to 8), each with its own browser tab ("lane", broker page
    `<task>~sub<n>`), and the executor continues when all have reported. `llm_concurrency` (Settings, default 4) caps
@@ -85,22 +84,68 @@ mounted, and a mounted file always wins. `OMUSE_VERSION` is a build-time value (
 4. **Act**: every action goes through Sentinel (`/internal/act`), which decides ALLOW / DENY / ASK, runs it, audits
    it and returns a redacted result. The task waits in `WAITING_APPROVAL` for an approval card, or in
    `WAITING_EXTERNAL` for a takeover (the user drives the live browser, then hands it back).
-5. **Answer**: an outcome check makes sure the answer doesn't claim actions that didn't happen; memory extraction
-   proposes facts and profile fields for the user to confirm.
+5. **Answer**: an outcome check makes sure the answer doesn't claim actions that didn't happen (a how-to question,
+   "how do I book", asks for advice, not the act, and "can be booked" is advice, not a claim: `outcome::intents`,
+   `outcome::claims`); memory extraction proposes facts and profile fields for the user to confirm.
 
 ## Flights & hotels search
 
-`flights_search` is always on and has a fallback chain like `web_search`: Kiwi.com first (free; date ranges of up to 14 days);
-with a SerpApi key, Google Flights (below) when Kiwi.com fails or finds nothing (the result's `fallback` line says why; each
-Google search costs a SerpApi credit); last the web search chain itself (search APIs, then the browser's engines) with the request
-spelled out as a query — web pages rather than offers, marked `flights_fallback` (`actions::flights_after_kiwi`). Sentinel asks
-Kiwi.com's public MCP server itself (`omuse_apps::kiwi`, `https://mcp.kiwi.com/`, two JSON-RPC calls, no key, no
-connector registration) and compacts the itineraries — airlines, flight numbers, local times, stops, price, baggage —
-with the booking links dropped (`compact_flights`; the `kw_…` offer ids resolve to the same details through
-`flight_offer`, with an empty link and the note that the booking happens on the airline's own site or with an agency
-the user chooses). The executor's prompt and the flight skills say so and call `flights_search` together with
-`web_search` in the same turn. The hotel tools need the key (the policy says so; `tests/kiwi_flights_e2e.py`,
-`tests/flights_real.py`).
+`flights_search` is always on and makes **ONE search per call** (`actions::travel_sync`). With a SerpApi key and one
+departure date it asks Google Flights (below; one credit): measured on 2026-10-29 against Kiwi.com over nine routes, Google
+had more airlines, the nonstops Kiwi missed (JFK–LAX), much cheaper premium cabins (SIN–LHR business $3,639 vs $6,754)
+and the airline-issued ticket with a partner leg (United UA 888 + Air China CA 4110, `ticket_also_sold_by` →
+`ticket: "one ticket, sold by United"`). Kiwi.com answers a range of dates (one query, `departureDateTo`), self-transfer
+(`self_transfer=true`, only when the user asks; otherwise `allow_self_transfer=false`, connections on one booking), the
+no-key case, and Google failing outright (the result's `fallback` line says why). An empty result is the answer (a `note`
+says to ask the user what to change); nothing else is searched — no web search for flights. Sentinel asks Kiwi.com's
+public MCP server itself (`omuse_apps::kiwi`, `https://mcp.kiwi.com/`, one JSON-RPC request per search — its server is stateless, so no `initialize` — no key, no connector
+registration) and compacts the itineraries — airlines, flight numbers, local times, stops, price, baggage.
+
+Every flight and hotel result carries a `booking_url`, at no extra cost: a Kiwi.com offer its Kiwi booking page
+(`kiwi.com/u/…`, kept only for `kiwi.com` hosts; `book_at` is the airline's own site), a Google Flights offer Google
+Flights' own page for that itinerary (`serpapi::itinerary_url`: the search's `google_flights_url` with the itinerary's
+flights added to its `tfs` protobuf — field 3 is a slice of the trip, a slice's field 4 a chosen flight with from 1,
+date 2, to 3, airline 5, number 6; one way opens `/travel/flights/booking` on "Book with United", a round trip opens with
+the outbound chosen for picking the return; checked in a browser on 2026-10-29), a hotel Google's page for it and the
+stay (`serpapi::hotel_page_url`: `/travel/hotels/entity/<property_token>?ts=…`, the dates in the `ts` protobuf — every
+seller and price, the hotel's own site among them; its own site is `hotel_site`, which may be down, as Hotel Keihan's
+was in a run). Each flight and hotel result also has a `compare_url`, Kayak's page for the same search (`omuse_apps::kayak`, built from the
+arguments, no call: `/flights/HND,NRT-SIN/2026-12-10/2026-12-20/business/2adults?sort=price_a&fs=stops=0;airlines=SQ,NH` — a
+range links its cheapest day — and `/hotels/Ginza%2CTokyo/…/2adults`). `flight_offer` (the booking options with prices per seller) costs another credit for Google data and is only
+for when the user wants those details.
+
+ONE travel search **per request and per turn** — flights, hotels, cars and places together (web and news search are not
+counted), in code: `guards::one_search_guard` refuses a travel search when the task already ran one (a failed call, e.g.
+on a bad date, may be corrected), and within a model turn the runtime skips every travel search after the first
+(`Skip.one_search`), both naming the search that ran. A request for a flight, a hotel and a car searches the first and
+offers the next ("Shall I search the hotel now?"); the user's next message runs it (`agent/tests.rs`;
+`tests/travel_brave_real.py` from the user's side).
+Google first, also beside a connector: with a SerpApi key (`/internal/catalog` → `connections.travel.google`) the
+built-in travel searches stay. Without a key they fall back (flights to Kiwi.com, hotels to a web search), so a travel
+search the user's own connector also offers (`mcp_<id>__hotels_search` beside `hotels_search`) is then the
+connector's alone: `Runtime::tools_for` leaves the built-in one out of that run, so the one search is not spent on the
+weaker fallback.
+
+**The preferred airline is always covered.** When a run searched flights and the user has a preferred airline in the
+profile, an answer that names neither it (an alliance: nor a member; any name it goes by in `loyalty::AIRLINE_CODES`)
+nor one of its flight numbers gets a line from the results — the cheapest preferred offer with its price, or that
+none was found and an offer to look (now the booking machine's `show`, "… is on your preferred airline"; the
+Travel bot's flight searches are the machine's, `guards::MACHINE_ONLY`).
+
+No mail before a travel search: the booking machine never reads mail for a search (its own mail is the results the
+user asked to be mailed). The old request-words guard (`mail_before_travel_guard`) is gone with phase 2d.
+
+Links (`crate::links`, 2026-10-31): the model sees every link as it is — with the opaque base64 stand-ins used before
+it could not tell where a link went (it guessed a shop's address and dropped its port) and a stand-in mistyped by one
+letter could not be recovered. Where the model's words leave the agent — a tool call's arguments as they are parsed,
+and the final answer — each link is repaired against the links the run's tool results showed (`links::seen`,
+`links::repair`): a link cut short (the same host and path, query parameters missing — a hotel page's `&ts=…`) or with
+its path one or two characters off (a letter dropped) becomes the shown link; another page or other query values
+(dates the model chose) stay as written. The rest of OMuse only ever sees whole, real links. Stand-ins left in older
+conversations are still decoded (`links::decode`). The booking and Kayak compare links are the booking machine's `show` items (appended to the answer by code). A travel MCP
+connector's flight or hotel results get `compare_url` too, inside their JSON. When a bot answers for Main, the files it
+handed over (PDF, picture, video) are shown in Main's chat above its answer (`bots::finish_handoff`), and the router
+gives the bot the user's local date and time (Settings → Timezone), never UTC's.
 
 Sentinel's `travel` connector: a SerpApi key (`cred_travel_1`, `POST /sentinel/api/connections/travel/credential`,
 checked against `/account.json`, which costs no search; `/test` reads it again) behind six read-only tools —
@@ -120,11 +165,9 @@ price cap, sort and currency go through as given (Google `travel_class` / `stops
 trip, adults, cabin, stops, and a rule line) so the executor answers in the cabin and stop limit the user asked for and
 searches again rather than presenting economy fares for a business-class request. A premium-cabin itinerary with a short
 economy leg is kept and labelled (`tag_cabins`: `cabin_mix: "business + economy"`, `economy_legs`); it counts as the
-cabin searched. A range of departure dates is one call (`date` + `date_to`): the client runs one lookup per day itself
-(`date_range` / `merge_days`; Kiwi up to 14 days, four at a time; Google up to 7, each a billed SerpApi search), moves a
-return date with each departure, and returns one result with each offer's `date` and the cheapest per day in `by_date`
-— the prompt and the skills say never to plan or call per day (`tests/kiwi_flights_e2e.py`,
-`tests/travel_search_e2e.py`; the skills tell the executor to read date, cabin, stops and passengers from the request
+cabin searched. A range of departure dates is one call (`date` + `date_to`, up to 14 days) and one Kiwi.com query (`departureDateTo`;
+a round trip keeps its stay as `nights_in_dst_from` / `_to`); the result is split per day (`merge_days`): each offer's
+`date` and the cheapest per day in `by_date` — the prompt and the skills say never to plan or call per day (`tests/travel_kiwi_real.py`; the skills tell the executor to read date, cabin, stops and passengers from the request
 first, and that a cheapest-fare question is one search with no plan). Preferences: `flights_search` takes `airlines`
 (names, 2-letter codes or alliances) and `hotels_search` takes `brands` (brands or groups); both **narrow the search
 itself**, in code, and matching offers or hotels come back with `preferred: true` (`mark_preferred`),
@@ -137,19 +180,19 @@ itself**, in code, and matching offers or hotels come back with `preferred: true
   leaves every airline in. `searched.airline_filter` says which happened. A narrowed Kiwi search that finds nothing is
   the answer (no preferred flight → ask before searching all airlines): Google Flights is tried with the same filter
   when there is a key, never the web search.
-- Hotels: Google Hotels' own `brands` filter, where a group's id takes all its brands (46 Marriott Bonvoy → Sheraton,
-  Westin, Aloft, AC, Moxy, EDITION …). Known groups at once (`GOOGLE_HOTEL_GROUP_IDS`: Marriott 46, Hilton 28, Hyatt
-  37, IHG 17, Accor 33, Wyndham 53, Shangri-La 315); any other brand or group by name from the `brands` list of a
-  first, unfiltered search of the same place (`google_brand_ids`, exact name first, then prefix), then the filtered
-  search; one Google lists no filter for there goes into the query words as before ("Aman hotels near Ginza Tokyo").
+- Hotels: ONE Google Hotels search. Known groups narrow it with Google's own `brands` filter, where a group's id takes
+  all its brands (46 Marriott Bonvoy → Sheraton, Westin, Aloft, AC, Moxy, EDITION …; `GOOGLE_HOTEL_GROUP_IDS`: Marriott
+  46, Hilton 28, Hyatt 37, IHG 17, Accor 33, Wyndham 53, Shangri-La 315); any other brand goes into the query words
+  ("Westin hotels near Ginza Tokyo") — no first lookup search for Google's brand list (removed 2026-10-29: one search
+  per call).
   `searched.brand_filter` says which happened.
 An alliance or a hotel group also stands for all its members when flagging (`HOTEL_GROUPS`, `expand`). The
 preferences come from the request, else from the profile: two standard fields, `preferred_airline` (an airline or an
 alliance) and `preferred_hotel_brand` (a brand or a group), dropdowns on Memory → Profile in two groups each
 (`ALLIANCES` / `AIRLINES`, `HOTEL_GROUPS` / `HOTEL_BRANDS` in `web/app.js`; a unit test keeps the alliance and group
 names equal to the Rust table; the card says anything not on the list goes in a custom field), plus any custom field
-whose label carries a travel / loyalty word (`store::PREFERENCE_WORDS`: airline, hotel, brand, loyalty, status, seat,
-航空, 酒店 …). `Runtime::standing_prefs` collects them and the executor prompt always carries them as a "Standing
+the user ticked "Always use" on (a `standing` flag per profile row, `Store::profile_standing`; off by default, also for
+fields saved before 0.6.0 — no label is read for travel words). `Runtime::standing_prefs` collects them and the executor prompt always carries them as a "Standing
 preferences" block (`prompts::prefs_text`) with the rule — pass them to the search tools, show the preferred option
 next to the best value with the price difference, say so when none matched, a wish in the request wins — so they
 count whether or not a skill was loaded and whichever flight tool (built-in or an MCP connector's) the executor picks;
@@ -163,8 +206,7 @@ repeated on the booking-options request), so a second call (`flight_offer` → t
 way to connect: the card (Settings → Connections → Flights & hotels) or Kiwi.com's free MCP server
 (`https://mcp.kiwi.com/`, streamable HTTP, no auth, one `search-flight` tool — the MCP card has a preset button that fills
 the add form). The travel skills name the built-in tools first, then an MCP connector's, then the browser with a one-line
-note on how to connect. `[endpoints] serpapi` points the client at `tests/fake_apps.py`'s stand-in (`/serpapi/*`);
-`tests/travel_search_e2e.py`, `tests/travel_card_ui.py`.
+note on how to connect. `tests/travel_card_ui.py` (the card before a key), `tests/travel_connect_real.py` (a real key).
 
 ## Search input validation (`omuse_apps::travel_args`, `omuse_common::util::sanitize_search_args`)
 
@@ -194,17 +236,31 @@ affordable") or `adults: 0`. Validation is code, deterministic, and runs before 
 ## Search services: who answers what
 
 - `web_search` (every model call): the browser's own search engines first (free; as fast as the APIs — about 1.6 s a
-  search in `tests/search_timing_real.py`, 15 in a row without a challenge page on 2026-10-28), then the search APIs when
+  search in `tests/bench_search_timing.py`, 15 in a row without a challenge page on 2026-10-28), then the search APIs when
   the browser fails, meets a challenge page or finds nothing: Brave → Exa's free MCP → Exa (the keys on hand, user over
   server; among them the one that worked last goes first). Tavily is not in this chain. The SerpApi key is never used here.
 - `news_search` (every model call): Tavily's news topic (`topic: news`, `days`; dated articles with snippets) when a
   Tavily key is set and the search connection is on, else `web_search` with "<query> news <period>"; `news_fallback`
   says why. The `news-search` skill tells the model to answer with dates and sources.
-- `flights_search` / `flight_offer`: Kiwi.com's public MCP first (free, ranges of up to 14 days, information only, links
-  stripped); then Google Flights through the SerpApi key; then the web search chain. Booking: the airline's own site or an agency the user chooses, never Kiwi.
-- `hotels_search` / `hotel_rooms`: Google Hotels data with the SerpApi key; without it, or when Google finds nothing,
-  `hotels_search` falls back to the web search chain (the request spelled out, `hotels_fallback` says why).
+- `flights_search` / `flight_offer`: ONE search per call. Google Flights through the SerpApi key for one date; Kiwi.com's
+  public MCP for a range of dates, self-transfer, without the key or when Google fails. Every offer has its `booking_url`.
+- `hotels_search` / `hotel_rooms`: ONE search per call. Google Hotels data with the SerpApi key (an empty result is the
+  answer); without it, or when Google fails, `hotels_search` falls back to the web search chain (the request spelled
+  out, `hotels_fallback` says why).
   `hotel_rooms` reads Google ids, so it needs the key (the policy says so).
+- `cars_search`: car rental at an airport (`omuse_apps::cars`). No rental site has a public search API (Kayak's is for
+  approved affiliates, Hertz has none) and Google has no car-rental data, so: ONE web search (the web search chain) for
+  the companies and "from" prices (the words ask for "car rental companies": plain "car rental" brought aggregator
+  snippets that named none, 2026-10-30; `companies_found` lists the companies the results name, read in code by
+  `cars::companies_in`, so the answer names them), and a `booking_url` built from the rental — Kayak's results page
+  (`/cars/LAX/SFO/2026-12-03-9h/2026-12-06-14h?fs=carclass=suv`, live offers for those dates; classes small, medium,
+  large, suv, van, luxury, convertible), else Rentalcars.com's (`/search-results?locationIata=…&driversAge=…`) only when
+  Kayak's page does not answer (`page_answers`: a 2xx within 8 s whose title is no bot check — Rentalcars' normal page
+  mentions "captcha" in its scripts, so the body is not searched); neither answering → Kayak's link with a note. Compared
+  on 2026-10-29 over five airports: Brave, Tavily and SerpApi's Google results had no offer for the dates and no booking
+  link (SerpApi was the slowest and noisiest); Kayak's, Rentalcars' and Priceline's prefilled pages showed the live prices,
+  Expedia and Skyscanner a bot check. Endpoints `[endpoints] kayak` / `rentalcars` (tests: `omuse_apps::cars` unit tests,
+  `tests/travel_user_real.py` and `tests/travel_brave_real.py` on the real sites). One car search per request and per turn, like flights and hotels.
 - `places_search` / `place_details`: restaurants and other places, Google Maps data with the key, else the web search
   chain the same way (`places_fallback`); `place_details` needs the key. Booking: the restaurant's own site or the
   platform the user names.
@@ -232,13 +288,10 @@ nothing downstream changes. The same `[search] serpapi_key` is the default for t
 (`travel_client`). `state::seed_default_keys` runs at startup: the first time a default appears the connection is
 switched on and its config records it (`default_key` / `default_providers` + `default_seeded`), so the policy
 (`travel` without a key) and the page (chip "server key") know; the user's own key always wins, deleting it falls back
-to the default, and switching the connection off is respected. `[endpoints] brave / tavily / serpapi` point the clients
-at `tests/fake_apps.py` (`/brave/web/search`, `/tavily/search`, `/serpapi/search.json?engine=google`).
-`tests/web_search_e2e.py`, `tests/search_card_ui.py` (the test stack ships a default Brave key in `tests/run_local.sh`, so
-the override and the fall-back to the server key are exercised). The search providers are never tools of their own: the
-model sees `web_search` (and `web_search`) and OMuse picks the provider (`tests/web_search_e2e.py` asserts no
-provider-named tool). Kiwi.com's MCP server is used the same way inside `flights_search` (`omuse_apps::kiwi`), never as a connector
-of its own, so no Kiwi tool or booking link reaches the model; Exa's hosted MCP is the first link of the chain, called by Sentinel itself (two JSON-RPC calls, no connector
+to the default, and switching the connection off is respected. `tests/search_card_ui.py` (the card before a key),
+`tests/web_search_real.py` (the real Brave and Tavily APIs). The search providers are never tools of their own: the
+model sees `web_search` and OMuse picks the provider. Kiwi.com's MCP server is used the same way inside `flights_search` (`omuse_apps::kiwi`), never as a connector
+of its own, so no Kiwi tool reaches the model (its booking links do, as each offer's `booking_url`); Exa's hosted MCP is the first link of the chain, called by Sentinel itself (two JSON-RPC calls, no connector
 registration), rather than an MCP connector of its own, which would add a provider-named tool.
 
 ## Streamed answers
@@ -258,7 +311,7 @@ rewrites (cut off, wrong language, an outcome notice) simply replaces the draft.
 memory and title calls never stream. Whether the text really arrives as it is written depends on the provider: the
 e2e gateway streams its `openai-codex/…` and `xai/…` models chunk by chunk but hands an `openai/…` reply over in one
 piece at the end (checked with a raw request, compression off), which then shows as a single delta — correct, just
-not live. `tests/stream_e2e.py`, `tests/stream_ui.py`, `tests/stream_real.py`.
+not live. `tests/stream_e2e.py`, `tests/stream_real.py`.
 
 ## Google Drive
 
@@ -295,12 +348,15 @@ batch, the 30-day note), `drive-video-edit` (search → download → `edit_video
 steps → upload back), `drive-photo-storybook` (photos → `file_look` → optional edits → text → one `make_pdf` with
 `![…](drive/…)` pages → upload). All three are `browser: off`.
 
-Tests: `tests/fake_apps.py` serves a Drive fake (`/drive`, `/drive-upload`: seeded folders, two real MP4 clips made with
-ffmpeg at start, three JPEG photos, big and old files with metadata only, a shared file, a trashed one; `/drive/_state`
-and `/drive/_reset` for the suites) behind the same fake Google OAuth as the calendar; `tests/drive_connect_e2e.py`
-(one sign-in connects both, a sign-in where Drive was unticked, catalog tools and permissions, disconnect one),
-`drive_cleanup_e2e.py`, `drive_video_e2e.py`, `drive_storybook_e2e.py` (scripted flows `DRIVECLEAN`, `DRIVEVIDEO`,
-`DRIVEBOOK` in `tests/fake_llm.py`).
+Tests: the Drive tools' unit tests; the fake Drive and its suites were removed with the fake services (2026-11-02) —
+no e2e suite has a real Google Drive account yet.
+
+## PDF page counts
+
+`make_pdf(pages=N)` fits the PDF to the most pages the user asked for ("a one-page packing list"): the browser prints it,
+counts the pages (`lopdf`) and prints it again 10% smaller each time, down to 60% (`PDF_MIN_SCALE`, still readable), so a
+list that runs a little over fits without the model guessing how much to cut. The result says the count and the scale;
+when it still does not fit, it tells the model to shorten the content (`tests/pdf_e2e.py`).
 
 ## Image and video generation
 
@@ -344,6 +400,42 @@ The profile (Memory → Profile) holds the fixed details forms and emails need: 
 nationality…), any number of further addresses as `address:<label>` ("Singapore flat", "Parents in Sydney"), and free
 fields as `custom:<label>`. The agent reads it with `profile_get` (only the fields a form needs; `address:*` selects
 every further address) and proposes changes with `profile_suggest`, which the user confirms on the Memory page.
+
+## Long-term memory: structured fields, the model's reading, code's selection
+
+No code reads a fact's prose or the request's words to sort or pick memory (CLAUDE.md, natural language is the
+model's). Every fact carries structured fields the model sets when it writes it — `domain`, `topics`
+(`store::TOPICS`), `scope` (always · topic · trigger with its `trigger` phrase), `kind` (`id_document`; `site_block` is
+code's own), `entity` (a website as its host) and, on the entity, the user's `relation` — through `memory_remember`'s
+JSON, the extraction prompt (`prompts::MEMORY_EXTRACT`) and, for a fact written without them (before 0.6.0, typed on
+the Memory page), the sorting step `memory_tidy::classify` (prompt `MEMORY_SORT`, JSON; at once for a typed fact, in the
+background for older ones, and in every tidy run). Code validates them against the enums (`FactOpts::with_model_fields`).
+At a task's start the model reads the request against what memory holds and answers with choices from JSON lists
+(`context::relevance`, prompt `MEMORY_RELEVANCE`: topics, entities with relation / aliases / one fact, trigger phrases,
+unsorted fact ids); `context::select` scores the facts on their fields plus the task's data (`context::task_data`: the
+bot, the skills loaded, the tools called). Memory → "Try it" runs the same path. `memory_search` takes `topics` and
+`entities` from the model besides its query words; the words are only a full-text search (FTS / LIKE) over the stored
+text. Identity-document and unsorted facts stay out unless `id_documents`. What a task used is recorded
+(`task_memory`: topics, entities, fact ids) and its episode carries the fact ids, so forgetting a fact deletes the
+episodes that used it by id (`Store::delete_fact`; `forget_fact` also drops pre-0.6.0 episodes, which carry no ids).
+Memory tidy merges only facts whose text is identical after normalisation; other wordings are the LLM review's to merge.
+The one text check left in code is the secrets backstop `store::looks_sensitive` (card / ID-shaped numbers, "password",
+密码, CVV), a documented safety exception.
+
+**Memory page layout**: the pending profile changes are the whole top row; the profile and the Vault (ID documents,
+memberships, credit cards) sit side by side below it (`#memPending`, `#memProfileVault`).
+
+**Credit cards live in the Vault, never in the profile.** A card the user holds can be saved by its name alone —
+issuer and product, "Citi Prestige", with the issuing country ("USA") as a field of its own, optional (the
+`vault_items.country` column: not a secret, the card picker reads the market from it) — as a Vault `card` item whose
+number, expiry and CVC are `UNKNOWN` (`vault::UNKNOWN`) until the user adds them on the Vault card: "+ Add credit card" with only the name,
+`vault_add_card(name, country)` (the card bot, or Main when the user names a card), or memory extraction (`kind: "card"` →
+`POST /internal/vault/card`, audited as `vault.add` by the agent). `vault::add_card` keeps one item per card (the name,
+case and spacing aside) (a country given later fills an empty one) and refuses a name with a run of five digits or more. Such an item lists its `missing` details;
+`vault_list` says them, the Vault card shows "Name only: add the number…", the word UNKNOWN is never scrubbed from
+pages, and in code a fill of an UNKNOWN detail and a `purchase_confirm` on that card are refused with the way to
+complete it (`policy::card_details_missing`; `vault.rs`, `policy.rs` tests, `tests/memory_vault_e2e.py` CARDFACT,
+`tests/profile_fields_ui.py`). The credit-card skills read and write cards in the Vault only.
 Identity, membership and card numbers never go into the profile: they live in the Sentinel vault.
 
 **First login.** While the profile lacks the name as in the passport, the birthday or the nationality
@@ -357,18 +449,273 @@ and never written to the workspace; the number is not logged and not stored in t
 The arrival-card skills use the addresses like this: a hotel booking for the dates in mail is the accommodation;
 otherwise the one profile address in the destination country is used without asking (a resident going home, an
 owner's flat); several addresses in that country → the agent asks in the chat which one, before opening the browser;
-none → calendar and memory, then one question (or an uploaded booking). `tests/sgac_e2e.py` covers the one-address and
-the two-address cases.
+none → calendar and memory, then one question (or an uploaded booking). `tests/arrival_address_real.py` and
+`tests/arrival_address2_real.py` cover the one-address and the two-address cases with a real model.
+
+## Known forms: one tool, one function per URL (2026-10-31)
+
+The model has one tool for every known form, `form_fill`, whose arguments are only the trip facts that need
+understanding (flight, arrival date, origin city / country, a departure date or next city when one is given, the stay
+and its kind, the purpose). The runtime reads the task's page URL from the browser and looks it up in
+`crate::forms` (host + path → a Rust function written against the real site's form); the function turns the facts,
+the profile and the defaults (departure = arrival + 7 days, next city = the flight's origin, Yes / No = No) into a fill
+plan — selectors, values in the form's formats, options, steps — and the call goes to Sentinel as `browser_fill_form`
+(never offered to the model), which adds the Vault ID document's values (masked in pictures, never into card fields)
+and runs the plan in the browser in one call (`/agent/fill_form`). The result says per field what went in and what did
+not, never a value. A page no function knows, or a field a function does not find, falls back to the generic path —
+the model field by field, with the essential guards only. `form: on` in a skill's front matter now only marks a form
+task (the 70-step budget, the hand-over rules); the separate "Form filling" model setting was removed on 2026-10-31:
+with forms filled in code, the executor reads the facts and handles the fallback. An optional model (the planner) that
+stays unavailable after its retries hands the call to the LLM (`chat_or_cancel`, a `model_fallback` event); each real
+suite's model calls are saved as `models-<suite>.json` in `OMUSE_E2E_OUT`.
+
+### Form functions so far (2026-10-31)
+
+| Form | Function | Mapped from | Notes |
+|---|---|---|---|
+| SG Arrival Card | `sg_arrival_card` | the live ICA form | radios by text, split date boxes typed by key, type-and-pick lookups; stops at Review (declaration + Submit are the user's) |
+| Malaysia MDAC | `my_arrival_card` | the live form | read-only datepicker boxes (`date` op), order: nationality → dialling code, state → city → postcode; the slider puzzle is the user's |
+| Korea e-Arrival card | `kr_arrival_card` | the live form | terms + email first; type-to-filter nationality / airline dropdowns; the address lookup popup, job and contact in Korea are left (best effort); the emailed code and Submit are the user's |
+| All Indonesia | `id_arrival_card` | the live site (every Next saves) | Languages → English → Foreign Visitor; session-suffixed ids (prefix selectors); readonly dropdowns with a Search box; the visa question defaults to No (a visa on arrival); the certification and Submit are the user's |
+| Taiwan TWAC | `tw_arrival_card` | the live site (steps 2–4 rendered client-side) | step 1 (email, Cloudflare, emailed code) is the user's: the plan `require`s the traveller form and stops until it shows; react-select comboboxes take the exact option text; visa-exempt nationalities as data (`TW_VISA_EXEMPT`) |
+| China arrival card | `cn_arrival_card` | the live site (steps 2–4) | the passport-photo upload (step 1) is the user's (`require` on the Last Name field); Element UI fields found by their labels; visa-free nationalities as data (`CN_VISA_FREE`); the port by airport code; stops before the companion question |
+
+Still on the generic path: Thailand TDAC (behind a Cloudflare check; mapped only from its public code), Cambodia
+(a profile photo; its health questions not captured), Visit Japan Web, eTravel and the UK ETA (behind accounts and
+emailed codes: their fields come from official guides, not live pages). The operations added for these forms: `require`
+(stop for the user's step — the field must be *visible*, not merely in the page: Taiwan's traveller form is in the DOM, hidden, before the email step; 2026-11-01), `option` / text fallbacks that click the deepest visible element with the text, visible
+matches first, and a guard against setting a value on a non-text element. A field-by-field fill on a page a function knows gets a note to call form_fill
+(`guards::form_fill_note`); a hand-over on such a page before any form_fill is refused once, so code fills it first and names the user's step (`guards::takeover_before_fill_guard`). `browser_fill_form`'s ops (`FILL_ONE_JS` in omuse-browser): text, select (value, text,
+starts-with, contains), radio, click / button / check by selector or by text inside a headed section, `date`
+(datepicker), and in the broker `keys` (real key presses), `pick` (type, then click the listed option) and `wait`.
+
+## Arrival cards and the HK tax refund: workflow tools (0.6.0, docs/json-tools.md)
+
+Filling in an arrival card or travel authorisation with a form function (`agent/driver.rs` `CARDS`: SG, MY, KR, ID,
+TW, TH, CN, JP, KH, PH, UK ETA) is ONE `arrival_card_fill` call; the Hong Kong departure tax refund is ONE
+`apdt_refund` call (`agent/apdt.rs`). Both are Travel-bot tools (`bots/travel.md`). The model reads the user's words —
+and the bookings the machine fetched — and passes the facts as JSON arguments; code validates them and runs every
+step; the reply is written from the machine's JSON result (`show`). No regex or keyword reads the user's words or a
+mail's or a document's text in these machines (the old `driver::extract`, `user_asks` / `asks_to_act`, `dates_in`,
+`method_in`, the document classifier and `EXTRACT_SYSTEM` are gone).
+
+- **`arrival_card_fill{country, flight_no, arrival_date, origin_city, stay_name, stay_address, own_address, purpose,
+  departure_date, next_city, occupation, …}`**, `driver::check`: the country in the table, the flight number an
+  airline code and digits (`norm_flight`), the dates ISO and the arrival not past, the own address one of the
+  profile's labels; the fields of the chat's earlier calls for the same country carry over (`with_earlier`). The trip
+  not known and a mailbox connected → `read_mail`: the machine runs the two fixed searches (the card's `mail_words`),
+  fetches the first hits and returns `mail_read` — the workflow tools stay offered (`workflow::reply_turn`) and the
+  model calls again with what the mails say. Then: one profile address in the country → the stay (`own`), several →
+  `choose_address` (the machine shows the choice card, result `needs_choice`; the user's pick comes back as
+  `own_address`), still missing → `needs_input` (flight, date, stay, and the purpose with them; else purpose holiday,
+  `purpose_assumed`). The UK ETA needs no trip (`CardSpec::needs_trip`); its occupation goes to the form
+  (`forms::Inputs::job_title`: the call's, else the profile's).
+- **The machine** (`driver::next`): the filing window (too early → `schedule_create`, result `scheduled`), the official
+  page, `form_fill` with the facts, a hand-over for a step that is the user's (a form function's `require` stop),
+  `form_fill` again, the review hand-over (the reason names the assumptions and the card's `user_steps`), the card's
+  reference element after the hand-back (`browser_read_elements` at `ref_sel`, its value checked against `ref_re`) → `submitted` / `not_confirmed` / `waiting_on_user` (the same
+  user's step undone twice) / `handed_over`.
+- **`apdt_refund{in_flight, in_date, out_flight, out_date, in_pass_file, out_pass_file, receipt_file, tax_hkd,
+  passport_file, refund_method, wallet_account, card}`**, `apdt::check`: flight numbers, dates, the files are this
+  chat's (the user's `uploads/…` or the saved `attachments/…`, a bare file name matched), the method the platform's;
+  documents not known → `read_mail` (the fixed search, every PDF / picture attachment saved, every PDF read, the
+  user's PDFs too) → `mail_read` with the files; the passport defaults to the user's only picture; what is still
+  missing → `needs_input`. The machine: the rule (`apdt::ineligible`: same or next day, after the departure, within 28
+  days, `tax_hkd` 0 → `not_eligible`), the Vault card (the one the user named, else the first complete one), the
+  platform's pages by their form functions, the uploads by the page's box labels, `browser_fill_secret` (or the user's
+  takeover for a card saved by name), stop before the face step → `confirmed` with the reference, the link and the
+  face-recognition deadline in `show` (`stopped` with the site's own error lines, `not_eligible`, …).
+
+Calls are `drv_<n>` / `apd_<n>`; the machines' tool calls and fetched mail are kept by the compression
+(`compress_transcript`). Tests: `driver::tests`, `apdt::tests` (arguments in, steps, Done JSON),
+`tests/arrival_*_real.py` (being rebuilt on the official sites; the stand-ins are gone).
+
+## Guarantees in code (2026-11-02)
+
+The hard rule of `CLAUDE.md` holds in the runtime loop: **no natural language from the model anywhere in the decision
+flow**. Nothing is pushed to the model as a "(System)" message during a task, no regex over the model's prose decides
+a step, a refusal, a rewrite or a hint, and no tool result tells the model what to call next. What the model writes is
+the reply the user reads; everything else is data or a code action:
+
+- **Model calls that return JSON only**: the planner and the bots router (`agent/bots.rs`), `Runtime::until_condition`, the decisions (`Runtime::decide`, below), and
+  `Runtime::review_answer` — the one reading of the final
+  answer as the user would (ok / problem); when it does not hold together the answer is written again from the run's
+  facts by `rescue_final` (code, once), never by a hint. `rescue_final` also writes the reply when the model returned
+  no text or only tool markup (`strip_tool_markup` runs on every final answer). A reply cut by the token limit
+  (`finish_reason: length`) is requested once more with a higher limit and the longer one is kept
+  (`continue_cut_answer`). The English-UI fix for a Chinese answer stays (`rewrite_in_english`, triggered by the
+  measured CJK share, `language_fixed` event).
+- **Questions to the user are a tool**: `ask_user(fields, question)` (`agent/tools.rs`, `agent/local.rs`). The
+  dispatcher refuses, in data, a field the profile or the form's defaults already answer (`guards::known_answer`:
+  nationality, birthday, home address, sex; an arrival card's departure date, next city, declarations; the one profile
+  address in the country) — `{"refused": "known", "known": [{field, value, source}]}` — and otherwise ends the run
+  with the question as the reply (`asked` in the loop, a `needs_user` event, status COMPLETED) and an
+  `{"type": "ask"}` card in the chat. `guards::asked_user` reads the call back for the appenders (`with_mailbox_hint`
+  when no mailbox is connected, `with_own_addresses` for `stay` / `which_address`). `present_choices` stays for
+  options; its result is `{"shown", "verified", "picked"}` plus the listing.
+- **Budgets are tool-list limits** (`Runtime::budget`): the finishing tools only in the last `BUDGET_RESERVE` steps or
+  past `TIME_NUDGE` of the minute budget; the page-reading tools withdrawn after `RESEARCH_NUDGE_PAGES + 3` page
+  visits; the search tools withdrawn after `WEB_NUDGE` web searches (`guards::web_budget_guard` refuses one more in the
+  same turn). When the step or minute budget is spent the model gets no tools and no message. A stuck run (every call
+  of a turn refused) re-plans at the second turn and stops at the third. The live state reaches the model as ONE JSON
+  message at the end of each request, never stored (`prompts::live_state`: `{"state": {time, minutes, plan: {objective,
+  steps: [{id, step, status, parallel}], next_parallel}, dead_ends: [{host, fails, why_code}]}}`, only when there is a
+  plan or a dead end); the system prompt is identical on every step of a task (prompt-cache reuse).
+- **Refusals are results, not instructions**: every guard answers `ERROR: [reason_code] one neutral sentence` (bilingual,
+  `system_text_en` keeps the English half): `repeat`, `retype`, `unknown_id`, `dead_host`, `one_search`,
+  `search_order`, `no_mail_for_search`, `empty_mail`, `arrival_mail`, `user_submits` (the sentence `… that click is the
+  user's own` is what `exec::hand_over_button` reads to hand the page over), `keep_default`, `apdt_face`,
+  `form_first`, `user_edit`, `web_budget`, `other_bot`, `browser_off`, `remade`, `bad_arguments`,
+  `arguments_cut`, `needs_approval_alone`, `[SITE BLOCKED site=…]`. The re-read pointer ("Already read: call c1") and
+  Sentinel's `DENIED by Sentinel: <reason>.` carry no advice. Tool results carry facts as data: `input_fixed` on a
+  `browser_type` whose text code replaced (departure = arrival + 7 days, next city = where the flight came from),
+  `{"browser": "off" | "on"}` from `load_skill`, `{"profile": {field: value | null}}` for a skill's `profile:` fields,
+  `{"sent": true}` / `{"already_sent": […]}` from the file tools, `{"made_times": n}`, a published report's JSON.
+- **Code actions in the loop** (transcript facts only, never the answer's words): the automatic hand-over
+  (`guards::needs_handover`: a typed-into arrival or claim form with no completed takeover after the last fill, or an
+  approved purchase in a browser run; `auto_handover` event), the hand-over after a refused final click
+  (`hand_over_button`), the snapshot after any hand-back (`needs_handback_snapshot`), the news report's delivery
+  (`news_publish`'s schedule and mail, `news_mail`), files the request asked for sent at once (`auto_send`,
+  `unsent_files`), the official site opened when the agent landed on a parked domain (`guards::parked_domain`,
+  `exec::official_site`: one web search, the first result on another domain), the arrival defaults typed by code
+  (`departure_fix`, `next_city_fix`, `departure_default` → `set_departure`, `default_no`), the APDT ticks
+  (`apdt_fixed_ticks`).
+- **The facts the user must read are appended to the answer by code** (2026-11-02, docs/json-tools.md "What the
+  answer shows"; it replaces phase 2d's review-enforced `show`): `facts::show_items` collects the `show` items of
+  this request's trusted tools (a machine's result, `emergency_contacts`, `visa_rules`, `fx_convert`, `loan_payment`, an
+  emergency `phone_call` refused in code, a recorded `confirm_reference`) and the run's structured facts
+  (`guards::*_fact(s)`: approval edits, ETIAS, the card catalog's date / unverified rows / FX fees / uncatalogued cards /
+  the user's cards, the approved amount, an injection notice, notifications, a model-made comparison's options), and
+  `show::append` puts them after the reply, after a `---` rule, one "- Label: value" line each (gate 40: the news
+  editions' links and the TDAC reference had been left out of the prose). `hints` are optional wording help;
+  `review_answer` checks only coherence and the language rule. Still code on the reply: `with_masked_cards` (secrets), the
+  link repair (`links::repair_answer`), `merge_stranded_answer` / `with_handover_answer` (the model's own earlier text).
+  Removed: the travel appenders (the Travel bot's flight and hotel searches are the booking machine's,
+  `guards::MACHINE_ONLY`), the grounding of figures / codes / phone numbers in the reply (`number_check`), the loan,
+  emergency-call, visa, FX, medical and consular appenders (now the tools above).
+- **Outcome from events only** (`outcome::assess`; the request's "send" words are no longer read — `asks_send` /
+  `with_request` removed): a purchase, send, calendar change or call is verified by its own
+  evidence (the order number from structured JSON only — a known site's machine result, read at the page's reference
+  element, or the model's `confirm_reference` on an unknown site — `confirm::confirmed`, its source `known_page` /
+  `model_read` kept in the evidence; a message or event id); neither the answer's words nor a page's text is read for
+  it. `outcome::notice` adds the "not confirmed" line when an action ran without its proof; the ledger gets that order
+  number. A delayed flight's times are the `flight_status` machine's (the airline's status table read by element).
+- **Hard stops stay two**: the final click is the user's (`policy::hand_over_click`, `arrival_submit_guard`,
+  `apdt_face_guard`) and the Vault's secrets.
+
+Gone with the rule (2026-11-02): `answer_traits` / `AnswerTraits` and every hint built on them (`arrival_default_hint`,
+`self_press_hint`, `reconfirm_hint`, `page_option_hint`, `known_profile_hint`), `short_after_handback_hint`,
+`proceed_with_pick_hint`, `visa_days_hint`, `missing_format_hint`, `card_comparison_hint`, `news_report_hint`,
+`report_followup_note`, `form_fill_note`, `arrival_ask_first_guard`, `departure_date_guard`, `next_city_note`,
+`requests_info`, `asks_user`, `cut_off_final`, `self_corrects`, `with_hours`, the time / web / stuck / step-limit /
+status-note / cut-off / plain-text / number / outcome / replan "(System)" messages, `outcome::nudge` and its claim
+regexes, the page hints (`deep_link_hint`, `product_page_hint`, `refusal_hint`, `parked_domain_hint`), and the
+"(System note)" tool-result notes. Four of the judgements they covered are back as decisions (below).
+
+### Price watches (2026-11-01)
+
+A price watch reads its price by an element or by the model, decided when it is made — never by a regex over the
+page's text (`watchers::price_hits`, its keyword / heading windows and the price regexes are gone). The watch's
+parameters carry `read` (`element` | `model`), `price_sel` / `price_attr`, `item`, `currency` and `threshold`
+(`scheduler::event_spec` → `watch_price::decide_read`; an old watch's `keyword` becomes its `item`). A known site
+(`watch_price::KNOWN`) or the model's `selector` → Sentinel reads the element (`read_elements`) and
+`watchers::parse_amount` checks the value is one price. Any other page → Sentinel returns the page text
+(`{"extract": …}`), the scheduler's `watch_price::complete_read` has the model extract `{price, currency, item}` into
+JSON (`json_in`, one retry, `null` = no price → a failed check that backs off) and calls Sentinel again with
+`observed`; `watchers::evaluate_price` compares it (first read = baseline; alert when newly below the threshold or
+lower than the last alert). `watch_create` (a code tool) does not call the model: on a model-read page the model's
+`current_price` is the baseline (required), and a price element that shows nothing switches the watch to the model
+with a note. Notifications are built from the event's fields (`seen · item`). Tests: `watch_price.rs` and
+`scheduler.rs` unit tests (the scripted watch cases and `watch_real` needed test pages and went with them, 2026-11-02).
+
+### Decisions: `Runtime::decide` (`agent/decide.rs`, 2026-11-02)
+
+When a step genuinely needs the model's judgement, it is a decision API call: the question, the context and the
+choices as a JSON array; the model answers `{"choice": "<one of them>"}` (`decide`) or `{"choices": [...]}`
+(`decide_many`), temperature 0, 60 tokens, no tools. The answer must be a listed choice (exact, case-insensitive,
+returned in the list's spelling); anything else gets ONE retry (the bad answer and the list again), then the caller's
+default; an unreachable model gives the default at once. Every call emits a `decision` event `{question, choices,
+picked, retried, defaulted}`. Code acts on the choice; defaults are the no-op choice. Decisions are only on PAGES now (phase 2d):
+the held pick, the file formats and the visa-free days went to JSON — `travel_book` takes the pick, the file calls carry
+`deliver_as` (each format the run did not make is converted by `judgements::conversion_calls` and sent, `fmt_<n>`
+calls, `format_conversion` event), `visa_rules` gives the official table's days (agent/facts.rs). What remains
+(`agent/judgements.rs`, none in a driven run):
+
+- **A page just opened** (`exec_call`, main run): a deep link (a path or query) redirected elsewhere → decide on the
+  title + first lines `error_page | normal_page | login_page`; `error_page` → code opens `scheme://host/`
+  (`deep_link_error`, once per site). In an `online-shopping` run, back on a page it opened and left without clicking
+  that page's Add-to-Cart button (found by code: `[eN] button "Add to cart|bag|basket"`) → decide `product_page |
+  listing_page | cart_page | other`; `product_page` → code clicks that ref (`add_to_cart`, once per page).
+
+### Driven forms settle every value before the form opens
+
+In the arrival-card, refund and claims machines the facts, the defaults, the choice of address and what the user must
+give are settled by the tool's `check` and the steps before the `browser_navigate` to the form (`needs_input`,
+`needs_choice` before any page opens). Once the form is open no question is asked again: a fact lost since
+(compression) is a blank field the user fills in at the hand-over. The only pauses after the navigate are the
+hand-overs for the user's own steps. Tests: `driver::tests::every_card_fills_from_its_arguments_and_asks_nothing_after_the_page_opens`,
+`apdt::tests` and the claims tests (`driver::questions_after_navigate` lists an `ask_user` / pick-less
+`present_choices` after the navigate).
+
+## News research reports (`skills/news-research/`, 2026-11-01)
+
+Main's `news-research` skill turns "research the news on X" into a newspaper-style edition:
+
+- **Search in the browser only.** `browser_news_search(query, days)` (Sentinel, connector `search`) opens the engines'
+  own news results in the browser: DuckDuckGo html with its date filter (`df` = d / w / m / y), then Bing News with its
+  interval (`Broker::news_engines`); the test engines get `&df=…`. It never falls back to a search API. In a run that
+  loaded the skill, a `web_search` call is marked `browser_only` (Sentinel skips the APIs) and a `news_search` call is
+  run as `browser_news_search` (`exec_call`, `guards::news_research_run`).
+- **Two workflow tools (docs/json-tools.md, `agent/news.rs`).** `news_gather{subject, window}`: code runs ONE
+  `browser_news_search` of the subject (a second, wider one only when the first finds no article), reads the first six
+  distinct links in one turn and returns the articles as JSON (number, title, publication, date, url, text). The model
+  writes the edition as JSON and calls `news_publish{title, stories:[{article, headline, summary}], insights, schedule,
+  weekday, hour, email}`: `news::check` keeps only stories whose article number exists, takes every link, publication
+  and date from the gathered articles, and adds an article the model left out with its own headline and opening. The
+  machine never calls the model and reads no user wording (the subject regexes and the in-code writing call are gone).
+- **Layout in code.** The machine calls `news_report` (code's own call, never offered to the model): `crate::newsreport`
+  drops stories without an http(s) link, keeps each article once, escapes every value and fills the skill's
+  `template.html` (masthead, lead = the first story, insights, stories in columns, sources). The HTML goes to
+  `<workspace>/artifacts/news/<subject slug>/<YYYY-MM-DD-HHMM>.html` (a second edition in the same minute gets `-2`),
+  the PDF beside it through Chromium's print (`/internal/render_pdf`); both are file cards in the chat. A scheduled run
+  also notifies the user ("📰 <title>").
+- **`/artifacts/`** (Sentinel `routes/artifacts.rs`, behind the login gate): `/artifacts/` lists the files newest first,
+  `/artifacts/<path>` shows one; paths stay inside the folder; HTML is served with a policy that runs no script and
+  loads nothing from elsewhere (`HTML_CSP`, sandboxed). A link `/artifacts/…` given as a mail attachment is the
+  workspace file `artifacts/…` (`actions::artifact_path`).
+- **Delivery from the JSON.** `schedule` (daily / weekly / monthly) → `schedule_create` by code (cron from
+  `newsreport::Ask`; the goal, `news::schedule_goal`, makes the scheduled run's model call `news_gather` →
+  `news_publish`, with `email: true` when the editions are mailed); no new schedule in a schedule's own run. `email:
+  true` → `gmail_send` to the user's own connected address with the PDF and HTML. "Email it" later in the chat →
+  `news_mail{files}` (the edition's links the model copies from the earlier reply; code accepts only
+  `artifacts/news/….pdf|.html`). The result's `show` carries the two links, the schedule and the mail (appended by code);
+  `next_question` offers the mail. The old regex guards (`news_report_action`, `news_schedule_goal`,
+  `report_followup_call`, `with_report_links`) are removed.
+- Tests: `agent/news/tests.rs`; `tests/news_report_real.py` on the real web (no fake articles, no mail sent).
 
 ## Sentinel policy
+
+**The purchase's site comes from the open page.** When earlier versions showed the model links as stand-ins
+(`crate::links`), a `purchase_confirm(site=…)` written from a link named the stand-in's host, `link.omuse.local`. Sentinel's act route
+(`purchase_site`) replaces such a site with the host of the page the task has open — where the total shows and the
+card is filled — and with no page open the policy refuses it ("open the booking page first"). Before this, the
+purchase was approved for "omuse.local" and the card fill on the booking site was refused (travel_michelin_e2e,
+2026-10-30).
+
+**The approved amount is always in the answer.** When a run had a purchase approved (`purchase_confirm` →
+`"status": "approved"`) and the final answer does not give its total (in any format: `JPY 28,000`, `¥28000`,
+`28,000.00`), `guards::purchase_total_facts` gives "Amount you approved: JPY 28,000 (<the items>)" — also when the answer gives the
+amount but not what it was for (the first word of the item's name).
 
 - **Data classes and taint**: reading mail, the vault or private connectors taints the task; a tainted task that
   sends data somewhere new (a URL with parameters on a site it hasn't used, a message to a new recipient) is asked
   for (the data-egress check). A domain written in the user's own request is trusted.
-- **Browser auto-approval** (`[browser] auto_approve`, default on; Settings → Agent): page loads, clicks, typing and
-  submits that would have asked run at once, with an approval record resolved by "auto", audited, and shown in chat
-  and the timeline like a manual approval. Never auto-approved: vault fills (`browser_fill_secret`), uploads, clicks
-  that pay or change an order, anything after a suspected prompt injection; logins and CAPTCHAs are takeovers.
+- **Browser auto-approval** (`[browser] auto_approve`, default on; Settings → Agent): with it on, nothing in the
+  browser asks — page loads, clicks, typing, submits, uploads, vault fills (the passport into an arrival card), the
+  purchase confirmation and the pay / order-change clicks, also after a suspected prompt injection
+  (`Decision::browser_auto_ok`; the user's decision, 2026-10-30). Each runs at once with an approval record resolved
+  by "auto", audited, and shown in chat and the timeline like a manual approval. Off: every risky browser action asks
+  again. Logins, CAPTCHAs and a form the user submits themselves are takeovers (a hand-over, not an approval).
 - **Vault**: secrets are encrypted with `vault.key`; the agent refers to an item by id and Sentinel fills the value
   into the page, restricted to the item's domains, so the value never reaches the model, the chat or the trace.
 - **Prompt injection**: mail, pages and tool output are untrusted; suspicious content escalates writes to approval.
@@ -383,16 +730,16 @@ missing or stale translations and on mixed-language strings.
 ## Tests
 
 - Rust unit tests live next to the code (`cargo test --workspace`).
-- The end-to-end suites (`tests/*_e2e.py`, `*_ui.py`, `e2e_0*.py`) run inside the `Dockerfile.test` image: each gets a
-  fresh stack started by `tests/run_local.sh` (the binary, the scripted model `tests/fake_llm.py`, fake third-party
-  services in `tests/fake_apps.py`, an IMAP server, test pages under `tests/pages` served as `http://shop.test:8099`).
-  The scripted model plays the agent: it matches a marker in the request (`SGAC`, `ARRCARD`, `ARRNOMAIL`, …) and
-  returns the tool calls a correct agent would make, so a suite checks the tools, approvals, takeovers and the
-  rules a skill must keep.
-- The travel-skill suites share `tests/skills_common.py` (mail seeded by IMAP APPEND, calendar, travel connector,
-  profile, vault, uploads, approvals and takeover hand-backs).
-- Real-model suites (`*_real.py`, and the travel suites with `OMUSE_E2E_ENV_FILE`) go through `tests/model_proxy.py`,
-  which times model calls so the `TIMING` line reports the agent's own time.
+- The scripted (fake-model) suites (`tests/*_e2e.py`, `*_ui.py`, `e2e_0*.py`) run inside the `Dockerfile.test` image:
+  each gets a fresh stack started by `tests/run_local.sh` (the binary and the scripted model `tests/fake_llm.py` —
+  nothing else: no fake services, no stand-in pages, no mailbox; web search, travel and market data point at a port
+  nothing listens on). The scripted model plays the agent: it matches a marker in the request and returns the tool
+  calls a correct agent would make, so a suite checks the run loop, approvals, takeovers and the UI. They are fast
+  checks, never counted as e2e.
+- The skill and bot suites share `tests/skills_common.py` (profile, vault, uploads, running a task, reading its events).
+- The e2e suites (`*_real.py`, real model) run only against real sites and services (real URLs, real APIs) and stop at
+  the first step the user owns; they go through `tests/model_proxy.py`, which times model calls so the `TIMING` line
+  reports the agent's own time.
 
 ## Publishing images for Products Provisioner
 
@@ -489,15 +836,18 @@ What the `credit-card-picker` skill reads to answer "which card should I use for
 4. **Verify a seed row**: open the issuer's page, fill `rules` / `caps` / `rule_notes` from it, set `source`,
    `verified_at` and `verified: true`, rebuild.
 5. **Test**: `cargo test -p omuse-runtime load_skill` (the reference-file reader) and the Docker suite
-   `tests/run_in_docker.sh credit_card_picker_e2e` (the skill reads the profile and the table, no browser).
+   `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh cards_real cards_markets_real` (the cards from
+   the Vault, the table's rates and date, no browser).
 6. The binary embeds `skills/`, so a catalog change ships with the next build; users who imported a copy of the skill
    from GitHub get it on re-import.
 
 ### What the agent does with it
 
-It reads the user's cards from the profile (`custom:credit cards`, names only — never numbers), loads the market's
-table, matches by issuer + product (aliases, tiers kept apart), computes the value per card with `calculate`, and
-answers with the maths, the caveats and the verification date. A card missing from the catalog is looked up on the
+It reads the user's cards from the Vault (`vault_list`, the `card` items by name — never numbers; a card the user
+names that is not there is added with `vault_add_card`), loads the market's table, matches by issuer + product (aliases, tiers kept apart),
+computes the value per card with `calculate`, and answers with the maths, the caveats and the verification date. The
+date is guaranteed in code: when a run read a catalog table and the answer gives neither its month nor a date in it,
+`guards::catalog_date_fact` gives "Card terms from the catalog as of August 2026; terms change." (a fact for the review). A card missing from the catalog is looked up on the
 issuer's page and reported as "can be added to the catalog".
 
 ## Web UI navigation
@@ -512,10 +862,28 @@ Two views are routable but unlisted:
 - **Tasks** (`#tasks`, `#tasks/<id>`): the task list and detail. Audit's task links, the chat's task cards and the
   Status page still open it; the waiting-approval badge that used to sit on the tab now sits on Chat, where approvals
   and takeovers are answered.
-- **Automations** (`#schedules`): schedules, goals and event triggers. The page is out of the navigation while timer
-  tasks are rethought (they may come back in another form); the backend is unchanged — `schedule_create`,
-  `goal_create` and the event triggers still work from the chat and the skills (order tracking, the morning brief, the
-  arrival-card reminders), and a finished schedule still shows its toast.
+- **Automations** (`#schedules`): the full page of schedules, goals and event triggers (Run now, Check now, Results,
+  Pause). It is out of the navigation; `schedule_create`, `goal_create` and the event triggers work from the chat and
+  the skills (order tracking, the morning brief, the arrival-card reminders), and a finished schedule shows its toast.
+
+**Tasks** (`#timers`, in Tools) is the simple page of the user's scheduled tasks (`viewTimers`): for each, when it
+runs next — **Pending** when that time has passed and it has not run (the machine slept or was suspended) — what it
+does, a link to its chat and Delete (the chat is kept). A schedule's chat is its own (`conv_<schedule id>`, kind
+`schedule`, listed under "Tasks" in the chat list), not the chat it was asked in; a run whose chat the user deleted
+makes it again under the same id (`Scheduler::ensure_conv`; a goal's final check does the same), so the link keeps
+working.
+
+**`/run_pending_tasks`** (Sentinel, behind the login gate: `curl -N -u user:password https://…/run_pending_tasks`;
+the runtime's `GET /api/run_pending_tasks`) runs every pending task now and streams NDJSON: `pending` (what is due),
+`started` / `skipped` per task, `finished` per run (status, answer), a `waiting` heartbeat every 15 s, and `done`, then
+closes. A run that stops for the user (an approval, a takeover) counts as finished. The background loop (every 20 s)
+and this URL claim a due task the same way (`Scheduler::fire`: `next_run` moved on by compare-and-set), so a task never
+runs twice; when the loop got there first, the stream follows that run. `[server] scheduler_loop` (default true) stays
+on in production, also where the server is often suspended: the loop runs what is due within 20 s of waking, so a
+missed wake-up hook loses nothing, and the URL is safe alongside it. Off, the loop keeps goal deadlines and the memory
+tidy but starts no task (tests/run_pending_ui.py: a task put in the database an hour overdue shows Pending, stays so
+past the loop's 20 s, and /run_pending_tasks runs it). Firing a task publishes `schedule_update`, so an open Tasks page
+drops Pending at once.
 
 The Skills page lists the skills under each bot, in the menu's order (`GET /api/skills` gives each skill's `bots`:
 the bots that may use it, so a newly imported skill shows under Main); a shared skill shows under each of its bots,
@@ -529,7 +897,7 @@ renders.
 The chat is split into bots. A bot is a set of skills and a short prompt of its own; every bot shares the memory, the
 profile, the Vault, the connectors and the approval rules. The bots are built in (`bots/<id>.md`, compiled into the
 binary like the skills): front matter with `name`, `name_zh`, `icon` (an emoji, for text), `badge` (the menu icon's
-badge: `chat`, `plane`, `shield`, `card`, `camera`), `order` (the menu), `aliases` (ids of earlier bots merged into
+badge: `chat`, `plane`, `dollar`, `card`, `camera`), `order` (the menu), `aliases` (ids of earlier bots merged into
 this one: `get` resolves them, and the store moves their conversations to this bot when it opens), `description` /
 `description_zh` (what the main bot routes by), `skills` (comma list) and `tools` (comma list: tools only the bots
 that name them may use — the travel searches `flights_search`, `flight_offer`, `hotels_search`, `hotel_rooms`; a
@@ -566,13 +934,12 @@ is the bot's prompt, added to the executor prompt.
   `#bot/<id>/<conv>`. While Main waits for a bot (`WAITING_BOT`), Main's reply bubble stays: the dancing dots and a
   verb that moves with the bot's model and tool calls, then the bot's answer as it streams (`relaying`, `relayOf`:
   the bot task's `answer_delta` events are shown in Main's bubble too). It goes while the bot waits for the user.
-- Tests: `tests/bots_e2e.py`, `tests/bots_ui.py`; suites of one bot's skills set `K.BOT` (`tests/skills_common.py`) or
-  use `travel_common.BOT`.
+- Tests: `tests/bots_e2e.py`, `tests/bots_ui.py`; suites of one bot's skills set `K.BOT` (`tests/skills_common.py`).
 
 ## Skill front matter
 
-Every `skills/<name>/SKILL.md` starts with a YAML block. `front_matter` (`skills.rs`) reads four keys and ignores the
-rest:
+Every `skills/<name>/SKILL.md` starts with a YAML block. `front_matter` (`skills.rs`) reads these keys and ignores
+the rest:
 
 | Key | Values | Effect |
 |---|---|---|
@@ -580,6 +947,10 @@ rest:
 | `description` | bilingual one-liner | shown to the executor to decide when to load the skill |
 | `browser` | `off` | no browser and no sub-agents for the rest of the task (the city guides; below) |
 | `plan` | `on` | the planner runs once when the skill is loaded, with the sheet as its context, and the plan is appended to the tool result |
+| `form` | `on` | a form-filling skill: its step budget is at least 70 (`guards::FORM_STEPS`) |
+| `form_kind` | `arrival` / `claim` | which form guards apply (defaults, hand-over, the submit refusal) |
+| `steps` | a number | the skill's own step budget for the task, when above the setting's |
+| `profile` | field names (`nationality, birthday`) | those profile values are appended to the load_skill result in code, or "not in the profile — ask once" (`local::skill_profile_note`; entry-requirements, eu-etias, uk-eta) |
 
 **Default: no plan.** Most skills are a procedure of a few tool calls (search flights, fill one form, draft one
 letter): the sheet already says what to call and in what order, so the executor follows it directly and the task
@@ -592,8 +963,7 @@ seven carry it: `csr-trip-claim`, `travel-expense-report`, `travel-planning`, `d
 `web-research-compare`, `drive-cleanup`, `drive-photo-storybook`. The other 53 (the bookings, the arrival cards, the
 disruption / baggage / emergency helpers, the city guides, mail, shopping, phone and PDF skills) run from their
 sheets. A unit test (`built_in_skills_spell_the_plan_flag_as_on_and_only_the_long_ones_carry_it`) keeps the list in
-step with the files; `tests/kiwi_flights_e2e.py` checks that a flight search makes no plan and
-`tests/csr_claim_e2e.py` that the claim does. Imported skills use the same keys.
+step with the files; the real `cards_claim_real.py` covers the claim. Imported skills use the same keys.
 
 ## City guides (`skills/<city>/SKILL.md`)
 
@@ -616,8 +986,8 @@ or moving to <City>"), then: How to use this skill (the **No browser** rule and 
 arrival-card skill) · Orientation · Entering … and the airports · Money · Getting online and the apps · Getting around ·
 Business scene and customs · Living here · Food · What to see · Timeline · Sources to verify against · Remember what you
 learn. 14–20 KB each (CJK, Thai and Vietnamese text counts 2–3 bytes per character); `tests/city_guides_e2e.py` checks
-the shape, the hand-offs, the absence of browser tools, the dates and the size, and that a scripted answer uses only
-the guide and `market_data`.
+the front matter and the absence of browser tools, that every guide is installed, and that a browser call after a guide
+is refused.
 
 ### Refreshing a guide
 1. Work through the facts most likely to change first: visa-free lists and durations, arrival cards and entry fees,
@@ -637,9 +1007,12 @@ cover) run through bolttech's single partner API, which needs a commercial agree
 intermediary licence: that is the route if buying should ever happen inside OMuse.
 
 - **Singapore**: FWD Singapore Pte. Ltd. is the insurer. Buying: the public quote page
-  (`fwd.com.sg/travel-insurance/online-quote/`), then the application with the passport and card from the Vault after
-  `purchase_confirm`, handed over for Pay. Claiming: the travel claim form (`fwd.com.sg/claim-online/travel.html`) or the
-  customer portal, filled and handed over for Submit; FWD asks to be told within 30 days. FWD's robots.txt keeps
+  (`fwd.com.sg/travel-insurance/online-quote/`: Vuetify selects by label, read-only date pickers, then `summary` with
+  the plans), the plan's button pressed, then handed over at FWD's eligibility statements (the user's), before the
+  add-ons, the details and Pay. Claiming: the travel claim form (`fwd.com.sg/claim-online/travel.html`, no sign-in),
+  step 1 filled by input names (claimant, NRIC/FIN from the Vault, mobile, email, policy number) and handed over: "next"
+  checks the policy on FWD's server, so steps 2–3 (bank account, incident, Submit) are the user's; FWD asks to be told
+  within 30 days. FWD's robots.txt keeps
   crawlers off the quote pages; a browser acting for a signed-in user is not a crawler, but the pages may change.
 - **Hong Kong**: the three travel plans on fwd.com.hk (MyTravel, TravelCare Plus, GBA Easy Travel) are underwritten by
   **bolttech Insurance (Hong Kong)**; FWD Financial sells them as bolttech's appointed agency. Only HKID holders in Hong
@@ -653,5 +1026,5 @@ page's cookies and keeps it as `downloads/<name>.pdf`; the result carries `pdf: 
 `browser_downloads`. `files_read` and `pdf_form_fields` / `pdf_form_fill` then work on it (any PDF form on the web, not
 only this one).
 
-`tests/fwd_insurance_e2e.py` runs the three flows on stand-in pages (`tests/pages/fwd_sg_*.html`, a field-for-field
-stand-in of bolttech's form) and mail with PDF attachments (`skills_common.seed_mail` takes attachments).
+`tests/insurance_real.py` and `tests/insurance_hk_real.py` are being rebuilt on the official sites (the stand-in pages
+and the seeded mail were removed 2026-11-02).

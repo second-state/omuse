@@ -1,6 +1,10 @@
-"""0.2.10: shopping on a long page (the 2026-09-29 Amazon run) — browser_find / browser_look (vision) / scroll,
-and "Add to Cart" works without an approval while "Buy Now" still needs one."""
-import json
+"""Scripted (fake-model) remainder of the 0.2.10 shopping suite: only what a real-model run cannot do.
+
+The use case — shopping on a long product page (find / look / scroll, choose, add to cart without an approval, buying
+handed over to the user) — is tested from the user's side by tests/shopping_real.py. What stays here needs a forced
+condition: the configured vision model cannot take images (Settings → Models with a text-only vision model), and
+browser_look must then fail cleanly with a hint instead of hanging or inventing what it saw. A real model run cannot
+make the vision endpoint refuse images on purpose."""
 import sys
 import time
 
@@ -34,46 +38,6 @@ def results(t, name):
 
 
 c.put(B + "/api/settings", json={"language": "en"}, headers=H)
-
-# ---------------------------------------------------------------- the whole add-to-cart run
-t = run("SHOPCART open Amazon, search for an iPhone 17 Pro Max case, pick a nice one and add it to the cart. Don't check out.")
-check("task completes without waiting for an approval", t["status"] == "COMPLETED", t["status"] + " " + json.dumps(
-    [e for e in t["events"] if e["type"] == "waiting"], ensure_ascii=False)[:600])
-nav = results(t, "browser_navigate")
-check("the first snapshot is cut off in the header (the original problem)",
-      nav and "Aurora Glitter" not in nav[0]["preview"], nav[:1])
-calls = [e["data"]["name"] for e in t["events"] if e["type"] == "tool_call"]
-check("the agent never re-opens the same URL", calls.count("browser_navigate") == 1, calls)
-vis = [e["data"] for e in t["events"] if e["type"] == "vision"]
-check("browser_look ran the vision model twice", len(vis) == 2, vis)
-if vis:
-    m = [int(x) for x in __import__("re").findall(r"RED=(\d+)", vis[0]["answer"])]
-    check("the screenshot sent to the vision model is a real image with red set-of-marks boxes", m and m[0] > 100, vis[0])
-    check("labels were drawn on the page", vis[0]["marks"] > 5, vis[0])
-    check("vision can see the products and names the link ref", "Aurora Glitter Case" in vis[0]["answer"] and "click [e" in vis[0]["answer"], vis[0])
-fnd = results(t, "browser_find")
-check("browser_find locates the product and returns its price as context",
-      fnd and "Aurora Glitter Case" in fnd[0]["preview"] and "S$21.90" in fnd[0]["preview"], fnd[:1])
-check("browser_find finds the Add to Cart button on the product page",
-      len(fnd) > 1 and "add to cart, shift, alt, k" in fnd[1]["preview"].lower(), fnd[1:2])
-clicks = results(t, "browser_click")
-check("clicked into the chosen product", clicks and "product.html?id=3" in clicks[0]["preview"], clicks[:1])
-check("Add to Cart clicked without approval, cart updated",
-      len(clicks) > 1 and clicks[1]["ok"] and "1 items in cart" in clicks[1]["preview"], clicks[1:2])
-check("the final look confirms the cart", len(vis) == 2 and "1 items in cart" in vis[1]["answer"] and "Added to Cart" in vis[1]["answer"], vis[1:])
-check("no approval was created for Add to Cart", not any(e["type"] == "waiting" for e in t["events"]))
-
-# ---------------------------------------------------------------- scroll shows the next part of the page
-t = run("SHOPSCROLL")
-sc = results(t, "browser_scroll")
-check("browser_scroll returns the region around the new position (not the header again)",
-      sc and "around the current scroll position" in sc[0]["preview"] and "Case for iPhone 17 Pro Max" in sc[0]["preview"]
-      and "Department number" not in sc[0]["preview"], sc[:1])
-
-# ---------------------------------------------------------------- the approval rule itself
-# The rule (Add to Cart is a normal click, Buy Now / Place order need approval, checkout is navigation) is unit-tested
-# in Rust next to the code: crates/omuse-common/src/guard.rs, `cargo test -p omuse-common click_risk`. The run above checks
-# it end to end: Add to Cart went through without an approval.
 
 # ---------------------------------------------------------------- the configured vision model can't take images
 sys_url = c.get(B + "/api/settings", headers=H).json()["settings"]["model_base_url"]

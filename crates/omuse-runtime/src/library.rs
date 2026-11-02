@@ -100,6 +100,22 @@ pub fn chunks(text: &str) -> Vec<(String, String)> {
     out
 }
 
+/// The report as the user reads it: the research's `library/<slug>/sources.md` is always shown under "## Sources" at
+/// its end — the links were written there and the user never saw them (2026-10-30, library_real). The report's own
+/// headings are the model's prose and are not searched for a sources list.
+pub fn with_sources(report: &str, workspace: &Path, slug: &str) -> String {
+    if report.is_empty() {
+        return String::new();
+    }
+    let p = workspace.join(format!("library/{slug}/sources.md"));
+    let src = std::fs::read_to_string(p).unwrap_or_default();
+    let src = src.trim();
+    if src.is_empty() {
+        return report.to_string();
+    }
+    format!("{}\n\n## Sources\n\n{src}\n", report.trim_end())
+}
+
 /// The report text (at most 2,000,000 characters; "" when the file is missing).
 pub fn read_report(workspace: &Path, slug: &str) -> String {
     let p = workspace.join(report_path(slug));
@@ -233,6 +249,27 @@ pub fn new_subject(title: &str, brief: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_report_shows_its_sources() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("library/nas")).unwrap();
+        std::fs::write(
+            d.path().join("library/nas/sources.md"),
+            "- https://www.synology.com/\n",
+        )
+        .unwrap();
+        let shown = with_sources("# NAS\n\nDS224+ …", d.path(), "nas");
+        assert!(
+            shown.ends_with("## Sources\n\n- https://www.synology.com/\n"),
+            "{shown}"
+        );
+        // the report's own headings are not read: the research's sources are shown all the same
+        let own = "# NAS\n\n## Sources\n- a";
+        assert!(with_sources(own, d.path(), "nas").ends_with("- https://www.synology.com/\n"));
+        assert_eq!(with_sources("# x", d.path(), "other"), "# x"); // no sources file
+    }
+
     use super::*;
 
     #[test]

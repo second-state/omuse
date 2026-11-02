@@ -17,3 +17,7 @@ calamine = { workspace = true, features = ["dates"] }
 indexmap.workspace = true
 encoding_rs.workspace = true
 thiserror.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

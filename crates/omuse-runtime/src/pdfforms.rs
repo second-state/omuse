@@ -772,10 +772,22 @@ pub fn fill(path: &Path, values: &Value, output: &Path) -> Result<Value, FormErr
         .filter(|n| !ok.contains_key(*n) && after_val(n).is_empty())
         .take(40)
         .collect();
-    Ok(
-        json!({"output": output.to_string_lossy(), "filled": ok, "problems": problems,
-              "required_still_empty": empty_required, "untouched": untouched}),
-    )
+    let mut r = json!({"output": output.to_string_lossy(), "filled": ok, "problems": problems,
+              "required_still_empty": empty_required, "untouched": untouched});
+    let to_sign = signature_fields(&listed);
+    if !to_sign.is_empty() {
+        r["left_for_the_user_to_sign"] = json!(to_sign);
+    }
+    Ok(r)
+}
+
+/// The form's signature fields (PDF field type `/Sig`), by name: never filled, the user signs them.
+pub fn signature_fields(listed: &[Value]) -> Vec<String> {
+    listed
+        .iter()
+        .filter(|f| f["type"] == "signature")
+        .map(|f| py_str(&f["name"]))
+        .collect()
 }
 
 #[cfg(test)]
@@ -784,7 +796,17 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/pages/permission_slip.pdf")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/permission_slip.pdf")
+    }
+
+    #[test]
+    fn the_signature_fields_are_the_sig_typed_ones_never_a_name() {
+        let listed = vec![
+            json!({"name": "Signature of parent", "type": "text"}),
+            json!({"name": "Sig1", "type": "signature"}),
+            json!({"name": "consent", "type": "checkbox"}),
+        ];
+        assert_eq!(signature_fields(&listed), ["Sig1"]);
     }
 
     fn by_name(list: &[Value]) -> Map<String, Value> {

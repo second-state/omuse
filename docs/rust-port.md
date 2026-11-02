@@ -75,7 +75,7 @@ omuse-phone         app/sentinel/{phone,voice_app,dialmcp}.py (depends on omuse-
 omuse-sentinel      app/sentinel/{actions,telegram_bot,watchers}.py → same names; app/sentinel/main.py → routes.rs (+ state.rs)
                     (`ActionError` lives in omuse-sentinel-core::errors so every connector crate can raise it)
 omuse-runtime       app/runtime/{store,llm,prompts,context,agent,scheduler,goals,memory_tidy,library,skills,imagegen,
-                    attachments,pdfforms,golden,health,metrics,outcome}.py → same names; app/runtime/main.py → routes.rs (+ state.rs)
+                    attachments,pdfforms,health,metrics,outcome}.py → same names; app/runtime/main.py → routes.rs (+ state.rs)
                     app/skills/* embedded (include_dir), extracted to <runtime data>/skills-builtin at start unless [skills].dir is set
 omuse-browser       app/browser/main.py → broker.rs (+ more files as needed) and routes.rs; app/browser/*.js via include_str!
 omuse               the binary: config, roles, process lifecycle

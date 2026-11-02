@@ -18,9 +18,9 @@ use tokio::task::JoinHandle;
 
 use super::exec::CallMode;
 use super::guards::*;
-use super::lang::{agent_lang, request_lang, with_langs};
+use super::lang::{agent_lang, with_langs};
 use super::tools::{concurrent_runs, tool_name, FINISH_TOOLS, LOCAL_TOOLS};
-use super::util::{arr, content_of, fmt_float, sget, stored_call, tool_calls};
+use super::util::{arr, content_of, sget, tool_calls};
 use super::{is_terminal, TERMINAL};
 use crate::health::Health;
 use crate::llm::{
@@ -45,6 +45,8 @@ struct Skip {
     first: String,
     search: bool,
     typed: bool,
+    /// a second travel search in the turn: what the first one searched (one travel search per turn)
+    one_search: Option<(&'static str, &'static str)>,
 }
 
 /// A tool call that must wait for the user (approval / takeover): the loop stops and the task is parked.
@@ -78,12 +80,8 @@ pub(crate) struct Inner {
     pub sent_files: HashSet<(String, String, u64, i64)>,
     /// task_id -> pages/emails actually read (for present_choices)
     pub evidence: HashMap<String, Vec<Value>>,
-    /// task_id -> "legacy" (golden A/B of personal context)
-    pub ctx_mode: HashMap<String, String>,
     /// task_id -> sites whose remembered habits were shown
     pub site_noted: HashMap<String, HashSet<String>>,
-    /// task_id -> full tool results, newest last (outcome evidence)
-    pub tool_texts: HashMap<String, Vec<String>>,
     /// task_id -> seconds spent queued for a model slot
     pub llm_wait: HashMap<String, f64>,
     /// task_id -> sub-agent lanes handed out so far (`sub1`, `sub2`, …); seeded from the task's events, reserved
@@ -93,10 +91,20 @@ pub(crate) struct Inner {
     /// browser tools are hidden from that task and its sub-agents, and refused if called anyway, until a skill
     /// without that policy is loaded
     pub no_browser: HashMap<String, String>,
+    /// task_id -> a loaded skill that needs the browser (no `browser: off`): while one is loaded, a city guide loaded
+    /// after it does not turn the browser off (2026-10-30, travel_info_real: getting-around-asia then tokyo)
+    pub browser_skill: HashMap<String, String>,
+    /// task_id -> the step budget a loaded skill asks for (`steps: N` in its front matter), when above the setting's
+    /// (arrival_cards2_real 2026-10-30: Visit Japan Web — a login hand-over and a 20-field form — ran out at 40)
+    pub skill_steps: HashMap<String, i64>,
     /// sites whose bot wall was learned as a habit
     pub block_noted: HashSet<String>,
-    /// task_id -> product pages that already got the cart hint
-    pub product_hinted: HashMap<String, HashSet<String>>,
+    /// tasks already sent back once for a listings comparison without `ranking` criteria
+    pub ranking_asked: HashSet<String>,
+    /// tasks whose known page already got its fixed ticks (`guards::apdt_fixed_ticks`)
+    pub fixed_ticks: HashSet<String>,
+    /// `task|kind|key` of the pages a judgement already looked at (`judgements::PageCheck`): once each
+    pub page_checked: HashSet<String>,
 }
 
 /// The agent runtime. Always used behind `Arc` ([`Runtime::new`] returns one).
@@ -147,17 +155,20 @@ pub(crate) fn assistant_with_calls(content: &str, calls: &[ToolCall]) -> Value {
                "function": {"name": c.name, "arguments": pyjson::dumps(&c.args)}})).collect::<Vec<_>>()})
 }
 
-fn content_chars(msgs: &[Value]) -> usize {
-    msgs.iter().map(|m| content_of(m).chars().count()).sum()
+/// The hosts that failed or were refused at least twice in this task, most failures first (at most 8).
+pub(crate) fn dead_ends(fails: &indexmap::IndexMap<String, i64>) -> Vec<(String, i64)> {
+    let mut bad: Vec<(String, i64)> = fails
+        .iter()
+        .filter(|(_, n)| **n >= 2)
+        .map(|(h, n)| (h.clone(), *n))
+        .collect();
+    bad.sort_by_key(|(_, n)| -*n); // stable: ties keep the order they first failed in
+    bad.truncate(8);
+    bad
 }
 
-fn user_said(transcript: &[Value]) -> String {
-    transcript
-        .iter()
-        .filter(|m| get_str(m, "role") == "user")
-        .map(content_of)
-        .collect::<Vec<_>>()
-        .join("\n")
+fn content_chars(msgs: &[Value]) -> usize {
+    msgs.iter().map(|m| content_of(m).chars().count()).sum()
 }
 
 fn user_msg(text: impl Into<String>) -> Value {
@@ -211,10 +222,16 @@ impl Runtime {
             });
             let get_settings: crate::llm::SettingsFn =
                 Arc::new(move || st.settings().unwrap_or_else(|_| json!({})));
-            let llm = Arc::new(match transport {
+            let mut llm = match transport {
                 Some(tr) => Llm::with_transport(get_settings, Some(on_call), Some(on_retry), tr),
                 None => Llm::new(get_settings, Some(on_call), Some(on_retry)),
-            });
+            };
+            // no model call for a stopped task, whoever makes it (the loop, a sub-agent, a judgement, a review)
+            let w3 = weak.clone();
+            llm.cancelled = Some(Arc::new(move |tid: &str| {
+                w3.upgrade().is_some_and(|rt| rt.is_cancelled(tid))
+            }));
+            let llm = Arc::new(llm);
             Runtime {
                 me: weak.clone(),
                 image_budget: AtomicI64::new(crate::imagegen::image_budget(&cfg) as i64),
@@ -269,6 +286,480 @@ impl Runtime {
     /// `llm.chat(...)` for a task, abandoned as soon as the task is cancelled (`None`). Python let a cancelled task
     /// finish its model call (and every Retry-After sleep in it) before noticing the flag; here the call future is
     /// dropped, which also hands its concurrency slot back.
+    /// The profile a code machine reads: the stored profile with the connected mail account's address as `mailbox`
+    /// (the user's own email where the profile has none).
+    fn machine_profile(&self, catalog: &Value) -> Value {
+        let mut profile = self.store.profile().unwrap_or_else(|_| json!({}));
+        let mailbox = own_mailbox(catalog);
+        if !mailbox.is_empty() && profile.is_object() {
+            profile["mailbox"] = json!(mailbox);
+        }
+        profile
+    }
+
+    /// The user's today, in the timezone of the settings.
+    fn user_today(&self) -> chrono::NaiveDate {
+        let tz = get_str(&self.settings(), "timezone");
+        tz.parse::<chrono_tz::Tz>()
+            .map(|z| chrono::Utc::now().with_timezone(&z).date_naive())
+            .unwrap_or_else(|_| chrono::Local::now().date_naive())
+    }
+
+    /// A workflow tool's arguments through the JSON checking layer (agent/json_in.rs, docs/json-tools.md): the syntax
+    /// was repaired where the call was read; here the schema (types, enums, dates made ISO), then the tool's own field
+    /// checks (`booking::check`). Unparseable, a required field missing or invalid, or field checks that fail: the
+    /// planner model writes the JSON once more from the user's words and the same checks run on it
+    /// (`json_regenerated`). Still invalid: `invalid` for the executor's one more try — and `needs_input` once the
+    /// executor already had that try in this request.
+    pub(crate) async fn checked_workflow_args(
+        &self,
+        task_id: &str,
+        tool: &str,
+        args: &Value,
+        transcript: &[Value],
+        catalog: &Value,
+    ) -> super::workflow::Checked {
+        use super::workflow::Checked;
+        let params = super::booking::tool_schemas()
+            .into_iter()
+            .chain(super::news::tool_schemas())
+            .chain(super::claims::tool_schemas())
+            .chain(super::driver::tool_schemas())
+            .chain(super::apdt::tool_schemas())
+            .chain(super::trains::tool_schemas())
+            .chain(super::flightstatus::tool_schemas())
+            .find(|s| tool_name(s) == tool)
+            .map(|s| s["function"]["parameters"].clone())
+            .unwrap_or_else(|| json!({}));
+        // the profile's place fields (codes) for addresses saved without them: the model reads them once, as JSON
+        self.fill_places(task_id).await;
+        let profile = self.machine_profile(catalog);
+        let user_texts = super::driver::user_words(transcript);
+        let today = self.user_today();
+        let cx = super::booking::Ctx {
+            profile: &profile,
+            today,
+            user_texts: &user_texts,
+        };
+        let check = |a: &Value| -> (Checked, Vec<String>, Vec<String>) {
+            if let Some(raw) = a.get(super::json_in::UNPARSED_KEY) {
+                return (
+                    Checked::Invalid(vec![format!(
+                        "the arguments are not valid JSON: {}",
+                        take_chars(&py_str(raw), 200)
+                    )]),
+                    Vec::new(),
+                    Vec::new(),
+                );
+            }
+            let mut a = a.clone();
+            let c = super::json_in::conform(&params, &mut a);
+            let checked = if super::news::TOOLS.contains(&tool) {
+                super::news::check_in(tool, &a, transcript, &profile)
+            } else if super::claims::TOOLS.contains(&tool) {
+                let cx = super::claims::Ctx {
+                    profile: &profile,
+                    today,
+                    mail_ready: truthy(&catalog["connections"]["gmail"]["ready"]),
+                    transcript,
+                };
+                super::claims::check(tool, &a, &cx)
+            } else if super::driver::TOOLS.contains(&tool) {
+                let cx = super::driver::Ctx {
+                    profile: &profile,
+                    today,
+                    mail_ready: truthy(&catalog["connections"]["gmail"]["ready"]),
+                    transcript,
+                };
+                super::driver::check(tool, &a, &cx)
+            } else if super::apdt::TOOLS.contains(&tool) {
+                let cx = super::apdt::Ctx {
+                    profile: &profile,
+                    today,
+                    mail_ready: truthy(&catalog["connections"]["gmail"]["ready"]),
+                    transcript,
+                };
+                super::apdt::check(tool, &a, &cx)
+            } else if super::trains::TOOLS.contains(&tool) {
+                super::trains::check(tool, &a, today)
+            } else if super::flightstatus::TOOLS.contains(&tool) {
+                super::flightstatus::check(tool, &a)
+            } else {
+                super::booking::check(tool, &a, &cx)
+            };
+            let checked = match checked {
+                Checked::Invalid(mut p) if c.required_bad => {
+                    p.splice(0..0, c.problems.clone());
+                    Checked::Invalid(p)
+                }
+                _ if c.required_bad => Checked::Invalid(c.problems.clone()),
+                Checked::Invalid(mut p) => {
+                    p.extend(c.problems.clone());
+                    Checked::Invalid(p)
+                }
+                other => other,
+            };
+            (checked, c.fixed, c.problems)
+        };
+        let (mut checked, fixed, dropped) = check(args);
+        if !fixed.is_empty() || !dropped.is_empty() {
+            self.event(
+                task_id,
+                "json_repaired",
+                json!({"name": tool, "fixed": fixed, "dropped": dropped}),
+            )
+            .await;
+        }
+        if let Checked::Invalid(problems) = &checked {
+            // the planner writes the JSON once more from the user's words
+            let last_user = transcript
+                .iter()
+                .rposition(|m| get_str(m, "role") == "user")
+                .unwrap_or(0);
+            let last_answer = transcript[..last_user]
+                .iter()
+                .rev()
+                .find(|m| get_str(m, "role") == "assistant" && !content_of(m).trim().is_empty())
+                .map(content_of)
+                .unwrap_or_default();
+            let (system, user) = super::json_in::regen_prompt(
+                tool,
+                &params,
+                user_texts.last().map(String::as_str).unwrap_or(""),
+                &last_answer,
+                &pyjson::dumps(args),
+                problems,
+                &today.format("%Y-%m-%d").to_string(),
+            );
+            let pm = sget(&self.settings(), "planner_model");
+            let o = ChatOpts {
+                max_tokens: Some(800),
+                temperature: Some(0.0),
+                model: if pm.is_empty() { None } else { Some(pm) },
+                no_think: true,
+                ..opts("planner", task_id)
+            };
+            let msgs = [json!({"role": "system", "content": system}), user_msg(user)];
+            let again = match self.chat_or_cancel(task_id, &msgs, None, &o).await {
+                Some(Ok(r)) => super::json_in::extract(&r.content),
+                _ => None,
+            };
+            let mut ok = false;
+            if let Some((v, repairs)) = again {
+                let (c2, fixed2, _) = check(&v);
+                ok = !matches!(c2, Checked::Invalid(_));
+                self.event(
+                    task_id,
+                    "json_regenerated",
+                    json!({"name": tool, "problems": problems, "repairs": repairs, "fixed": fixed2,
+                           "args": v, "ok": ok}),
+                )
+                .await;
+                if ok
+                    || matches!(checked, Checked::Invalid(_))
+                        && matches!(c2, Checked::NeedsInput(_))
+                {
+                    checked = c2;
+                }
+            } else {
+                self.event(
+                    task_id,
+                    "json_regenerated",
+                    json!({"name": tool, "problems": problems, "ok": ok}),
+                )
+                .await;
+            }
+        }
+        // the executor already had its one more try in this request: what is still wrong is asked of the user
+        if let Checked::Invalid(problems) = &checked {
+            let last_user = transcript
+                .iter()
+                .rposition(|m| get_str(m, "role") == "user")
+                .unwrap_or(0);
+            let tried = transcript[last_user..].iter().any(|m| {
+                get_str(m, "role") == "tool"
+                    && serde_json::from_str::<Value>(&content_of(m))
+                        .is_ok_and(|v| get_str(&v, "status") == "invalid")
+            });
+            if tried {
+                return Checked::NeedsInput(problems.clone());
+            }
+        }
+        checked
+    }
+
+    /// The code machine's turn: the next step from the transcript, as a model reply with code calls (or, for the machines
+    /// not yet converted, a code-written answer). `None` when a workflow machine is done: its JSON result is appended
+    /// as the `T_result` code exchange and the model writes the reply on the next turn (agent/workflow.rs). When a
+    /// transitional machine finds no value by its regexes, one extraction call (recorded as an `extract_facts`
+    /// result), then the step again.
+    async fn drive(
+        &self,
+        task_id: &str,
+        machine: &Machine,
+        transcript: &mut Vec<Value>,
+        catalog: &Value,
+        lg: &str,
+    ) -> Option<ChatReply> {
+        use super::driver::Step;
+        let profile = self.machine_profile(catalog);
+        let today = self.user_today();
+        let mail_ready = truthy(&catalog["connections"]["gmail"]["ready"]);
+        // a schedule's run makes no new schedule (the news machine)
+        let scheduled = self
+            .store
+            .task(task_id)
+            .ok()
+            .flatten()
+            .is_some_and(|t| get_str(&t, "source") == "schedule");
+        // the catalog's tool names: the booking machine calls a travel connector's tool when the native one is missing
+        let available: Vec<String> = arr(catalog, "tools")
+            .iter()
+            .map(|t| tool_name(t).to_string())
+            .collect();
+        // the machine's code calls before this run's tool call (`prefix`): the ids go on from there
+        let first = |t: &[Value], from: usize, prefix: &str| {
+            t[..from.min(t.len())]
+                .iter()
+                .flat_map(tool_calls)
+                .filter(|tc| get_str(tc, "id").starts_with(prefix))
+                .count()
+        };
+        let next = |t: &[Value]| match machine {
+            Machine::Workflow { tool, args, from }
+                if super::driver::TOOLS.contains(&tool.as_str()) =>
+            {
+                let from = (*from).min(t.len());
+                let m = super::driver::Machine {
+                    profile: &profile,
+                    mail_ready,
+                    today,
+                    first: first(t, from, super::driver::PREFIX),
+                };
+                super::driver::next(tool, args, &t[from..], &m)
+            }
+            Machine::Workflow { tool, args, from }
+                if super::apdt::TOOLS.contains(&tool.as_str()) =>
+            {
+                let from = (*from).min(t.len());
+                let m = super::apdt::Machine {
+                    profile: &profile,
+                    mail_ready,
+                    today,
+                    first: first(t, from, super::apdt::PREFIX),
+                };
+                super::apdt::next(tool, args, &t[from..], &m)
+            }
+            Machine::Workflow { tool, args, from }
+                if super::news::TOOLS.contains(&tool.as_str()) =>
+            {
+                let from = (*from).min(t.len());
+                let first = t[..from]
+                    .iter()
+                    .flat_map(tool_calls)
+                    .filter(|tc| get_str(tc, "id").starts_with(super::news::PREFIX))
+                    .count();
+                let m = super::news::Machine {
+                    profile: &profile,
+                    today,
+                    scheduled,
+                    zh: lg != "en",
+                    first,
+                };
+                super::news::next(tool, args, &t[from..], &m)
+            }
+            Machine::Workflow { tool, args, from }
+                if super::trains::TOOLS.contains(&tool.as_str()) =>
+            {
+                let from = (*from).min(t.len());
+                let m = super::trains::Machine {
+                    today,
+                    first: first(t, from, super::trains::PREFIX),
+                };
+                super::trains::next(tool, args, &t[from..], &m)
+            }
+            Machine::Workflow { tool, args, from }
+                if super::flightstatus::TOOLS.contains(&tool.as_str()) =>
+            {
+                let from = (*from).min(t.len());
+                let m = super::flightstatus::Machine {
+                    first: first(t, from, super::flightstatus::PREFIX),
+                };
+                super::flightstatus::next(tool, args, &t[from..], &m)
+            }
+            Machine::Workflow { tool, args, from }
+                if super::claims::TOOLS.contains(&tool.as_str()) =>
+            {
+                let m = super::claims::Machine {
+                    profile: &profile,
+                    today,
+                };
+                super::claims::next(tool, args, t, *from, &m)
+            }
+            Machine::Workflow { tool, args, from } => {
+                let from = (*from).min(t.len());
+                let first = t[..from]
+                    .iter()
+                    .flat_map(tool_calls)
+                    .filter(|tc| get_str(tc, "id").starts_with(super::booking::PREFIX))
+                    .count();
+                let m = super::booking::Machine {
+                    profile: &profile,
+                    mail_ready,
+                    available: &available,
+                    first,
+                };
+                super::booking::next(tool, args, &t[from..], &m)
+            }
+        };
+        let step = next(transcript);
+        let Machine::Workflow { tool, .. } = machine;
+        let card = tool.as_str();
+        let (content, tool_calls) = match step {
+            Step::Calls(c) => (String::new(), c),
+            Step::Done(result) => {
+                // the machine's JSON result: the `T_result` code exchange, then the model writes the reply
+                let tool = tool.clone();
+                self.event(
+                    task_id,
+                    "workflow_result",
+                    json!({"tool": tool, "status": get_str(&result, "status"), "result": result}),
+                )
+                .await;
+                let ex = super::workflow::result_exchange(transcript, &tool, &result);
+                transcript.extend(ex);
+                return None;
+            }
+        };
+        self.event(
+            task_id,
+            "driver",
+            json!({"card": card, "calls": tool_calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), "final": !content.is_empty()}),
+        )
+        .await;
+        Some(ChatReply {
+            content,
+            reasoning: String::new(),
+            tool_calls,
+            usage: json!({}),
+            finish_reason: json!("stop"),
+        })
+    }
+
+    /// One reading of the final answer by the model, as the user would read it: `Some(review)` when it does not hold
+    /// together (it contradicts itself, stops mid-way, answers another question, or claims the opposite of what it
+    /// reports) or breaks the language rule; `None` when it is fine. JSON only, no judgement of style. The facts the
+    /// user must read are not the review's: code appends them after it (agent/show.rs).
+    async fn review_answer(
+        &self,
+        task_id: &str,
+        request: &str,
+        answer: &str,
+        lg: &str,
+    ) -> Option<Review> {
+        if answer.chars().count() < 40 {
+            return None;
+        }
+        let o = ChatOpts {
+            max_tokens: Some(120),
+            temperature: Some(0.0),
+            no_think: true,
+            ..opts("classify", task_id)
+        };
+        let body = format!(
+            "The user's request:\n{}\n\nThe reply:\n{}",
+            take_chars(request, 2000),
+            take_chars(answer, 6000)
+        );
+        let msgs = [
+            json!({"role": "system", "content": prompts::review_system(lg)}),
+            user_msg(body),
+        ];
+        let r = self.llm.chat(&msgs, None, &o).await.ok()?;
+        let v = crate::llm::extract_json(&r.content)?;
+        let ok = v.get("ok").and_then(Value::as_bool).unwrap_or(true);
+        let problem = take_chars(get_str(&v, "problem").trim(), 300).to_string();
+        // the language rule (Settings → Language), judged by the model: only an explicit false counts
+        let language = v.get("language_ok").and_then(Value::as_bool) == Some(false);
+        if (ok || problem.is_empty()) && !language {
+            return None;
+        }
+        Some(Review {
+            problem: if ok { String::new() } else { problem },
+            language,
+        })
+    }
+
+    /// The reply again in the agent's language (`lg`), when the final review found it written in another one against
+    /// the language rule (the model judges; code never guesses a text's language). Text the user asked for in another
+    /// language stays as it is.
+    async fn reply_in_language(
+        &self,
+        task_id: &str,
+        request: &str,
+        reply: &str,
+        lg: &str,
+    ) -> String {
+        let sysmsg = format!(
+            "Rewrite the reply to the user in {}. No tools. Keep its content, structure, markdown, links, numbers, names, \
+email subjects and quotes exactly; text the user asked for in another language (a translation, a poem, story, post or \
+message to use as written) stays in that language. Output only the rewritten reply.",
+            prompts::lang_name(lg)
+        );
+        let body = format!(
+            "The user's request:\n{}\n\nThe reply:\n{}",
+            take_chars(request, 2000),
+            take_chars(reply, 6000)
+        );
+        match self
+            .llm
+            .chat(
+                &[json!({"role": "system", "content": sysmsg}), user_msg(body)],
+                None,
+                &opts("rescue_final", task_id),
+            )
+            .await
+        {
+            Ok(r) => strip_tool_markup(&r.content).trim().to_string(),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// The reply again, with the problem the review named fixed (the model writes it; the machine's result JSON is the
+    /// only source).
+    async fn reply_fixed(
+        &self,
+        task_id: &str,
+        request: &str,
+        reply: &str,
+        result: &Value,
+        review: &Review,
+        lg: &str,
+    ) -> String {
+        let sysmsg = prompts::l(lg,
+            "你根据工具的 JSON 结果改写给用户的回复。不能调用工具。保留原回复的内容和语言，改正指出的问题（数字、编号、链接原样照抄）。只输出改写后的回复。",
+            "You rewrite a reply to the user from a tool's JSON result. No tools. Keep the reply's content and language and fix the problem named (numbers, references and links copied exactly from the result). Output only the rewritten reply.");
+        let body = format!(
+            "The user's request:\n{}\n\nThe tool's result (JSON):\n{}\n\nThe reply:\n{}\n\nProblem: {}",
+            take_chars(request, 2000),
+            take_chars(&result.to_string(), 8000),
+            take_chars(reply, 6000),
+            review.problem
+        );
+        match self
+            .llm
+            .chat(
+                &[json!({"role": "system", "content": sysmsg}), user_msg(body)],
+                None,
+                &opts("rescue_final", task_id),
+            )
+            .await
+        {
+            Ok(r) => strip_tool_markup(&r.content).trim().to_string(),
+            Err(_) => String::new(),
+        }
+    }
+
     pub async fn chat_or_cancel(
         &self,
         task_id: &str,
@@ -276,13 +767,72 @@ impl Runtime {
         tools: Option<&[Value]>,
         o: &ChatOpts,
     ) -> Option<Result<ChatReply, LlmError>> {
-        let fut = self.llm.chat(msgs, tools, o);
+        let r = self.chat_cancellable(task_id, msgs, tools, o).await?;
+        // an optional model (the form-filling or planner model) that stays unavailable after its retries: the call goes
+        // to the LLM instead of failing the task (2026-10-30: xAI "at capacity" ended form tasks running on grok-4.7)
+        if let (Err(e), Some(model)) = (&r, o.model.as_ref()) {
+            if !e.is_context() && unavailable(e) {
+                self.event(
+                    task_id,
+                    "model_fallback",
+                    json!({"model": model, "error": take_chars(&e.to_string(), 200)}),
+                )
+                .await;
+                let fallback = ChatOpts {
+                    model: None,
+                    ..o.clone()
+                };
+                return self.chat_cancellable(task_id, msgs, tools, &fallback).await;
+            }
+        }
+        Some(r)
+    }
+
+    /// Sleep `dur`, waking at once when the task is cancelled: `true` when it was (a code step's wait — the email
+    /// verification step's poll for the mail, agent/email_code.rs — ends then).
+    pub(crate) async fn sleep_or_cancel(&self, task_id: &str, dur: Duration) -> bool {
+        let notified = self.cancel_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.cancel_flags.lock().contains(task_id) {
+            return true;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(dur) => self.cancel_flags.lock().contains(task_id),
+            _ = &mut notified => self.cancel_flags.lock().contains(task_id),
+        }
+    }
+
+    async fn chat_cancellable(
+        &self,
+        task_id: &str,
+        msgs: &[Value],
+        tools: Option<&[Value]>,
+        o: &ChatOpts,
+    ) -> Option<Result<ChatReply, LlmError>> {
+        self.until_cancelled(task_id, self.llm.chat(msgs, tools, o))
+            .await
+    }
+
+    /// Whether the user stopped this task (`POST /api/tasks/{id}/cancel`). Checked before every model call, tool
+    /// call and code-machine step; sub-agents run under their parent's id, so they stop with it.
+    pub fn is_cancelled(&self, task_id: &str) -> bool {
+        !task_id.is_empty() && self.cancel_flags.lock().contains(task_id)
+    }
+
+    /// `fut`, abandoned (dropped, `None`) as soon as the task is stopped: a model call queued for a slot or sleeping on
+    /// a Retry-After, a tool call waiting on Sentinel (a page load, a video job being polled, a phone call), any wait.
+    pub(crate) async fn until_cancelled<F: std::future::Future>(
+        &self,
+        task_id: &str,
+        fut: F,
+    ) -> Option<F::Output> {
         tokio::pin!(fut);
         loop {
             let notified = self.cancel_notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if self.cancel_flags.lock().contains(task_id) {
+            if self.is_cancelled(task_id) {
                 return None;
             }
             tokio::select! {
@@ -435,23 +985,14 @@ impl Runtime {
             return Ok(());
         }
         let s = self.settings();
-        let mut language = sget(&s, "language");
-        if language.is_empty() {
-            language = "zh".into();
-        }
-        if get_str(&s, "reply_language") == "match" {
-            let last_user = msgs
-                .iter()
-                .rev()
-                .find(|m| get_str(m, "role") == "user")
-                .map(content_of)
-                .unwrap_or_default();
-            language = if prompts::request_language(&last_user, &language) == "English" {
-                "en".into()
-            } else {
-                "zh".into()
-            };
-        }
+        let language = if get_str(&s, "language") == "en" {
+            "en"
+        } else {
+            "zh"
+        };
+        // Reply language = match: the model writes the title in the latest message's language and names it in
+        // `lang` (JSON, checked against the list); otherwise the setting fixes it
+        let fixed = (get_str(&s, "reply_language") != "match").then_some(language);
         let text = msgs
             .iter()
             .map(|m| {
@@ -468,7 +1009,7 @@ impl Runtime {
             .collect::<Vec<_>>()
             .join("\n\n");
         let o = ChatOpts {
-            max_tokens: Some(60),
+            max_tokens: Some(80),
             temperature: Some(0.0),
             no_think: true,
             ..opts("title", task_id)
@@ -477,7 +1018,7 @@ impl Runtime {
             .llm
             .chat(
                 &[
-                    json!({"role": "system", "content": prompts::title_prompt(&language)}),
+                    json!({"role": "system", "content": prompts::title_prompt(fixed)}),
                     user_msg(text),
                 ],
                 None,
@@ -485,7 +1026,7 @@ impl Runtime {
             )
             .await
             .map_err(|e| anyhow!("{}: {}", e.name(), e))?;
-        let title = prompts::clean_title(&r.content, &language);
+        let (title, _lang) = prompts::parse_title(&r.content, language, fixed);
         if !title.is_empty() && title != get_str(&conv, "title") {
             self.store.set_conv_title(cid, &title)?;
             self.publish(json!({"kind": "conv_update", "conv_id": cid}))
@@ -543,38 +1084,6 @@ impl Runtime {
         cat
     }
 
-    /// Golden (test) runs stop where a real run would change something or need the user; the stop is the result.
-    pub(crate) async fn dry_run_stop(
-        &self,
-        task_id: &str,
-        name: &str,
-        args: &Value,
-        why: &str,
-    ) -> String {
-        self.event(
-            task_id,
-            "dry_run_stop",
-            json!({"tool": name, "args": preview_args(args), "why": truncate(why, 200)}),
-        )
-        .await;
-        format!(
-            "（演练模式）到这一步会真正执行操作或需要用户批准，演练到此为止，没有执行：{}。不要重试这一步，也不要换别的方法绕过；直接写最终回答，说明准备怎么做、做到了哪一步。\
- (Dry run: this step would act for real or need the user's approval, so it was not run. Do not retry it or \
-work around it; write the final answer saying what you would do and how far you got.)",
-            if why.is_empty() { name } else { why }
-        )
-    }
-
-    pub(crate) fn note_tool_text(&self, task_id: &str, content: &str) {
-        let mut inner = self.inner.lock();
-        let log = inner.tool_texts.entry(task_id.to_string()).or_default();
-        log.push(take_chars(content, 20000).to_string());
-        let n = log.len();
-        if n > 40 {
-            log.drain(..n - 40);
-        }
-    }
-
     // ================================================================ events
     /// Store a task event and publish it (`{"kind": "task_event", **event}`).
     pub async fn event(&self, task_id: &str, type_: &str, data: Value) {
@@ -596,6 +1105,19 @@ work around it; write the final answer saying what you would do and how far you 
     /// `set_status(task_id, status, **kw)`: update, publish the brief, audit; terminal states notify the health
     /// watch and let the browser recycle the task's page.
     pub async fn set_status(&self, task_id: &str, status: &str, kw: Value) {
+        // a stopped task stays stopped: a step that was already under way when the user pressed Stop (a suspend, the
+        // final answer, a failure) never turns CANCELLED back into something else
+        if status != "CANCELLED"
+            && self
+                .store
+                .task(task_id)
+                .ok()
+                .flatten()
+                .is_some_and(|t| get_str(&t, "status") == "CANCELLED")
+        {
+            println!("[status] {task_id}: stays CANCELLED (not {status})");
+            return;
+        }
         let mut upd = Map::new();
         upd.insert("status".into(), json!(status));
         if let Some(o) = kw.as_object() {
@@ -771,18 +1293,16 @@ work around it; write the final answer saying what you would do and how far you 
             .unwrap_or_else(|| json!({}));
         let s0 = self.settings();
         let goal = sget(&t0, "goal");
-        let (mut tl, mut fl) = (String::new(), String::new());
+        let (mut tl, fl) = (String::new(), String::new());
         if get_str(&s0, "reply_language") == "match" {
-            tl = request_lang(&goal).to_string(); // this task only (and what it spawns)
-        } else if get_str(&s0, "language") == "en"
-            && request_lang(&goal) == "zh"
-            && prompts::wants_cjk_output(&goal)
-        {
-            // 2026-10-02 R8/R10: a note in the English prompt wasn't enough — "写一篇 5000 字的科幻小说" still came out in English
-            fl = "zh".into();
+            // the model reads the request's language (a JSON choice); this task only (and what it spawns)
+            tl = self.request_lang(&task_id, &goal).await.to_string();
         }
         let res = with_langs(tl, fl, self.run(&task_id)).await;
-        if let Err(e) = res {
+        if let (Err(e), true) = (&res, self.is_cancelled(&task_id)) {
+            // stopped by the user meanwhile: what broke off is not a failure (no FAILED, no error message)
+            println!("[runtime] task {} stopped: {:#}", task_id, e);
+        } else if let Err(e) = res {
             let name = e
                 .downcast_ref::<LlmError>()
                 .map(|l| l.name())
@@ -822,8 +1342,9 @@ work around it; write the final answer saying what you would do and how far you 
         {
             let mut inner = self.inner.lock();
             inner.evidence.remove(&task_id);
-            inner.tool_texts.remove(&task_id);
             inner.no_browser.remove(&task_id);
+            inner.browser_skill.remove(&task_id);
+            inner.skill_steps.remove(&task_id);
         }
     }
 
@@ -875,7 +1396,10 @@ work around it; write the final answer saying what you would do and how far you 
         }
     }
 
-    /// Cancel a task (and expire its pending approval / takeover).
+    /// Cancel (stop) a task: the flag is seen before its next model call, tool call or code-machine step, and wakes
+    /// whatever it is waiting on (`until_cancelled`); the status is CANCELLED at once and stays so. Its sub-agents run
+    /// under its id and stop with it; the bot task it handed over to is cancelled too. A pending approval / takeover
+    /// expires.
     pub async fn cancel(&self, task_id: &str, reason: &str) {
         self.cancel_flags.lock().insert(task_id.to_string());
         self.cancel_notify.notify_waiters();
@@ -892,23 +1416,28 @@ work around it; write the final answer saying what you would do and how far you 
             json!({"finished_at": now_ts(), "error": reason})
         };
         self.set_status(task_id, "CANCELLED", kw).await;
-        if status == super::bots::WAITING_BOT {
-            self.cancel_handoff(&t.get("waiting").cloned().unwrap_or(Value::Null), reason)
-                .await;
+        // the sub-agents still working (started, not done): they see the parent's flag and stop at their next step
+        let evs = self.store.events(task_id, 0).unwrap_or_default();
+        let count = |ty: &str| evs.iter().filter(|e| get_str(e, "type") == ty).count();
+        let subagents = count("subagent_start").saturating_sub(count("subagent_done"));
+        let mut data = json!({});
+        if !reason.is_empty() {
+            data["reason"] = json!(reason);
         }
-        self.event(
+        if subagents > 0 {
+            data["subagents"] = json!(subagents);
+        }
+        self.event(task_id, "cancelled", data).await;
+        self.cancel_handoff(
             task_id,
-            "cancelled",
-            if reason.is_empty() {
-                json!({})
-            } else {
-                json!({"reason": reason})
-            },
+            &t.get("waiting").cloned().unwrap_or(Value::Null),
+            reason,
         )
         .await;
-        if super::WAITING.contains(&status.as_str()) {
+        {
             // don't leave an orphan approval behind: approving it later would run an action for a dead task
-            // (Sentinel also ends a takeover of this task's page)
+            // (Sentinel also ends a takeover of this task's page). Also for a running task: a call dropped mid-way may
+            // have just asked for one
             let why = if reason.is_empty() {
                 "任务已取消 (task cancelled)"
             } else {
@@ -1011,18 +1540,11 @@ work around it; write the final answer saying what you would do and how far you 
                     .cloned()
                     .unwrap_or_else(|| json!({}));
                 let lg = agent_lang(&self.settings());
-                let text = prompts::l(
-                    lg,
-                    "用户已完成接管并交还浏览器控制权。请先调用 browser_snapshot 查看当前页面状态再继续。",
-                    "",
-                );
+                // a fact, not an instruction: the page after the hand-back is read by code (`needs_handback_snapshot`)
                 let text = if lg == "en" {
-                    format!(
-                        "{}: the user handed browser control back. Take a browser_snapshot first to see the current page, then continue.",
-                        TAKEOVER_DONE_EN
-                    )
+                    format!("{TAKEOVER_DONE_EN}: the user handed browser control back.")
                 } else {
-                    text.to_string()
+                    format!("{TAKEOVER_DONE_MARK}并交还浏览器控制权。")
                 };
                 pend["resolved"] = json!({"call_id": pend.get("call_id"), "decision": "takeover_ended",
                                           "result": {"status": "ok", "result": text}});
@@ -1267,12 +1789,10 @@ work around it; write the final answer saying what you would do and how far you 
         self.skills_dirs.enabled(&self.settings())
     }
 
-    /// Long-term facts for this task (personal context v1): the ones that matter for what is asked, grouped by
-    /// domain. A golden A/B run can ask for the old selection with `ctx_mode[task_id] = "legacy"`.
     /// The profile's standing preferences for the executor prompt, as (label, value): the fixed
-    /// `preferred_airline` / `preferred_hotel_brand` / `preferred_car_rental` fields, then any custom field whose label carries one of
-    /// `store::PREFERENCE_WORDS` (a second airline, a loyalty programme, a seat wish…). Empty values are skipped;
-    /// nothing else of the profile is ever put in the prompt.
+    /// `preferred_airline` / `preferred_hotel_brand` / `preferred_car_rental` fields, then the custom fields the user
+    /// marked standing on the Memory page (`Store::profile_standing`: a second airline, a loyalty programme, a seat
+    /// wish…). Empty values are skipped; nothing else of the profile is ever put in the prompt.
     pub fn standing_prefs(&self) -> Vec<(String, String)> {
         let prof = self.store.profile().unwrap_or_else(|_| json!({}));
         let Some(map) = prof.as_object() else {
@@ -1290,83 +1810,39 @@ work around it; write the final answer saying what you would do and how far you 
                 out.push((label, v.trim().to_string()));
             }
         }
-        for (k, v) in map {
-            let Some(label) = k.strip_prefix("custom:") else {
+        for k in self.store.profile_standing().unwrap_or_default() {
+            let (Some(label), Some(v)) = (
+                k.strip_prefix("custom:"),
+                map.get(&k).and_then(Value::as_str),
+            ) else {
                 continue;
             };
-            let v = v.as_str().unwrap_or("");
-            let low = label.to_lowercase();
-            if !v.trim().is_empty()
-                && crate::store::PREFERENCE_WORDS
-                    .iter()
-                    .any(|w| low.contains(w))
-            {
+            if !v.trim().is_empty() {
                 out.push((label.to_string(), v.trim().to_string()));
             }
         }
         out
     }
 
-    pub fn facts_for(&self, goal: &str, history_txt: &str, task_id: &str) -> Vec<Value> {
-        if self.inner.lock().ctx_mode.get(task_id).map(String::as_str) == Some("legacy") {
-            return self.facts_legacy(goal);
-        }
+    /// Long-term facts for this task: the model reads the request against what memory holds (JSON choices), and
+    /// code selects on the facts' structured fields and the task's data (bot, skills, tools) — `context::facts_for_task`.
+    pub async fn facts_for(&self, t: &Value, history_txt: &str) -> Vec<Value> {
         let users: Vec<&str> = history_txt
             .lines()
             .filter_map(|ln| ln.strip_prefix("user: "))
             .collect();
         let users = users[users.len().saturating_sub(3)..].join("\n");
-        let facts = self.store.facts(500, Some("long")).unwrap_or_default();
-        let ents = self.store.entities(None).unwrap_or_default();
-        let out = crate::context::select(goal, &facts, Some(&ents), 12, &users);
-        let golden = self
-            .store
-            .task(task_id)
-            .ok()
-            .flatten()
-            .map(|t| get_str(&t, "source") == "golden")
-            .unwrap_or(false);
-        if !golden {
-            let ids: Vec<String> = out.iter().take(12).map(|f| get_str(f, "id")).collect();
-            let _ = self.store.mark_used(&ids);
-        }
-        out
-    }
-
-    /// The selection before batch 2 (kept for the A/B comparison).
-    pub fn facts_legacy(&self, goal: &str) -> Vec<Value> {
-        let found = self
-            .store
-            .search_facts(goal, 10, Some("long"), false)
-            .unwrap_or_default();
-        let mut prefs: Vec<Value> = self
-            .store
-            .facts(300, Some("long"))
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|f| {
-                matches!(
-                    get_str(f, "category").as_str(),
-                    "preference" | "person" | "habit"
-                )
-            })
-            .collect();
-        let num = |f: &Value, k: &str| f.get(k).and_then(omuse_common::util::as_f64).unwrap_or(0.0);
-        prefs.sort_by(|a, b| {
-            (num(b, "uses"), num(b, "last_verified"))
-                .partial_cmp(&(num(a, "uses"), num(a, "last_verified")))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        prefs.truncate(10);
-        let mut seen = HashSet::new();
-        let mut out = Vec::new();
-        for f in found.into_iter().chain(prefs) {
-            if seen.insert(get_str(&f, "id")) {
-                out.push(f);
-            }
-        }
-        out.truncate(15);
-        out
+        let task = crate::context::task_data(&self.bot_of(t).id, arr(t, "transcript"));
+        crate::context::facts_for_task(
+            &self.store,
+            &self.llm,
+            &get_str(t, "id"),
+            &get_str(t, "goal"),
+            &users,
+            &task,
+        )
+        .await
+        .0
     }
 
     /// Tell the ledger how a purchase ended: the order number from the confirmation page, or none.
@@ -1414,15 +1890,14 @@ work around it; write the final answer saying what you would do and how far you 
         if !self.inner.lock().block_noted.insert(site.to_string()) {
             return;
         }
-        let existing = self
+        // recorded before (in an earlier run): a fact of kind site_block with this site as its entity
+        if self
             .store
-            .search_facts(&format!("{} 反机器人 bot", site), 5, Some("long"), true)
-            .unwrap_or_default();
-        if existing.iter().any(|f| {
-            let fact = get_str(f, "fact");
-            fact.contains(site)
-                && (fact.contains("反机器人") || fact.to_lowercase().contains("bot"))
-        }) {
+            .facts(5000, None)
+            .unwrap_or_default()
+            .iter()
+            .any(|f| get_str(f, "kind") == "site_block" && get_str(f, "entity") == site)
+        {
             return;
         }
         let fact = format!(
@@ -1434,6 +1909,9 @@ work around it; write the final answer saying what you would do and how far you 
             confidence: 0.8,
             domain: "site".into(),
             status: "pending".into(),
+            kind: "site_block".into(),
+            scope: "topic".into(),
+            task_id: task_id.to_string(),
             ..Default::default()
         };
         match self.store.add_fact(&fact, "habit", site, &o) {
@@ -1461,13 +1939,14 @@ work around it; write the final answer saying what you would do and how far you 
         let found = crate::context::site_facts(
             url,
             &self.store.facts(500, Some("long")).unwrap_or_default(),
+            &self.store.entities(None).unwrap_or_default(),
         );
         if found.is_empty() {
             return String::new();
         }
-        let _ = self
-            .store
-            .mark_used(&found.iter().map(|f| get_str(f, "id")).collect::<Vec<_>>());
+        let ids: Vec<String> = found.iter().map(|f| get_str(f, "id")).collect();
+        let _ = self.store.mark_used(&ids);
+        let _ = self.store.note_task_memory(task_id, &[], &[], &ids);
         let lines: Vec<String> = found
             .iter()
             .map(|f| {
@@ -1612,6 +2091,7 @@ work around it; write the final answer saying what you would do and how far you 
         task_id: &str,
         conv_id: &str,
         s: &Value,
+        seen: Vec<String>,
     ) -> (ChatOpts, Option<JoinHandle<()>>) {
         let mut o = opts("executor", task_id);
         if !s.get("stream_answers").map(truthy).unwrap_or(true) {
@@ -1628,9 +2108,13 @@ work around it; write the final answer saying what you would do and how far you 
                     d = newer; // only the newest text matters
                 }
                 if last.as_ref() != Some(&d) {
+                    // the same links as the final answer will have: repaired against the results, a half-written one
+                    // held back until it is whole
+                    let text =
+                        crate::links::repair_answer(crate::links::trim_open_link(&d.text), &seen);
                     rt.publish(
                         json!({"kind": "answer_delta", "task_id": tid, "conv_id": cid,
-                                      "text": d.text, "calls": d.tool_calls}),
+                                      "text": text, "calls": d.tool_calls}),
                     )
                     .await;
                     last = Some(d);
@@ -1649,7 +2133,7 @@ work around it; write the final answer saying what you would do and how far you 
         let t = self.store.task(task_id).ok().flatten()?;
         let goal_text = get_str(&t, "goal");
         let (_, history_txt) = self.history(&get_str(&t, "conv_id"), task_id);
-        let facts = self.facts_for(&goal_text, &history_txt, task_id);
+        let facts = self.facts_for(&t, &history_txt).await;
         let mut pt = t.clone();
         let atts = arr(&t, "attachments");
         if !atts.is_empty() {
@@ -1691,7 +2175,11 @@ work around it; write the final answer saying what you would do and how far you 
             .collect()
     }
 
-    /// The tool list for this run: Sentinel's catalog + the local tools, minus the schedule/goal-only ones.
+    /// The tool list for this run: Sentinel's catalog + the local tools, minus the schedule/goal-only ones. Google
+    /// first: with a SerpApi key (the catalog's `connections.travel.google`) the built-in travel searches stay. Without
+    /// one they would fall back (flights to Kiwi.com, hotels to a web search), so a travel search the user's own
+    /// connector also offers (`mcp_<id>__hotels_search` beside `hotels_search`) is then the connector's alone: with one
+    /// travel search a turn, the model must not spend it on the weaker built-in one.
     pub fn tools_for(
         catalog: &Value,
         allow: Option<&[&str]>,
@@ -1700,29 +2188,46 @@ work around it; write the final answer saying what you would do and how far you 
     ) -> Vec<Value> {
         let mut tools: Vec<Value> = arr(catalog, "tools").to_vec();
         tools.extend(LOCAL_TOOLS.iter().cloned());
-        tools
+        let tools: Vec<Value> = tools
             .into_iter()
             .filter(|t| {
                 let n = tool_name(t);
                 (schedule || (n != "schedule_state_get" && n != "schedule_state_set"))
                     && (goal || n != "goal_update")
+                    // run by the form functions (crate::forms) with a plan computed in code, never by the model
+                    && n != "browser_fill_form"
+                    // read by the code machines with their fixed selectors (a known page's elements)
+                    && n != "browser_read_elements"
                     && allow.is_none_or(|a| a.contains(&n))
             })
+            .collect();
+        let connected: HashSet<&str> = tools
+            .iter()
+            .filter_map(|t| tool_name(t).strip_prefix("mcp_")?.split_once("__"))
+            .map(|(_, base)| base)
+            .collect();
+        let google = truthy(&catalog["connections"]["travel"]["google"]);
+        let shadowed = |n: &str| !google && travel_search(n).is_some() && connected.contains(n);
+        tools
+            .iter()
+            .filter(|t| !shadowed(tool_name(t)))
+            .cloned()
             .collect()
     }
 
     /// Keep the last steps for delivering what the user asked for.
     ///
-    /// A research-heavy task used to spend every step reading pages and hit the limit before writing the PDF / sending
-    /// the email. Now: (1) after many page visits, one nudge to start writing; (2) with BUDGET_RESERVE steps left, a note
-    /// to stop gathering and deliver; (3) in the last 2 steps only delivery tools remain.
+    /// The budget is a tool-list limit, never a message to the model (the hard rule: no natural language in the
+    /// decision flow): with BUDGET_RESERVE steps left, or past TIME_NUDGE of the minute budget (`late`), only the
+    /// finishing tools remain (the deliverable, send_file, the answer); after RESEARCH_NUDGE_PAGES + 3 page visits the
+    /// page-reading tools are withdrawn, after WEB_NUDGE web searches (`web_calls`) the search tools.
     pub fn budget(
-        transcript: &mut Vec<Value>,
+        transcript: &[Value],
         tools: Vec<Value>,
         remaining: i64,
-        lang: &str,
+        web_calls: i64,
+        late: bool,
     ) -> Vec<Value> {
-        let said = user_said(transcript);
         let pages = transcript
             .iter()
             .filter(|m| get_str(m, "role") == "assistant")
@@ -1734,49 +2239,36 @@ work around it; write the final answer saying what you would do and how far you 
                     == Some("browser_navigate")
             })
             .count() as i64;
-        if pages >= RESEARCH_NUDGE_PAGES
-            && !said.contains(BUDGET_MARK_PAGES)
-            && remaining > BUDGET_RESERVE
-        {
-            let txt = if lang == "en" {
-                format!(
-                    "(System) [{BUDGET_MARK_PAGES}] You have opened {pages} pages. If you have enough, start writing the result now; otherwise read at most 2–3 more pages or delegate the rest to a sub-agent."
-                )
-            } else {
-                format!(
-                    "（系统）[{BUDGET_MARK_PAGES}] 你已经打开了 {pages} 个网页。如果信息已经够用，现在就开始写结果/交付物；还缺的话最多再看 2–3 个页面，或者用 delegate 交给子 Agent 去查。"
-                )
-            };
-            transcript.push(user_msg(txt));
-        }
-        if remaining <= BUDGET_RESERVE && !said.contains(BUDGET_MARK) {
-            let txt = if lang == "en" {
-                format!(
-                    "(System) [{BUDGET_MARK}] Only {remaining} steps left: stop gathering yourself and produce the deliverable the \
-user asked for with what you have (write the file, make_pdf/make_xlsx, send_file, send the email…), then give \
-the final answer and note anything left unverified. If a fixed number of items the user asked for is still \
-short, use one delegate call for the rest (it doesn't use these steps). Internal control — do not mention a \
-'budget' or remaining steps to the user."
-                )
-            } else {
-                format!(
-                    "（系统）[{BUDGET_MARK}] 只剩 {remaining} 步了。停止自己继续搜集资料，用已有的信息马上完成\
-用户要的交付物（写文件、生成 PDF/Excel、send_file、发邮件等），然后给出最终回答，并说明哪些没来得及核实。\
-如果用户要的固定数量条目还没凑齐，用一次 delegate 把剩下的交给子 Agent（不占用这里的步数）。\
-这是内部控制，不要向用户提「预算」或剩余步数。"
-                )
-            };
-            transcript.push(user_msg(txt));
-        }
-        if remaining <= 2 {
-            let fin: Vec<Value> = tools
-                .iter()
-                .filter(|x| FINISH_TOOLS.contains(&tool_name(x)))
-                .cloned()
+        const GATHER: [&str; 6] = [
+            "browser_navigate",
+            "browser_read",
+            "web_search",
+            "news_search",
+            "browser_news_search",
+            "browser_click",
+        ];
+        if remaining <= BUDGET_RESERVE || late {
+            return tools
+                .into_iter()
+                .filter(|t| FINISH_TOOLS.contains(&tool_name(t)))
                 .collect();
-            if !fin.is_empty() {
-                return fin;
-            }
+        }
+        if pages >= RESEARCH_NUDGE_PAGES + 3 {
+            return tools
+                .into_iter()
+                .filter(|t| !GATHER.contains(&tool_name(t)))
+                .collect();
+        }
+        if web_calls >= WEB_NUDGE {
+            return tools
+                .into_iter()
+                .filter(|t| {
+                    !matches!(
+                        tool_name(t),
+                        "web_search" | "news_search" | "browser_news_search"
+                    )
+                })
+                .collect();
         }
         tools
     }
@@ -1800,7 +2292,7 @@ short, use one delegate call for the rest (it doesn't use these steps). Internal
         let conv_id = get_str(&t, "conv_id");
         let (history, history_txt) = self.history(&conv_id, task_id);
         let goal_text = get_str(&t, "goal");
-        let facts = self.facts_for(&goal_text, &history_txt, task_id);
+        let facts = self.facts_for(&t, &history_txt).await;
         let t_transcript_empty = arr(&t, "transcript").is_empty();
         if facts
             .first()
@@ -1907,12 +2399,6 @@ call notify_user only if something the user cares about happened.",
             );
         }
         extra += &super::bots::bot_prompt(bot, lg0 == "en");
-        if lg0 == "en" && prompts::wants_cjk_output(&goal_text) {
-            // 2026-10-02 R8: the app is in English but this request asks for text to use in Chinese (a post, a story …)
-            extra += "\n## Output language for this request\nThe user asked, in Chinese, for text they will use as written: write \
-that text (the post, story, poem, message, translation …) in Chinese — or in the language they name. \
-Your own notes and the short explanation around it stay in English.";
-        }
         // the main bot: the planner picks the bot before the first turn (agent/bots.rs, `route`)
         let routing = bot.is_main()
             && transcript.is_empty()
@@ -2001,7 +2487,6 @@ yourself; ask_bot is not available for it."
                 let content = self.format_external(&first.name, &result);
                 transcript
                     .push(json!({"role": "tool", "tool_call_id": first.id, "content": content}));
-                self.note_tool_text(task_id, &content);
                 let st = result
                     .get("status")
                     .cloned()
@@ -2013,6 +2498,9 @@ yourself; ask_bot is not available for it."
                     .update_task(task_id, &json!({"pending": null, "transcript": transcript}))?;
                 let rest = &calls[1..];
                 for (i, call) in rest.iter().enumerate() {
+                    if self.is_cancelled(task_id) {
+                        return self.stopped(task_id, &transcript);
+                    }
                     if let Err(sp) = self
                         .exec_call(
                             &t,
@@ -2035,7 +2523,7 @@ yourself; ask_bot is not available for it."
             .get("steps")
             .and_then(omuse_common::util::as_i64)
             .unwrap_or(0);
-        let max_steps = s
+        let mut max_steps = s
             .get("max_steps")
             .and_then(omuse_common::util::as_i64)
             .filter(|n| *n != 0)
@@ -2057,8 +2545,10 @@ yourself; ask_bot is not available for it."
         let mut stuck = 0; // turns in a row where every call was refused by a loop guard
         let mut gave_up = false; // set when the agent keeps going round in circles: it must answer now, without tools
         let mut searched: HashMap<String, String> = HashMap::new(); // normalised web_search query -> first call id
-        let (mut nudged, mut cut_nudged, mut numbers_checked, mut outcome_checked) =
-            (false, false, false, false);
+        let mut cut_continued = false;
+        let mut auto_handed = false;
+        let mut answer_reviewed = false;
+        let mut handback_snapped = false;
         let mut ctx_retries = 0;
         loop {
             if self.cancel_flags.lock().contains(task_id) {
@@ -2076,7 +2566,8 @@ yourself; ask_bot is not available for it."
                 .task(task_id)?
                 .ok_or_else(|| anyhow!("task vanished"))?;
             let lg = agent_lang(&s);
-            // the system prompt stays identical for the whole run (live state goes in the status note at the end)
+            // the system prompt stays identical for the whole run (the plan and the dead ends go in the live state,
+            // one JSON message at the end of the request: `prompts::live_state`)
             transcript[0] = json!({"role": "system", "content": prompts::executor_system(&prompts::ExecutorPrompt {
                 user_name: get_str(&s, "user_name"),
                 tz: tz.clone(),
@@ -2099,47 +2590,13 @@ yourself; ask_bot is not available for it."
                 .copied()
                 .unwrap_or(0.0);
             let minutes = (now_ts() - run_started - waited).max(0.0) / 60.0;
-            if minutes >= max_minutes * TIME_NUDGE && !user_said(&transcript).contains(TIME_MARK) {
-                let txt = if lg == "en" {
-                    format!("(System) [{TIME_MARK}] This task has run for {:.0} minutes (limit {}). Stop gathering \
-and deliver what the user asked for with what you have (chart, file, answer); note what is unverified.", minutes, fmt_float(max_minutes))
-                } else {
-                    format!(
-                        "（系统）[{TIME_MARK}] 这个任务已经用了 {:.0} 分钟（上限 {} 分钟）。\
-停止继续搜集，用已有的信息尽快完成用户要的结果（图表、文件、回答），并说明哪些还没核实。",
-                        minutes,
-                        fmt_float(max_minutes)
-                    )
-                };
-                transcript.push(user_msg(txt));
-            }
-            let web_calls = transcript
-                .iter()
-                .filter(|m| get_str(m, "role") == "assistant")
-                .flat_map(tool_calls)
-                .filter(|c| {
-                    let n = stored_call(c).0;
-                    n.starts_with("browser_") || n == "web_search" || n == "news_search"
-                    // the searches of the web count
-                })
-                .count();
-            if web_calls as i64 >= WEB_NUDGE && !user_said(&transcript).contains(WEB_MARK) {
-                // 2026-10-02 R4-04b: a "top 3 products" lookup made 47 web calls in 12 minutes chasing cleaner results
-                let txt = if lg == "en" {
-                    format!("(System) [{WEB_MARK}] This task has made {web_calls} web calls. Stop opening pages one by one yourself. \
-If the user asked for a fixed number of items (e.g. 3 jobs, 5 companies) and you don't have them all yet, \
-use delegate to fetch the rest (a sub-agent per remaining item — its calls don't count here) and compile \
-them yourself; if you have enough or truly cannot find more, answer with what you have and note what is \
-unverified. This is an internal efficiency control — never mention a 'budget' or a call count to the user.")
-                } else {
-                    format!("（系统）[{WEB_MARK}] 这个任务已经调用了 {web_calls} 次网页工具。不要自己再一个个翻网页了。\
-如果用户要的是固定数量的条目（例如 3 个岗位、5 家公司）而你还没凑齐，就用 delegate 把还差的交给子 Agent 去查\
-（子 Agent 的调用不算在这里），再由你汇总；如果已经够了或确实查不到更多，就用已有信息完成回答，说明哪些没核实。\
-这是内部效率控制，不要向用户提起「预算」或调用次数。")
-                };
-                transcript.push(user_msg(txt));
-            }
+            // the web searches so far: past WEB_NUDGE the search tools are withdrawn (a tool-list limit, never a
+            // message to the model; `guards::web_budget_guard` refuses a search past it in the same turn)
+            let web_calls = super::guards::web_searches(&transcript);
             let timed_out = minutes >= max_minutes;
+            if let Some(n) = self.inner.lock().skill_steps.get(task_id) {
+                max_steps = max_steps.max(*n);
+            }
             let force_final = steps >= max_steps || gave_up || timed_out;
             let mut tools: Option<Vec<Value>> = None;
             if !force_final {
@@ -2150,6 +2607,37 @@ unverified. This is an internal efficiency control — never mention a 'budget' 
                     goal.is_some(),
                 );
                 let tl = self.without_browser_if_off(task_id, tl);
+                // the page input tools and form_fill only while browser-use is loaded (forms are code's, fixed ids)
+                let input_ok = super::guards::browser_use_active(&transcript);
+                let tl: Vec<Value> = tl
+                    .into_iter()
+                    .filter(|x| {
+                        let n = tool_name(x);
+                        input_ok
+                            || !(super::guards::MODEL_INPUT_TOOLS.contains(&n) || n == "form_fill")
+                    })
+                    .collect();
+                // the flight and hotel searches are the booking machine's where `travel_search` runs them: not offered
+                let workflow_bot = crate::bots::has_tool(bot, "travel_search");
+                let tl: Vec<Value> = tl
+                    .into_iter()
+                    .filter(|x| !(workflow_bot && super::guards::machine_only(tool_name(x))))
+                    .collect();
+                // the reply to a machine's result: the workflow tools are not offered on that turn
+                let reply_turn = super::workflow::reply_turn(&transcript);
+                let tl: Vec<Value> = tl
+                    .into_iter()
+                    .filter(|x| {
+                        !(reply_turn
+                            && (super::booking::TOOLS.contains(&tool_name(x))
+                                || super::claims::TOOLS.contains(&tool_name(x))
+                                || super::driver::TOOLS.contains(&tool_name(x))
+                                || super::apdt::TOOLS.contains(&tool_name(x))
+                                || super::trains::TOOLS.contains(&tool_name(x))
+                                || super::flightstatus::TOOLS.contains(&tool_name(x))))
+                            && super::news::offered(&transcript, tool_name(x))
+                    })
+                    .collect();
                 // ask_bot is the main bot's; a tool a bot file claims (the travel searches) only its bots'
                 let tl: Vec<Value> = tl
                     .into_iter()
@@ -2160,57 +2648,106 @@ unverified. This is an internal efficiency control — never mention a 'budget' 
                             && crate::bots::has_tool(bot, n)
                     })
                     .collect();
-                let tl = Self::budget(&mut transcript, tl, max_steps - steps, lg);
+                let tl = Self::budget(
+                    &transcript,
+                    tl,
+                    max_steps - steps,
+                    web_calls,
+                    minutes >= max_minutes * TIME_NUDGE,
+                );
                 tools = Some(if lg == "en" {
                     prompts::strip_tools_en(&tl)
                 } else {
                     tl
                 });
             }
-            if gave_up {
-                transcript.push(user_msg(prompts::l(lg,
-                    "（系统）同样的方法和来源反复失败，已经换过计划也没有进展，所以停止重试。请不要再调用工具，\
-用已经拿到的信息给出尽可能有用的回答；清楚说明哪些数据没拿到、为什么（例如哪个网站打不开或被拦截），\
-并建议用户下一步可以怎么做（例如换哪个来源、或者由用户提供数据）。",
-                    "(System) The same methods and sources keep failing even after re-planning, so retrying has stopped. \
-Do not call tools. Give the most useful answer you can from what you already have, say clearly what could \
-not be fetched and why (e.g. which site would not open or was blocked), and suggest what the user can do \
-next (another source, or providing the data).")));
-            } else if timed_out {
-                let txt = if lg == "en" {
-                    format!("(System) The {:.0}-minute time limit is reached: stop calling tools and give the most complete \
-answer you can from what you have — what is done, the findings and what is missing.", max_minutes)
-                } else {
-                    format!("（系统）已达到 {:.0} 分钟的用时上限。请停止调用工具，用已有的信息给出尽量完整的回答，\
-说明完成了什么、结论是什么、还缺什么。", max_minutes)
-                };
-                transcript.push(user_msg(txt));
-            } else if force_final {
-                transcript.push(user_msg(prompts::l(lg,
-                    "（系统）已达到步数上限。请停止调用工具，总结目前完成的内容、结果和未完成的部分。",
-                    "(System) Step limit reached: stop calling tools and summarize what is done, the results and what is left.")));
-            }
+            // the budget is spent (gave_up / timed_out / force_final): the model gets no tools, nothing is said to it
             self.event(task_id, "thinking", json!({"step": steps + 1}))
                 .await;
             let mut msgs = transcript.clone();
             if !force_final {
-                // live state at the end (not stored), see prompts::status_note
-                let dead = dead_ends_text(&source_failures(&self.store.events(task_id, 0)?), lg);
-                msgs.push(user_msg(prompts::status_note(
-                    t.get("plan"),
-                    &tz,
-                    lg,
-                    minutes,
-                    &dead,
-                )));
+                // the live state as data at the end (not stored): the plan, the next parallel stage, the dead ends
+                let dead = dead_ends(&source_failures(&self.store.events(task_id, 0)?));
+                if let Some(state) = prompts::live_state(t.get("plan"), &tz, lg, minutes, &dead) {
+                    msgs.push(user_msg(state.to_string()));
+                }
             }
-            let (exec_opts, live) = self.executor_opts(task_id, &conv_id, &s);
-            let called = self
-                .chat_or_cancel(task_id, &msgs, tools.as_deref(), &exec_opts)
-                .await;
-            drop(exec_opts); // closes the live-text channel …
-            if let Some(live) = live {
-                let _ = live.await; // … and the last text is out before the reply is acted on
+            // a known-form skill (the arrival cards with a form function): code decides the next step, no model call
+            // (and the claims and the FWD purchase: `agent/claims.rs`)
+            let machine = super::workflow::active(&transcript, &super::booking::TOOLS)
+                .or_else(|| super::workflow::active(&transcript, &super::news::TOOLS))
+                .or_else(|| super::workflow::active(&transcript, &super::claims::TOOLS))
+                .or_else(|| super::workflow::active(&transcript, &super::driver::TOOLS))
+                .or_else(|| super::workflow::active(&transcript, &super::apdt::TOOLS))
+                .or_else(|| super::workflow::active(&transcript, &super::trains::TOOLS))
+                .or_else(|| super::workflow::active(&transcript, &super::flightstatus::TOOLS))
+                .map(|(from, tool, args)| Machine::Workflow { tool, args, from });
+            let driven = match &machine {
+                Some(_) if self.is_cancelled(task_id) => {
+                    return self.stopped(task_id, &transcript);
+                }
+                Some(m) if !force_final => {
+                    match self.drive(task_id, m, &mut transcript, &catalog, lg).await {
+                        Some(r) => Some(r),
+                        None => {
+                            // the machine is done (its `T_result` is in the transcript). A page handed to browser-use:
+                            // code loads the skill for the model, which fills that one page
+                            if let Some(res) = super::workflow::latest_result(&transcript)
+                                .filter(|r| get_str(r, "status") == "browser_use")
+                            {
+                                let tc = ToolCall {
+                                    id: format!("{}skill_{steps}", super::booking::PREFIX),
+                                    name: "load_skill".into(),
+                                    args: json!({"name": super::booking::BROWSER_USE}),
+                                };
+                                self.event(
+                                    task_id,
+                                    "browser_use_handoff",
+                                    json!({"url": get_str(&res, "url")}),
+                                )
+                                .await;
+                                transcript
+                                    .push(assistant_with_calls("", std::slice::from_ref(&tc)));
+                                if let Err(sp) = self
+                                    .exec_call(
+                                        &t,
+                                        &tc,
+                                        &mut transcript,
+                                        &catalog,
+                                        &[],
+                                        None,
+                                        CallMode::MAIN,
+                                    )
+                                    .await
+                                {
+                                    return self.suspend(task_id, sp, transcript).await;
+                                }
+                            }
+                            self.store
+                                .update_task(task_id, &json!({"transcript": transcript}))?;
+                            continue;
+                        }
+                    }
+                }
+                _ => None,
+            };
+            let called = if let Some(r) = driven {
+                Some(Ok(r))
+            } else {
+                let (exec_opts, live) =
+                    self.executor_opts(task_id, &conv_id, &s, crate::links::seen(&transcript));
+                let called = self
+                    .chat_or_cancel(task_id, &msgs, tools.as_deref(), &exec_opts)
+                    .await;
+                drop(exec_opts); // closes the live-text channel …
+                if let Some(live) = live {
+                    let _ = live.await; // … and the last text is out before the reply is acted on
+                }
+                called
+            };
+            if self.is_cancelled(task_id) {
+                // stopped while the model wrote this turn: nothing of it is acted on
+                return self.stopped(task_id, &transcript);
             }
             let resp: ChatReply = match called {
                 None => return Ok(()), // cancelled while waiting for the model (e.g. sleeping on a Retry-After)
@@ -2270,7 +2807,9 @@ answer you can from what you have — what is done, the findings and what is mis
             } else {
                 resp.tool_calls.clone()
             };
+            let mut asked: Option<String> = None;
             if !calls.is_empty() {
+                let base_len = transcript.len();
                 transcript.push(assistant_with_calls(&resp.content, &calls));
                 if !resp.content.is_empty() {
                     self.event(
@@ -2287,6 +2826,7 @@ answer you can from what you have — what is done, the findings and what is mis
                 let mut seen_sigs: HashMap<String, String> = HashMap::new();
                 let mut progress = false;
                 let mut typed_this_turn = String::new();
+                let mut travel_this_turn: Option<(String, (&'static str, &'static str))> = None;
                 let mut skips: Vec<Option<Skip>> = Vec::with_capacity(calls.len());
                 for call in &calls {
                     let sig = call_sig(&call.name, &call.args);
@@ -2300,10 +2840,25 @@ answer you can from what you have — what is done, the findings and what is mis
                             first: first.clone(),
                             search: false,
                             typed: false,
+                            one_search: None,
                         }));
                         continue;
                     }
                     seen_sigs.insert(sig, call.id.clone());
+                    if let Some(kind) = super::guards::travel_search(&call.name) {
+                        // ONE travel search per turn — flights, hotels, cars and places together: a range of dates,
+                        // several airports, airlines or brands all go in that one call; the rest are not run
+                        if let Some((first, what)) = &travel_this_turn {
+                            skips.push(Some(Skip {
+                                first: first.clone(),
+                                search: false,
+                                typed: false,
+                                one_search: Some(*what),
+                            }));
+                            continue;
+                        }
+                        travel_this_turn = Some((call.id.clone(), kind));
+                    }
                     if call.name == "browser_type" && get_truthy(&call.args, "submit") {
                         if !typed_this_turn.is_empty() {
                             // 2026-10-04 V3-03: 12 searches typed into one shop's search box in a single turn — only the
@@ -2312,12 +2867,16 @@ answer you can from what you have — what is done, the findings and what is mis
                                 first: typed_this_turn.clone(),
                                 search: false,
                                 typed: true,
+                                one_search: None,
                             }));
                             continue;
                         }
                         typed_this_turn = call.id.clone();
                     }
-                    if call.name == "web_search" || call.name == "news_search" {
+                    if call.name == "web_search"
+                        || call.name == "news_search"
+                        || call.name == "browser_news_search"
+                    {
                         // per tool: the same words may be a news search and a web search
                         let raw = search_key(call.args.get("query").unwrap_or(&Value::Null));
                         let qk = if raw.is_empty() {
@@ -2331,6 +2890,7 @@ answer you can from what you have — what is done, the findings and what is mis
                                 first: first.clone(),
                                 search: true,
                                 typed: false,
+                                one_search: None,
                             }));
                             continue;
                         }
@@ -2349,6 +2909,10 @@ answer you can from what you have — what is done, the findings and what is mis
                 let runs = concurrent_runs(&shape);
                 let mut i = 0;
                 while i < calls.len() {
+                    // stopped between two calls of this turn (or two code calls of a machine's step): the rest never run
+                    if self.is_cancelled(task_id) {
+                        return self.stopped(task_id, &transcript);
+                    }
                     if let Some(run) = runs.iter().find(|r| r.start == i) {
                         let batch = &calls[run.clone()];
                         self.event(
@@ -2401,15 +2965,8 @@ answer you can from what you have — what is done, the findings and what is mis
                     }
                     let call = &calls[i];
                     if let Some(sk) = &skips[i] {
-                        self.skip_duplicate(
-                            task_id,
-                            call,
-                            &sk.first,
-                            &mut transcript,
-                            sk.search,
-                            sk.typed,
-                        )
-                        .await;
+                        self.skip_duplicate(task_id, call, sk, &mut transcript)
+                            .await;
                         i += 1;
                         continue;
                     }
@@ -2433,79 +2990,61 @@ answer you can from what you have — what is done, the findings and what is mis
                     }
                     i += 1;
                 }
+                if self.is_cancelled(task_id) {
+                    return self.stopped(task_id, &transcript);
+                }
                 self.store
                     .update_task(task_id, &json!({"transcript": transcript}))?;
                 stuck = if progress { 0 } else { stuck + 1 };
-                let evs = self.store.events(task_id, 0)?;
-                let replans = evs
-                    .iter()
-                    .filter(|e| get_str(e, "type") == "replanning")
-                    .count() as i64;
-                let dead = dead_ends_text(&source_failures(&evs), lg);
-                if stuck >= 3 || ((stuck != 0 || consecutive_errors >= 3) && replans >= MAX_REPLANS)
-                {
-                    // still going round in circles after a nudge and a re-plan: stop and answer with what we have
-                    gave_up = true;
-                    self.event(task_id, "gave_up",
+                // `ask_user`: the question is the reply, and the run waits for the user's next message
+                if let Some((_, q)) = super::guards::asked_user(&transcript[base_len..]) {
+                    asked = Some(q);
+                } else {
+                    let evs = self.store.events(task_id, 0)?;
+                    let replans = evs
+                        .iter()
+                        .filter(|e| get_str(e, "type") == "replanning")
+                        .count() as i64;
+                    let dead = dead_ends_text(&source_failures(&evs), lg);
+                    if stuck >= 3
+                        || ((stuck != 0 || consecutive_errors >= 3) && replans >= MAX_REPLANS)
+                    {
+                        // still going round in circles after a nudge and a re-plan: stop and answer with what we have
+                        gave_up = true;
+                        self.event(task_id, "gave_up",
                                json!({"reason": "stuck", "replans": replans, "dead_ends": take_chars(&dead, 500)}))
                         .await;
-                } else if stuck == 2 || consecutive_errors >= 3 {
-                    self.replan(task_id, &mut transcript, &facts, &history_txt, &dead)
-                        .await?;
-                    consecutive_errors = 0;
-                } else if stuck == 1 {
-                    let tail = if dead.is_empty() {
-                        String::new()
-                    } else {
-                        format!("\n{}", dead)
-                    };
-                    let txt = if lg == "en" {
-                        format!("(System) Every call you just made was refused (a repeat, or a site that already failed several times). \
-Do not repeat them. Switch to a completely different method or source, or finish the task if you \
-already have enough.{tail}")
-                    } else {
-                        format!("（系统）你刚才的调用全部被拦截了（重复调用，或者这个网站已经多次失败）。不要再重复同样的调用。\
-换一个完全不同的方法或来源继续；如果前面已经拿到了足够的信息，就直接完成任务。{tail}")
-                    };
-                    transcript.push(user_msg(txt));
+                    } else if stuck == 2 || consecutive_errors >= 3 {
+                        self.replan(task_id, &transcript, &facts, &history_txt, &dead)
+                            .await?;
+                        consecutive_errors = 0;
+                    }
+                    continue;
                 }
-                continue;
             }
-            let mut final_ = resp.content.clone();
+            // the model's markup never reaches the user: stripped in code (an empty remainder is rescued below)
+            let mut final_ = asked
+                .clone()
+                .unwrap_or_else(|| strip_tool_markup(&resp.content).trim().to_string());
             let plan_steps = t
                 .get("plan")
                 .map(|p| arr(p, "steps").to_vec())
                 .unwrap_or_default();
-            let open_steps = plan_steps
-                .iter()
-                .filter(|st| matches!(sget(st, "status").as_str(), "pending" | "running"))
-                .count();
             if !final_.is_empty()
-                && !cut_nudged
-                && !force_final
-                && steps < max_steps - 1
-                && cut_off_final(&final_, resp.finish_reason.as_str(), open_steps)
+                && asked.is_none()
+                && !cut_continued
+                && resp.finish_reason.as_str() == Some("length")
             {
-                cut_nudged = true;
+                // the reply hit the token limit: the same request once more with a higher limit, and the longer of
+                // the two is the answer (no message to the model about it)
+                cut_continued = true;
                 self.event(
                     task_id,
                     "cut_off_answer",
                     json!({"text": truncate(&final_, 200)}),
                 )
                 .await;
-                transcript.push(json!({"role": "assistant", "content": final_}));
-                transcript.push(user_msg(prompts::l(lg,
-                    "（系统）你刚才的回复被截断了，只有半句话。任务还没完成的话就继续用工具做完；已经做完了就把完整的最终回答重新写一遍（包括前面查到的所有结果）。",
-                    "(System) Your last reply was cut off mid-sentence. If the task is not finished, keep going with tools; \
-if it is, write the complete final answer again (including everything you found).")));
-                continue;
-            }
-            if final_.is_empty() && !nudged {
-                nudged = true;
-                transcript.push(user_msg(prompts::l(lg,
-                    "（系统）请直接用文字写出最终回答（不要调用工具，也不要输出 <tool_call> 之类的标记）。",
-                    "(System) Write the final answer now as plain text (no tool calls, no <tool_call> markup).")));
-                continue;
+                final_ = self.continue_cut_answer(task_id, &msgs, &final_).await;
             }
             if final_.is_empty() {
                 final_ = self
@@ -2554,103 +3093,196 @@ if it is, write the complete final answer again (including everything you found)
                     )
                 };
             }
+            // the reply to a workflow machine's result (its `T_result` in this request): the machine did the work, so
+            // no runtime step acts on the reply; code appends the result's `show` facts to it (a page handed to
+            // browser-use is the model's from there on)
+            let workflow_reply = super::workflow::latest_result(&transcript)
+                .filter(|r| get_str(r, "status") != "browser_use");
+            let driven_run = super::workflow::active(&transcript, &super::driver::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::apdt::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::booking::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::news::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::claims::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::trains::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::flightstatus::TOOLS).is_some()
+                || workflow_reply.is_some();
+            // the confirmation after a hand-back is read by code: a snapshot the model skipped is taken here, once,
+            // before the answer (the model reads it and passes the reference as JSON, `confirm_reference`)
             if !final_.is_empty()
-                && !numbers_checked
-                && !force_final
-                && !timed_out
-                && steps < max_steps - 1
+                && asked.is_none()
+                && !handback_snapped
+                && !driven_run
+                && super::guards::needs_handback_snapshot(&transcript)
             {
-                numbers_checked = true;
-                let bad = ungrounded_numbers(&transcript, &final_, &goal_text);
-                let codes = ungrounded_codes(&transcript, &final_, &goal_text);
-                if self_corrects(&final_) && bad.is_empty() {
-                    self.event(task_id, "number_check", json!({"self_correction": true}))
-                        .await;
-                    transcript.push(json!({"role": "assistant", "content": final_}));
-                    transcript.push(user_msg(prompts::l(lg,
-                        "（系统）你的回答中途改口了（例如「等一下，这里需要修正」）。用 calculate 把所有数字重新算一遍，然后只写最终正确的版本：不要保留错误的版本，也不要提到这次更正。",
-                        "(System) Your answer changes its mind half-way (\"wait, this needs correcting\"). Recompute every figure \
-with calculate, then write only the final correct version: drop the wrong one and don't mention the fix.")));
-                    continue;
-                }
-                if !codes.is_empty() && bad.is_empty() {
-                    // 2026-10-04 V8-05: a return flight "SQ 637 11:30" that no email mentioned
-                    let c10: Vec<String> = codes.iter().take(10).cloned().collect();
-                    self.event(task_id, "number_check", json!({"unsupported_codes": c10}))
-                        .await;
-                    transcript.push(json!({"role": "assistant", "content": final_}));
-                    let txt = if lg == "en" {
-                        format!("(System) These flight numbers / codes in your answer appear in no tool result: {}. Never invent flights, booking codes or times: remove them or say \"not found\", then write the complete final answer again.", c10.join(", "))
-                    } else {
-                        format!("（系统）你回答里的这些航班号/编号没有出现在任何工具结果里：{}。不要编造航班、预订号或时间：删掉它们，或者写明「未找到」，然后重新写完整的最终回答。", c10.join("、"))
-                    };
-                    transcript.push(user_msg(txt));
-                    continue;
-                }
-                if !bad.is_empty() {
-                    // 2026-10-03 M1-06: calculate returned the right building blocks, the answer then carried a
-                    // hand-made table whose balances came from nowhere (17,016.64 instead of 16,962.71)
-                    let b10: Vec<String> = bad.iter().take(10).cloned().collect();
-                    self.event(task_id, "number_check", json!({"unsupported": b10}))
-                        .await;
-                    transcript.push(json!({"role": "assistant", "content": final_}));
-                    let txt = if lg == "en" {
-                        format!("(System) These figures in your answer do not appear in any tool result: {}. \
-Recompute them with calculate (data_query for table data) — if an earlier result looked wrong, fix the \
-inputs — then write the complete final answer again using only figures the tools produced. Start \
-straight with the content: don't mention this check or say \"here is the complete answer\".", b10.join(", "))
-                    } else {
-                        format!("（系统）你回答里的这些数字没有出现在任何工具结果里：{}。\
-请用 calculate（表格数据用 data_query）把它们重新算一遍——如果之前某个工具结果看起来不对，就改正输入再算——\
-然后重新写完整的最终回答，只使用工具算出的数字。回答直接从内容开始，不要提到这次核对或“以下是完整回答”之类的话。", b10.join("、"))
-                    };
-                    transcript.push(user_msg(txt));
-                    continue;
+                handback_snapped = true;
+                let tc = ToolCall {
+                    id: format!("handback_snapshot_{steps}"),
+                    name: "browser_snapshot".into(),
+                    args: json!({"max_chars": 6000}),
+                };
+                self.event(task_id, "handback_snapshot", json!({})).await;
+                transcript.push(json!({"role": "assistant", "content": final_, "tool_calls": [{"id": tc.id, "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+                match self
+                    .exec_call(
+                        &t,
+                        &tc,
+                        &mut transcript,
+                        &catalog,
+                        &[],
+                        None,
+                        CallMode::MAIN,
+                    )
+                    .await
+                {
+                    Ok(_) => continue,
+                    Err(sp) => return self.suspend(task_id, sp, transcript).await,
                 }
             }
+            let judged =
+                !final_.is_empty() && asked.is_none() && !driven_run && !force_final && !timed_out;
+            // the answer read once by the model as the user would (JSON out): an answer that does not hold together
+            // is written again from the machine's result (`reply_fixed`) or the run's facts (`rescue_final`), once —
+            // no message to the model. The facts the user must read are appended by code afterwards (agent/show.rs).
             if !final_.is_empty()
-                && !outcome_checked
+                && asked.is_none()
+                && !answer_reviewed
+                && (!driven_run || workflow_reply.is_some())
                 && !force_final
                 && !timed_out
-                && steps < max_steps - 1
             {
-                outcome_checked = true;
-                let texts = self.inner.lock().tool_texts.get(task_id).cloned();
-                let oc = crate::outcome::assess(
-                    &self.store.events(task_id, 0)?,
-                    &final_,
-                    texts.as_deref(),
-                    Some(&goal_text),
-                );
-                let hint = crate::outcome::nudge(&oc, lg != "en");
-                if !hint.is_empty() {
-                    // 2026-10-06 (roadmap batch 1): "done" needs proof — an order number the confirmation page shows,
-                    // or no claim at all
+                answer_reviewed = true;
+                if let Some(review) = self.review_answer(task_id, &goal_text, &final_, lg).await {
                     self.event(
                         task_id,
-                        "outcome_check",
-                        json!({"status": oc.get("status"), "missing": oc.get("missing")}),
+                        "answer_review",
+                        json!({"problem": review.problem, "language": review.language}),
                     )
                     .await;
-                    transcript.push(json!({"role": "assistant", "content": final_}));
-                    transcript.push(user_msg(hint));
-                    continue;
+                    let again = match &workflow_reply {
+                        _ if review.problem.is_empty() => String::new(),
+                        Some(res) => {
+                            self.reply_fixed(task_id, &goal_text, &final_, res, &review, lg)
+                                .await
+                        }
+                        None => {
+                            self.rescue_final(task_id, &goal_text, &transcript, lg)
+                                .await
+                        }
+                    };
+                    if !again.is_empty() {
+                        final_ = again;
+                    }
+                    // written in another language than the rule asks for: the model writes it again in the agent's
+                    if review.language {
+                        let fixed = self
+                            .reply_in_language(task_id, &goal_text, &final_, lg)
+                            .await;
+                        if !fixed.is_empty() {
+                            self.event(task_id, "language_fixed", json!({"to": lg}))
+                                .await;
+                            final_ = fixed;
+                        }
+                    }
                 }
             }
-            final_ = merge_stranded_answer(&transcript, &final_);
-            if lg == "en"
-                && prompts::cjk_share(&final_) > 0.5
-                && !prompts::wants_cjk_output(&goal_text)
+            // a filled form (an arrival card, a claim) or an approved purchase that ends without the hand-over: the
+            // runtime hands the page over itself — a runtime step decided from the transcript, so no budget stops it
+            // (cards_interruption_real 2026-10-31: the claim's last field took the last step and nothing was handed over)
+            if !final_.is_empty()
+                && asked.is_none()
+                && !auto_handed
+                && !driven_run
+                && super::guards::needs_handover(&transcript)
             {
-                final_ = self.rewrite_in_english(task_id, &transcript, &final_).await;
+                auto_handed = true;
+                self.event(task_id, "auto_handover", json!({})).await;
+                let tc = crate::llm::ToolCall {
+                    id: format!("{}{steps}", super::guards::AUTO_HANDOVER),
+                    name: "browser_request_takeover".into(),
+                    args: json!({"reason": super::guards::handover_reason(&transcript, super::exec::HANDOVER_REASON)}),
+                };
+                // the answer the agent was about to give rides on the hand-over call: after the hand-back it opens the
+                // final answer (`with_handover_answer`), so the user still gets it
+                transcript.push(json!({"role": "assistant", "content": final_, "tool_calls": [{"id": tc.id, "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));
+                match self
+                    .exec_call(
+                        &t,
+                        &tc,
+                        &mut transcript,
+                        &catalog,
+                        &[],
+                        None,
+                        CallMode::MAIN,
+                    )
+                    .await
+                {
+                    Ok(_) => continue,
+                    Err(sp) => return self.suspend(task_id, sp, transcript).await,
+                }
             }
-            let texts = self.inner.lock().tool_texts.get(task_id).cloned();
-            let oc = crate::outcome::assess(
-                &self.store.events(task_id, 0)?,
-                &final_,
-                texts.as_deref(),
-                Some(&goal_text),
-            );
+            // the file formats the user asked for (the file calls' `deliver_as`): each one the run did not make is
+            // converted from what it made and sent, in code
+            if judged {
+                let conv = self.format_calls(task_id, &transcript).await;
+                for tc in &conv {
+                    transcript.push(assistant_with_calls("", std::slice::from_ref(tc)));
+                    if let Err(sp) = self
+                        .exec_call(&t, tc, &mut transcript, &catalog, &[], None, CallMode::MAIN)
+                        .await
+                    {
+                        return self.suspend(task_id, sp, transcript).await;
+                    }
+                }
+            }
+            // a file the user asked for (its call's `deliver_as`) that the run wrote but never sent: sent now, in code
+            for path in super::guards::unsent_files(&transcript) {
+                let r = self.send_file(&t, &json!({"path": path})).await;
+                self.event(
+                    task_id,
+                    "auto_send_file",
+                    json!({"path": path, "ok": r.as_ref().is_ok_and(|x| !x.starts_with("ERROR"))}),
+                )
+                .await;
+            }
+            final_ = merge_stranded_answer(&transcript, &final_);
+            final_ = super::guards::with_handover_answer(&transcript, &final_);
+            final_ = super::guards::with_masked_cards(&final_);
+            // the answer's links, repaired against the links the run's results showed (crate::links)
+            final_ = crate::links::repair_answer(&final_, &crate::links::seen(&transcript));
+            // the facts the user must read (agent/facts.rs, agent/show.rs): the trusted code tools' `show` items (a
+            // machine's result, emergency_contacts, visa_rules, fx_convert, loan_payment, confirm_reference …) and the
+            // run's structured facts, appended by code after the reply — never read from or written into its prose
+            // (a Vault card without its catalog id: the model picks the row as a JSON choice, the facts read it)
+            if !final_.is_empty() && asked.is_none() {
+                let mut fact_view = transcript.clone();
+                fact_view.extend(self.attach_card_ids(task_id, &transcript).await);
+                let items = super::facts::show_items(
+                    &fact_view,
+                    super::facts::Ctx {
+                        zh: lg != "en",
+                        scheduled: get_str(&t, "source") == "schedule",
+                        workflow: workflow_reply.is_some(),
+                    },
+                );
+                if !items.is_empty() {
+                    self.event(task_id, "answer_show", json!({"items": items.len()}))
+                        .await;
+                }
+                final_ = super::show::append(&final_, &items, lg != "en");
+            }
+            // the run's confirmed reference: a known site's machine result, or the model's `confirm_reference`
+            let confirmed = super::confirm::confirmed(&transcript);
+            let oc = crate::outcome::assess(&self.store.events(task_id, 0)?, confirmed.as_ref());
+            if !arr(&oc, "missing").is_empty() {
+                self.event(
+                    task_id,
+                    "outcome_check",
+                    json!({"status": oc.get("status"), "missing": oc.get("missing")}),
+                )
+                .await;
+            }
             final_ += &crate::outcome::notice(&oc, lg != "en");
             self.store.update_task(task_id, &json!({"outcome": oc}))?;
             self.event(task_id, "outcome", oc.clone()).await;
@@ -2660,6 +3292,10 @@ straight with the content: don't mention this check or say \"here is the complet
                     || (a.is_object() && get_str(a, "kind") == "purchase")
             }) {
                 self.ledger_confirm(task_id, &oc, &final_).await;
+            }
+            if self.is_cancelled(task_id) {
+                // stopped while the answer was being finished: no answer is posted for a stopped task
+                return self.stopped(task_id, &transcript);
             }
             transcript.push(json!({"role": "assistant", "content": final_}));
             let mut plan = t.get("plan").cloned().unwrap_or_else(|| json!({}));
@@ -2676,16 +3312,11 @@ straight with the content: don't mention this check or say \"here is the complet
                 &json!({"transcript": transcript, "result": final_, "plan": plan, "finished_at": now_ts()}),
             )?;
             let en_ui = get_str(&s, "language") == "en";
-            let needs_user = (gave_up || force_final) && !timed_out && asks_user(&final_);
             let (mut gave_up_f, mut force_final_f) = (gave_up, force_final);
-            if needs_user {
-                // stopped because something only the user knows is missing, and the answer asks for it: not a failure
-                self.event(
-                    task_id,
-                    "needs_user",
-                    json!({"reason": if gave_up { "gave_up" } else { "step_limit" }}),
-                )
-                .await;
+            if asked.is_some() {
+                // the run asked the user (`ask_user`): the question is the reply, the user's next message answers it
+                self.event(task_id, "needs_user", json!({"reason": "ask_user"}))
+                    .await;
                 self.set_status(task_id, "COMPLETED", json!({})).await;
                 gave_up_f = false;
                 force_final_f = false;
@@ -2829,30 +3460,25 @@ straight with the content: don't mention this check or say \"here is the complet
         }
     }
 
-    /// English mode but the model answered in Chinese (e.g. memory says the user likes Chinese): ask once for English.
-    async fn rewrite_in_english(
-        &self,
-        task_id: &str,
-        transcript: &[Value],
-        final_: &str,
-    ) -> String {
-        let mut msgs = transcript.to_vec();
-        msgs.push(json!({"role": "assistant", "content": final_}));
-        msgs.push(user_msg(
-            "(System) Settings → Language is English. Rewrite your complete final answer \
-in English now — same content, same structure, no tool calls. Keep \
-names, email subjects and quotes in their original language only where needed.",
-        ));
-        let Ok(r) = self.llm.chat(&msgs, None, &opts("executor", task_id)).await else {
-            return final_.to_string();
+    /// A reply cut by the token limit (`finish_reason: length`): the same request once more, without tools and with
+    /// a higher limit; the longer reply is the answer. No words to the model about the cut.
+    async fn continue_cut_answer(&self, task_id: &str, msgs: &[Value], first: &str) -> String {
+        let set = self.settings();
+        let limit = omuse_common::util::as_i64(&set["max_tokens"])
+            .filter(|n| *n > 0)
+            .map(|n| n * 2)
+            .unwrap_or(8192)
+            .max(8192);
+        let o = ChatOpts {
+            max_tokens: Some(limit),
+            ..opts("executor", task_id)
         };
-        let text = r.content.trim().to_string();
-        if !text.is_empty() && prompts::cjk_share(&text) < prompts::cjk_share(final_) {
-            self.event(task_id, "language_fixed", json!({"from": "zh", "to": "en"}))
-                .await;
-            return text;
+        match self.llm.chat(msgs, None, &o).await {
+            Ok(r) if r.content.trim().chars().count() > first.trim().chars().count() => {
+                strip_tool_markup(&r.content).trim().to_string()
+            }
+            _ => first.to_string(),
         }
-        final_.to_string()
     }
 
     /// The model returned no text even when asked for the final answer (2026-10-05 S1-04: after 27 steps of price
@@ -2908,7 +3534,7 @@ user can do next. Answer in the user's language.");
     async fn replan(
         &self,
         task_id: &str,
-        transcript: &mut Vec<Value>,
+        transcript: &[Value],
         facts: &[Value],
         history_txt: &str,
         dead_ends: &str,
@@ -2957,18 +3583,7 @@ user can do next. Answer in the user's language.");
         );
         self.store.update_task(task_id, &json!({"plan": plan}))?;
         self.event(task_id, "plan", plan).await;
-        let base = prompts::l(agent_lang(&self.settings()),
-            "（系统）多次失败后已重新规划，请按新计划换一种方法继续，不要重复失败过的调用。",
-            "(System) Several steps failed; a new plan was made — try a different approach and do not repeat the calls that failed.");
-        transcript.push(user_msg(format!(
-            "{}{}",
-            base,
-            if dead_ends.is_empty() {
-                String::new()
-            } else {
-                format!("\n{}", dead_ends)
-            }
-        )));
+        // the new plan reaches the model through the system prompt (structured data); nothing is said to it
         Ok(())
     }
 
@@ -2978,19 +3593,24 @@ user can do next. Answer in the user's language.");
         &self,
         task_id: &str,
         call: &ToolCall,
-        first_id: &str,
+        sk: &Skip,
         transcript: &mut Vec<Value>,
-        whole_task: bool,
-        one_page: bool,
     ) {
-        let msg = if one_page {
+        let first_id = &sk.first;
+        let msg = if let Some((what, zh)) = sk.one_search {
+            format!("已跳过 — 这一轮已经做过唯一的一次旅行搜索（调用 {first_id}，{zh}），一轮只搜一次。一次搜索就能覆盖日期范围、\
+整个城市、偏好的航空公司或酒店品牌和往返；先用那次的结果回答，其余的（酒店、租车或别的条件）在回答里问用户，下一轮再搜。\
+ Skipped: this turn already ran its one travel search (call {first_id}: {what}); ONE travel search per turn. One \
+search covers a date range, a whole city, the preferred airlines or brands and a round trip; answer from that result \
+and offer the rest (the hotel or car, other conditions) — the next turn can search again.")
+        } else if sk.typed {
             format!("已跳过 — 这一轮已经在网页搜索框里搜过一次（调用 {first_id}），同一个浏览器页面一次只能显示一个结果页，\
 后面的搜索会把前面的结果冲掉。先读完这次的结果并记下（update_plan 的 note），下一轮再搜下一个；\
 要一次查多个，用 browser_read 读多个搜索网址（每次最多 4 个）。\
  Skipped: this turn already searched the site (call {first_id}); one page shows one result page, so later \
 searches would replace it unread. Read and note these results, then search the next item in the next turn — \
 or browser_read several search URLs (up to 4) at once.")
-        } else if whole_task {
+        } else if sk.search {
             format!("已跳过 — 这个任务里已经搜索过几乎相同的内容（调用 {first_id}）。请使用那次的结果：读其中的网址，\
 或换一个明显不同的关键词 / 来源；如果确实找不到，就在回答里说明“未找到”。\
  Skipped: you already ran this search in this task (call {first_id}). Use those results (read their URLs), \
@@ -3008,7 +3628,53 @@ try a clearly different query or source, or say in the answer that it wasn't fou
             .await;
     }
 
+    /// The run ends because the user stopped the task: the transcript so far is kept, nothing else happens (the status
+    /// is already CANCELLED, set by [`Runtime::cancel`]).
+    fn stopped(&self, task_id: &str, transcript: &[Value]) -> Result<()> {
+        // the calls of the last turn that never ran are answered as stopped (the transcript stays well-formed)
+        let mut transcript = transcript.to_vec();
+        if let Some(i) = transcript
+            .iter()
+            .rposition(|m| get_str(m, "role") == "assistant" && !tool_calls(m).is_empty())
+        {
+            let unanswered: Vec<String> = tool_calls(&transcript[i])
+                .iter()
+                .map(|tc| get_str(tc, "id"))
+                .filter(|id| {
+                    !transcript[i + 1..]
+                        .iter()
+                        .any(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == *id)
+                })
+                .collect();
+            for id in unanswered {
+                transcript.push(json!({"role": "tool", "tool_call_id": id,
+                                       "content": format!("ERROR: {} — not run.", crate::llm::CANCELLED_MSG)}));
+            }
+        }
+        self.store
+            .update_task(task_id, &json!({"transcript": transcript}))?;
+        Ok(())
+    }
+
     async fn suspend(&self, task_id: &str, sp: Suspend, transcript: Vec<Value>) -> Result<()> {
+        if self.is_cancelled(task_id) {
+            // stopped while the call that asks the user ran: no card, no wait; an approval it left behind expires and a
+            // bot task it created never starts
+            self.stopped(task_id, &transcript)?;
+            if sp.status == super::bots::WAITING_BOT {
+                self.cancel_handoff(task_id, &sp.waiting, "").await;
+            } else {
+                let _ = self
+                    .sentinel(
+                        "POST",
+                        "/internal/expire_approvals",
+                        Some(json!({"task_id": task_id, "reason": "任务已取消 (task cancelled)"})),
+                        15.0,
+                    )
+                    .await;
+            }
+            return Ok(());
+        }
         let mut waiting = sp.waiting;
         let pending = waiting
             .as_object_mut()
@@ -3125,6 +3791,7 @@ try a clearly different query or source, or say in the answer that it wasn't fou
         };
         let (mut added, mut recent, mut suggested): (Vec<String>, Vec<String>, Vec<String>) =
             (vec![], vec![], vec![]);
+        let mut cards: Vec<String> = vec![];
         for f in items.iter().take(8) {
             if !f.is_object() {
                 continue;
@@ -3138,6 +3805,27 @@ try a clearly different query or source, or say in the answer that it wasn't fou
             }
             let kind = kind.to_lowercase();
             let fact = sget(f, "fact").trim().to_string();
+            if kind == "card" {
+                // a card the user holds goes into the Vault by its name (its number, expiry and CVC UNKNOWN until the
+                // user adds them); Sentinel refuses a number and keeps one entry per card
+                let name = sget(f, "value").trim().to_string();
+                if !name.is_empty() && !crate::store::looks_sensitive(&name) {
+                    if let Ok(r) = self
+                        .sentinel(
+                            "POST",
+                            "/internal/vault/card",
+                            Some(json!({"name": name, "country": sget(f, "country").trim(), "task_id": task_id})),
+                            20.0,
+                        )
+                        .await
+                    {
+                        if get_truthy(&r, "added") {
+                            cards.push(get_str(&r["item"], "label"));
+                        }
+                    }
+                }
+                continue;
+            }
             if kind == "profile" {
                 let val = sget(f, "value").trim().to_string();
                 if let Ok(Some(r)) = self.store.suggest_profile(
@@ -3184,8 +3872,10 @@ try a clearly different query or source, or say in the answer that it wasn't fou
                 } else {
                     "active".into()
                 },
+                task_id: task_id.to_string(),
                 ..Default::default()
-            };
+            }
+            .with_model_fields(f); // topics, scope, trigger, id_document, relation: the model's JSON, validated
             if let Ok(Some(res)) = self.store.add_fact(&fact, &cat, &sget(f, "entity"), &o) {
                 if !get_truthy(&res, "duplicate") {
                     if tier == "recent" {
@@ -3197,8 +3887,8 @@ try a clearly different query or source, or say in the answer that it wasn't fou
                 }
             }
         }
-        let out = json!({"facts": added, "recent": recent, "profile_suggestions": suggested});
-        if !added.is_empty() || !recent.is_empty() || !suggested.is_empty() {
+        let out = json!({"facts": added, "recent": recent, "profile_suggestions": suggested, "vault_cards": cards});
+        if !added.is_empty() || !recent.is_empty() || !suggested.is_empty() || !cards.is_empty() {
             self.event(task_id, "memory_saved", out.clone()).await;
             self.audit(
                 "memory",
@@ -3210,19 +3900,6 @@ try a clearly different query or source, or say in the answer that it wasn't fou
             self.publish(json!({"kind": "memory_update"})).await;
         }
         out
-    }
-
-    /// `rt.ctx_mode[task_id] = mode` / `pop`.
-    pub fn set_ctx_mode(&self, task_id: &str, mode: Option<&str>) {
-        let mut inner = self.inner.lock();
-        match mode {
-            Some(m) => {
-                inner.ctx_mode.insert(task_id.to_string(), m.to_string());
-            }
-            None => {
-                inner.ctx_mode.remove(task_id);
-            }
-        }
     }
 }
 
@@ -3258,10 +3935,54 @@ pub fn compress_with(
     if total < high {
         return transcript;
     }
+    // the booking machine's own search and data results stay whole: code reads them again at every step
+    // (travel_flight_real 2026-11-01: the search cut short after the card fills read as "found nothing")
+    const MACHINE_DATA: &[&str] = &[
+        "flights_search",
+        "flight_offer",
+        "hotels_search",
+        "hotel_rooms",
+        "places_search",
+        "michelin_search",
+        "restaurant_availability",
+        "browser_read",
+    ];
+    let kept: Vec<String> = transcript
+        .iter()
+        .flat_map(tool_calls)
+        .filter(|tc| {
+            let id = get_str(tc, "id");
+            let (name, _) = super::util::stored_call(tc);
+            // a workflow tool's call (its validated arguments) and its result (`T_result`) are the machine's state too
+            (id.starts_with("bkg_")
+                && MACHINE_DATA.contains(&name.rsplit("__").next().unwrap_or(&name)))
+                || super::booking::TOOLS.contains(&name.as_str())
+                || super::news::TOOLS.contains(&name.as_str())
+                || id.starts_with(super::news::PREFIX)
+                || super::claims::TOOLS.contains(&name.as_str())
+                || (id.starts_with(super::claims::PREFIX) && name == "gmail_get_message")
+                || super::driver::TOOLS.contains(&name.as_str())
+                || (id.starts_with(super::driver::PREFIX) && name == "gmail_get_message")
+                || super::trains::TOOLS.contains(&name.as_str())
+                || id.starts_with(super::trains::PREFIX)
+                || super::flightstatus::TOOLS.contains(&name.as_str())
+                || id.starts_with(super::flightstatus::PREFIX)
+                || super::apdt::TOOLS.contains(&name.as_str())
+                || (id.starts_with(super::apdt::PREFIX)
+                    && matches!(name.as_str(), "gmail_get_message" | "files_read"))
+                || id.starts_with(super::workflow::RESULT_PREFIX)
+                // a known page's elements read by a machine's fixed selectors (code-only): code reads them again at
+                // every step (shopping_real 2026-11-01: the results' cards cut short read as "0 listings")
+                || name == "browser_read_elements"
+        })
+        .map(|tc| get_str(tc, "id"))
+        .collect();
     let tool_idx: Vec<usize> = transcript
         .iter()
         .enumerate()
-        .filter(|(_, m)| get_str(m, "role") == "tool")
+        .filter(|(_, m)| {
+            get_str(m, "role") == "tool" && !kept.contains(&get_str(m, "tool_call_id"))
+        })
         .map(|(i, _)| i)
         .collect();
     let shrink = |transcript: &mut Vec<Value>,
@@ -3369,19 +4090,8 @@ impl RuntimeApi for Runtime {
     fn is_running(&self, task_id: &str) -> bool {
         Runtime::is_running(self, task_id)
     }
-    fn set_ctx_mode(&self, task_id: &str, mode: Option<&str>) {
-        Runtime::set_ctx_mode(self, task_id, mode)
-    }
     fn catalog(&self) -> BoxFuture<'_, Value> {
         Box::pin(Runtime::catalog(self, false))
-    }
-    fn facts_legacy(&self, goal: &str) -> Vec<Value> {
-        Runtime::facts_legacy(self, goal)
-    }
-    fn facts_select(&self, goal: &str) -> Vec<Value> {
-        let facts = self.store.facts(500, Some("long")).unwrap_or_default();
-        let ents = self.store.entities(None).unwrap_or_default();
-        crate::context::select(goal, &facts, Some(&ents), 12, "")
     }
     fn plan(
         &self,
@@ -3434,4 +4144,46 @@ impl crate::memory_tidy::TidyRuntime for Runtime {
 /// Whether a tool stays available while a skill has turned the browser off: no `browser_*`, no `delegate`.
 pub fn browser_policy_allows(name: &str) -> bool {
     !name.starts_with("browser_") && name != "delegate"
+}
+
+/// The model service gave up after its retries (overloaded, unavailable): another model may still answer.
+fn unavailable(e: &LlmError) -> bool {
+    e.to_string().contains("model unavailable after retries")
+}
+
+/// The user's own address: the first connected mailbox (the one sends go from), `""` when none.
+fn own_mailbox(catalog: &Value) -> String {
+    let gm = &catalog["connections"]["gmail"];
+    if !truthy(&gm["ready"]) {
+        return String::new();
+    }
+    gm.get("accounts")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .map(|a| get_str(a, "email"))
+        .filter(|e| !e.is_empty())
+        .or_else(|| Some(get_str(gm, "account")).filter(|e| !e.is_empty()))
+        .unwrap_or_default()
+}
+
+/// What the final review found: a problem with the reply (it does not hold together) or the language rule broken.
+#[derive(Debug, Clone, Default)]
+struct Review {
+    problem: String,
+    /// the reply is not in the language the rule asks for (the model's `language_ok: false`)
+    language: bool,
+}
+
+/// The code machine that decides a driven run's steps: a workflow tool's run (`arrival_card_fill`: agent/driver.rs;
+/// `apdt_refund`: agent/apdt.rs; the claims, the bookings, the news).
+#[derive(Clone)]
+enum Machine {
+    /// a workflow tool's run (`travel_search`, `travel_book`, `shop_order`: agent/booking.rs; `news_gather`,
+    /// `news_publish`, `news_mail`: agent/news.rs): the tool, its validated arguments and the index of its call in the
+    /// transcript (agent/workflow.rs)
+    Workflow {
+        tool: String,
+        args: Value,
+        from: usize,
+    },
 }

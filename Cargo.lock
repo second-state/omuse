@@ -2339,6 +2339,7 @@ name = "omuse-apps"
 version = "0.5.3"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "futures-util",
@@ -2368,6 +2369,7 @@ dependencies = [
  "futures",
  "html-escape",
  "indexmap",
+ "lopdf 0.46.0",
  "mime_guess",
  "omuse-common",
  "omuse-docs",
@@ -2447,8 +2449,10 @@ dependencies = [
  "omuse-common",
  "regex",
  "serde_json",
+ "tempfile",
  "thiserror",
  "unicode-width",
+ "walkdir",
  "zip 2.6.1",
 ]
 
@@ -2558,6 +2562,7 @@ dependencies = [
  "lopdf 0.46.0",
  "mail-parser",
  "mime_guess",
+ "omuse-apps",
  "omuse-common",
  "omuse-docs",
  "once_cell",

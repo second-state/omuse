@@ -86,9 +86,9 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
             let keyed = store.has_secret("cred_travel_1").unwrap_or(false)
                 || !ctx.cfg.search.serpapi_key.trim().is_empty();
             workspace = json!(if keyed {
-                "google flights + google hotels + google maps places (key)"
+                "google flights (kiwi.com for date ranges and as the fallback) + google hotels + google maps places (key)"
             } else {
-                "flights: kiwi.com data (free, information only); hotels and restaurants: need the key"
+                "flights: kiwi.com data (free, with kiwi.com booking links); hotels and restaurants: need the key"
             });
         }
         let accounts: Value = if name == "gmail" {
@@ -186,6 +186,12 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
     if vault::list_items(store).map_err(ierr)?.is_empty() {
         schemas.retain(|s| get_str(&s["function"], "name") != "browser_fill_secret");
     }
+    // Google Flights / Hotels on hand (a SerpApi key): the built-in travel searches come first, before a connector's
+    let google = store.has_secret("cred_travel_1").unwrap_or(false)
+        || !ctx.cfg.search.serpapi_key.trim().is_empty();
+    if let Some(Value::Object(t)) = status.get_mut("travel") {
+        t.insert("google".into(), json!(google));
+    }
     let mut risk = Map::new();
     for (k, v) in tools.iter() {
         risk.insert(k.clone(), v["risk"].clone());
@@ -271,10 +277,18 @@ async fn render(ctx: &App, path: &str, body: &Value, timeout: f64) -> Result<Val
 /// `POST /internal/render_pdf`: print a workspace document to PDF on this machine — no online converters.
 pub async fn render_pdf(State(ctx): State<App>, body: Bytes) -> JsonResult {
     let b = body_obj(&body)?;
-    let req = obj(["source", "markdown", "output", "title"]
+    let mut req = obj(["source", "markdown", "output", "title"]
         .iter()
         .map(|k| (*k, json!(s_opt(&b, k))))
         .collect());
+    // the most pages the user asked for: the browser fits the document to it
+    if let Some(n) = b
+        .get("pages")
+        .and_then(Value::as_u64)
+        .filter(|n| (1..=50).contains(n))
+    {
+        req["pages"] = json!(n);
+    }
     let source = get_str(&req, "source");
     let tid = s_or(&b, "task_id", "");
     match render(&ctx, "/pdf", &req, 150.0).await {
@@ -764,6 +778,24 @@ pub async fn mail_check(State(ctx): State<App>) -> JsonResult {
     Ok(Json(json!({"accounts": out})))
 }
 
+/// `POST /internal/mail_code` `{query, since}`: the email verification step's mail — the newest message matching the
+/// fixed query (the site's sender, recent) dated `since` (epoch seconds) or later, its body unredacted, for the
+/// runtime's one extraction call (agent/email_code.rs). Never a tool: the agent's mail reads stay redacted.
+pub async fn mail_code(State(ctx): State<App>, body: Bytes) -> JsonResult {
+    let b = body_obj(&body)?;
+    let query = s_or(&b, "query", "");
+    if query.trim().is_empty() {
+        return Ok(Json(json!({"error": "query is empty", "found": false})));
+    }
+    let since = b.get("since").and_then(Value::as_f64).unwrap_or(0.0);
+    match crate::actions::code_mail(&ctx, &query, since).await {
+        Ok(v) => Ok(Json(v)),
+        Err(e) => Ok(Json(
+            json!({"error": take_chars(&e.to_string(), 300), "found": false}),
+        )),
+    }
+}
+
 /// `GET /internal/browser_state`.
 pub async fn browser_state(State(ctx): State<App>) -> JsonResult {
     match deps::broker(&ctx, "GET", "/state", None, 10.0).await {
@@ -817,7 +849,8 @@ pub async fn watch(State(ctx): State<App>, body: Bytes) -> JsonResult {
         Some(p) if p.is_object() => p.clone(),
         _ => json!({}),
     };
-    let res = match deps::watch_poll(&ctx, &src, &params, &cursor).await {
+    let observed = b.get("observed").filter(|o| o.is_object());
+    let res = match deps::watch_poll(&ctx, &src, &params, &cursor, observed).await {
         Ok(r) => r,
         Err(e) => return Ok(Json(json!({"error": e, "events": [], "cursor": cursor}))),
     };

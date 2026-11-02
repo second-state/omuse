@@ -17,7 +17,10 @@ use serde_json::{json, Value};
 use crate::broker::{browser_error, cdp_err, Broker, CdpExt};
 use crate::keys;
 use crate::pages::{err_text, ref_finder_js, CdpResult, TaskPage};
-use crate::textfmt::{cut, expiry_for_field, normalize_date_input, VIEWPORT_H, VIEWPORT_W};
+use crate::textfmt::{
+    cut, date_for_field, expiry_for_field, normalize_date_input, DATE_INPUTS, VIEWPORT_H,
+    VIEWPORT_W,
+};
 
 pub const BLOCK_JS: &str = include_str!("../js/block.js");
 
@@ -265,7 +268,7 @@ async fn clear_and_type(el: &ElementRef, text: &str, delay: u64) -> Result<(), S
 
 async fn field_hint(el: &ElementRef) -> String {
     match el
-        .eval("e => [e.placeholder, e.getAttribute('aria-label'), e.maxLength > 0 ? 'maxlength' + e.maxLength : ''].filter(Boolean).join(' ')", vec![])
+        .eval("e => [e.placeholder, e.getAttribute('aria-label'), e.labels && e.labels[0] ? e.labels[0].innerText : '', e.maxLength > 0 ? 'maxlength' + e.maxLength : ''].filter(Boolean).join(' ')", vec![])
         .await
     {
         Ok(Value::String(s)) => s,
@@ -304,6 +307,265 @@ impl Broker {
                     .unwrap_or_default();
                 return Ok(json!({"url": page.url(), "text": txt}));
             }
+            "read_elements" => {
+                // a known page's data by its HTML elements (a code machine's fixed selectors): for each
+                // `{name, sel, attr?, cells?}` the visible matches' text (or the attribute), or with `cells` each
+                // matched row's cells and its links — never a pattern over the page's text
+                let page = self.page(&task_id).await?;
+                let items = body.get("read").cloned().unwrap_or_else(|| json!([]));
+                let v = page
+                    .eval(None, READ_ELEMENTS_JS, vec![items])
+                    .await
+                    .unwrap_or(Value::Null);
+                return Ok(json!({"url": page.url(), "title": page.title().await, "elements": v}));
+            }
+            "empty_fields" => {
+                // the form's visible, enabled fields that are still empty, by label (a radio group counts once):
+                // checked before a hand-over, so the agent fills what it can first
+                let page = self.page(&task_id).await?;
+                let v = page
+                    .eval(None, EMPTY_FIELDS_JS, vec![])
+                    .await
+                    .unwrap_or(Value::Null);
+                return Ok(json!({"url": page.url(), "empty": v}));
+            }
+            "set_departure" => {
+                // an arrival card handed over: the departure date field gets the user's default (the runtime sends
+                // it only when nothing in the trip gives another date)
+                let page = self.page(&task_id).await?;
+                let v = page
+                    .eval(None, SET_DEPARTURE_JS, vec![json!(get_str(body, "value"))])
+                    .await
+                    .unwrap_or(Value::Null);
+                return Ok(json!({"url": page.url(), "set": v}));
+            }
+            "default_no" => {
+                // an arrival card handed over: every plain Yes / No question still unanswered gets No — the user's
+                // own default for health and declaration questions, which they review on the page before submitting
+                let page = self.page(&task_id).await?;
+                let v = page
+                    .eval(None, DEFAULT_NO_JS, vec![])
+                    .await
+                    .unwrap_or(Value::Null);
+                return Ok(json!({"url": page.url(), "answered": v}));
+            }
+            "fill_form" => {
+                // a known form's fill plan, computed in code (omuse_runtime::forms): every operation in order — text,
+                // select (by value or visible text), radio, checkbox, click — with what worked and what did not;
+                // values are never echoed back, and Vault values are remembered so pictures for a vision model hide them
+                let page = self.page(&task_id).await?;
+                let fills = body
+                    .get("fills")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut out = Vec::new();
+                for f in fills.iter().take(200) {
+                    if get_truthy(f, "secret") {
+                        let v = get_str(f, "value");
+                        let mut st = self.st.lock();
+                        let list = st.secrets.entry(task_id.clone()).or_default();
+                        if v.trim().chars().count() >= 3 && !list.contains(&v) {
+                            list.push(v);
+                        }
+                    }
+                    let op = get_str(f, "op");
+                    let fail = |e: String| json!({"ok": false, "why": e});
+                    // a field the rest of the plan needs: absent = the user's step comes first (a sign-in, an emailed
+                    // code); the plan stops here and says why
+                    // `await`: the same wait as `require`, but the plan goes on either way (a page that may be slow)
+                    if op == "require" || op == "await" {
+                        let at =
+                            json!({"op": "exists", "sel": f.get("sel"), "text": f.get("text")});
+                        // `wait_ms`: a page that renders late (a single-page app's route) is given that long
+                        let patience = f
+                            .get("wait_ms")
+                            .and_then(as_i64)
+                            .unwrap_or(0)
+                            .clamp(0, 20_000);
+                        let start = std::time::Instant::now();
+                        let mut here;
+                        loop {
+                            here = page
+                                .eval(None, FILL_ONE_JS, vec![at.clone()])
+                                .await
+                                .ok()
+                                .and_then(|v| v.get("ok").and_then(Value::as_bool))
+                                .unwrap_or(false);
+                            if here || start.elapsed().as_millis() as i64 >= patience {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        if op == "await" {
+                            out.push(
+                                json!({"op": "await", "field": get_str(f, "field"), "ok": here}),
+                            );
+                            continue;
+                        }
+                        if !here {
+                            out.push(json!({"op": "require", "field": get_str(f, "field"), "ok": false, "stop": true,
+                                            "why": get_str(f, "why")}));
+                            break;
+                        }
+                        continue;
+                    }
+                    let r = match op.as_str() {
+                        "wait" => {
+                            let ms = f.get("ms").and_then(as_i64).unwrap_or(800).clamp(0, 10_000);
+                            tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
+                            json!({"ok": true})
+                        }
+                        // real key presses into the field: components that listen to keys (split date boxes, masked
+                        // inputs) and lookups that need the typed text before they offer options
+                        "keys" | "pick" => {
+                            let at = json!({"op": "focus", "sel": f.get("sel"), "scope": f.get("scope"),
+                                            "scope_sel": f.get("scope_sel"), "nth": f.get("nth"), "clear": true});
+                            let focus = page
+                                .eval(None, FILL_ONE_JS, vec![at])
+                                .await
+                                .unwrap_or_else(|e| fail(crate::pages::err_text(&e)));
+                            if focus.get("ok").and_then(Value::as_bool) != Some(true) {
+                                focus
+                            } else {
+                                let typed = if op == "pick" && f.get("type").is_some() {
+                                    get_str(f, "type")
+                                } else {
+                                    get_str(f, "value")
+                                };
+                                match keys::type_text(&page, &typed, 25).await {
+                                    Err(e) => fail(e.to_string()),
+                                    Ok(()) if op == "keys" => json!({"ok": true}),
+                                    Ok(()) => {
+                                        tokio::time::sleep(std::time::Duration::from_millis(1300))
+                                            .await;
+                                        let pick = json!({"op": "option", "value": f.get("value"),
+                                                          "option_sel": f.get("option_sel")});
+                                        page.eval(None, FILL_ONE_JS, vec![pick])
+                                            .await
+                                            .unwrap_or_else(|e| fail(crate::pages::err_text(&e)))
+                                    }
+                                }
+                            }
+                        }
+                        // a calendar's month: real clicks on its → arrow (`sel`, match `next`) until the element
+                        // `until` ({sel, text}: the header showing the month) is there, then on ← (`prev`) — at most
+                        // `max` clicks each way; the plan never needs to know which month the calendar opened on
+                        "seek" => {
+                            let until = json!({"op": "exists", "sel": f["until"].get("sel"),
+                                               "text": f["until"].get("text")});
+                            let max = f.get("max").and_then(as_i64).unwrap_or(24).clamp(0, 60);
+                            let mut found = false;
+                            'dirs: for key in ["next", "prev"] {
+                                for _ in 0..=max {
+                                    let here = page
+                                        .eval(None, FILL_ONE_JS, vec![until.clone()])
+                                        .await
+                                        .ok()
+                                        .and_then(|v| v.get("ok").and_then(Value::as_bool))
+                                        .unwrap_or(false);
+                                    if here {
+                                        found = true;
+                                        break 'dirs;
+                                    }
+                                    let at = json!({"op": "rect", "sel": f.get("sel"), "nth": f.get(key)});
+                                    let r = page
+                                        .eval(None, FILL_ONE_JS, vec![at])
+                                        .await
+                                        .unwrap_or(Value::Null);
+                                    match (r.get("x").and_then(as_f64), r.get("y").and_then(as_f64))
+                                    {
+                                        (Some(x), Some(y)) => {
+                                            if page.click_at(x, y, false).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        _ => break,
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                                }
+                            }
+                            if found {
+                                json!({"ok": true})
+                            } else {
+                                fail("the month was not reached".into())
+                            }
+                        }
+                        // a real mouse click at the element's centre: components that ignore a script's click
+                        // (a Vuetify date picker closes its menu on one)
+                        // a form function's named script (`op: js`): `src` is a function `(sel, nth, args) =>
+                        // {ok, value?, why?}` from the fixed table of the form function's file (omuse_runtime::forms —
+                        // never from the model: the runtime refuses a `js` op in any call the model wrote); it works a
+                        // framework's control directly (Angular Material's mat-select: open it, click the option,
+                        // check what it shows) and reports the value it now shows, for the fill report's check
+                        "js" => {
+                            let src = get_str(f, "src");
+                            if get_str(f, "script").is_empty()
+                                || !src.trim_start().starts_with("async (sel, nth, args)")
+                            {
+                                fail("not a form script".into())
+                            } else {
+                                let mut args = f.get("args").cloned().unwrap_or_else(|| json!({}));
+                                if let (Some(o), Some(v)) = (args.as_object_mut(), f.get("value")) {
+                                    o.insert("value".into(), v.clone());
+                                }
+                                let sel = f.get("sel").cloned().unwrap_or(Value::Null);
+                                let nth = f.get("nth").cloned().unwrap_or(json!(0));
+                                let mut r = page
+                                    .eval(None, &src, vec![sel, nth, args])
+                                    .await
+                                    .unwrap_or_else(|e| fail(crate::pages::err_text(&e)));
+                                // the value it shows goes back only for a value that is no secret
+                                if get_truthy(f, "secret") {
+                                    if let Some(o) = r.as_object_mut() {
+                                        o.remove("value");
+                                    }
+                                }
+                                r
+                            }
+                        }
+                        "tap" => {
+                            let mut at = f.clone();
+                            at["op"] = json!("rect");
+                            let r = page
+                                .eval(None, FILL_ONE_JS, vec![at])
+                                .await
+                                .unwrap_or_else(|e| fail(crate::pages::err_text(&e)));
+                            match (
+                                r.get("ok").and_then(Value::as_bool),
+                                r.get("x").and_then(as_f64),
+                                r.get("y").and_then(as_f64),
+                            ) {
+                                (Some(true), Some(x), Some(y)) => {
+                                    match page.click_at(x, y, false).await {
+                                        Ok(()) => json!({"ok": true}),
+                                        Err(e) => fail(e.to_string()),
+                                    }
+                                }
+                                _ => r,
+                            }
+                        }
+                        _ => page
+                            .eval(None, FILL_ONE_JS, vec![f.clone()])
+                            .await
+                            .unwrap_or_else(|e| fail(crate::pages::err_text(&e))),
+                    };
+                    if matches!(op.as_str(), "click" | "button" | "tap") {
+                        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                    }
+                    let mut done = json!({"op": get_str(f, "op"), "sel": get_str(f, "sel"), "field": get_str(f, "field"),
+                                    "ok": r.get("ok").cloned().unwrap_or(json!(false)),
+                                    "why": r.get("why").cloned().unwrap_or(Value::Null)});
+                    if op == "js" {
+                        done["script"] = json!(get_str(f, "script"));
+                        if let Some(v) = r.get("value") {
+                            done["shown"] = v.clone();
+                        }
+                    }
+                    out.push(done);
+                }
+                return Ok(json!({"url": page.url(), "filled": out}));
+            }
             "focused" => return self.focused(&task_id).await,
             "describe_at" => {
                 let x = body.get("x").and_then(as_f64).unwrap_or(0.0);
@@ -334,6 +596,10 @@ impl Broker {
                     .filter(|v| truthy(v))
                     .and_then(as_i64)
                     .unwrap_or(8);
+                // `news_days`: the engines' news, dated within that many days (browser_news_search)
+                if let Some(d) = body.get("news_days").and_then(as_i64).filter(|d| *d > 0) {
+                    return self.news_search(&q, n, d).await;
+                }
                 return self.web_search(&q, n).await;
             }
             "read" => {
@@ -349,7 +615,15 @@ impl Broker {
                 };
                 urls.retain(|u| !u.trim().is_empty());
                 urls.truncate(4);
-                return self.web_read(&urls, 6000).await;
+                // `wait_ms`: how long a page's scripts get to draw it (default 1.2 s, at most 10 s)
+                let wait = body
+                    .get("wait_ms")
+                    .and_then(as_i64)
+                    .unwrap_or(1200)
+                    .clamp(500, 10_000);
+                return self
+                    .web_read(&urls, 6000, std::time::Duration::from_millis(wait as u64))
+                    .await;
             }
             _ => {}
         }
@@ -544,8 +818,27 @@ impl Broker {
                         _ => String::new(),
                     };
                     text = normalize_date_input(&kind, &text);
+                    if get_truthy(body, "secret") {
+                        // a vault value: remembered (as typed and as stored) so pictures for a vision model hide it
+                        let mut st = self.st.lock();
+                        let list = st.secrets.entry(task_id.clone()).or_default();
+                        if text.trim().chars().count() >= 3 && !list.contains(&text) {
+                            list.push(text.clone());
+                        }
+                    }
                     if get_truthy(body, "expiry") {
+                        // a card's expiry: MM/YY or MM/YYYY as the field asks
                         text = expiry_for_field(&text, &field_hint(&el).await);
+                    } else if get_truthy(body, "date") && !DATE_INPUTS.contains(&kind.as_str()) {
+                        // a document's date (a passport expiry) into a text box: in the order the field shows
+                        text = date_for_field(&text, &field_hint(&el).await);
+                    }
+                    if get_truthy(body, "secret") {
+                        let mut st = self.st.lock();
+                        let list = st.secrets.entry(task_id.clone()).or_default();
+                        if text.trim().chars().count() >= 3 && !list.contains(&text) {
+                            list.push(text.clone());
+                        }
                     }
                     if get_truthy(body, "keys") {
                         // card fields (Adyen, Stripe…) format and validate on key events; fill() leaves them "incomplete"
@@ -822,3 +1115,246 @@ impl Broker {
         Ok(json!({"ok": true}))
     }
 }
+
+/// Sets the departure-date field of the page's form (its label says departure / leaving and not arrival) to the given
+/// value, as typing would (input and change events); returns the field's name, or null when there is none.
+const SET_DEPARTURE_JS: &str = r#"(value) => {
+  const DEP = /depart|leaving|离境|出境|出國|출국/i, ARR = /arriv|入境|到达|抵達|입국/i;
+  const labelOf = e => ((e.labels && e.labels[0] && e.labels[0].innerText) || e.getAttribute('aria-label') || e.placeholder || e.name || '').trim();
+  for (const e of document.querySelectorAll('input')) {
+    const t = (e.type || 'text').toLowerCase();
+    if (!['text', 'date', ''].includes(t) || e.disabled || e.readOnly) continue;
+    const l = labelOf(e);
+    if (!DEP.test(l) || ARR.test(l)) continue;
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    set.call(e, t === 'date' && /^\d\d\/\d\d\/\d{4}$/.test(value) ? value.split('/').reverse().join('-') : value);
+    e.dispatchEvent(new Event('input', {bubbles: true}));
+    e.dispatchEvent(new Event('change', {bubbles: true}));
+    return e.name || e.id || l;
+  }
+  return null;
+}"#;
+
+/// Answers No to every plain Yes / No question of the page's forms that has no answer yet — a radio group of exactly two
+/// (Yes and No) or a select offering Yes and No — and returns the questions' names. Anything else is left alone.
+const DEFAULT_NO_JS: &str = r#"() => {
+  const NO = /^(no|否|不是|没有|無|沒有|아니오|아니요|いいえ|tidak|hindi)$/i, YES = /^(yes|是|有|예|네|はい|ya|oo)$/i;
+  const lab = r => ((r.labels && r.labels[0] && r.labels[0].innerText) || r.value || '').trim();
+  const out = [], seen = new Set();
+  for (const e of document.querySelectorAll('input[type=radio]')) {
+    if (!e.name || seen.has(e.name) || e.disabled) continue;
+    seen.add(e.name);
+    const group = [...document.querySelectorAll(`input[type=radio][name="${CSS.escape(e.name)}"]`)];
+    if (group.length !== 2 || group.some(r => r.checked)) continue;
+    const no = group.find(r => NO.test(lab(r)) || NO.test(r.value)), yes = group.find(r => YES.test(lab(r)) || YES.test(r.value));
+    if (!no || !yes) continue;
+    no.click();
+    if (!no.checked) { no.checked = true; no.dispatchEvent(new Event('change', {bubbles: true})); }
+    out.push(e.name);
+  }
+  for (const sel of document.querySelectorAll('select')) {
+    if (sel.disabled || (sel.value || '').trim()) continue;
+    const opts = [...sel.options], no = opts.find(o => NO.test(o.text.trim())), yes = opts.find(o => YES.test(o.text.trim()));
+    if (!no || !yes) continue;
+    sel.value = no.value;
+    sel.dispatchEvent(new Event('change', {bubbles: true}));
+    out.push(sel.name || sel.id);
+  }
+  return out;
+}"#;
+
+/// One operation of a fill plan (`fill_form`), run in the page. Where: `sel` (a CSS selector, its `nth` match), inside
+/// the deepest `scope_sel` element (default div / section / fieldset) whose text contains `scope` (a field's heading,
+/// "Date of Birth"); or, with `text`, the visible control whose own text is `text` (a radio, an option, a button).
+/// What: `text` sets an input's value through the native setter (input, change, blur events); `select` picks the option
+/// whose value or visible text is `value`; `radio` checks group `sel`'s radio whose value or label is `value`; `check`
+/// ticks a checkbox; `click` / `button` click; `date` sets a read-only date-picker box (the page's own datepicker when
+/// it has one); `focus` focuses (with `clear`, empties) the field before keys are typed; `rect` gives the element's centre
+/// (`{ok, x, y}`, for the broker's `tap`: a real mouse click there);
+/// `option` clicks the visible list option (`option_sel`, default mat-option / [role=option]) whose text is `value`,
+/// else starts with it, else contains it. Returns `{ok, why}`. (`keys`, `pick` and `wait` run in the broker.)
+const FILL_ONE_JS: &str = r#"(f) => {
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const fire = (e, ...types) => types.forEach(t => e.dispatchEvent(new Event(t, {bubbles: true})));
+  const vis = e => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
+  const want = norm(f.value);
+  const own = e => norm(e.innerText || e.value || e.getAttribute('aria-label') || '');
+  const byText = (els, t) => { const w = norm(t);
+    return els.find(e => own(e) === w) || els.find(e => own(e).startsWith(w)) || els.find(e => own(e).includes(w)); };
+  const rootOf = () => {
+    if (!f.scope) return document;
+    const w = norm(f.scope);
+    const cands = [...document.querySelectorAll(f.scope_sel || 'div, section, fieldset')]
+      .filter(e => norm(e.innerText).includes(w) && (!f.sel || e.querySelector(f.sel)));
+    return cands.find(c => !cands.some(o => o !== c && c.contains(o))) || null;
+  };
+  const find = () => {
+    const root = rootOf();
+    if (!root) return null;
+    if (f.text) {
+      const els = [...root.querySelectorAll(f.sel || 'label, button, mat-radio-button, mat-checkbox, mat-option, [role=option], [role=radio], [role=button], a')].filter(vis);
+      // nothing with that text among the usual controls: a plain element whose own text is exactly it (a tile, a menu item)
+      const exact = () => f.sel ? null : [...root.querySelectorAll('div, span, li, p, td')]
+        .filter(e => vis(e) && e.children.length <= 1 && own(e) === norm(f.text))
+        .sort((a, b) => a.children.length - b.children.length)[0];
+      return byText(els, f.text) || exact() || null;
+    }
+    if (!f.sel) return null;
+    // the visible matches first (several dropdowns each have their own hidden search box)
+    const all = [...root.querySelectorAll(f.sel)], shown = all.filter(vis);
+    return (shown.length ? shown : all)[f.nth || 0] || null;
+  };
+  if (f.op === 'option') {
+    const els = [...document.querySelectorAll(f.option_sel || 'mat-option, [role=option], .mat-option')].filter(vis);
+    // no listed option element: the visible leaf whose own text is exactly the value (custom lists without roles)
+    // the deepest first: a wrapper with one child has the same text
+    const leaves = () => byText([...document.querySelectorAll('li, div, span, a, button, p, td')]
+      .filter(e => vis(e) && !e.querySelector('input, select, textarea') && e.children.length <= 1)
+      .sort((a, b) => a.children.length - b.children.length), f.value);
+    const o = byText(els, f.value) || (els.length ? null : leaves());
+    if (!o) return {ok: false, why: 'no matching option (' + els.length + ' shown)'};
+    o.scrollIntoView({block: 'center'}); o.click();
+    return {ok: true};
+  }
+  if (f.op === 'radio') {
+    const group = [...document.querySelectorAll(`input[type=radio][name="${CSS.escape(f.sel)}"]`)];
+    if (!group.length) return {ok: false, why: 'no such radio group'};
+    const lab = r => norm((r.labels && r.labels[0] && r.labels[0].innerText) || (r.closest('label') && r.closest('label').innerText));
+    const r = group.find(x => norm(x.value) === want) || group.find(x => lab(x) === want) || group.find(x => lab(x).startsWith(want));
+    if (!r) return {ok: false, why: 'no such option'};
+    r.click(); if (!r.checked) { r.checked = true; fire(r, 'input', 'change'); }
+    return {ok: true};
+  }
+  const el = find();
+  if (f.op === 'exists') return {ok: !!el && vis(el)};   // a required field counts only when the user can see it
+  if (!el) return {ok: false, why: 'not on the page'};
+  el.scrollIntoView({block: 'center'});
+  if (f.op === 'rect') {
+    const r = el.getBoundingClientRect();
+    return {ok: r.width > 0 && r.height > 0, x: r.left + r.width / 2, y: r.top + r.height / 2};
+  }
+  if (f.op === 'click' || f.op === 'button') {
+    const t = el.matches('input') ? el : (el.querySelector('input[type=radio], input[type=checkbox]') || el);
+    t.click(); return {ok: true};
+  }
+  if (f.op === 'check') {
+    const c = el.matches('input') ? el : (el.querySelector('input[type=checkbox]') || el);
+    if (!c.checked) c.click();
+    if (c.matches('input') && !c.checked) { c.checked = true; fire(c, 'change'); }
+    return {ok: true};
+  }
+  if (f.op === 'focus') {
+    if (el.click) el.click();
+    el.focus();
+    if (f.clear && 'value' in el && el.value) {
+      const set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set; set.call(el, ''); fire(el, 'input');
+    }
+    return {ok: document.activeElement === el || el.contains(document.activeElement)};
+  }
+  if (f.op === 'date') {
+    // a read-only box driven by a date picker (bootstrap-datepicker): its own setDate, else the value and a change
+    const jq = window.jQuery;
+    if (jq && jq(el).datepicker) { jq(el).datepicker('setDate', f.value); }
+    else { el.removeAttribute('readonly'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, f.value || ''); }
+    fire(el, 'input', 'change');
+    return {ok: (el.value || '') === (f.value || '')};
+  }
+  if (f.op === 'select') {
+    const opts = [...el.options];
+    const o = opts.find(x => norm(x.value) === want) || opts.find(x => norm(x.text) === want) || opts.find(x => norm(x.text).startsWith(want))
+      || (want && opts.find(x => norm(x.text).includes(want)));
+    if (!o) return {ok: false, why: 'no such option'};
+    el.value = o.value; fire(el, 'input', 'change');
+    return {ok: true};
+  }
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return {ok: false, why: 'not a text field'};
+  const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  const set = Object.getOwnPropertyDescriptor(proto, 'value').set;
+  el.focus(); set.call(el, f.value || ''); fire(el, 'input', 'change');
+  if (el.blur) el.blur();
+  return {ok: (el.value || '') === (f.value || '')};
+}"#;
+
+/// `read_elements`: `items = [{name, sel, attr?, cells?, fields?, hidden?, max?}]` → `{name: [value]}`, for each of
+/// the selector's visible matches (with `hidden`, every match: an input's ref or attribute) up to `max` (40, at most
+/// 200), 400 characters each (an invalid selector gives an empty list). The value is the element's text, or its
+/// attribute (`attr`), or with `cells` its cells and links (a table row), or with `fields` an object
+/// `{field: value}` read inside it — each field a selector (`"h2 a"`, its first match's text) or
+/// `{sel?, attr?, closest?}`: `closest` goes up to that ancestor first, `sel` down to its first match, `attr` takes an
+/// attribute instead of the text (`href` is the absolute link). A field with no element is `""`.
+const READ_ELEMENTS_JS: &str = r#"(items) => {
+  const clean = s => (s || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  const vis = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const attrOf = (e, a) => clean(a === 'href' && e.href ? e.href : e.getAttribute(String(a)));
+  const textOf = e => clean(e.innerText || e.textContent);
+  const field = (e, f) => {
+    const spec = typeof f === 'string' ? {sel: f} : (f || {});
+    let t = e;
+    try {
+      if (spec.closest) t = t.closest(String(spec.closest));
+      if (t && spec.sel) t = t.querySelector(String(spec.sel));
+    } catch (x) { t = null; }
+    if (!t) return '';
+    return spec.attr ? attrOf(t, spec.attr) : textOf(t);
+  };
+  const out = {};
+  for (const it of (Array.isArray(items) ? items : []).slice(0, 20)) {
+    const name = String(it && it.name || ''); if (!name) continue;
+    const max = Math.min(Math.max(parseInt(it.max, 10) || 40, 1), 200);
+    let els = [];
+    try { els = Array.from(document.querySelectorAll(String(it.sel || ''))); } catch (e) {}
+    if (!it.hidden) els = els.filter(vis);
+    out[name] = els.slice(0, max).map(e => {
+      if (it.cells) return {cells: Array.from(e.querySelectorAll('th,td')).map(c => clean(c.innerText)),
+                            links: Array.from(e.querySelectorAll('a[href]')).map(a => a.href)};
+      if (it.fields && typeof it.fields === 'object') {
+        const o = {};
+        for (const [k, f] of Object.entries(it.fields)) o[k] = field(e, f);
+        return o;
+      }
+      if (it.attr) return attrOf(e, it.attr);
+      return textOf(e);
+    });
+  }
+  return out;
+}"#;
+
+/// The empty fields of the page's forms: `[{label, kind}]` for each visible, enabled text / date / number / email / tel
+/// input, textarea and select with no value, and each radio group with none chosen (passwords, files and hidden
+/// inputs left out). The label: its `<label>`, aria-label, placeholder, or the text of the field's row.
+const EMPTY_FIELDS_JS: &str = r#"() => {
+  const seen = new Set(), out = [];
+  const vis = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const labelOf = e => {
+    const l = (e.labels && e.labels[0] && e.labels[0].innerText) || e.getAttribute('aria-label') || e.placeholder || '';
+    if (l.trim()) return l.trim();
+    const row = e.closest('fieldset, .field, .form-group, .row, li, tr, div');
+    const leg = row && (row.querySelector('legend, label, .label, th') || row);
+    return (leg && leg.innerText || e.name || '').trim();
+  };
+  for (const e of document.querySelectorAll('input, textarea, select')) {
+    if (e.disabled || e.readOnly || !vis(e)) continue;
+    const t = (e.type || '').toLowerCase();
+    if (['hidden', 'password', 'file', 'submit', 'button', 'reset', 'image', 'checkbox'].includes(t)) continue;
+    if (t === 'radio') {
+      if (!e.name || seen.has(e.name)) continue;
+      seen.add(e.name);
+      if (!document.querySelector(`input[type=radio][name="${CSS.escape(e.name)}"]:checked`)) {
+        const fs = e.closest('fieldset'), lg = fs && fs.querySelector('legend');
+        out.push({label: ((lg && lg.innerText) || labelOf(e)).trim().slice(0, 120), kind: 'choice'});
+      }
+      continue;
+    }
+    if ((e.value || '').trim()) continue;
+    const sec = e.closest('fieldset, section, form');
+    const leg = sec && sec.querySelector('legend, h1, h2, h3, h4');
+    out.push({label: labelOf(e).slice(0, 120), kind: e.tagName === 'SELECT' ? 'select' : 'text',
+              ref: e.getAttribute('data-persona-ref') || '',
+              hint: [e.placeholder, e.name, e.id, e.getAttribute('autocomplete'), leg && leg.innerText]
+                .filter(Boolean).join(' ').slice(0, 200)});
+  }
+  return out.slice(0, 40);
+}"#;

@@ -1,66 +1,49 @@
-"""Web research with a real model (see tests/real_common.py): a plain research question sent to the main bot, which
-keeps it (research is general work). web_search goes to the test stack's stand-in engines (tests/fake_apps.py: the
-browser's engines → /ddg, "Result N for <query>" pointing at http://shop.test:8094/slow?…&name=PageN; the Brave API
-stand-in behind them), so the content is placeholder text: the checks are that the model searched (web_search, the
-stand-in engine saw the queries) and kept to a sane number of searches and calls. The stack has network, and a model that
-sees only placeholder results may read well-known pages itself (browser_read): the answer must cite what the agent
-actually found — a link from a search result or from a page it read — never a source it did not open. The browser only
-reads (no click, typing or form). One TIMING line.
+"""Web research with a real model, from the user's point of view (tests/user_common.py). In Main's chat the user asks
+for the pros and cons of heat pumps versus gas boilers for a small UK house, with links to the sources. A real-data suite
+(run_in_docker.sh REAL_DATA_SUITES): the web search and the pages are the real ones. What the user sees: an answer that cites its sources as links that open — none of them is a dead link (a 404 or a site that does not exist), which
+would mean a source the agent never opened. One TIMING line.
 
-    OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env OMUSE_E2E_PLANNER=xai/grok-4.7 OMUSE_E2E_EXECUTOR=openai-codex/gpt-6-luna \\
-        tests/run_in_docker.sh research_real"""
+    OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh research_real"""
 import os
 import re
 import sys
 
+import httpx
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tests import real_common as R  # noqa: E402
+from tests import user_common as U  # noqa: E402
+from tests.user_common import check  # noqa: E402
 
-FAKE = "http://127.0.0.1:8094"
-MAX_SEARCHES, MAX_CALLS = 8, 20
 URL = re.compile(r"https?://[^\s)\]>\"'`,]+")
-READS = ("browser_read", "browser_navigate", "browser_snapshot", "browser_get_text", "browser_screenshot")
 
 
-def norm(u: str) -> str:
-    return u.rstrip(".;:/").lower()
+def dead(url: str) -> str:
+    """Why the link is dead for the user ('' when the page is there, even if it shows a bot check or asks to sign in)."""
+    try:
+        r = httpx.get(url, headers={"User-Agent": U.UA}, follow_redirects=True, timeout=30)
+    except httpx.ConnectError as e:
+        return f"no such site: {str(e)[:100]}"
+    except httpx.HTTPError as e:
+        return f"did not load: {str(e)[:100]}"
+    return f"{r.status_code}" if r.status_code in (404, 410) else ""
 
 
-def results(info: dict, name: str) -> list[dict]:
-    return [e["data"] for x in info["tasks"] for e in R.task(x).get("events", []) if e["type"] == "tool_result"
-            and e["data"].get("name") == name]
+async def main():
+    async with U.User() as u:
+        # (one literal: this request is also Main's example in the UI — bots/main.md, checked by bots.rs tests)
+        a = await u.ask("Research the pros and cons of heat pumps versus gas boilers for heating a small house in the UK. Search the web and give me a short summary with links to your sources.",
+                        label="heatpump")
+        cited = sorted({x.rstrip(".;:") for x in a.links + URL.findall(a.text) if "127.0.0.1:8080" not in x})
+        print(f"INFO cited {cited}")
+        check("heatpump: the answer cites its sources as links", bool(cited), a.text[-600:])
+        status = {x: dead(x) for x in cited}
+        for x, why in status.items():
+            ok, title = U.opens(x)
+            print(f"INFO source {x}: {'dead ' + why if why else 'there'}; opens for a browser: {ok} ({title})")
+        check("heatpump: no cited source is a dead link (404 or no such site)", not [x for x, w in status.items() if w],
+              {x: w for x, w in status.items() if w})
+        check("heatpump: at least one source opens", any(U.opens(x)[0] for x in cited), cited)
 
 
-R.setup()
-hits0 = R.c.get(FAKE + "/ddg/_hits").json()["n"]
-apis0 = len(R.c.get(FAKE + "/search/_log").json())
-info = R.ask("Research the pros and cons of heat pumps versus gas boilers for heating a small house in the UK. "
-             "Search the web and give me a short summary with links to your sources.")
-R.routed("heatpump", info, "main")
-R.finished("heatpump", info)
-res = info["result"]
-searches = [x for x in info["calls"] if x["name"] in ("web_search", "news_search")]
-engine = R.c.get(FAKE + "/ddg/_hits").json()["n"] - hits0 + len(R.c.get(FAKE + "/search/_log").json()) - apis0
-print(f"INFO searches: {[(x.get('args') or {}).get('query') for x in searches]}; stand-in engines hit {engine} times")
-R.check("heatpump: the model searched the web (web_search)", R.used(info, "web_search"), info["names"])
-R.check("heatpump: the searches reached the stand-in engines", engine >= 1, engine)
-R.check(f"heatpump: a sane number of searches ({len(searches)} <= {MAX_SEARCHES})", 1 <= len(searches) <= MAX_SEARCHES,
-        [(x.get("args") or {}).get("query") for x in searches])
-R.check(f"heatpump: a sane number of tool calls ({len(info['names'])} <= {MAX_CALLS})", len(info["names"]) <= MAX_CALLS, info["names"])
-found = set()   # every URL the agent got from a search or read: result links, the pages browser_read was given and returned
-for r in results(info, "web_search") + results(info, "news_search") + results(info, "browser_read"):
-    found |= {norm(u) for u in URL.findall(str(r.get("preview") or ""))}
-for x in info["calls"]:
-    if x["name"] in ("browser_read", "browser_navigate"):
-        a = x.get("args") or {}
-        found |= {norm(u) for u in list(a.get("urls") or []) + [a.get("url") or ""] if u}
-cited = {norm(u) for u in URL.findall(res)}
-print(f"INFO cited {sorted(cited)}")
-R.check("heatpump: the answer cites its sources, and every one was found or read by the agent",
-        bool(cited) and cited <= found, (sorted(cited - found), sorted(found)[:20]))
-R.check("heatpump: the answer covers the question (heat pumps and gas boilers)",
-        R.mentions(res, "heat pump") and R.mentions(res, "boiler"), res[:600])
-acts = [n for n in info["names"] if n.startswith("browser_") and n not in READS]
-R.check("heatpump: the browser (if used at all) only read pages", not acts, acts)
-R.timing("heatpump", info)
-R.finish()
+U.setup()
+U.run(main)

@@ -204,7 +204,11 @@ pub async fn library_get(st: St, UrlPath(sid): UrlPath<String>) -> R {
         return Err(not_found());
     };
     let slug = get_str(&sub, "slug");
-    let report = lib::read_report(&st.rt.workspace, &slug);
+    let report = lib::with_sources(
+        &lib::read_report(&st.rt.workspace, &slug),
+        &st.rt.workspace,
+        &slug,
+    );
     Ok(Json(
         json!({"subject": sub, "report": report, "path": lib::report_path(&slug)}),
     ))
@@ -319,7 +323,8 @@ pub async fn memory(st: St) -> R {
     Ok(Json(json!({
         "facts": s.facts(500, Some("long"))?, "recent": s.facts(1000, Some("recent"))?, "episodes": s.episodes(50)?,
         "domains": triple(&DOMAINS), "entities": s.entities(None)?,
-        "profile": s.profile()?, "profile_fields": triple(&PROFILE_FIELDS),
+        "profile": s.profile()?, "profile_fields": triple(&PROFILE_FIELDS), "places": crate::places::choices(), "profile_standing": s.profile_standing()?,
+        "topics": crate::store::topic_keys(),
         "pending": s.profile_pending("pending")?, "runs": runs, "job": mt::job_state(),
         "needs_first_review": mt::needs_first_review(s)?, "library": s.subjects()?,
         "settings": sub,
@@ -343,15 +348,26 @@ pub async fn add_memory(st: St, body: Bytes) -> R {
         .into(),
         domain: pstr_or(&b, "domain", ""),
         ..Default::default()
-    };
+    }
+    .with_model_fields(&b); // fields the page (or an API client) sent: topics, scope, trigger, id_document
     let r = st.rt.store.add_fact(
         &fact,
-        &pstr_or(&b, "category", "preference"),
+        // no category by default: the domain is the one the page picked, else the model's (sorted below)
+        &pstr_or(&b, "category", "other"),
         &pstr_or(&b, "entity", ""),
         &o,
     )?;
     let Some(r) = r else {
         return Err(http(400, "empty fact"));
+    };
+    // a fact typed without its topics and scope: the model sorts it now (JSON), so it is used from the next task
+    let fid = get_str(&r, "id");
+    if !truthy(&r["duplicate"]) && o.scope.is_empty() {
+        sort_now(&st, &fid, false).await;
+    }
+    let r = match st.rt.store.fact(&fid)? {
+        Some(f) if !truthy(&r["duplicate"]) => f,
+        _ => r,
     };
     st.rt
         .audit(
@@ -400,10 +416,28 @@ async fn edit_fact(st: &State, fid: &str, body: &Bytes) -> R {
     if let Some(e) = b.get("entity").and_then(Value::as_str) {
         kw.insert("entity".into(), json!(take_chars(e.trim(), 60)));
     }
+    // the structured fields, as the user set them (the store drops values outside their enums)
+    for k in ["scope", "kind", "trigger"] {
+        if let Some(v) = b.get(k).and_then(Value::as_str) {
+            kw.insert(k.into(), json!(take_chars(v.trim(), 60)));
+        }
+    }
+    if let Some(t) = b.get("topics") {
+        kw.insert("topics".into(), t.clone());
+    }
+    let new_text = kw.contains_key("fact")
+        && !["scope", "topics", "kind", "trigger"]
+            .iter()
+            .any(|k| kw.contains_key(*k));
     let kw = Value::Object(kw);
-    let Some(r) = st.rt.store.update_fact(fid, &kw)? else {
+    let Some(mut r) = st.rt.store.update_fact(fid, &kw)? else {
         return Err(http(404, "not found"));
     };
+    if new_text {
+        // a new text may mean something else: the model sorts it again
+        sort_now(st, fid, true).await;
+        r = st.rt.store.fact(fid)?.unwrap_or(r);
+    }
     st.rt
         .audit(
             "user",
@@ -424,23 +458,26 @@ pub async fn edit_memory_consolidate(st: St, body: Bytes) -> R {
     edit_fact(&st, "consolidate", &body).await
 }
 
-/// What OMuse would know going into a request (Memory page → "试一试"; also used by the batch 2 tests).
+/// The model sorts one fact (domain, topics, scope, entity…) right away (`memory_tidy::classify`); a model that
+/// cannot be reached leaves it for the background sorting.
+async fn sort_now(st: &State, fid: &str, force: bool) {
+    let ids = [fid.to_string()];
+    let ids = if force { Some(&ids[..]) } else { None };
+    if let Err(e) = mt::classify(&st.rt.store, &st.rt.llm, ids).await {
+        eprintln!("[memory sort] {e:?}");
+    }
+}
+
+/// What OMuse would know going into a request (Memory page → "试一试"): the same path as a task's start — the model
+/// reads the request against what memory holds (JSON choices), code selects on the facts' fields. `bot` = a bot id
+/// (its topics count, as in that bot's chats).
 pub async fn context_preview(st: St, q: Q) -> R {
     let query = q.get("q").cloned().unwrap_or_default();
-    let mode = q.get("mode").cloned().unwrap_or_else(|| "v1".into());
+    let bot = q.get("bot").cloned().unwrap_or_else(|| "main".into());
     let rt = &st.rt;
-    let facts = if mode == "legacy" {
-        rt.facts_legacy(&query)
-    } else {
-        let ents = rt.store.entities(None)?;
-        crate::context::select(
-            &query,
-            &rt.store.facts(500, Some("long"))?,
-            Some(&ents),
-            12,
-            "",
-        )
-    };
+    let task = crate::context::task_data(&bot, &[]);
+    let (facts, rel) =
+        crate::context::facts_for_task(&rt.store, &rt.llm, "", &query, "", &task).await;
     let list: Vec<Value> = facts
         .iter()
         .map(|f| {
@@ -448,7 +485,9 @@ pub async fn context_preview(st: St, q: Q) -> R {
                    "why": f.get("why").cloned().unwrap_or_else(|| json!("")), "score": getv(f, "score")})
         })
         .collect();
-    Ok(Json(json!({"mode": mode, "facts": list})))
+    Ok(Json(
+        json!({"facts": list, "topics": rel.topics, "entities": rel.entities, "triggers": rel.triggers}),
+    ))
 }
 
 pub async fn edit_entity(st: St, UrlPath(eid): UrlPath<String>, body: Bytes) -> R {
@@ -491,7 +530,7 @@ pub async fn del_entity(st: St, UrlPath(eid): UrlPath<String>) -> R {
 }
 
 async fn forget(st: &State, fid: &str) -> R {
-    st.rt.store.delete_fact(fid)?;
+    st.rt.store.forget_fact(fid)?;
     st.rt
         .audit("user", "memory.forget", "", json!({"resource": fid}))
         .await;
@@ -518,15 +557,32 @@ pub async fn set_profile(st: St, body: Bytes) -> R {
     if looks_sensitive(&val) {
         return Err(http(400, VAULT_MSG));
     }
+    if key == "gender" && !val.trim().is_empty() && crate::store::gender_of(&val).is_none() {
+        return Err(http(400, "gender: Male, Female or X (as on the passport)"));
+    }
+    if crate::places::clean_value(&key, &val).is_none() {
+        return Err(http(
+            400,
+            "a city code of the table (home_city) or an ISO country code",
+        ));
+    }
     st.rt.store.set_profile(&key, &val, "user-ui")?;
+    // a custom field the agent always sees (Memory → Profile: the "always use" tick)
+    if let Some(on) = b.get("standing").and_then(Value::as_bool) {
+        if key.starts_with("custom:") && !val.trim().is_empty() {
+            st.rt.store.set_profile_standing(&key, on)?;
+        }
+    }
     st.rt
         .audit("user", "profile.set", "", json!({"resource": key}))
         .await;
-    Ok(Json(json!({"profile": st.rt.store.profile()?})))
+    Ok(Json(
+        json!({"profile": st.rt.store.profile()?, "profile_standing": st.rt.store.profile_standing()?}),
+    ))
 }
 
 /// The fields a profile needs before forms (arrival cards, bookings) can be filled without asking.
-pub const PROFILE_REQUIRED: [&str; 3] = ["name_en", "birthday", "nationality"];
+pub const PROFILE_REQUIRED: [&str; 4] = ["name_en", "birthday", "gender", "nationality"];
 
 /// `GET /api/profile/status`: `complete` (the required fields are filled), `missing` and whether the reminder is on.
 pub async fn profile_status(st: St) -> R {
@@ -603,6 +659,12 @@ pub async fn profile_ocr(st: St, headers: HeaderMap, body: Body) -> R {
     for (k, v) in [
         ("name_en", name.clone()),
         ("birthday", field("date_of_birth")),
+        (
+            "gender",
+            crate::store::gender_of(&field("sex"))
+                .unwrap_or("")
+                .to_string(),
+        ),
         ("nationality", field("nationality")),
     ] {
         if !v.is_empty() && !looks_sensitive(&v) {

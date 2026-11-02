@@ -154,6 +154,56 @@ pub fn expiry_for_field(value: &str, hint: &str) -> String {
 
 const DATE_KINDS: &[&str] = &["date", "time", "datetime-local", "month", "week"];
 
+/// The `<input>` types the browser formats itself ([`normalize_date_input`] gives them their ISO value).
+pub const DATE_INPUTS: &[&str] = DATE_KINDS;
+
+/// A stored date ("2031-05-20", or "20/05/2031" day first) rewritten in the order and with the separator the field
+/// shows in its placeholder, label or aria-label ("DD/MM/YYYY", "mm-dd-yyyy", "YYYY.MM.DD"; French and German letters
+/// too); a field that shows none gets day first with slashes, as most arrival and booking forms outside the US ask.
+/// A value that is no date passes through. (A passport expiry typed as "2031-05-20" into a DD/MM/YYYY mask spread
+/// its digits over the wrong parts of the field, 2026-10-30, sg-arrival-card.)
+pub fn date_for_field(value: &str, hint: &str) -> String {
+    static YMD: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})$").unwrap());
+    static DMY: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{4})$").unwrap());
+    static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b(dd|mm|yyyy|jjjj|jj|aaaa|tt)\s*([-/.\s])\s*(dd|mm|yyyy|jjjj|jj|aaaa|tt)\s*[-/.\s]\s*(dd|mm|yyyy|jjjj|jj|aaaa|tt)\b").unwrap()
+    });
+    let v = value.trim();
+    let (y, m, d) = if let Some(c) = YMD.captures(v) {
+        (c[1].to_string(), c[2].to_string(), c[3].to_string())
+    } else if let Some(c) = DMY.captures(v) {
+        (c[3].to_string(), c[2].to_string(), c[1].to_string())
+    } else {
+        return v.to_string();
+    };
+    let two = |s: &str| {
+        if s.len() < 2 {
+            format!("0{s}")
+        } else {
+            s.to_string()
+        }
+    };
+    let (m, d) = (two(&m), two(&d));
+    let part = |p: &str| match p.to_lowercase().as_str() {
+        "yyyy" | "aaaa" | "jjjj" => y.clone(),
+        "mm" => m.clone(),
+        _ => d.clone(), // dd, jj (jour), tt (Tag)
+    };
+    match PATTERN.captures(hint) {
+        Some(c) => {
+            let sep = if c[2].trim().is_empty() {
+                " "
+            } else {
+                c[2].trim()
+            };
+            [part(&c[1]), part(&c[3]), part(&c[4])].join(sep)
+        }
+        None => format!("{d}/{m}/{y}"),
+    }
+}
+
 /// Rewrite free text into the value format a date/time `<input>` accepts (date YYYY-MM-DD, time HH:MM,
 /// datetime-local YYYY-MM-DDTHH:MM, month YYYY-MM). Other inputs, or text that can't be parsed, pass through
 /// (`normalize_date_input`).
@@ -248,6 +298,29 @@ pub fn cut(s: &str, n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn document_dates_follow_the_field() {
+        let iso = "2031-05-20";
+        assert_eq!(date_for_field(iso, "DD/MM/YYYY"), "20/05/2031");
+        assert_eq!(
+            date_for_field(iso, "Date of Expiry (dd-mm-yyyy)"),
+            "20-05-2031"
+        );
+        assert_eq!(date_for_field(iso, "MM/DD/YYYY"), "05/20/2031");
+        assert_eq!(date_for_field(iso, "yyyy.mm.dd"), "2031.05.20");
+        assert_eq!(date_for_field(iso, "JJ/MM/AAAA"), "20/05/2031");
+        assert_eq!(date_for_field(iso, "TT.MM.JJJJ"), "20.05.2031");
+        // no format shown: day first with slashes
+        assert_eq!(
+            date_for_field(iso, "Passport expiry maxlength10"),
+            "20/05/2031"
+        );
+        // a date stored day first, and one that is no date
+        assert_eq!(date_for_field("20/5/2031", "YYYY-MM-DD"), "2031-05-20");
+        assert_eq!(date_for_field("unknown", "DD/MM/YYYY"), "unknown");
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -269,8 +342,8 @@ mod tests {
     fn reg_domain_keys() {
         assert_eq!(reg_domain("https://www.decathlon.sg/p/1"), "decathlon.sg");
         assert_eq!(reg_domain("https://m.amazon.com.sg/x"), "amazon.com.sg");
-        assert_eq!(reg_domain("https://shop.test/"), "shop.test");
-        assert_eq!(reg_domain("shop.test:8099/x"), "shop.test");
+        assert_eq!(reg_domain("https://shop.example/"), "shop.example");
+        assert_eq!(reg_domain("shop.example:8443/x"), "shop.example");
         assert_eq!(reg_domain(""), "");
     }
 

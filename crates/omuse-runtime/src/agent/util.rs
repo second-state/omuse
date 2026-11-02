@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use chrono::{Local, TimeZone};
 use omuse_common::pyjson;
-use omuse_common::util::{py_str, truthy};
+use omuse_common::util::{get_str, py_str, truthy};
 use serde_json::{Map, Value};
 
 /// `str(v or "")`: "" for falsy values, else Python's `str()`.
@@ -277,6 +277,18 @@ pub fn pystr_opt(v: Option<&Value>) -> String {
         Some(v) => py_str(v),
         None => "None".into(),
     }
+}
+
+/// `goal_create`'s arguments for a `schedule_create` call whose check ends once `success` happens: the same name,
+/// instruction and timing (`Runtime::until_condition`).
+pub fn goal_args_from_schedule(a: &Value, success: &str) -> Value {
+    serde_json::json!({
+        "title": get_str(a, "name"),
+        "objective": get_str(a, "goal"),
+        "success_criteria": success,
+        "check_kind": get_str(a, "kind"),
+        "check_spec": py_str(a.get("spec").unwrap_or(&Value::Null)),
+    })
 }
 
 #[cfg(test)]

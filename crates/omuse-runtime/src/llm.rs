@@ -32,7 +32,6 @@ static XML_PARAM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<parameter=([\w.\-]+)>\n?(.*?)\n?</parameter>").unwrap());
 static ANY_TOOLCALL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<tool_call>.*?(?:</tool_call>|$)").unwrap());
-static TRAILING_COMMA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r",\s*([}\]])").unwrap());
 
 /// The `(name, body)` pairs of `_TOOLCALL_XML.findall(text)`.
 pub fn toolcall_xml(text: &str) -> Vec<(String, String)> {
@@ -193,68 +192,17 @@ fn context_exceeded(text: &str) -> bool {
         || t.contains("prompt is too long")
 }
 
-fn parse_loose(s: &str) -> Option<Value> {
-    serde_json::from_str(s).ok()
-}
-
-/// Tool-call arguments from whatever the model sent: a dict as is, JSON text (also with trailing commas or
-/// wrapped in prose), else `{"_unparsed": ...}`.
+/// Tool-call arguments from whatever the model sent: the JSON checking layer's repair (`agent::json_in::parse_args`):
+/// an object as is, JSON text repaired (the repairs under `_repaired` until the run loop reports them), else
+/// `{"_unparsed": ...}`.
 pub fn parse_args(raw: &Value) -> Value {
-    static OBJ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\{.*\}").unwrap());
-    if raw.is_object() {
-        return raw.clone();
-    }
-    if !truthy(raw) {
-        return json!({});
-    }
-    let s = py_str(raw).trim().to_string();
-    if let Some(v) = parse_loose(&s) {
-        return if v.is_object() {
-            v
-        } else {
-            json!({"value": v})
-        };
-    }
-    let s2 = TRAILING_COMMA.replace_all(&s, "$1");
-    if let Some(v) = parse_loose(&s2) {
-        return v;
-    }
-    if let Some(m) = OBJ.find(&s) {
-        if let Some(v) = parse_loose(m.as_str()) {
-            return v;
-        }
-    }
-    json!({"_unparsed": take_chars(&s, 500)})
+    crate::agent::json_in::parse_args(raw)
 }
 
-/// Pull the first JSON object/array out of a model reply (handles ```json fences).
+/// Pull the first JSON object/array out of a model reply, its syntax repaired where it is broken (code fences, prose,
+/// quotes, trailing commas, a reply cut short: `agent::json_in::extract`).
 pub fn extract_json(text: &str) -> Option<Value> {
-    static FENCE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?s)```(?:json)?\s*(.*?)```").unwrap());
-    if text.is_empty() {
-        return None;
-    }
-    let text = THINK.replace_all(text, "");
-    let cand: &str = match FENCE.captures(&text) {
-        Some(c) => c.get(1).map(|m| m.as_str()).unwrap_or(""),
-        None => &text,
-    };
-    for (opener, closer) in [('{', '}'), ('[', ']')] {
-        let (Some(i), Some(j)) = (cand.find(opener), cand.rfind(closer)) else {
-            continue;
-        };
-        if j <= i {
-            continue;
-        }
-        let piece = &cand[i..=j];
-        if let Some(v) = parse_loose(piece) {
-            return Some(v);
-        }
-        if let Some(v) = parse_loose(&TRAILING_COMMA.replace_all(piece, "$1")) {
-            return Some(v);
-        }
-    }
-    None
+    crate::agent::json_in::extract(text).map(|(v, _)| v)
 }
 
 // ------------------------------------------------------------------------------------------------ transport
@@ -440,6 +388,11 @@ fn describe_reqwest_error(e: reqwest::Error) -> String {
 pub type Hook = Arc<dyn Fn(Value) -> BoxFuture<'static, ()> + Send + Sync>;
 /// `get_settings()`: the settings in force (`store.settings()`).
 pub type SettingsFn = Arc<dyn Fn() -> Value + Send + Sync>;
+/// `is_cancelled(task_id)`: the task was stopped by the user, so no model call is made for it any more.
+pub type CancelFn = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// The error of a model call refused because its task was stopped (see [`Llm::cancelled`]).
+pub const CANCELLED_MSG: &str = "任务已停止 (task stopped)";
 
 /// Per-call options of [`Llm::chat`] (the Python keyword arguments).
 #[derive(Debug, Clone)]
@@ -691,6 +644,9 @@ pub struct Llm {
     transport: Arc<dyn LlmTransport>,
     /// Tests: called with the delay instead of sleeping.
     pub sleep_hook: Option<Arc<dyn Fn(f64) + Send + Sync>>,
+    /// The runtime's stop check: a call for a stopped task (`ChatOpts::task_id`) fails at once, before it is sent and
+    /// before each retry, so nothing reaches the model after the user pressed Stop.
+    pub cancelled: Option<CancelFn>,
 }
 
 /// `llm_concurrency` from the settings, 1..=8 (default 4: parallel sub-agents each hold a slot while their model
@@ -741,6 +697,17 @@ impl Llm {
             fallback: parking_lot::Mutex::new(HashMap::new()),
             transport,
             sleep_hook: None,
+            cancelled: None,
+        }
+    }
+
+    /// `Err` when the call's task was stopped (no request is sent for it any more).
+    fn stop_check(&self, o: &ChatOpts) -> Result<(), LlmError> {
+        match &self.cancelled {
+            Some(f) if !o.task_id.is_empty() && f(&o.task_id) => {
+                Err(LlmError::Failed(CANCELLED_MSG.to_string()))
+            }
+            _ => Ok(()),
         }
     }
 
@@ -993,6 +960,7 @@ impl Llm {
         tools: Option<&[Value]>,
         o: &ChatOpts,
     ) -> Result<ChatReply, LlmError> {
+        self.stop_check(o)?;
         let s = (self.get_settings)();
         let base = get_str(&s, "model_base_url")
             .trim_end_matches('/')
@@ -1078,6 +1046,7 @@ impl Llm {
         let wait_s = round2(now_ts() - queued);
         let mut t0;
         let data = loop {
+            self.stop_check(o)?;
             t0 = now_ts();
             let req = HttpRequest {
                 method: "POST",
@@ -1363,7 +1332,7 @@ fn round2(x: f64) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use parking_lot::Mutex;
 
@@ -1403,12 +1372,16 @@ mod tests {
     fn args_and_json_extraction() {
         assert_eq!(parse_args(&json!({"a": 1})), json!({"a": 1}));
         assert_eq!(parse_args(&json!("")), json!({}));
-        assert_eq!(parse_args(&json!("{\"a\": 1,}")), json!({"a": 1}));
-        assert_eq!(parse_args(&json!("[1]")), json!({"value": [1]}));
+        let mut a = parse_args(&json!("{\"a\": 1,}"));
         assert_eq!(
-            parse_args(&json!("call with {\"q\": \"x\"} please")),
-            json!({"q": "x"})
+            crate::agent::json_in::take_repairs(&mut a),
+            vec!["trailing comma"]
         );
+        assert_eq!(a, json!({"a": 1}));
+        assert_eq!(parse_args(&json!("[1]")), json!({"value": [1]}));
+        let mut a = parse_args(&json!("call with {\"q\": \"x\"} please"));
+        crate::agent::json_in::take_repairs(&mut a);
+        assert_eq!(a, json!({"q": "x"}));
         assert_eq!(
             parse_args(&json!("garbage")),
             json!({"_unparsed": "garbage"})
@@ -1476,9 +1449,9 @@ mod tests {
     }
 
     /// Serves scripted responses (or transport errors) in order and records the request bodies.
-    struct Scripted {
+    pub(crate) struct Scripted {
         responses: Mutex<Vec<Result<HttpResponse, String>>>,
-        requests: Mutex<Vec<HttpRequest>>,
+        pub(crate) requests: Mutex<Vec<HttpRequest>>,
     }
 
     impl LlmTransport for Scripted {
@@ -1489,7 +1462,11 @@ mod tests {
         }
     }
 
-    fn resp(status: u16, body: Value, retry_after: Option<&str>) -> Result<HttpResponse, String> {
+    pub(crate) fn resp(
+        status: u16,
+        body: Value,
+        retry_after: Option<&str>,
+    ) -> Result<HttpResponse, String> {
         Ok(HttpResponse {
             status,
             retry_after: retry_after.map(str::to_string),
@@ -1502,7 +1479,7 @@ mod tests {
     }
 
     #[allow(clippy::type_complexity)]
-    fn scripted_llm(
+    pub(crate) fn scripted_llm(
         responses: Vec<Result<HttpResponse, String>>,
     ) -> (
         Llm,

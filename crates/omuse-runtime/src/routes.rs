@@ -1,7 +1,7 @@
 //! Agent Runtime HTTP API (reached only through Sentinel's reverse proxy) — port of `app/runtime/main.py`.
 //!
-//! [`serve`] is the FastAPI lifespan plus uvicorn: stall watch, runtime, skills seed, scheduler, health watch, golden
-//! runs, task recovery, then the server on `[server] runtime_host:runtime_port`. [`router`] builds the routes (also
+//! [`serve`] is the FastAPI lifespan plus uvicorn: stall watch, runtime, skills seed, scheduler, health watch, task
+//! recovery, then the server on `[server] runtime_host:runtime_port`. [`router`] builds the routes (also
 //! used by the unit tests). Handlers live in `routes/*.rs`, grouped like the sections of the Python file.
 
 use std::collections::HashMap;
@@ -231,6 +231,7 @@ pub fn router(state: Arc<State>) -> Router {
         )
         .route("/api/schedules/{sid}/poll", post(auto::poll_schedule))
         .route("/api/schedules/{sid}/run", post(auto::run_schedule))
+        .route("/api/run_pending_tasks", get(auto::run_pending_tasks))
         .route("/api/goals", get(auto::goals).post(auto::add_goal))
         .route(
             "/api/goals/{gid}",
@@ -292,12 +293,10 @@ pub fn router(state: Arc<State>) -> Router {
             "/api/profile/pending/{pid}",
             post(knowledge::resolve_profile),
         )
-        // trust: metrics, health, golden runs, outcomes
+        // trust: metrics, health, outcomes
         .route("/api/metrics", get(trust::api_metrics))
         .route("/api/health/status", get(trust::api_health))
         .route("/api/health/check", post(trust::api_health_check))
-        .route("/api/golden/runs", get(trust::golden_runs))
-        .route("/api/golden/run", post(trust::golden_run))
         .route("/api/ledger/backfill", post(trust::ledger_backfill))
         .route("/api/ledger/reconcile", post(trust::ledger_reconcile))
         .route("/api/outcome/{tid}", post(trust::task_outcome))
@@ -351,9 +350,8 @@ pub async fn serve(cfg: Arc<Config>) -> anyhow::Result<()> {
         Ok(None) => {}
         Err(e) => println!("[skills] seed failed: {:#}", e),
     }
-    state.sched.start();
+    state.sched.start(cfg.server.scheduler_loop);
     rt.health().start();
-    state.golden.start();
     rt.recover().await;
     let addr = format!("{}:{}", cfg.server.runtime_host, cfg.server.runtime_port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

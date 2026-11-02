@@ -398,8 +398,212 @@ fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
         .map_or(&[], Vec::as_slice)
 }
 
-/// One Google Flights itinerary, compact: airlines, the legs, local times, duration, stops, price, an offer id.
-fn compact_itinerary(it: &Value, currency: &str) -> Value {
+/// The airline that sells a whole itinerary as one ticket: one that flies or also sells every leg (Google's
+/// `ticket_also_sold_by`, a codeshare) — United for UA 888 + Air China CA 4110, which United also sells. `None` when no
+/// single airline does.
+fn one_ticket_seller(flights: &[Value]) -> Option<String> {
+    let first = flights.first()?;
+    let mut cands = vec![get_str(first, "airline")];
+    cands.extend(
+        arr(first, "ticket_also_sold_by")
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string),
+    );
+    cands.into_iter().filter(|c| !c.is_empty()).find(|c| {
+        flights.iter().all(|l| {
+            get_str(l, "airline") == *c
+                || arr(l, "ticket_also_sold_by")
+                    .iter()
+                    .any(|x| x.as_str() == Some(c.as_str()))
+        })
+    })
+}
+
+/// A protobuf varint.
+fn put_varint(out: &mut Vec<u8>, mut n: u64) {
+    while n >= 0x80 {
+        out.push((n as u8 & 0x7f) | 0x80);
+        n >>= 7;
+    }
+    out.push(n as u8);
+}
+
+/// A protobuf varint field.
+fn put_int(out: &mut Vec<u8>, field: u64, n: u64) {
+    put_varint(out, field << 3);
+    put_varint(out, n);
+}
+
+/// Google Hotels' page for one hotel and stay, free (no SerpApi credit): `/travel/hotels/entity/<property_token>` with
+/// the dates in its `ts` (a protobuf: field 3 → 2 → 2 holds the check-in (1) and check-out (2) dates as year / month
+/// / day, and the nights (3); field 5 the currency). It lists every seller with its price for those dates, the hotel's
+/// own site among them (checked in a browser on 2026-10-29: Check-in Thu, Dec 10 / Check-out Sat, Dec 12).
+pub fn hotel_page_url(
+    token: &str,
+    check_in: &str,
+    check_out: &str,
+    currency: &str,
+) -> Option<String> {
+    use base64::Engine as _;
+    let parse = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
+    let (ci, co) = (parse(check_in)?, parse(check_out)?);
+    let nights = u64::try_from((co - ci).num_days())
+        .ok()
+        .filter(|n| *n > 0)?;
+    let date = |d: chrono::NaiveDate| {
+        use chrono::Datelike;
+        let mut b = Vec::new();
+        put_int(&mut b, 1, u64::try_from(d.year()).unwrap_or(0));
+        put_int(&mut b, 2, u64::from(d.month()));
+        put_int(&mut b, 3, u64::from(d.day()));
+        b
+    };
+    let mut stay = Vec::new();
+    put_bytes(&mut stay, 1, &date(ci));
+    put_bytes(&mut stay, 2, &date(co));
+    put_int(&mut stay, 3, nights);
+    let mut zero = Vec::new();
+    put_int(&mut zero, 2, 0);
+    let mut inner = Vec::new();
+    put_bytes(&mut inner, 2, &stay);
+    put_bytes(&mut inner, 6, &zero);
+    let mut empty3 = Vec::new();
+    put_bytes(&mut empty3, 3, &[]);
+    let mut f3 = Vec::new();
+    put_bytes(&mut f3, 1, &empty3);
+    put_bytes(&mut f3, 2, &inner);
+    let mut cur = Vec::new();
+    put_bytes(&mut cur, 7, currency.as_bytes());
+    let mut f5 = Vec::new();
+    put_bytes(&mut f5, 1, &cur);
+    put_bytes(&mut f5, 3, &[]);
+    let mut ts = Vec::new();
+    put_int(&mut ts, 1, 1);
+    put_bytes(&mut ts, 3, &f3);
+    put_bytes(&mut ts, 5, &f5);
+    let enc = |x: &str| url::form_urlencoded::byte_serialize(x.as_bytes()).collect::<String>();
+    Some(format!(
+        "https://www.google.com/travel/hotels/entity/{}?hl=en&curr={}&ts={}",
+        enc(token),
+        enc(currency),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(ts)
+    ))
+}
+
+/// A protobuf length-delimited field.
+fn put_bytes(out: &mut Vec<u8>, field: u64, b: &[u8]) {
+    put_varint(out, field << 3 | 2);
+    put_varint(out, b.len() as u64);
+    out.extend_from_slice(b);
+}
+
+fn varint(b: &[u8], i: &mut usize) -> Option<u64> {
+    let mut n = 0u64;
+    for shift in (0..64).step_by(7) {
+        let byte = *b.get(*i)?;
+        *i += 1;
+        n |= u64::from(byte & 0x7f) << shift;
+        if byte < 0x80 {
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// Google Flights' own page for one itinerary, free (no SerpApi credit): the search's `google_flights_url` with the
+/// itinerary's flights selected in its `tfs` (a protobuf: field 3 is a slice of the trip, and a slice's field 4 a
+/// chosen flight — from, date, to, airline code, number). A one-way trip opens on the booking options ("Book with
+/// United", the airline's own site first); a round trip opens with the outbound chosen, for picking the return.
+/// `None` when the search URL or a leg's flight number cannot be read.
+fn itinerary_url(search_url: &str, legs: &[Value]) -> Option<String> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let mut url = url::Url::parse(search_url).ok()?;
+    let tfs = url.query_pairs().find(|(k, _)| k == "tfs")?.1.into_owned();
+    let msg = b64.decode(tfs.trim_end_matches('=')).ok()?;
+    let mut chosen = Vec::new();
+    for l in legs {
+        let number = get_str(l, "flight_number").replace(' ', "");
+        if number.len() < 3 || !number.is_ascii() {
+            return None;
+        }
+        let (code, num) = number.split_at(2);
+        let date: String = get_str(l, "depart").chars().take(10).collect();
+        let (from, to) = (get_str(l, "from"), get_str(l, "to"));
+        if date.len() != 10
+            || from.is_empty()
+            || to.is_empty()
+            || !num.chars().all(|c| c.is_ascii_digit())
+        {
+            return None;
+        }
+        let mut seg = Vec::new();
+        for (f, v) in [
+            (1, from.as_str()),
+            (2, date.as_str()),
+            (3, to.as_str()),
+            (5, code),
+            (6, num),
+        ] {
+            put_bytes(&mut seg, f, v.as_bytes());
+        }
+        put_bytes(&mut chosen, 4, &seg);
+    }
+    if chosen.is_empty() {
+        return None;
+    }
+    // copy the message, the flights added to its first slice; note the trip type (field 19: 1 round trip, 2 one way)
+    let (mut out, mut i, mut done, mut one_way) = (Vec::new(), 0, false, false);
+    while i < msg.len() {
+        let start = i;
+        let key = varint(&msg, &mut i)?;
+        match key & 7 {
+            0 => {
+                let v = varint(&msg, &mut i)?;
+                one_way |= key >> 3 == 19 && v == 2;
+                out.extend_from_slice(&msg[start..i]);
+            }
+            2 => {
+                let len = usize::try_from(varint(&msg, &mut i)?).ok()?;
+                let body = msg.get(i..i.checked_add(len)?)?;
+                i += len;
+                if key >> 3 == 3 && !done {
+                    let mut slice = body.to_vec();
+                    slice.extend_from_slice(&chosen);
+                    put_bytes(&mut out, 3, &slice);
+                    done = true;
+                } else {
+                    out.extend_from_slice(&msg[start..i]);
+                }
+            }
+            _ => return None,
+        }
+    }
+    if !done {
+        return None;
+    }
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(k, v)| {
+            let v = if k == "tfs" {
+                b64.encode(&out)
+            } else {
+                v.into_owned()
+            };
+            (k.into_owned(), v)
+        })
+        .collect();
+    url.query_pairs_mut().clear().extend_pairs(pairs);
+    if one_way {
+        url.set_path("/travel/flights/booking");
+    }
+    Some(url.into())
+}
+
+/// One Google Flights itinerary, compact: airlines, the legs, local times, duration, stops, price, an offer id, and
+/// (given the search's `google_flights_url`) Google Flights' own page for it as `booking_url`.
+fn compact_itinerary(it: &Value, currency: &str, search_url: Option<&str>) -> Value {
     let legs: Vec<Value> = arr(it, "flights")
         .iter()
         .map(|l| {
@@ -413,6 +617,7 @@ fn compact_itinerary(it: &Value, currency: &str) -> Value {
                 "duration_min": num(l.get("duration")),
                 "aircraft": get_str(l, "airplane"),
                 "cabin": get_str(l, "travel_class"),
+                "also_sold_by": arr(l, "ticket_also_sold_by"),
             })
         })
         .collect();
@@ -466,6 +671,27 @@ fn compact_itinerary(it: &Value, currency: &str) -> Value {
     out.insert("price".into(), num(it.get("price")));
     out.insert("currency".into(), json!(currency));
     out.insert("trip".into(), json!(get_str(it, "type")));
+    // one ticket from one airline (it answers for every connection) or, with several airlines and no common seller,
+    // possibly separate tickets — flight_offer's booking options say how it is sold
+    out.insert(
+        "ticket".into(),
+        json!(match one_ticket_seller(arr(it, "flights")) {
+            Some(seller) => format!("one ticket, sold by {seller}"),
+            None => "may be separate tickets (flight_offer shows how it is sold)".to_string(),
+        }),
+    );
+    if let Some(u) = search_url.and_then(|u| itinerary_url(u, &legs)) {
+        let round = get_str(it, "type").eq_ignore_ascii_case("round trip");
+        out.insert("booking_url".into(), json!(u));
+        out.insert(
+            "book".into(),
+            json!(if round {
+                "booking_url is this outbound on Google Flights: pick the return flight there, then book with the seller it lists (the airline's own site first)"
+            } else {
+                "booking_url is this itinerary on Google Flights: book with the seller it lists (the airline's own site first)"
+            }),
+        );
+    }
     out.insert("legs".into(), Value::Array(legs));
     let notes: Vec<String> = arr(it, "extensions")
         .iter()
@@ -480,11 +706,12 @@ fn compact_itinerary(it: &Value, currency: &str) -> Value {
 
 /// The Google Flights reply, compact (best first, at most 12), with Google's own price insight.
 pub fn compact_flights(data: &Value, currency: &str) -> Value {
+    let search_url = get_str(&data["search_metadata"], "google_flights_url");
     let mut offers: Vec<Value> = arr(data, "best_flights")
         .iter()
         .chain(arr(data, "other_flights").iter())
         .take(12)
-        .map(|it| compact_itinerary(it, currency))
+        .map(|it| compact_itinerary(it, currency, Some(&search_url)))
         .collect();
     for (i, o) in offers.iter_mut().enumerate() {
         o["rank"] = json!(i + 1);
@@ -551,7 +778,7 @@ pub fn compact_booking(data: &Value, currency: &str) -> Value {
     }
     let selected: Vec<Value> = arr(data, "selected_flights")
         .iter()
-        .map(|it| compact_itinerary(it, currency))
+        .map(|it| compact_itinerary(it, currency, None))
         .collect();
     let mut out = json!({"count": options.len(), "options": options, "itinerary": selected});
     let url = get_str(&data["search_metadata"], "google_flights_url");
@@ -625,9 +852,10 @@ fn compact_property(p: &Value, currency: &str) -> Value {
     );
     out.insert("check_in".into(), json!(get_str(p, "check_in_time")));
     out.insert("check_out".into(), json!(get_str(p, "check_out_time")));
+    // the hotel's own site (hotels_search adds Google's page for the hotel and the dates as booking_url)
     let link = get_str(p, "link");
     if !link.is_empty() {
-        out.insert("link".into(), json!(link));
+        out.insert("hotel_site".into(), json!(link));
     }
     Value::Object(out)
 }
@@ -686,6 +914,45 @@ pub fn compact_rooms(data: &Value, currency: &str) -> Value {
 
 /// One Google Maps place from a search, compact: what the model needs to pick and to tell the user, with the
 /// `place_id` for `place_details`.
+/// A place's own Google Maps page (Google's Maps URLs API: the name and address as the query, the place id to pin
+/// it), built in code so the link the browser loads is never the model's guess.
+pub fn place_map_url(name: &str, address: &str, place_id: &str) -> String {
+    let enc = |x: &str| url::form_urlencoded::byte_serialize(x.as_bytes()).collect::<String>();
+    let q = [name.trim(), address.trim()]
+        .into_iter()
+        .filter(|x| !x.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut u = format!(
+        "https://www.google.com/maps/search/?api=1&query={}",
+        enc(&q)
+    );
+    if !place_id.trim().is_empty() {
+        u.push_str(&format!("&query_place_id={}", enc(place_id.trim())));
+    }
+    u
+}
+
+/// A map page the model opens on another map site (OpenStreetMap) becomes the Google Maps search for the same
+/// query: maps are Google Maps (SerpApi `places_search` for the data, its `map_url` in the browser). `None` for
+/// any other link.
+pub fn google_maps_instead(link: &str) -> Option<String> {
+    let u = url::Url::parse(link).ok()?;
+    let host = u.host_str()?.to_lowercase();
+    if !(host == "openstreetmap.org" || host.ends_with(".openstreetmap.org")) {
+        return None;
+    }
+    let q = u
+        .query_pairs()
+        .find(|(k, _)| k == "query" || k == "q")
+        .map(|(_, v)| v.into_owned())
+        .unwrap_or_default();
+    if q.trim().is_empty() {
+        return Some("https://www.google.com/maps".to_string());
+    }
+    Some(place_map_url(&q, "", ""))
+}
+
 fn compact_place(p: &Value) -> Value {
     let types: Vec<String> = arr(p, "types")
         .iter()
@@ -705,6 +972,7 @@ fn compact_place(p: &Value) -> Value {
         "open_state": get_str(p, "open_state"),
         "phone": get_str(p, "phone"),
         "website": get_str(p, "website"),
+        "map_url": place_map_url(&get_str(p, "title"), &get_str(p, "address"), &get_str(p, "place_id")),
     });
     if let Some(h) = p.get("hours").filter(|h| h.is_string()) {
         out["hours"] = h.clone();
@@ -864,27 +1132,15 @@ impl SerpApi {
         }))
     }
 
-    /// `flights_search`: Google Flights for a route and date (a return date makes it a round trip).
+    /// `flights_search`: ONE Google Flights search, for a route and one departure date (a return date makes it a
+    /// round trip). A range of dates is Kiwi.com's (one query there; here it would take one search per day).
     pub async fn flights(&self, a: &Value) -> Result<Value, SerpError> {
-        let (days, cut) = date_range(a, 7).map_err(SerpError)?;
-        if days.len() == 1 && !cut {
-            return self.flights_day(a).await;
+        let to = get_str(a, "date_to");
+        if !to.trim().is_empty() && to.trim() != get_str(a, "date").trim() {
+            return Err(SerpError(
+                "Google Flights searches one departure date; a range of dates is searched on Kiwi.com".into(),
+            ));
         }
-        let runs = days.iter().map(|(d, r)| {
-            let mut x = a.clone();
-            x["date"] = json!(d);
-            x["return_date"] = json!(r);
-            async move { (d.clone(), self.flights_day(&x).await) }
-        });
-        let mut out = Vec::new();
-        for (d, r) in futures_util::future::join_all(runs).await {
-            out.push((d, r.unwrap_or_else(|e| json!({"offers": [], "note": e.0}))));
-        }
-        Ok(merge_days(out, cut, &get_str(a, "date_to")))
-    }
-
-    /// One departure date (the range is handled by [`SerpApi::flights`]).
-    async fn flights_day(&self, a: &Value) -> Result<Value, SerpError> {
         let origin = get_str(a, "origin");
         let dest = get_str(a, "destination");
         let from = airport_codes(&origin)
@@ -1128,42 +1384,34 @@ impl SerpApi {
             "reviews" => params.push(("sort_by", "13".to_string())),
             _ => {}
         }
-        // preferred brands and groups narrow the search with Google's own brand filter (a group's id takes all its
-        // brands): known groups at once (crate::loyalty::GOOGLE_HOTEL_GROUP_IDS); any other preference by name from the
-        // `brands` list of a first, unfiltered search of the same place; one Google does not list there → the query
+        // ONE search: preferred groups Google has an id for narrow it with Google's own brand filter (a group's id takes
+        // all its brands, crate::loyalty::GOOGLE_HOTEL_GROUP_IDS); any other preference goes into the search words
         let fixed: Option<Vec<u64>> = brands
             .iter()
             .map(|b| crate::loyalty::google_group_id(b).map(u64::from))
             .collect();
-        let mut filter = "";
-        let data = match fixed {
-            Some(ids) if !brands.is_empty() => {
+        let filter = match fixed {
+            _ if brands.is_empty() => "",
+            Some(ids) => {
                 params.push(("brands", join_ids(&ids)));
-                filter = "brands";
-                self.get("search.json", &params).await?
+                "brands"
             }
-            _ if brands.is_empty() => self.get("search.json", &params).await?,
-            _ => {
-                let first = self.get("search.json", &params).await?;
-                let list = arr(&first, "brands");
-                let found: Vec<Vec<u64>> = brands
-                    .iter()
-                    .map(|b| match crate::loyalty::google_group_id(b) {
-                        Some(id) => vec![u64::from(id)],
-                        None => crate::loyalty::google_brand_ids(b, list),
-                    })
-                    .collect();
-                if found.iter().all(|f| !f.is_empty()) {
-                    params.push(("brands", join_ids(&found.concat())));
-                    filter = "brands";
-                } else {
-                    params[1].1 = query(&lead);
-                    filter = "query";
-                }
-                self.get("search.json", &params).await?
+            None => {
+                params[1].1 = query(&lead);
+                "query"
             }
         };
+        let data = self.get("search.json", &params).await?;
         let mut out = compact_hotels(&data, &currency);
+        // each hotel's booking page: Google's page for it and these dates (every seller, the hotel's own site among them)
+        for h in out["hotels"].as_array_mut().into_iter().flatten() {
+            let token = token_of(&get_str(h, "hotel_id")).unwrap_or_default();
+            if let Some(u) = hotel_page_url(&token, &params[2].1, &params[3].1, &currency)
+                .filter(|_| !token.is_empty())
+            {
+                h["booking_url"] = json!(u);
+            }
+        }
         let found = mark_preferred(&mut out["hotels"], &brands, "name");
         let brand_filter = match filter {
             "brands" => json!(format!("only these brands were searched (Google's brand filter; a group takes all its brands): {}", brands.join(", "))),
@@ -1316,6 +1564,31 @@ mod tests {
         );
     }
     use super::*;
+
+    #[test]
+    fn a_place_links_to_its_google_maps_page_and_osm_becomes_google_maps() {
+        assert_eq!(
+            place_map_url("Hotel Ginza Grand", "8-7-6 Ginza, Chuo City, Tokyo", "ChIJ123"),
+            "https://www.google.com/maps/search/?api=1&query=Hotel+Ginza+Grand%2C+8-7-6+Ginza%2C+Chuo+City%2C+Tokyo&query_place_id=ChIJ123"
+        );
+        let p = compact_place(
+            &serde_json::json!({"title": "Ichiran", "address": "Shibuya", "place_id": "P1"}),
+        );
+        assert_eq!(p["map_url"], place_map_url("Ichiran", "Shibuya", "P1"));
+        assert_eq!(
+            google_maps_instead("https://www.openstreetmap.org/search?query=8-7-6%20Ginza%2C%20Tokyo#map=17/35.6/139.7").as_deref(),
+            Some("https://www.google.com/maps/search/?api=1&query=8-7-6+Ginza%2C+Tokyo")
+        );
+        assert_eq!(
+            google_maps_instead("https://openstreetmap.org/").as_deref(),
+            Some("https://www.google.com/maps")
+        );
+        assert_eq!(
+            google_maps_instead("https://www.google.com/maps/search/?api=1&query=x"),
+            None
+        );
+        assert_eq!(google_maps_instead("https://example.com/?query=x"), None);
+    }
 
     #[test]
     fn preferred_airlines_and_brands_are_flagged_not_filtered() {
@@ -1558,6 +1831,38 @@ mod tests {
     }
 
     #[test]
+    fn a_codeshare_itinerary_is_one_ticket_from_the_airline_that_sells_every_leg() {
+        let it = |flights: Value| {
+            compact_itinerary(&json!({"flights": flights, "price": 773}), "USD", None)
+        };
+        // SFO → PEK on United, PEK → CTU on Air China, which United also sells (a United ticket)
+        let united = it(json!([
+            {"airline": "United", "flight_number": "UA 888"},
+            {"airline": "Air China", "flight_number": "CA 4110", "ticket_also_sold_by": ["United"]}
+        ]));
+        assert_eq!(united["ticket"], "one ticket, sold by United");
+        assert_eq!(united["legs"][1]["also_sold_by"], json!(["United"]));
+        // the codeshare on the first leg works the same way
+        let first = it(json!([
+            {"airline": "Air China", "flight_number": "CA 986", "ticket_also_sold_by": ["United"]},
+            {"airline": "United", "flight_number": "UA 1"}
+        ]));
+        assert_eq!(first["ticket"], "one ticket, sold by United");
+        assert_eq!(
+            it(json!([{"airline": "Singapore Airlines", "flight_number": "SQ 638"}]))["ticket"],
+            "one ticket, sold by Singapore Airlines"
+        );
+        let mixed = it(json!([
+            {"airline": "Scoot", "flight_number": "TR 1"},
+            {"airline": "Peach", "flight_number": "MM 2"}
+        ]));
+        assert!(mixed["ticket"]
+            .as_str()
+            .unwrap()
+            .starts_with("may be separate tickets"));
+    }
+
+    #[test]
     fn booking_options_and_hotels_compact() {
         let b = json!({"booking_options": [{"together": {"book_with": "Singapore Airlines", "marketed_as": ["SQ 638"], "price": 620,
             "booking_request": {"url": "https://www.google.com/travel/clk/f", "post_data": "u=abc"}, "baggage_prices": ["1 free checked bag"], "option_title": "Economy"}}],
@@ -1595,5 +1900,77 @@ mod tests {
         assert_eq!(rooms["count"], 1);
         assert_eq!(rooms["offers"][0]["rooms"][0]["name"], "Deluxe Twin");
         assert_eq!(rooms["address"], "1-1 Ginza");
+    }
+
+    #[test]
+    fn each_google_flights_itinerary_links_to_its_own_page() {
+        use base64::Engine as _;
+        // the search URL SerpApi gave for SFO → CTU one way on 2026-12-10 (checked in a browser on 2026-10-29: the
+        // link opens "Book with United" for UA 888 + CA 4110)
+        let search = "https://www.google.com/travel/flights?hl=en&gl=us&curr=USD&tfs=CBwQAhoeEgoyMDI2LTEyLTEwagcIARIDU0ZPcgcIARIDQ1RVQAFIAXABmAEC&tfu=EgIIAQ";
+        let data = json!({"search_metadata": {"google_flights_url": search}, "best_flights": [{"type": "One way", "price": 1439, "flights": [
+            {"airline": "United", "flight_number": "UA 888", "departure_airport": {"id": "SFO", "time": "2026-12-10 10:45"},
+             "arrival_airport": {"id": "PEK", "time": "2026-12-11 14:35"}},
+            {"airline": "Air China", "flight_number": "CA 4110", "departure_airport": {"id": "PEK", "time": "2026-12-11 19:30"},
+             "arrival_airport": {"id": "CTU", "time": "2026-12-11 22:25"}}]}]});
+        let o = &compact_flights(&data, "USD")["offers"][0];
+        let link = url::Url::parse(o["booking_url"].as_str().unwrap()).unwrap();
+        assert_eq!(link.path(), "/travel/flights/booking");
+        let q: HashMap<_, _> = link.query_pairs().into_owned().collect();
+        assert_eq!(
+            (q["hl"].as_str(), q["curr"].as_str(), q["tfu"].as_str()),
+            ("en", "USD", "EgIIAQ")
+        );
+        let tfs = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&q["tfs"])
+            .unwrap();
+        let text = String::from_utf8_lossy(&tfs);
+        for part in [
+            "SFO",
+            "2026-12-10",
+            "PEK",
+            "UA",
+            "888",
+            "2026-12-11",
+            "CA",
+            "4110",
+            "CTU",
+        ] {
+            assert!(text.contains(part), "{part} in {text:?}");
+        }
+        assert!(o["book"].as_str().unwrap().contains("Google Flights"));
+        // a leg without a readable flight number: no link rather than a wrong one
+        let mut bad = data.clone();
+        bad["best_flights"][0]["flights"][1]["flight_number"] = json!("");
+        assert!(compact_flights(&bad, "USD")["offers"][0]
+            .get("booking_url")
+            .is_none());
+        // a booking-options reply has no search to start from
+        assert!(compact_itinerary(&data["best_flights"][0], "USD", None)
+            .get("booking_url")
+            .is_none());
+    }
+
+    #[test]
+    fn each_hotel_links_to_googles_page_for_it_and_the_dates() {
+        use base64::Engine as _;
+        // the token and dates checked in a browser on 2026-10-29 (Check-in Thu, Dec 10 / Check-out Sat, Dec 12)
+        let u = hotel_page_url(
+            "ChkI_Zmo7NeSqYDfARoML2cvMXB0X18zcGttEAE",
+            "2026-12-10",
+            "2026-12-12",
+            "USD",
+        )
+        .unwrap();
+        assert_eq!(
+            u,
+            "https://www.google.com/travel/hotels/entity/ChkI_Zmo7NeSqYDfARoML2cvMXB0X18zcGttEAE?hl=en&curr=USD\
+&ts=CAEaIAoCGgASGhIUCgcI6g8QDBgKEgcI6g8QDBgMGAIyAhAAKgkKBToDVVNEGgA"
+        );
+        let ts = u.split("ts=").nth(1).unwrap();
+        assert!(base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(ts)
+            .is_ok());
+        assert!(hotel_page_url("tok", "2026-12-12", "2026-12-10", "USD").is_none());
     }
 }

@@ -23,12 +23,17 @@ tools, editing is `edit_image` / `caption_image` / `upscale_image`, the book is 
 3. **Edit only where asked** — `edit_image` for a change the user wants (remove a passer-by, a watercolour look for a
    children's book, brighten), `upscale_image` for a small photo that will fill a page, `caption_image` when words must
    be ON the picture. Each edit is billed: do not restyle every photo unless the user asked for a styled book.
+   If `edit_image` says the image model cannot edit pictures, make the restyled picture once with `make_image` from
+   what `file_look` saw in the photo (same scene, people and colours, in the asked style) and say so in the answer.
+   Leave the restyled picture shown in the chat (do not pass `send=false`) so the user sees it before the book.
 4. **Write the text** — the story or captions in the user's language, one or two short paragraphs per page for a story
    book, one line per photo for an album. Use what you saw in the photos and what the user told you (names, dates,
    places). For a child, short sentences and a warm tone; for an album, dates and places.
-5. **Lay it out** — ONE `make_pdf` call: title page, then one photo per page as `![…](drive/…)` (or the edited path)
-   followed by its text; landscape photos one per page, two portrait photos may share a page. Give it a title for the
-   file name ("Kyoto-2026-storybook"), then `send_file` it so the user sees the book in the chat.
+5. **Lay it out** — ONE `make_pdf` call with the book as Markdown in `markdown` (not a `source` file): a `#` title,
+   then for each page a `##` heading, the picture as `![…](drive/…)` (or the edited picture's path, e.g.
+   `images/…png`) and its text. Paths are workspace paths as the tools returned them. Never print an `.html` file for
+   a book: its pictures are not loaded and the PDF comes out without them. Give it an `output` for the file name
+   ("reports/Kyoto-2026-storybook.pdf"), then `send_file` it so the user sees the book in the chat.
 6. **Put it back** — `drive_upload` the PDF into the photos' folder (or a new "Story books" folder from
    `drive_create_folder`). Approval is asked — just call it. Tell the user the Drive link.
 7. Offer changes: different order, more or fewer photos, another tone, a printable version.

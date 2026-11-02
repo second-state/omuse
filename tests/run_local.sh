@@ -1,22 +1,34 @@
 #!/bin/bash
-# Start fake LLM, test pages, fake third-party services and the OMuse binary (all three services in one process)
-# locally. The binary reads one config.toml, written here.
+# Start the scripted model (tests/fake_llm.py) and the OMuse binary (all three services in one process) locally. The
+# binary reads one config.toml, written here. No fake services: every third-party endpoint is the real one (the
+# product's defaults); the scripted suites never need them, the real-model suites use them as a user's install does.
 set -e
 cd "$(dirname "$0")/.."
 T=/tmp/claude-0/persona-test
 rm -rf $T; mkdir -p $T/{sdata,data,workspace,bprofile}
 BIN="${OMUSE_BIN:-$PWD/target/release/omuse}"
 export PYTHONPATH=$PWD
-(cd tests/pages && env -u HTTPS_PROXY -u HTTP_PROXY python3 -m http.server 8099 >$T/pages.log 2>&1 &)
-# inside the test container only: the official sites' stand-ins over HTTPS on 443 (tests/https_standins.py)
-[ "${OMUSE_STANDINS:-}" = 1 ] && python3 tests/https_standins.py >$T/standins.log 2>&1 &
-TEST_PAGE=http://shop.test:8099/page.html python3 -m uvicorn tests.fake_llm:app --port 8090 >$T/llm.log 2>&1 &
-python3 -m uvicorn tests.fake_telegram:app --port 8091 >$T/tg.log 2>&1 &
-python3 -m uvicorn tests.fake_mcp:app --port 8093 >$T/mcp.log 2>&1 &
-python3 -m uvicorn tests.fake_apps:app --port 8094 >$T/apps.log 2>&1 &
-python3 -m uvicorn tests.fake_dial:app --port 8096 >$T/dial.log 2>&1 &
-python3 -m uvicorn tests.fake_travel:app --port 8097 >$T/travel.log 2>&1 &
-env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy python3 -m uvicorn tests.fake_voice:app --port 8095 >$T/voice.log 2>&1 &
+python3 -m uvicorn tests.fake_llm:app --port 8090 >$T/llm.log 2>&1 &
+# the scripted suites stay off the internet: web search, travel data and market data point at a port nothing listens on
+# (a fast, certain failure — no fake answers); the real-model suites (OMUSE_E2E_REAL) use the real services
+OFF="http://127.0.0.1:9"
+if [ -z "${OMUSE_E2E_REAL:-}" ]; then
+  ENGINES="${OMUSE_E2E_SEARCH_ENGINES-off=$OFF/?q=}"
+  ENDPOINTS="serpapi = \"$OFF\"
+brave = \"$OFF\"
+tavily = \"$OFF\"
+exa = \"$OFF\"
+exa_mcp = \"$OFF/mcp\"
+kiwi_mcp = \"$OFF/\"
+kayak = \"$OFF\"
+rentalcars = \"$OFF\"
+market_data_hosts = [\"$OFF\"]"
+  FREE_EXA=false
+else
+  ENGINES="${OMUSE_E2E_SEARCH_ENGINES-}"
+  ENDPOINTS=""
+  FREE_EXA=true
+fi
 cat > $T/config.toml <<TOML
 [server]
 host = "0.0.0.0"
@@ -24,6 +36,7 @@ port = 8080
 runtime_port = 8081
 browser_port = 8082
 timezone = "Asia/Singapore"
+scheduler_loop = ${OMUSE_E2E_SCHEDULER_LOOP:-true}   # a suite's "# run_local: OMUSE_E2E_SCHEDULER_LOOP=false" line (run_in_docker.sh)
 
 [data]
 sentinel = "$T/sdata"
@@ -45,54 +58,17 @@ fast = true                # every request to the system model carries service_t
 reasoning_effort = "low"
 
 [browser]
-search_engines = "${OMUSE_E2E_SEARCH_ENGINES-empty=http://shop.test:8094/emptysearch?q=,duckduckgo=http://shop.test:8094/ddg?q=}"   # OMUSE_E2E_SEARCH_ENGINES= (empty): the real engines
-auto_approve = false       # the suites check the approval flow; browser_auto_approve_e2e.py turns it on itself
-
-[telegram]
-api = "http://127.0.0.1:8091"
-
-[voice]
-port = 8083
-allow_http = true
-telnyx_api = "http://127.0.0.1:8095"
-openai_api = "http://127.0.0.1:8095"
-openai_realtime_url = "ws://127.0.0.1:8095/v1/realtime"
-dialmcp_url = "http://127.0.0.1:8096/mcp"
-
-[stripe]
-api_key = "sk_test_fake_omuse"
-customer_id = "cus_test123"
-subscription_id = "sub_test123"
-api = "http://127.0.0.1:8094/stripe"
-
-[google]
-auth_url = "http://127.0.0.1:8094/g/auth"
-token_url = "http://127.0.0.1:8094/g/token"
-userinfo_url = "http://127.0.0.1:8094/g/userinfo"
-gcal_api = "http://127.0.0.1:8094/cal"
-gdrive_api = "http://127.0.0.1:8094/drive"
-gdrive_upload_api = "http://127.0.0.1:8094/drive-upload"
-relay_url = "http://127.0.0.1:8094/relay/callback"
-managed_file = "$T/google_managed.json"
+auto_approve = false       # the suites check the approval flow; browser_auto_real.py turns it on itself
+search_engines = "$ENGINES"   # empty: the real DuckDuckGo / Bing
 
 [search]
-brave_key = "brave-test-key-0123456789"   # a server default (the fake accepts it): the user's own key overrides it
+free_exa = $FREE_EXA
 
 [endpoints]
-notion = "http://127.0.0.1:8094"
-serpapi = "${OMUSE_E2E_SERPAPI_EP:-http://127.0.0.1:8094/serpapi}"
-brave = "${OMUSE_E2E_BRAVE_EP:-http://127.0.0.1:8094/brave}"
-tavily = "${OMUSE_E2E_TAVILY_EP:-http://127.0.0.1:8094/tavily}"
-exa = "${OMUSE_E2E_EXA_EP:-http://127.0.0.1:8094/exa}"
-exa_mcp = "${OMUSE_E2E_EXA_MCP_EP:-http://127.0.0.1:8094/exa-mcp/mcp}"
-kiwi_mcp = "${OMUSE_E2E_KIWI_MCP_EP:-http://127.0.0.1:8094/kiwi-mcp/}"
-slack = "http://127.0.0.1:8094/api"
-github_raw = "http://127.0.0.1:8094/ghraw"
-ms_login = "http://127.0.0.1:18999"
-outlook_imap = "127.0.0.1:1143:none"
-outlook_smtp = "127.0.0.1:1025:none"
-market_data_hosts = ["http://127.0.0.1:8094/yahoo1", "http://127.0.0.1:8094/yahoo2"]
-ical_allow_http = true
+$ENDPOINTS
+
+[skills]
+dir = "${OMUSE_E2E_SKILLS_DIR-}"   # OMUSE_E2E_SKILLS_DIR=/repo/skills (run_in_docker.sh): the working tree's skills, no rebuild
 
 [internal]
 runtime_token = "rt-test"
@@ -100,4 +76,4 @@ browser_token = "bt-test"
 TOML
 env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy "$BIN" --config $T/config.toml >$T/omuse.log 2>&1 &
 sleep 4
-for p in 8080 8081 8082 8090 8091 8093 8094; do curl -s --noproxy '*' -o /dev/null -w "$p %{http_code}\n" http://127.0.0.1:$p/ ; done
+for p in 8080 8081 8082 8090; do curl -s --noproxy '*' -o /dev/null -w "$p %{http_code}\n" http://127.0.0.1:$p/ ; done

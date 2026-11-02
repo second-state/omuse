@@ -1,5 +1,7 @@
 """Memory → Profile: custom fields and extra addresses without limit — "+ Add field" opens another row, every filled row is
-saved, a saved field has a remove button, and removing one deletes just that key."""
+saved, a saved field has a remove button, and removing one deletes just that key. The page's layout: the pending changes
+are the whole top row, the Vault is beside the profile. A credit card is added on the Vault card by its name alone ("+ Add
+credit card"): its number, expiry and CVC are UNKNOWN, and the card says so until the user adds them."""
 import asyncio
 import os
 import sys
@@ -57,6 +59,8 @@ async def main():
         for i, (lab, val) in enumerate((("Airline", "Singapore Airlines"), ("Seat", "aisle"), ("Hotel chain", "Marriott"))):
             await rows.nth(i).locator("input").nth(0).fill(lab)
             await rows.nth(i).locator("input").nth(1).fill(val)
+        # the airline is a standing preference: the user ticks "Always use" on its row (the agent then sees it in every task)
+        await rows.nth(0).locator("input[type=checkbox]").check()
         await card.locator("button", has_text="Add address").click()
         arow = card.locator(".newfield[data-kind=address]").nth(1)
         await arow.locator("input").nth(0).fill("Beach house")
@@ -66,6 +70,8 @@ async def main():
         toast = await pg.locator(".toast").inner_text()
         check("saving reports the four new fields and the three dropdown choices", "7" in toast, toast)
         prof = K.c.get(K.B + "/api/memory").json().get("profile", {})
+        standing = K.c.get(K.B + "/api/memory").json().get("profile_standing")
+        check("the ticked custom field is saved as a standing preference, the others are not", standing == ["custom:Airline"], standing)
         check("the dropdown choices are saved as the standard fields", prof.get("preferred_airline") == "Star Alliance" and prof.get("preferred_hotel_brand") == "Holiday Inn"
               and prof.get("preferred_car_rental") == "Hertz", {k: prof.get(k) for k in ("preferred_airline", "preferred_hotel_brand", "preferred_car_rental")})
         await pg.wait_for_function("() => document.querySelectorAll('#profile .removable').length >= 4", timeout=10000)
@@ -74,7 +80,8 @@ async def main():
               all(k in keys for k in ("custom:Airline", "custom:Seat", "custom:Hotel chain", "address:Beach house")), keys)
         pg.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
         await pg.locator("#profile .removable[data-key='custom:Seat'] button").click()
-        await pg.wait_for_function("() => !document.querySelector(\"#profile .removable[data-key='custom:Seat']\")", timeout=10000)
+        # the page is drawn again after the removal: wait for the rows to be back, without the removed one
+        await pg.wait_for_function("() => document.querySelector(\"#profile .removable[data-key='custom:Airline']\") && !document.querySelector(\"#profile .removable[data-key='custom:Seat']\")", timeout=10000)
         keys = await pg.evaluate("() => [...document.querySelectorAll('#profile .removable')].map(e => e.dataset.key)")
         check("removing one field deletes just that key", "custom:Seat" not in keys and "custom:Airline" in keys and "address:Beach house" in keys, keys)
         await pg.reload()
@@ -92,9 +99,58 @@ async def main():
                      customAfterAddr: !!(a.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) }; }""")
         check("saved addresses and custom fields are full-width rows above the entry rows, not cells of the fixed-field grid",
               not lay["inGrid"] and abs(lay["addrW"] - lay["newW"]) < 2 and lay["addrBeforeNew"] and lay["addrName"] == "Beach house" and lay["customAfterAddr"], lay)
+        # the layout: pending changes across the top, the Vault beside the profile
+        await pg.wait_for_selector("#memProfileVault #addCardBtn", timeout=10000)
+        box = await pg.evaluate("""() => { const q = s => document.querySelector(s);
+            const pend = q('#memPending'), prof = q('#profile'), grid = q('#memProfileVault');
+            const cards = grid ? [...grid.children] : [];
+            const vault = cards.find(e => e.querySelector('#addCardBtn'));
+            const b = e => e ? e.getBoundingClientRect() : { top: -1, left: -1, width: -1 };
+            return { pendTop: b(pend).top, pendW: b(pend).width, mainW: b(grid).width, profTop: b(prof).top,
+                     profLeft: b(prof).left, vaultTop: b(vault).top, vaultLeft: b(vault).left, vaultIsVault: !!vault,
+                     gridKids: cards.map(e => e.className + '#' + e.id) }; }""")
+        check("the pending changes are the whole top row", box["pendTop"] < box["profTop"] and abs(box["pendW"] - box["mainW"]) < 2, box)
+        check("the Vault is beside the profile", box["vaultIsVault"] and abs(box["vaultTop"] - box["profTop"]) < 2 and box["vaultLeft"] > box["profLeft"], box)
+        # a credit card by its name alone
+        for it in K.c.get(K.B + "/sentinel/api/vault", headers=K.H).json()["items"]:
+            if it["label"] in ("Citi Prestige", "UOB One"):
+                K.c.delete(K.B + "/sentinel/api/vault/" + it["id"], headers=K.H)
+        await pg.locator("#addCardBtn").click()
+        form_label = pg.locator("#memProfileVault input[placeholder*='Citi Prestige']")
+        form_country = pg.locator("#memProfileVault input.cardcountry")
+        check("+ Add credit card opens the form for a card: its name, and the issuing country as a field of its own (optional)",
+              await form_label.count() == 1 and await form_country.is_visible() and "optional" in (await form_country.get_attribute("placeholder") or ""))
+        await form_label.fill("Citi Prestige")
+        await form_country.fill("USA")
+        await pg.locator("#memProfileVault > .card").nth(1).get_by_role("button", name="Save", exact=True).click()
+        await pg.wait_for_selector(".vaultitem[data-kind=card] .namedcard", timeout=10000)
+        items = [i for i in K.c.get(K.B + "/sentinel/api/vault", headers=K.H).json()["items"] if i["label"] == "Citi Prestige"]
+        check("the card is in the Vault by its name and country: number, expiry and CVC UNKNOWN",
+              len(items) == 1 and items[0]["kind"] == "card" and items[0]["country"] == "USA" and items[0]["masked"] == "UNKNOWN"
+              and items[0]["missing"] == ["number", "expiry", "cvc"], items)
+        row = await pg.locator(".vaultitem[data-kind=card]", has_text="Citi Prestige").inner_text()
+        check("the Vault card shows the card's country, and that it is a name only, to add the number before paying with it",
+              "USA" in row and "UNKNOWN" in row and "add the number" in row, row)
+        # the country is optional: a card by its name alone
+        await pg.locator("#addCardBtn").click()
+        await form_label.fill("UOB One")
+        await pg.locator("#memProfileVault > .card").nth(1).get_by_role("button", name="Save", exact=True).click()
+        await pg.wait_for_selector(".vaultitem[data-kind=card]:has-text('UOB One')", timeout=10000)
+        uob = [i for i in K.c.get(K.B + "/sentinel/api/vault", headers=K.H).json()["items"] if i["label"] == "UOB One"]
+        check("a card without a country is saved too (the country is optional)", len(uob) == 1 and uob[0]["country"] == "", uob)
+        items += uob
+        for it in items:
+            K.c.delete(K.B + "/sentinel/api/vault/" + it["id"], headers=K.H)
         if os.path.isdir("/repo-out"):   # OMUSE_E2E_OUT: a picture of the card for a visual check
             await pg.emulate_media(color_scheme="dark")
             await card.screenshot(path="/repo-out/profile_card.png")
+            await pg.emulate_media(color_scheme="light")
+            shot = [K.vault_item("Citi Prestige", "card", {}, country="USA"), K.vault_item("UOB One", "card", {})]
+            await pg.goto(B + "#memory")
+            await pg.wait_for_selector("#memProfileVault .vaultitem")
+            await pg.screenshot(path="/repo-out/memory_page.png", full_page=False)
+            for i in shot:
+                K.c.delete(K.B + "/sentinel/api/vault/" + i, headers=K.H)
         check("no page errors", not errs, errs)
         await br.close()
 

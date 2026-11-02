@@ -1,6 +1,6 @@
 """Sidebar navigation in four named sections: Bots (Main first, then the specialised ones, each a robot icon with a
-badge) · Tools (Browser, Connections, Memory) · Trust (Status, Audit) · Config (Skills, Settings); the Tasks and
-Automations views are not listed but #tasks/<id> still opens a task (Audit links to it); the Health section of the Trust page
+badge) · Tools (Tasks, Browser, Connections, Memory) · Trust (Status, Audit) · Config (Skills, Settings); the task list and
+Automations views are not listed (Tasks is the simple page of scheduled tasks, #timers) but #tasks/<id> still opens a task (Audit links to it); the Health section of the Trust page
 is in English when the UI language is English (no Chinese in any component detail); the Skills page lists the skills
 under each bot."""
 import asyncio
@@ -34,14 +34,15 @@ async def main():
         await pg.wait_for_selector("#navlinks a")
         labels = await pg.evaluate("() => [...document.querySelectorAll('#navlinks a')].map(a => [...a.childNodes].filter(n => !(n.classList && (n.classList.contains('ic') || n.classList.contains('badge')))).map(n => n.textContent).join('').trim())")
         BOTS = ["Main", "Travel", "Insurance & claims", "Credit cards", "Photos & videos"]
-        check("the sidebar shows the five bots (Main first) in place of Chat, then the seven views in order",
-              labels == BOTS + ["Browser", "Connections", "Memory", "Status", "Audit", "Skills", "Settings"], labels)
+        check("the sidebar shows the five bots (Main first) in place of Chat, then the eight views in order",
+              labels == BOTS + ["Tasks", "Browser", "Connections", "Memory", "Status", "Audit", "Skills", "Settings"], labels)
         seps = await pg.evaluate("() => [...document.querySelectorAll('#navlinks > *')].map(e => e.classList.contains('navhead') ? '[' + e.textContent + ']' : (a => [...a.childNodes].filter(n => !(n.classList && (n.classList.contains('ic') || n.classList.contains('badge')))).map(n => n.textContent).join('').trim())(e)).join(' ')")
         check("four named sections: Bots, Tools, Trust, Config",
-              seps == "[Bots] " + " ".join(BOTS) + " [Tools] Browser Connections Memory [Trust] Status Audit [Config] Skills Settings", seps)
+              seps == "[Bots] " + " ".join(BOTS) + " [Tools] Tasks Browser Connections Memory [Trust] Status Audit [Config] Skills Settings", seps)
         icons = await pg.evaluate("() => [...document.querySelectorAll('#navlinks a')].map(a => [!!a.querySelector('.boticon svg .head'), a.querySelectorAll('.boticon .bb').length])")
         check("each bot has a robot icon with a badge; the tools do not", icons[:5] == [[True, 1]] * 5 and all(not i[0] for i in icons[5:]), icons)
-        check("no Tasks or Automations tab", "Tasks" not in labels and "Automations" not in labels, labels)
+        check("Tasks is the scheduled-tasks page (#timers); no Automations tab",
+              await pg.locator("#navlinks a[href='#timers']").count() == 1 and "Automations" not in labels, labels)
         await pg.goto(B + "#tasks/" + t["id"])
         await pg.wait_for_selector("#taskDetail", timeout=10000)
         check("a task is still reachable at #tasks/<id> (Audit links there)", await pg.locator("#taskDetail").count() == 1 and not await pg.locator("#navlinks a.active").count())

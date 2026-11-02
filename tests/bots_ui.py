@@ -16,7 +16,8 @@ from tests.skills_common import check, finish  # noqa: E402
 B = K.B + "/"
 DATE = (dt.date.today() + dt.timedelta(days=30)).isoformat()
 K.c.put(K.B + "/api/settings", json={"language": "en", "ui_language": "en", "profile_reminder": False}, headers=K.H)
-# BOTSLOW: the routing and the bot's work take about 2 s each (tests/fake_llm.py), so the two timers differ
+# BOTSLOW: the routing takes about 2 s (tests/fake_llm.py) — the bot's search is code and quick — so Main's timer is
+# longer than the bot's by the routing
 t = K.run(f"BOTHAND BOTSLOW cheapest flight Singapore to Tokyo on {DATE} DATE={DATE}", bot="main")
 main_cid = t["_conv"]
 h = next((e["data"] for e in t["events"] if e["type"] == "handoff"), {})
@@ -26,7 +27,7 @@ kid = K.c.get(f"{K.B}/api/tasks/{h.get('task_id', 'x')}").json()
 main_s = (t.get("finished_at") or 0) - (t.get("created_at") or 0)
 kid_s = (kid.get("finished_at") or 0) - (kid.get("created_at") or 0)
 check("the bot's task is timed from the hand-over to its answer; Main's from the request to the answer, routing included",
-      t.get("created_at") < kid.get("created_at") <= kid.get("finished_at") <= t.get("finished_at") and kid_s >= 1.8 and main_s - kid_s >= 1.8,
+      t.get("created_at") < kid.get("created_at") <= kid.get("finished_at") <= t.get("finished_at") and main_s - kid_s >= 1.8,
       (main_s, kid_s, t.get("created_at"), kid.get("created_at"), kid.get("finished_at"), t.get("finished_at")))
 
 

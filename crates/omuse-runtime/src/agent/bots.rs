@@ -152,6 +152,20 @@ pub fn checked_route(raw: &Value, goal: &str, conv_ok: impl Fn(&str, &str) -> bo
     Route::Bot(args)
 }
 
+/// The bot conversation a hand-over continues when the router or the model named none: the one that gave the main
+/// conversation's latest answer, when it is the same bot's — a follow-up there ("book it" after the options) keeps
+/// the bot's context and its results (travel_hotel_real 2026-11-01: a new Travel conversation had no booking page
+/// and the room was never booked). `msgs` are the main conversation's messages, oldest first.
+pub fn continued_conv(msgs: &[Value], bot: &str) -> Option<String> {
+    let last = msgs
+        .iter()
+        .rev()
+        .find(|m| get_str(m, "role") == "assistant")?;
+    let h = last.get("meta").and_then(|m| m.get("handoff"))?;
+    let cid = sget(h, "conv_id").trim().to_string();
+    (sget(h, "bot") == bot && !cid.is_empty()).then_some(cid)
+}
+
 impl Runtime {
     /// The main bot's first step: the planner model picks the bot for this request (see the module docs).
     pub(crate) async fn route(&self, t: &Value, history: &[Value]) -> Route {
@@ -170,7 +184,8 @@ impl Runtime {
             .collect();
         let user = format!(
             "Today: {}\n\nConversation so far:\n{}\n\nThe user's new request:\n{}",
-            chrono::Utc::now().format("%Y-%m-%d"),
+            // the user's own date and time (Settings → Timezone), never UTC's: late in the UTC day they differ
+            crate::prompts::now_str(&sget(&self.settings(), "timezone"), "en"),
             if recent.is_empty() {
                 "(none)".to_string()
             } else {
@@ -242,8 +257,7 @@ impl Runtime {
         let me = self.bot_of(t);
         if !me.is_main() {
             return Err(format!(
-                "ERROR: only the main bot hands requests to other bots; you are the {} bot. Answer with your own \
-skills, or say which bot the user should ask.",
+                "ERROR: [other_bot] only the main bot hands requests to other bots; this is the {} bot.",
                 me.name
             ));
         }
@@ -255,17 +269,28 @@ skills, or say which bot the user should ask.",
         let want = sget(args, "bot").trim().to_lowercase();
         let Some(bot) = bots::get(&want).filter(|b| !b.is_main()) else {
             return Err(format!(
-                "ERROR: unknown bot {want:?}. Use one of: {}.",
+                "ERROR: [unknown_bot] unknown bot {want:?}; the bots are {}.",
                 ids.join(", ")
             ));
         };
         let question = sget(args, "question").trim().to_string();
         if question.is_empty() {
-            return Err("ERROR: question is empty: give the user's request in full, with what the bot needs from this conversation.".into());
+            return Err("ERROR: [empty_question] question is empty.".into());
         }
         let parent_conv = get_str(t, "conv_id");
         let parent_tid = get_str(t, "id");
         let mut cid = sget(args, "conversation_id").trim().to_string();
+        if cid.is_empty() {
+            // a follow-up on the bot's latest answer continues its conversation (decided from state, not the model)
+            let msgs = self.store.msgs(&parent_conv, 30).unwrap_or_default();
+            if let Some(c) = continued_conv(&msgs, &bot.id).filter(|c| {
+                self.store.conv(c).ok().flatten().is_some_and(|x| {
+                    get_str(&x, "bot_id") == bot.id && get_str(&x, "parent_conv") == parent_conv
+                })
+            }) {
+                cid = c;
+            }
+        }
         if !cid.is_empty() {
             let ok = self
                 .store
@@ -274,7 +299,7 @@ skills, or say which bot the user should ask.",
                 .is_some_and(|c| get_str(&c, "bot_id") == bot.id);
             if !ok {
                 return Err(format!(
-                    "ERROR: {cid} is not a conversation of the {} bot. Leave conversation_id out to start a new one.",
+                    "ERROR: [other_conversation] {cid} is not a conversation of the {} bot.",
                     bot.name
                 ));
             }
@@ -446,6 +471,24 @@ skills, or say which bot the user should ask.",
         self.set_status(&tid, final_status, kw).await;
         self.event(&tid, "final", json!({"text": truncate(&text, 4000)}))
             .await;
+        // the files the bot handed over (a PDF, a picture, a video) show in Main too, above its answer
+        let (bot_conv, bot_task) = (sget(waiting, "conv_id"), sget(waiting, "task_id"));
+        let files: Vec<Value> = self
+            .store
+            .msgs(&bot_conv, 200)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| get_str(m, "role") == "system" && get_str(m, "task_id") == bot_task)
+            .filter_map(|m| serde_json::from_str::<Value>(&get_str(&m, "content")).ok())
+            .filter(|c| matches!(get_str(c, "type").as_str(), "file" | "files"))
+            .collect();
+        for mut card in files {
+            card["from_bot"] = json!(bot.id);
+            card["bot_conv"] = json!(bot_conv);
+            let _ = self
+                .store
+                .add_msg(&conv_id, "system", &pyjson::dumps(&card), &tid, None);
+        }
         self.store
             .add_msg(&conv_id, "assistant", &text, &tid, Some(&meta))?;
         self.publish(json!({"kind": "conv_update", "conv_id": conv_id}))
@@ -482,12 +525,46 @@ skills, or say which bot the user should ask.",
         }
     }
 
-    /// The main task was cancelled while it waited for a bot: cancel the bot's task too.
-    pub(crate) async fn cancel_handoff(&self, waiting: &Value, reason: &str) {
-        let child = sget(waiting, "task_id");
-        if sget(waiting, "type") == "bot" && !child.is_empty() {
-            Box::pin(self.cancel(&child, reason)).await;
+    /// The main task was cancelled: the bot task it handed over to (the one it waits for, or one just created by an
+    /// `ask_bot` whose wait had not started yet) is cancelled too, and that is recorded (`handoff_cancelled`).
+    pub(crate) async fn cancel_handoff(&self, task_id: &str, waiting: &Value, reason: &str) {
+        let mut child = if sget(waiting, "type") == "bot" {
+            sget(waiting, "task_id")
+        } else {
+            String::new()
+        };
+        if child.is_empty() {
+            child = self
+                .store
+                .events(task_id, 0)
+                .unwrap_or_default()
+                .iter()
+                .rev()
+                .find(|e| get_str(e, "type") == "handoff")
+                .map(|e| sget(&e["data"], "task_id"))
+                .unwrap_or_default();
         }
+        if child.is_empty() || child == task_id {
+            return;
+        }
+        let Some(ct) = self.store.task(&child).ok().flatten() else {
+            return;
+        };
+        if super::is_terminal(&get_str(&ct, "status")) {
+            return;
+        }
+        let why = if reason.is_empty() {
+            "主任务已停止 (the main task was stopped)"
+        } else {
+            reason
+        };
+        Box::pin(self.cancel(&child, why)).await;
+        self.event(
+            task_id,
+            "handoff_cancelled",
+            json!({"task_id": child, "conv_id": get_str(&ct, "conv_id")}),
+        )
+        .await;
     }
 }
 

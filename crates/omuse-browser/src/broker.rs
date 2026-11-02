@@ -106,6 +106,9 @@ pub struct State {
     pub pw: bool,
     /// download guid -> index into `downloads`
     pub download_idx: HashMap<String, (usize, String)>,
+    /// task_id -> the vault values typed into its page (`/agent/type` with `secret`): hidden in every picture a vision
+    /// model sees (`Broker::masked`), never logged
+    pub secrets: HashMap<String, Vec<String>>,
 }
 
 /// The broker.

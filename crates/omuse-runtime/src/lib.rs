@@ -9,16 +9,21 @@ pub mod agent;
 pub mod attachments;
 pub mod bots;
 pub mod context;
+pub mod forms;
 pub mod goals;
-pub mod golden;
 pub mod health;
+pub mod ids;
 pub mod imagegen;
 pub mod library;
+pub mod links;
+pub mod listings;
 pub mod llm;
 pub mod memory_tidy;
 pub mod metrics;
+pub mod newsreport;
 pub mod outcome;
 pub mod pdfforms;
+pub mod places;
 pub mod prompts;
 pub mod routes;
 pub mod rt_api;
@@ -27,6 +32,7 @@ pub mod skills;
 pub mod state;
 pub mod store;
 pub mod videogen;
+pub mod watch_price;
 
 /// Start the runtime HTTP API on `[server] runtime_host:runtime_port` and serve until the process ends.
 pub async fn serve(cfg: Arc<Config>) -> anyhow::Result<()> {
