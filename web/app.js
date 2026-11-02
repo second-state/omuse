@@ -414,7 +414,10 @@ function renderConvList(list) {
     if (chats.length) el.append(h('h4', null, T('对话 Chats')), ...chats.map(mk));
     else el.append(h('p', { class: 'small muted', style: 'padding:4px 8px' }, T('还没有对话')));
     if (research.length) el.append(h('h4', null, T('研究 Research')), ...research.map(mk));
-    if (scheds.length) el.append(h('h4', null, T('任务')), ...scheds.map(mk));
+    // a scheduled task's entry opens it on the Tasks page (#timers), where its schedule, next run and chat are
+    const toTask = c => { const e = mk(c); const go = () => { closeHistory(); location.hash = '#timers'; };
+      e.onclick = go; e.onkeydown = ev => { if (ev.key === 'Enter') go(); }; return e; };
+    if (scheds.length) el.append(h('h4', null, T('任务')), ...scheds.map(toTask));
   }
 }
 
@@ -2401,9 +2404,15 @@ function memProfileCard(r, v) {
   const countries = (places.countries || []).map(c => [c.iso, c.name]);
   const rows = (r.profile_fields || []).map(f => {
     const groups = PROFILE_CHOICES[f.key] && PROFILE_CHOICES[f.key]();
-    let i;
-    if (f.key === 'home_city' || f.key === 'home_country') {
-      i = placeSelect(f.key === 'home_city' ? cities : countries, prof[f.key] || '');
+    let i, extra = null;
+    if (f.key === 'home_city') {
+      // free text, the known cities as suggestions (a known one is saved as its code; it shows as its name)
+      const cur = prof[f.key] || '';
+      const known = cities.find(([v]) => v === cur);
+      i = h('input', { type: 'text', value: known ? known[1] : cur, list: 'homeCityList', autocomplete: 'off', 'data-key': f.key });
+      extra = h('datalist', { id: 'homeCityList' }, ...cities.map(([, name]) => h('option', { value: name })));
+    } else if (f.key === 'home_country') {
+      i = placeSelect(countries, prof[f.key] || '');
       i.setAttribute('data-key', f.key);
     } else if (groups) {
       // a dropdown in two groups; a value saved earlier that is on neither list stays selectable
@@ -2417,7 +2426,7 @@ function memProfileCard(r, v) {
       i = h('input', { type: 'text', value: prof[f.key] || '', autocomplete: 'off' });
     }
     inputs[f.key] = i;
-    return h('label', { class: 'field' }, h('span', null, LANG === 'en' ? f.en : ZH(f.zh)), i);
+    return h('label', { class: 'field' }, h('span', null, LANG === 'en' ? f.en : ZH(f.zh)), i, extra);
   });
   // further addresses (address:<label>): a flat in another city, the parents' house — forms such as arrival cards pick
   // the one in the destination country

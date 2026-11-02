@@ -25,10 +25,9 @@ only: {\"home_city\": \"<a listed city code, or empty when the home address is i
 pub fn place_fields(answer: &Value, asked: &Value, home_city_asked: bool) -> Vec<(String, String)> {
     let mut out = Vec::new();
     if home_city_asked {
-        if let Some(code) = places::clean_value("home_city", &get_str(answer, "home_city")) {
-            if !code.is_empty() {
-                out.push(("home_city".to_string(), code));
-            }
+        // the model's answer must be a listed code (the profile's own field also takes free text)
+        if let Some(c) = places::city(&get_str(answer, "home_city")) {
+            out.push(("home_city".to_string(), c.code.to_string()));
         }
     }
     let Some(countries) = answer.get("countries").and_then(Value::as_object) else {
