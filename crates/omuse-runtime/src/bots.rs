@@ -396,11 +396,18 @@ mod tests {
         let runner = std::fs::read_to_string(root.join("run_in_docker.sh")).unwrap();
         let mut suites: Vec<String> = Vec::new();
         for list in ["REAL_DATA_SUITES=", "REAL_APP_SUITES=", "REAL_SITES="] {
-            let at = runner.find(list).unwrap_or_else(|| panic!("{list} in run_in_docker.sh"));
+            let at = runner
+                .find(list)
+                .unwrap_or_else(|| panic!("{list} in run_in_docker.sh"));
             let rest = &runner[at + list.len()..];
             let body = rest.trim_start_matches('"');
             let end = body.find('"').unwrap();
-            suites.extend(body[..end].split_whitespace().filter(|w| *w != "\\").map(String::from));
+            suites.extend(
+                body[..end]
+                    .split_whitespace()
+                    .filter(|w| *w != "\\")
+                    .map(String::from),
+            );
         }
         let mut sources = String::new();
         for s in &suites {
@@ -409,7 +416,8 @@ mod tests {
             }
         }
         // the shared requests of the arrival suites live in their common module
-        sources.push_str(&std::fs::read_to_string(root.join("arrival_common.py")).unwrap_or_default());
+        sources
+            .push_str(&std::fs::read_to_string(root.join("arrival_common.py")).unwrap_or_default());
         for b in all() {
             for e in &b.examples {
                 assert!(

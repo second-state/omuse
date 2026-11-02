@@ -1390,16 +1390,24 @@ pub fn unverified_cards_fact(transcript: &[Value], zh: bool) -> Option<String> {
         return None;
     }
     let mut named: Vec<String> = Vec::new();
+    let mut known = false;
     for card in vault_cards(transcript) {
         let Some(c) = catalog_card(&card.card_id) else {
             continue;
         };
+        known = true;
         if c.get("verified").is_some_and(|v| v.as_bool() == Some(true)) {
             continue;
         }
         if !named.contains(&card.label) {
             named.push(card.label);
         }
+    }
+    if named.is_empty() && !known {
+        // the run knows none of the user's cards as catalog rows (cards named in the chat and not added to the
+        // Vault during the run — the Vault gets them only when the request ends: cards_markets_real 2026-11-01): the
+        // seed rows of the market tables the run read are said to be unverified instead
+        return unverified_markets_fact(transcript, zh);
     }
     if named.is_empty() {
         return None;
@@ -1410,6 +1418,61 @@ pub fn unverified_cards_fact(transcript: &[Value], zh: bool) -> Option<String> {
     } else {
         format!(
             "The catalog's terms for {list} are unverified seeds; check them on the issuer's page."
+        )
+    })
+}
+
+/// The market of each card catalog table the run read (`# Credit cards — SG (…)`, the header `build_cards.py` writes).
+static CATALOG_MARKET: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"# Credit cards — ([A-Z]{2}) \(").unwrap());
+
+/// The market tables the run read whose catalog rows include unverified seeds (`verified: false`), as a fact: "The
+/// catalog's Singapore rows are unverified seeds; …". `None` when every row of the tables read is verified.
+fn unverified_markets_fact(transcript: &[Value], zh: bool) -> Option<String> {
+    let mut markets: Vec<String> = Vec::new();
+    for m in transcript.iter().filter(|m| get_str(m, "role") == "tool") {
+        for c in CATALOG_MARKET.captures_iter(&content_of(m)) {
+            let code = c[1].to_string();
+            let seeds = catalog_cards().iter().any(|row| {
+                get_str(row, "region") == code
+                    && !row
+                        .get("verified")
+                        .is_some_and(|v| v.as_bool() == Some(true))
+            });
+            if seeds && !markets.contains(&code) {
+                markets.push(code);
+            }
+        }
+    }
+    if markets.is_empty() {
+        return None;
+    }
+    let name = |code: &str| match (code, zh) {
+        ("SG", false) => "Singapore",
+        ("SG", true) => "新加坡",
+        ("HK", false) => "Hong Kong",
+        ("HK", true) => "香港",
+        ("US", false) => "US",
+        ("US", true) => "美国",
+        _ => "",
+    };
+    let list: Vec<&str> = markets
+        .iter()
+        .map(|c| name(c))
+        .filter(|n| !n.is_empty())
+        .collect();
+    if list.is_empty() {
+        return None;
+    }
+    Some(if zh {
+        format!(
+            "信用卡数据库里{}的条款是未核实的初始数据，请以发卡行网页为准。",
+            list.join("、")
+        )
+    } else {
+        format!(
+            "The catalog's {} rows are unverified seeds; check them on the issuer's page.",
+            list.join(" and ")
         )
     })
 }
