@@ -747,6 +747,37 @@ async fn a_form_skill_gets_a_form_sized_step_budget() {
     assert_eq!(rt.inner.lock().skill_steps.get(&get_str(&t2, "id")), None);
 }
 
+/// A machine's offer on a choice card keeps its structured price, currency and id (shopping_real 2026-11-02: the
+/// Shopping bot's card reached the chat without them).
+#[tokio::test]
+async fn a_choice_cards_offers_keep_their_price_and_id() {
+    let (rt, _d) = rt();
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = json!({"id": "t1", "conv_id": conv, "goal": "x"});
+    let opts = json!([
+        {"label": "Men's Clifton 10", "details": ["SGD 144.09"], "price": 144.09, "currency": "SGD", "offer_id": "shp_1"},
+        {"label": "Novablast 5", "details": ["SGD 114.36"], "price": 114.36, "currency": "SGD", "offer_id": "shp_2"}
+    ]);
+    let r = rt
+        .local(
+            &t,
+            "present_choices",
+            &json!({"question": "running shoes", "kind": "clarify", "options": opts}),
+        )
+        .await
+        .unwrap();
+    assert!(!r.starts_with("ERROR"), "{r}");
+    let msgs = rt.store.msgs(&conv, 20).unwrap();
+    let card: Value = msgs
+        .iter()
+        .find_map(|m| serde_json::from_str(&get_str(m, "content")).ok())
+        .expect("the card");
+    let o = &card["options"];
+    assert_eq!(o[0]["price"].as_f64(), Some(144.09));
+    assert_eq!(o[0]["currency"], "SGD");
+    assert_eq!(o[1]["offer_id"], "shp_2");
+}
+
 #[tokio::test]
 async fn present_choices_clarify_and_files_roundtrip() {
     let (rt, _d) = rt();

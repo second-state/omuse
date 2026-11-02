@@ -1212,11 +1212,25 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                 if opts_.is_empty() {
                     return Ok("ERROR: options is empty.".into());
                 }
-                let mut clean: Vec<Value> = opts_.iter().map(|o| json!({
-                    "label": truncate(&sget(o, "label"), 160),
-                    "details": arr(o, "details").iter().map(|d| truncate(&py_str(d), 200)).take(6).collect::<Vec<_>>(),
-                    "source_url": truncate(&sget(o, "source_url"), 500),
-                    "note": truncate(&sget(o, "note"), 400)})).collect();
+                let mut clean: Vec<Value> = opts_.iter().map(|o| {
+                    let mut c = json!({
+                        "label": truncate(&sget(o, "label"), 160),
+                        "details": arr(o, "details").iter().map(|d| truncate(&py_str(d), 200)).take(6).collect::<Vec<_>>(),
+                        "source_url": truncate(&sget(o, "source_url"), 500),
+                        "note": truncate(&sget(o, "note"), 400)});
+                    // a machine's offer keeps its structured price and id (the Shopping bot's card, 2026-11-02:
+                    // shopping_real found the card's offers without their prices)
+                    if let Some(p) = o.get("price").and_then(Value::as_f64) {
+                        c["price"] = json!(p);
+                    }
+                    for k in ["currency", "offer_id"] {
+                        let v = sget(o, k);
+                        if !v.is_empty() {
+                            c[k] = json!(truncate(&v, 64));
+                        }
+                    }
+                    c
+                }).collect();
                 // listings on a results page are ranked in code from the criteria the model read off the user's words
                 let ranking = a
                     .get("ranking")
