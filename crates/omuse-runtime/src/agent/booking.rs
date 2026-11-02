@@ -459,6 +459,9 @@ fn check_travel(a: &Value, cx: &Ctx, book: bool) -> Checked {
             if let Some(x) = after("return_date", ret, &mut problems) {
                 out.insert("return_date".into(), json!(iso(x)));
             }
+            // a "range" ending on the day itself is that one day: no range, fixed here (not sent back to the model — a
+            // second travel_search call for nothing, the user's HK → Singapore request 2026-11-02)
+            let date_to = date_to.filter(|x| Some(*x) != d);
             if let Some(x) = after("date_to", date_to, &mut problems) {
                 out.insert("date_to".into(), json!(iso(x)));
             }

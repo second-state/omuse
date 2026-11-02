@@ -2548,6 +2548,22 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
 }
 
 #[test]
+fn a_range_ending_on_the_day_itself_is_that_day_not_a_second_call() {
+    // the user's HK → Singapore request, 2026-11-02: date_to = date was sent back as a problem, and the model called
+    // travel_search a second time
+    let p = profile();
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "origin": "Hong Kong", "destination": "Singapore", "date": "2026-11-03",
+               "date_to": "2026-11-03", "arrive_before": "23:59"}),
+        "the last flight from HK to Singapore tomorrow that lands before midnight",
+        &p,
+    );
+    assert!(a.get("date_to").is_none(), "{a}");
+    assert_eq!(a["date"], "2026-11-03");
+}
+
+#[test]
 fn how_complete_a_flight_search_is_is_the_models_flag() {
     // the user, 2026-11-02: the model decides from the request whether the search must list every flight (SerpApi's
     // deep search); Kiwi.com ignores it
