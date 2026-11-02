@@ -839,7 +839,7 @@ fn a_range_of_days_is_one_search_and_the_result_counts_the_days() {
 }
 
 #[test]
-fn a_google_offer_gets_its_sellers() {
+fn a_searched_google_offer_needs_no_second_request_for_its_sellers() {
     let p = profile();
     let a = valid(
         TRAVEL_SEARCH,
@@ -870,12 +870,15 @@ fn a_google_offer_gets_its_sellers() {
         },
         |r| ids_where(r, |f| f["offer_id"] == "fl_1"),
     );
-    assert_eq!(
-        args_of(&t, "flight_offer")[0],
-        json!({"offer_id": "fl_1", "currency": "SGD"})
+    // a search: the flight's own booking page is linked; who sells it is a second SerpApi request, not made (the user,
+    // 2026-11-02)
+    assert!(args_of(&t, "flight_offer").is_empty());
+    assert!(res.get("sellers").is_none());
+    assert!(
+        must(&res).contains("https://www.google.com/travel/flights/booking?tfs=1"),
+        "{}",
+        must(&res)
     );
-    assert_eq!(res["sellers"][1]["book_with"], "Trip.com");
-    assert!(must(&res).contains("- Sold by: Singapore Airlines, Trip.com"));
 }
 
 // ---------------------------------------------------------------- mail
@@ -2464,8 +2467,8 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
     for other in ["TR 983", "CX 715", "UO 777", "SQ 893", "cheapest"] {
         assert!(!m.contains(other), "{other} in {m}");
     }
-    // the pick's sellers (Google Flights) are read for that flight only
-    assert_eq!(args_of(&t, "flight_offer")[0]["offer_id"], "fl_sq895");
+    // a search: no second request for the pick's sellers
+    assert!(args_of(&t, "flight_offer").is_empty());
     // the block names what was searched, the window included
     assert!(
         m.contains("- Searched: HKG to SIN on 2026-11-03, economy, 1 adult, arriving 18:00–23:59"),

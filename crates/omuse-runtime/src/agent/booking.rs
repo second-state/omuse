@@ -2959,7 +2959,9 @@ fn present(s: Shown, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             "on your preferred airline",
         ));
     }
-    if kind == Kind::Flight && pick.id.starts_with("fl_") {
+    // who sells the flight (`flight_offer`, a second SerpApi request): for a booking only — a search's answer links
+    // the flight's own booking page already (the user, 2026-11-02: no second call for a search)
+    if kind == Kind::Flight && req.book && pick.id.starts_with("fl_") {
         let got = calls_of(t, "flight_offer")
             .into_iter()
             .rfind(|(a, msg)| sget(a, "offer_id") == pick.id && pos(t, msg) > search_pos);

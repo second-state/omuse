@@ -175,6 +175,14 @@ fn user_msg(text: impl Into<String>) -> Value {
     json!({"role": "user", "content": text.into()})
 }
 
+/// The workflow tools whose bots' tasks are one-off requests: no memory selection for them (see `Runtime::run`).
+const ONE_OFF_TOOLS: [&str; 3] = ["travel_search", "shop_order", "insurance_buy"];
+
+/// A bot whose tasks are one-off workflow requests (Travel, Shopping, Insurance): its tasks select no memory.
+pub fn one_off(bot: &crate::bots::Bot) -> bool {
+    ONE_OFF_TOOLS.iter().any(|w| crate::bots::has_tool(bot, w))
+}
+
 impl Runtime {
     /// `Runtime(data_dir, publish)`: open the runtime store under `data_dir`, make the workspace, wire the model
     /// client's hooks and the health watch.
@@ -2309,7 +2317,14 @@ message to use as written) stays in that language. Output only the rewritten rep
         let conv_id = get_str(&t, "conv_id");
         let (history, history_txt) = self.history(&conv_id, task_id);
         let goal_text = get_str(&t, "goal");
-        let facts = self.facts_for(&t, &history_txt).await;
+        // a one-off workflow request (a travel search, a shopping search, an insurance quote: the bots whose work is a
+        // workflow tool) needs no memory — the structured profile its machine reads is enough, and the selection is a
+        // model call (the user, 2026-11-02)
+        let facts = if one_off(self.bot_of(&t)) {
+            Vec::new()
+        } else {
+            self.facts_for(&t, &history_txt).await
+        };
         let t_transcript_empty = arr(&t, "transcript").is_empty();
         if facts
             .first()

@@ -431,4 +431,14 @@ mod tests {
             }
         }
     }
+
+    /// One-off workflow bots select no memory for their tasks (the user, 2026-11-02: a travel search needs none);
+    /// Main and the advice bots keep it.
+    #[test]
+    fn the_one_off_workflow_bots_load_no_memory() {
+        let one_off =
+            |id: &str| crate::agent::runtime::one_off(BOTS.iter().find(|b| b.id == id).unwrap());
+        assert!(one_off("travel") && one_off("shopping") && one_off("insurance"));
+        assert!(!one_off("main") && !one_off("cards") && !one_off("photos"));
+    }
 }
