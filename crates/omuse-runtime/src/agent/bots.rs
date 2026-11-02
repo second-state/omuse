@@ -525,12 +525,46 @@ impl Runtime {
         }
     }
 
-    /// The main task was cancelled while it waited for a bot: cancel the bot's task too.
-    pub(crate) async fn cancel_handoff(&self, waiting: &Value, reason: &str) {
-        let child = sget(waiting, "task_id");
-        if sget(waiting, "type") == "bot" && !child.is_empty() {
-            Box::pin(self.cancel(&child, reason)).await;
+    /// The main task was cancelled: the bot task it handed over to (the one it waits for, or one just created by an
+    /// `ask_bot` whose wait had not started yet) is cancelled too, and that is recorded (`handoff_cancelled`).
+    pub(crate) async fn cancel_handoff(&self, task_id: &str, waiting: &Value, reason: &str) {
+        let mut child = if sget(waiting, "type") == "bot" {
+            sget(waiting, "task_id")
+        } else {
+            String::new()
+        };
+        if child.is_empty() {
+            child = self
+                .store
+                .events(task_id, 0)
+                .unwrap_or_default()
+                .iter()
+                .rev()
+                .find(|e| get_str(e, "type") == "handoff")
+                .map(|e| sget(&e["data"], "task_id"))
+                .unwrap_or_default();
         }
+        if child.is_empty() || child == task_id {
+            return;
+        }
+        let Some(ct) = self.store.task(&child).ok().flatten() else {
+            return;
+        };
+        if super::is_terminal(&get_str(&ct, "status")) {
+            return;
+        }
+        let why = if reason.is_empty() {
+            "主任务已停止 (the main task was stopped)"
+        } else {
+            reason
+        };
+        Box::pin(self.cancel(&child, why)).await;
+        self.event(
+            task_id,
+            "handoff_cancelled",
+            json!({"task_id": child, "conv_id": get_str(&ct, "conv_id")}),
+        )
+        .await;
     }
 }
 

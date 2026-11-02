@@ -221,8 +221,61 @@ impl Runtime {
     }
 
     /// Run one tool call and append its result to the transcript. `Err(Suspend)` when it must wait for the user.
+    ///
+    /// A stopped task (`Runtime::cancel`) runs no call: one seen before it starts is not run, and one under way (a
+    /// page load, a sub-agent, a video job, a wait on Sentinel) is dropped the moment the task is stopped. Either way
+    /// the transcript gets a `stopped` result for it and nothing else happens.
     #[allow(clippy::too_many_arguments)]
     pub fn exec_call<'a>(
+        &'a self,
+        t: &'a Value,
+        call: &'a ToolCall,
+        transcript: &'a mut Vec<Value>,
+        catalog: &'a Value,
+        remaining: &'a [ToolCall],
+        allow: Option<&'a [&'a str]>,
+        mode: CallMode<'a>,
+    ) -> BoxFuture<'a, Result<CallOutcome, Suspend>> {
+        Box::pin(async move {
+            let task_id = get_str(t, "id");
+            let started = !self.is_cancelled(&task_id);
+            let before = transcript.len();
+            if started {
+                let run = self.exec_call_inner(
+                    t,
+                    call,
+                    &mut *transcript,
+                    catalog,
+                    remaining,
+                    allow,
+                    mode,
+                );
+                if let Some(r) = self.until_cancelled(&task_id, run).await {
+                    return r;
+                }
+            }
+            let answered = transcript[before..]
+                .iter()
+                .any(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == call.id);
+            if !answered {
+                transcript.push(json!({"role": "tool", "tool_call_id": call.id,
+                                       "content": format!("ERROR: {} — not run.", crate::llm::CANCELLED_MSG)}));
+            }
+            self.event(
+                &task_id,
+                "call_stopped",
+                json!({"call_id": call.id, "name": call.name, "started": started, "sub": mode.sub}),
+            )
+            .await;
+            Ok(CallOutcome {
+                ok: false,
+                refused: true,
+            })
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn exec_call_inner<'a>(
         &'a self,
         t: &'a Value,
         call: &'a ToolCall,

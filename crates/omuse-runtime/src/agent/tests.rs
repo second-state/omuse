@@ -4215,3 +4215,304 @@ async fn a_code_machines_page_read_runs_while_the_skill_has_the_browser_off() {
     assert!(!crate::agent::util::content_of(tr.last().unwrap()).contains("browser_off"));
     assert_eq!(acts.lock().as_slice(), ["browser_navigate"]);
 }
+
+// ---------------------------------------------------------------- Stop: a cancelled task does nothing more
+/// Sentinel for the stop tests: a catalog with the browser tools; every `/internal/act` is recorded and answered with a
+/// page, and the `stop_at`-th one stops its task (as the user's Stop click would, while the call is under way).
+fn stopping_hook(rt: &Arc<Runtime>, stop_at: usize) -> Arc<Mutex<Vec<(String, Value)>>> {
+    let acts: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+    let a2 = acts.clone();
+    let w = Arc::downgrade(rt);
+    rt.set_sentinel_hook(Some(Arc::new(move |_, path, payload| {
+        let p = payload.unwrap_or(Value::Null);
+        let w = w.clone();
+        let mut stop = String::new();
+        if path == "/internal/act" {
+            let mut a = a2.lock();
+            a.push((get_str(&p, "tool"), p["args"].clone()));
+            if a.len() == stop_at {
+                stop = get_str(&p, "task_id");
+            }
+        }
+        let url = get_str(&p["args"], "url");
+        Box::pin(async move {
+            if path == "/internal/catalog" {
+                return Ok(
+                    json!({"tools": tools(&["browser_navigate", "browser_read_elements", "browser_snapshot"]),
+                           "connections": {}}),
+                );
+            }
+            if !stop.is_empty() {
+                if let Some(rt) = w.upgrade() {
+                    rt.cancel(&stop, "").await;
+                }
+            }
+            Ok(json!({"status": "ok", "result": {"url": url, "title": "Page", "snapshot": "[e1] link \"More\""}}))
+        })
+    })));
+    acts
+}
+
+#[tokio::test]
+async fn stop_ends_a_looping_run_within_one_step_and_nothing_more_is_called() {
+    // a model that never stops: a new page every turn, forever
+    let (rt, _d, seen) = scripted_rt(
+        |body| {
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let n = tool_msgs(body).len();
+            call_msg(
+                &format!("c{n}"),
+                "browser_navigate",
+                &json!({"url": format!("https://loop.test/p{n}")}).to_string(),
+            )
+        },
+        json!({"language": "en", "max_steps": 200}),
+    )
+    .await;
+    let acts = stopping_hook(&rt, 3);
+    let (t, evs) = run_task(&rt, "keep reading pages").await;
+    assert_eq!(get_str(&t, "status"), "CANCELLED", "{t}");
+    // the call that was under way when Stop came was the last one: no model call, no tool call after it
+    assert_eq!(acts.lock().len(), 3, "{:?}", acts.lock());
+    assert_eq!(executor_calls(&seen).len(), 3);
+    let n = seen.lock().len();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(seen.lock().len(), n, "a model call after the stop");
+    assert_eq!(events_of(&evs, "cancelled").len(), 1);
+    assert!(
+        events_of(&evs, "final").is_empty(),
+        "no answer for a stopped task"
+    );
+    assert!(get_str(&t, "result").is_empty());
+    // a late step never overwrites the stop
+    let tid = get_str(&t, "id");
+    rt.set_status(&tid, "COMPLETED", json!({})).await;
+    rt.set_status(&tid, "RUNNING", json!({})).await;
+    assert_eq!(
+        get_str(&rt.store.task(&tid).unwrap().unwrap(), "status"),
+        "CANCELLED"
+    );
+    // and the run itself ends at once when started again
+    rt.run(&tid).await.unwrap();
+    assert_eq!(acts.lock().len(), 3);
+}
+
+#[tokio::test]
+async fn stop_skips_the_rest_of_a_turns_calls() {
+    let (rt, _d, seen) = scripted_rt(
+        |body| {
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let call = |i: usize| {
+                json!({"id": format!("c{i}"), "type": "function", "function": {"name": "browser_navigate",
+                       "arguments": json!({"url": format!("https://loop.test/q{i}")}).to_string()}})
+            };
+            json!({"role": "assistant", "content": "", "tool_calls": [call(1), call(2), call(3)]})
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let acts = stopping_hook(&rt, 1);
+    let (t, evs) = run_task(&rt, "read three pages").await;
+    assert_eq!(get_str(&t, "status"), "CANCELLED", "{t}");
+    assert_eq!(acts.lock().len(), 1, "{:?}", acts.lock());
+    assert_eq!(executor_calls(&seen).len(), 1);
+    // the calls that never ran are answered as stopped in the transcript (it stays well-formed)
+    let tr = t["transcript"].as_array().unwrap();
+    for id in ["c2", "c3"] {
+        let r = tr
+            .iter()
+            .find(|m| get_str(m, "tool_call_id") == id)
+            .unwrap_or_else(|| panic!("no result for {id}: {tr:?}"));
+        assert!(get_str(r, "content").contains("task stopped"), "{r}");
+    }
+    assert_eq!(events_of(&evs, "cancelled").len(), 1);
+    assert!(events_of(&evs, "final").is_empty());
+}
+
+#[tokio::test]
+async fn stop_ends_a_code_machine_between_its_code_calls() {
+    let (rt, _d, seen) = scripted_rt(
+        |body| {
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            match tool_msgs(body).len() {
+                0 => call_msg(
+                    "c1",
+                    "train_times",
+                    r#"{"line": "narita_express", "date": "2030-12-03"}"#,
+                ),
+                _ => json!({"role": "assistant", "content": "Here are the trains."}),
+            }
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    // the machine's first code call (the timetable page) is under way when Stop comes
+    let acts = stopping_hook(&rt, 1);
+    let (t, evs) = run_in_bot(&rt, "travel", "Narita Express times on 3 December 2030").await;
+    assert_eq!(get_str(&t, "status"), "CANCELLED", "{t}");
+    let tools_run: Vec<String> = acts.lock().iter().map(|(n, _)| n.clone()).collect();
+    assert_eq!(tools_run, ["browser_navigate"], "the machine went on");
+    assert!(events_of(&evs, "workflow_result").is_empty());
+    assert_eq!(executor_calls(&seen).len(), 1, "the model was called again");
+}
+
+#[tokio::test]
+async fn stopping_the_parent_stops_its_sub_agent() {
+    let (rt, _d, seen) = scripted_rt(
+        |body| {
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let n = tool_msgs(body).len();
+            if system_of(body).contains("focused sub-agent") {
+                // the sub-agent loops too
+                return call_msg(
+                    &format!("s{n}"),
+                    "browser_navigate",
+                    &json!({"url": format!("https://sub.test/p{n}")}).to_string(),
+                );
+            }
+            match n {
+                0 => call_msg(
+                    "d1",
+                    "delegate",
+                    r#"{"role": "researcher", "task": "read every page"}"#,
+                ),
+                _ => json!({"role": "assistant", "content": "done"}),
+            }
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let acts = stopping_hook(&rt, 2);
+    let (t, evs) = run_task(&rt, "research this").await;
+    assert_eq!(get_str(&t, "status"), "CANCELLED", "{t}");
+    assert_eq!(acts.lock().len(), 2, "{:?}", acts.lock());
+    let n = seen.lock().len();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(seen.lock().len(), n, "a model call after the stop");
+    // the main executor was asked once; the sub-agent twice (its second page was the stopped one)
+    assert_eq!(executor_calls(&seen).len(), 3);
+    let c = events_of(&evs, "cancelled");
+    assert_eq!(c[0]["subagents"], 1, "{c:?}");
+    assert!(events_of(&evs, "final").is_empty());
+}
+
+#[tokio::test]
+async fn stopping_the_main_task_cancels_the_bot_task_it_handed_over_to() {
+    let (rt, _d) = rt();
+    let main_conv = rt.store.create_conv("m", "chat", None).unwrap();
+    let bot_conv = rt.store.create_conv("b", "chat", None).unwrap();
+    rt.store
+        .set_conv_bot(&bot_conv, "travel", &main_conv)
+        .unwrap();
+    let new_task = |conv: &str| {
+        get_str(
+            &rt.store
+                .create_task("q", conv, "chat", "", "", None)
+                .unwrap(),
+            "id",
+        )
+    };
+    let status = |id: &str| get_str(&rt.store.task(id).unwrap().unwrap(), "status");
+    // waiting for the bot
+    let (parent, child) = (new_task(&main_conv), new_task(&bot_conv));
+    rt.set_status(&child, "RUNNING", json!({})).await;
+    rt.set_status(
+        &parent,
+        crate::agent::bots::WAITING_BOT,
+        json!({"waiting": {"type": "bot", "task_id": child, "conv_id": bot_conv}}),
+    )
+    .await;
+    rt.cancel(&parent, "").await;
+    assert_eq!(status(&parent), "CANCELLED");
+    assert_eq!(status(&child), "CANCELLED");
+    assert!(rt.is_cancelled(&child));
+    let ev = event_data(&rt, &parent, "handoff_cancelled");
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0]["task_id"], child.as_str());
+    // stopped just after the hand-over call created the bot's task, before the wait began: cancelled too, never started
+    let (parent, child) = (new_task(&main_conv), new_task(&bot_conv));
+    rt.set_status(&parent, "RUNNING", json!({})).await;
+    rt.event(
+        &parent,
+        "handoff",
+        json!({"bot": "travel", "conv_id": bot_conv, "task_id": child}),
+    )
+    .await;
+    rt.cancel(&parent, "").await;
+    assert_eq!(status(&child), "CANCELLED");
+    assert!(!rt.is_running(&child));
+    assert_eq!(event_data(&rt, &parent, "handoff_cancelled").len(), 1);
+}
+
+#[tokio::test]
+async fn stop_drops_a_tool_call_that_is_still_waiting() {
+    // a call that waits a long time on Sentinel (a slow page, a video job being polled): Stop ends it at once
+    let (rt, _d, seen) = scripted_rt(
+        |body| {
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            call_msg("c1", "browser_navigate", r#"{"url": "https://slow.test/"}"#)
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let acts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let a2 = acts.clone();
+    rt.set_sentinel_hook(Some(Arc::new(move |_, path, _| {
+        let a2 = a2.clone();
+        Box::pin(async move {
+            match path.as_str() {
+                "/internal/catalog" => {
+                    Ok(json!({"tools": tools(&["browser_navigate"]), "connections": {}}))
+                }
+                "/internal/act" => {
+                    a2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                    Ok(json!({"status": "ok", "result": {}}))
+                }
+                _ => Ok(json!({})),
+            }
+        })
+    })));
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = rt
+        .submit(&conv, "open the slow page", "chat", "", None)
+        .await
+        .unwrap();
+    let tid = get_str(&t, "id");
+    let t0 = std::time::Instant::now();
+    while acts.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        assert!(t0.elapsed().as_secs() < 10, "the call never started");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    rt.cancel(&tid, "").await;
+    let t1 = std::time::Instant::now();
+    while rt.is_running(&tid) {
+        assert!(
+            t1.elapsed().as_secs() < 3,
+            "the task kept waiting after Stop"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let t = rt.store.task(&tid).unwrap().unwrap();
+    assert_eq!(get_str(&t, "status"), "CANCELLED");
+    let stopped = event_data(&rt, &tid, "call_stopped");
+    assert_eq!(stopped.len(), 1, "{stopped:?}");
+    assert_eq!(stopped[0]["started"], true);
+    assert_eq!(executor_calls(&seen).len(), 1);
+    assert_eq!(acts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let tr = t["transcript"].as_array().unwrap();
+    assert!(tr
+        .iter()
+        .any(|m| get_str(m, "tool_call_id") == "c1"
+            && get_str(m, "content").contains("task stopped")));
+}

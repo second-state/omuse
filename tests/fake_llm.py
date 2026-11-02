@@ -493,6 +493,11 @@ async def _chat(req: Request, b: dict):
         if n == 4:
             return reply("", [tc("browser_navigate", {"url": PAGE})])
         return reply(f"SWITCH OK dead_ends_in_prompt={dead_seen} last={last_tool[:120]}")
+    if "LOOPFOREVER" in goal:   # a model that never ends (stop_ui.py stops it from the chat): a harmless new note every
+        # turn, so no loop guard ends it; a short think per turn so the page can be watched
+        import asyncio as _a
+        await _a.sleep(0.4)
+        return reply("", [tc("files_write", {"path": f"notes/loop{n}.md", "content": f"round {n}"})])
     if "LOOPFEED" in goal:   # a model stuck re-opening the same RSS feed (the 2026-09-28 news-brief run)
         if not b.get("tools"):
             return reply(f"LOOP SUMMARY after {n} tool calls: feed read, email not sent.")
