@@ -3391,7 +3391,9 @@ yourself; ask_bot is not available for it."
             // machine's result, emergency_contacts, visa_rules, fx_convert, loan_payment, confirm_reference …) and the
             // run's structured facts, appended by code after the reply — never read from or written into its prose
             // (a Vault card without its catalog id: the model picks the row as a JSON choice, the facts read it)
-            if !final_.is_empty() && asked.is_none() {
+            // also after a question: what a machine already found stays under it (claims_real 2026-11-02: WorldTracer's
+            // answer and the 21-day rule were lost when the model then asked for the family name)
+            if !final_.is_empty() {
                 let mut fact_view = transcript.clone();
                 fact_view.extend(self.attach_card_ids(task_id, &transcript).await);
                 let items = super::facts::show_items(

@@ -129,7 +129,11 @@ async def main():
         if g:
             page = await u.ctx.new_page()
             await page.goto(g[0], wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(6000)
+            # Google's page loads its booking options after "Loading results": up to 30 s
+            try:
+                await page.wait_for_function("() => /Book with|Booking options/.test(document.body.innerText)", timeout=30000)
+            except Exception:   # noqa: BLE001 — the check below reports what the page showed
+                pass
             body = await page.inner_text("body")
             check("flight: the booking link opens the flight's booking options (\"Book with …\")", "Book with" in body or "Booking options" in body,
                   " ".join(body.split())[:300])
