@@ -345,13 +345,12 @@ impl KiwiMcp {
                 args["select_airlines"] = json!(codes.join(","));
             }
         }
-        // one day: every flight of the day, by departure hour (Kiwi answers a dozen itineraries per request); a range of
-        // days stays one request
-        let data = if last.is_none() {
-            self.whole_day(&args).await?
-        } else {
-            self.call(&args).await?
-        };
+        // the user's time window (the model's JSON: depart_after … arrive_before) as Kiwi's own hour filters, in the
+        // same ONE request
+        for (k, v) in kiwi_times(a) {
+            args[k] = json!(v);
+        }
+        let data = self.call(&args).await?;
         let mut out = compact_flights(&data, self_transfer);
         let found = crate::serpapi::mark_preferred(
             &mut out["offers"],
@@ -366,55 +365,6 @@ impl KiwiMcp {
             out["searched"]["airline_filter"] = crate::serpapi::airline_filter_note(&filter);
         }
         Ok(out)
-    }
-
-    /// Every flight of one day: Kiwi answers only a dozen or so itineraries per request (the cheapest first, so a
-    /// day's later or dearer flights never showed — "the last flight that lands before midnight" was not among them,
-    /// 2026-11-02), so the day is asked hour by hour of departure (`dtime_from` / `dtime_to`, local hours; checked on
-    /// mcp.kiwi.com 2026-11-02: `dtime_to` h takes departures up to h:00, and 23 is its largest value, so the last
-    /// window has no end), the windows side by side, and an hour whose answer is full is asked once more for direct
-    /// flights only (connections crowd them out). The itineraries merged, each once (Kiwi's `id`).
-    async fn whole_day(&self, args: &Value) -> Result<Value, KiwiError> {
-        use futures_util::stream::{self, StreamExt};
-        let windows: Vec<Value> = (0..24u32)
-            .map(|h| {
-                let mut w = args.clone();
-                w["dtime_from"] = json!(h);
-                if h < 23 {
-                    w["dtime_to"] = json!(h + 1);
-                }
-                w
-            })
-            .collect();
-        let first: Vec<(Value, Result<Value, KiwiError>)> = stream::iter(windows)
-            .map(|w| async move {
-                let r = self.call(&w).await;
-                (w, r)
-            })
-            .buffered(KIWI_PARALLEL)
-            .collect()
-            .await;
-        // a full hour: once more with direct flights only (unless the search is direct-only already)
-        let direct_only = args.get("max_sector_stopovers").and_then(Value::as_u64) == Some(0);
-        let full: Vec<Value> = first
-            .iter()
-            .filter(|(_, r)| {
-                !direct_only
-                    && r.as_ref()
-                        .is_ok_and(|d| arr(d, "itineraries").len() >= KIWI_FULL)
-            })
-            .map(|(w, _)| {
-                let mut w = w.clone();
-                w["max_sector_stopovers"] = json!(0);
-                w
-            })
-            .collect();
-        let again: Vec<Result<Value, KiwiError>> = stream::iter(full)
-            .map(|w| async move { self.call(&w).await })
-            .buffered(KIWI_PARALLEL)
-            .collect()
-            .await;
-        merge_windows(first.into_iter().map(|(_, r)| r).chain(again))
     }
 
     /// One `search-flight` request: Kiwi's reply data (`{currency, itineraries, …}`).
@@ -472,49 +422,28 @@ impl KiwiMcp {
     }
 }
 
-/// How many hour windows of a day are asked at once.
-const KIWI_PARALLEL: usize = 6;
-/// An answer this long may be cut by Kiwi (it answers 12–15 itineraries at most): the hour is asked again for direct
-/// flights.
-const KIWI_FULL: usize = 12;
-
-/// The answers of a day's windows as one reply: every itinerary once (by Kiwi's `id`, else its booking link), in
-/// departure order; the first answer's other fields. Windows that failed are left out; all failed: the first error.
-fn merge_windows(
-    answers: impl IntoIterator<Item = Result<Value, KiwiError>>,
-) -> Result<Value, KiwiError> {
-    let mut base: Option<Value> = None;
-    let mut err: Option<KiwiError> = None;
-    let mut seen = std::collections::HashSet::new();
-    let mut all: Vec<Value> = Vec::new();
-    for r in answers {
-        match r {
-            Ok(d) => {
-                for it in arr(&d, "itineraries") {
-                    let mut key = get_str(it, "id");
-                    if key.is_empty() {
-                        key = get_str(it, "bookingUrl");
-                    }
-                    if key.is_empty() || seen.insert(key) {
-                        all.push(it.clone());
-                    }
-                }
-                if base.is_none() {
-                    base = Some(d);
-                }
-            }
-            Err(e) => {
-                err.get_or_insert(e);
-            }
+/// The request's local time window (`depart_after` / `depart_before` / `arrive_after` / `arrive_before`, HH:MM) as
+/// Kiwi's hour filters (`dtime_from` / `dtime_to`, `atime_from` / `atime_to`, 0–23, local at each airport). Checked on
+/// mcp.kiwi.com 2026-11-02: `dtime_to` h takes departures up to h:00 and 23 is its largest value — so an end is rounded
+/// up to the next hour (never cutting a flight inside the window) and an end after 23:00 is no end; a start is its
+/// hour (00 is no start). The window is a superset at most an hour wider: the pick over the result is the model's.
+pub fn kiwi_times(a: &Value) -> Vec<(&'static str, u32)> {
+    let w = crate::serpapi::time_window(a);
+    let mut out = Vec::new();
+    for (range, from_k, to_k) in [
+        (w.depart, "dtime_from", "dtime_to"),
+        (w.arrive, "atime_from", "atime_to"),
+    ] {
+        let Some((from, to)) = range else { continue };
+        if from / 60 > 0 {
+            out.push((from_k, from / 60));
+        }
+        let end = to.div_ceil(60);
+        if end <= 23 {
+            out.push((to_k, end));
         }
     }
-    let Some(mut out) = base else {
-        return Err(err.unwrap_or_else(|| KiwiError("Kiwi: no answer".into())));
-    };
-    all.sort_by_key(|it| get_str(&it["outbound"], "departureTime"));
-    out["resultsCount"] = json!(all.len());
-    out["itineraries"] = Value::Array(all);
-    Ok(out)
+    out
 }
 
 #[cfg(test)]
@@ -522,32 +451,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_days_hour_windows_merge_into_every_itinerary_once_and_none_is_cut() {
-        // Kiwi answers a dozen itineraries per request: the day is asked hour by hour and merged; an itinerary at an
-        // hour's edge (in two windows) is kept once, a failed window is left out
-        let it = |id: &str, dep: &str| {
-            json!({"id": id, "price": 1000.0, "outbound": {"from": "HKG", "to": "SIN", "departureTime": dep,
-                   "arrivalTime": dep, "segments": [], "route": ["HKG", "SIN"]}})
-        };
-        let w = |its: Vec<Value>| Ok(json!({"currency": "HKD", "itineraries": its}));
-        let day = merge_windows(vec![
-            w((0..13)
-                .map(|i| it(&format!("a{i}"), &format!("2026-11-03T18:{i:02}:00")))
-                .collect()),
-            w(vec![
-                it("b1", "2026-11-03T19:00:00"),
-                it("a12", "2026-11-03T18:12:00"),
-            ]),
-            Err(KiwiError("Kiwi HTTP 502".into())),
-            w(vec![it("c1", "2026-11-03T07:50:00")]),
-        ])
-        .unwrap();
-        assert_eq!(day["resultsCount"], 15);
-        assert_eq!(day["itineraries"][0]["id"], "c1");
-        let out = compact_flights(&day, false);
-        assert_eq!(out["count"], 15, "no itinerary cut");
-        // every window failed: the error
-        assert!(merge_windows(vec![Err(KiwiError("down".into()))]).is_err());
+    fn the_users_time_window_becomes_kiwis_hour_filters() {
+        // "the last flight that lands before midnight", narrowed by the model to arrivals from 18:00
+        let w = kiwi_times(&json!({"arrive_after": "18:00", "arrive_before": "23:59"}));
+        assert_eq!(
+            w,
+            [("atime_from", 18)],
+            "23:59 is no end (dtime_to 23 would cut 23:01–23:59)"
+        );
+        // an end is rounded up to the next hour; a start of 00:00 is no start
+        let w = kiwi_times(
+            &json!({"depart_after": "00:00", "depart_before": "09:30", "arrive_after": "06:15"}),
+        );
+        assert_eq!(w, [("dtime_to", 10), ("atime_from", 6)]);
+        assert_eq!(
+            kiwi_times(&json!({"depart_before": "18:00"})),
+            [("dtime_to", 18)]
+        );
+        // no time words: no filter (one normal search)
+        assert!(kiwi_times(&json!({"origin": "HKG"})).is_empty());
+        assert!(kiwi_times(&json!({"depart_after": "late"})).is_empty());
     }
 
     #[test]

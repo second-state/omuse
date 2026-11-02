@@ -186,6 +186,11 @@ pub fn tool_schemas() -> Vec<Value> {
         "card": {"type": "string", "description": "the Vault card the user named to pay with: its id from vault_list (id=…), its card_id, or its label exactly as listed"},
         "next": {"type": "array", "items": {"type": "string", "enum": ["flight", "hotel", "car", "restaurant"]}, "description": "the other searches the same request asks for (offered after this one)"}
     });
+    // a flight's local time window (outside the literal above: json!'s recursion limit)
+    travel["depart_after"] = json!({"type": "string", "description": "flight: HH:MM local at the departure airport — copy the user's own time limit (\"after 6 pm\" → 18:00); empty when the user gave none"});
+    travel["depart_before"] = json!({"type": "string", "description": "flight: HH:MM local at the departure airport — the user's limit (\"leave before noon\" → 12:00); empty when none"});
+    travel["arrive_after"] = json!({"type": "string", "description": "flight: HH:MM local at the arrival airport — the user's limit; for \"the last flight …\" you may narrow the search to the evening (18:00) so the last ones are in it; empty when none"});
+    travel["arrive_before"] = json!({"type": "string", "description": "flight: HH:MM local at the arrival airport — the user's limit (\"lands before midnight\" → 23:59, \"by 8 pm\" → 20:00); empty when none. The search filters by the hour; the pick from its flights (travel_pick) is yours"});
     let search = fn_(
         TRAVEL_SEARCH,
         "Search and compare flights, hotels, MICHELIN restaurants or restaurants. Code runs ONE search with these arguments. \
@@ -308,6 +313,13 @@ pub struct Ctx<'a> {
 static EMAIL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[\w.+-]+@[\w-]+(?:\.[\w-]+)+$").unwrap());
 static CODES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z]{3}(?:,[A-Z]{3})*$").unwrap());
+/// A flight's local time window, as the model copied it from the user's words (HH:MM).
+const TIME_KEYS: [&str; 4] = [
+    "depart_after",
+    "depart_before",
+    "arrive_after",
+    "arrive_before",
+];
 static HHMM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([01]?\d|2[0-3]):([0-5]\d)$").unwrap());
 
@@ -462,6 +474,22 @@ fn check_travel(a: &Value, cx: &Ctx, book: bool) -> Checked {
                 )),
             }
             out.insert("nonstop".into(), json!(b_arg(a, "nonstop")));
+            // the user's local time window: HH:MM (24-hour), passed to the search's own time filter
+            for k in TIME_KEYS {
+                let v = s_arg(a, k);
+                if v.is_empty() {
+                    continue;
+                }
+                match HHMM.captures(&v) {
+                    Some(c) => {
+                        out.insert(
+                            k.into(),
+                            json!(format!("{:02}:{}", c[1].parse::<u32>().unwrap_or(0), &c[2])),
+                        );
+                    }
+                    None => problems.push(format!("{k}: \"{v}\" — give HH:MM (24-hour, local)")),
+                }
+            }
             // the airlines in the request, else the profile's standing preference (unless every airline is asked for)
             let mut airlines = list_arg(a, "airlines");
             if airlines.is_empty() && !b_arg(a, "all_airlines") {
@@ -1105,6 +1133,8 @@ pub struct Req {
     pub next: Vec<String>,
     /// `travel_book`: book the pick
     pub book: bool,
+    /// a flight's local time window as given ((`depart_after` …, HH:MM)), passed to the search's own time filter
+    pub times: Vec<(String, String)>,
 }
 
 impl Req {
@@ -1152,6 +1182,11 @@ impl Req {
             pick: s_arg(a, "pick"),
             next: list_arg(a, "next"),
             book: b_arg(a, "book"),
+            times: TIME_KEYS
+                .iter()
+                .map(|k| (k.to_string(), s_arg(a, k)))
+                .filter(|(_, v)| !v.is_empty())
+                .collect(),
         }
     }
 
@@ -1187,6 +1222,9 @@ impl Req {
                 }
                 if !self.airlines.is_empty() {
                     a["airlines"] = json!(self.airlines);
+                }
+                for (k, v) in &self.times {
+                    a[k.as_str()] = json!(v);
                 }
                 a
             }
@@ -1259,6 +1297,9 @@ impl Req {
                 put("currency", json!(self.currency));
                 if !self.airlines.is_empty() {
                     put("airlines", json!(self.airlines));
+                }
+                for (k, v) in &self.times {
+                    put(k, json!(v));
                 }
             }
             Kind::Hotel => {
@@ -2188,26 +2229,28 @@ fn choice_title(kind: Kind) -> &'static str {
 /// What was searched, in one line (the choice card's title and the mailed list's subject).
 fn searched_line(kind: Kind, r: &Req) -> String {
     match kind {
-        Kind::Flight => format!(
-            "{} to {} {}{}, {}, {} adult{}{}",
-            r.origin,
-            r.destination,
-            match r.date_to {
-                Some(to) => format!(
-                    "any day {} to {}",
-                    r.date.map(iso).unwrap_or_default(),
-                    iso(to)
-                ),
-                None => format!("on {}", r.date.map(iso).unwrap_or_default()),
-            },
-            r.return_date
-                .map(|d| format!(" (return {})", iso(d)))
-                .unwrap_or_default(),
-            r.cabin.replace('_', " "),
-            r.party_or(kind),
-            if r.party_or(kind) > 1 { "s" } else { "" },
-            if r.nonstop { ", direct" } else { "" },
-        ),
+        Kind::Flight => {
+            format!(
+                "{} to {} {}{}, {}, {} adult{}{}",
+                r.origin,
+                r.destination,
+                match r.date_to {
+                    Some(to) => format!(
+                        "any day {} to {}",
+                        r.date.map(iso).unwrap_or_default(),
+                        iso(to)
+                    ),
+                    None => format!("on {}", r.date.map(iso).unwrap_or_default()),
+                },
+                r.return_date
+                    .map(|d| format!(" (return {})", iso(d)))
+                    .unwrap_or_default(),
+                r.cabin.replace('_', " "),
+                r.party_or(kind),
+                if r.party_or(kind) > 1 { "s" } else { "" },
+                if r.nonstop { ", direct" } else { "" },
+            ) + &window_words(r)
+        }
         Kind::Hotel => format!(
             "{}{}, {} to {}, {} guest{}",
             r.city,
@@ -2239,6 +2282,24 @@ fn searched_line(kind: Kind, r: &Req) -> String {
         ),
         Kind::Shop => String::new(),
     }
+}
+
+/// A flight's time window in words for the searched line (", arriving 18:00–23:59"); "" without one.
+fn window_words(r: &Req) -> String {
+    let get = |k: &str| {
+        r.times
+            .iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.as_str())
+    };
+    let side = |verb: &str, after: Option<&str>, before: Option<&str>| match (after, before) {
+        (Some(a), Some(b)) => format!(", {verb} {a}–{b}"),
+        (Some(a), None) => format!(", {verb} after {a}"),
+        (None, Some(b)) => format!(", {verb} before {b}"),
+        (None, None) => String::new(),
+    };
+    side("leaving", get("depart_after"), get("depart_before"))
+        + &side("arriving", get("arrive_after"), get("arrive_before"))
 }
 
 /// The options as plain lines for a mail (data, one option per line).
