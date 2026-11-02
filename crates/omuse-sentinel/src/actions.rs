@@ -2261,8 +2261,26 @@ pub async fn shop_search(st: &AppState, args: &Value) -> Value {
             omuse_apps::shopify::localise(offers, &currency, &results);
         }
     }
+    // only the fields the machine reads, a Google product token swapped for a short reference kept here for the pick
+    if let Some(offers) = out.get_mut("offers").and_then(Value::as_array_mut) {
+        let mut refs: Vec<(String, String)> = Vec::new();
+        let compacted: Vec<Value> = shops::trim(std::mem::take(offers))
+            .iter()
+            .map(|o| shops::compact(o, &mut refs))
+            .collect();
+        *offers = compacted;
+        let mut cache = PRODUCT_REFS.lock();
+        cache.clear();
+        cache.extend(refs);
+    }
     out
 }
+
+/// The latest search's Google Shopping product tokens by their short reference (`product_ref` → token), for the pick's
+/// `shop_stores`.
+static PRODUCT_REFS: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 /// The strings of an array argument.
 fn strs(args: &Value, key: &str) -> Vec<String> {
@@ -2291,10 +2309,16 @@ pub async fn shop_stores(st: &AppState, args: &Value) -> Value {
     let Some(s) = serpapi_client(st) else {
         return json!({"stores": [], "error": "no_key"});
     };
-    match s
-        .shopping_stores(&fstr(args, "product_token"), &fstr(args, "country"))
-        .await
-    {
+    // the short reference of the latest search, else a token given as it is
+    let token = PRODUCT_REFS
+        .lock()
+        .get(&fstr(args, "product_ref"))
+        .cloned()
+        .unwrap_or_else(|| fstr(args, "product_token"));
+    if token.is_empty() {
+        return json!({"stores": [], "error": "unknown product"});
+    }
+    match s.shopping_stores(&token, &fstr(args, "country")).await {
         Ok(stores) => json!({"stores": stores}),
         Err(e) => json!({"stores": [], "error": e.to_string()}),
     }

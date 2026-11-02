@@ -262,7 +262,7 @@ fn google_pick(o: &Value, t: &[Value], m: &Machine, ids: &Ids, country: &str) ->
                 .unwrap_or_default()
         })
         .find(|x| get_str(x, "offer_id") == get_str(o, "offer_id"))
-        .map(|x| get_str(&x, "product_token"))
+        .map(|x| get_str(&x, "product_ref"))
         .unwrap_or_default();
     let product_page = || {
         Step::Done(json!({"status": "link", "offer": o,
@@ -274,7 +274,7 @@ fn google_pick(o: &Value, t: &[Value], m: &Machine, ids: &Ids, country: &str) ->
         return product_page();
     }
     let Some((_, msg)) = calls_of(t, STORES).into_iter().next() else {
-        return ids.calls(STORES, json!({"product_token": token, "country": country}));
+        return ids.calls(STORES, json!({"product_ref": token, "country": country}));
     };
     let stores = data_of(msg)["stores"]
         .as_array()

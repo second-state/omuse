@@ -1683,10 +1683,15 @@ fn sg_google_search() -> String {
         "../../../../omuse-apps/src/serpapi_recorded/google_shopping_sg.json"
     ))
     .unwrap();
-    let offers = shops::tag(
+    // as Sentinel answers it: tagged, then only the machine's fields, the product token as a short reference
+    let mut refs = Vec::new();
+    let offers: Vec<Value> = shops::tag(
         shops::Provider::GoogleShopping,
         serpapi::shopping_offers(&data, "SGD"),
-    );
+    )
+    .iter()
+    .map(|o| shops::compact(o, &mut refs))
+    .collect();
     json!({"offers": offers, "providers": [{"provider": "google", "ok": true, "count": 8}]})
         .to_string()
 }
@@ -1747,7 +1752,7 @@ fn a_brand_brings_in_google_shopping_and_a_pick_links_the_sellers_own_page() {
     let (t2, res) = run_call("call_b", SHOP_ORDER, &b, t, &Env::of(&p), answer);
     let st = args_of(&t2, "shop_stores");
     assert_eq!(st.len(), 1, "one stores request, for the pick only");
-    assert!(!get_str(&st[0], "product_token").is_empty());
+    assert!(get_str(&st[0], "product_ref").starts_with('p'), "{}", st[0]);
     assert_eq!(res["status"], "link", "{res}");
     let m = must(&res);
     assert!(

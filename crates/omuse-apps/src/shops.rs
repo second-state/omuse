@@ -231,6 +231,71 @@ pub fn tag(p: Provider, list: Vec<Value>) -> Vec<Value> {
         .collect()
 }
 
+/// The fields of an offer the shopping machine reads: anything else (variants, options, images …) is left out, so a
+/// search of 70 offers stays well inside the 40,000 characters a tool result keeps (shopping_real 2026-11-02: 126,437
+/// characters, cut, read as no offer at all).
+const OFFER_FIELDS: &[&str] = &[
+    "offer_id",
+    "provider",
+    "id",
+    "title",
+    "price",
+    "currency",
+    "available",
+    "seller",
+    "url",
+    "checkout_url",
+    "rating",
+    "ratings",
+    "delivery",
+    "product_ref",
+    "price_min",
+    "price_local",
+    "currency_local",
+    "fx_rate",
+];
+
+/// The most offers kept per provider (the machine shows at most 12 in all).
+pub const PER_PROVIDER: usize = 20;
+
+/// The first [`PER_PROVIDER`] offers of each provider, in their order.
+pub fn trim(offers: Vec<Value>) -> Vec<Value> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    offers
+        .into_iter()
+        .filter(|o| {
+            let n = seen.entry(get_str(o, "provider")).or_insert(0);
+            *n += 1;
+            *n <= PER_PROVIDER
+        })
+        .collect()
+}
+
+/// An offer with only [`OFFER_FIELDS`]; a Google Shopping product token (hundreds of characters) is swapped for a short
+/// reference in `refs` (`product_ref`), which `shop_stores` takes back.
+pub fn compact(o: &Value, refs: &mut Vec<(String, String)>) -> Value {
+    let mut out = serde_json::Map::new();
+    let token = get_str(o, "product_token");
+    if !token.is_empty() {
+        let r = format!("p{}", refs.len() + 1);
+        refs.push((r.clone(), token));
+        out.insert("product_ref".into(), json!(r));
+    }
+    if let Some(m) = o.as_object() {
+        for k in OFFER_FIELDS {
+            if let Some(v) = m.get(*k) {
+                let v = if *k == "seller" {
+                    json!({"name": get_str(v, "name"), "url": get_str(v, "url")})
+                } else {
+                    v.clone()
+                };
+                out.insert((*k).into(), v);
+            }
+        }
+    }
+    Value::Object(out)
+}
+
 /// The offers' currencies that need a rate into `target`.
 pub fn fx_symbols(offers: &[Value], target: &str) -> Vec<String> {
     shopify::fx_symbols(offers, target)
@@ -246,6 +311,42 @@ pub fn ids_ok(result: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 70 offers (30 Shopify, 40 Google with their long tokens) fit well inside the 40,000 characters a tool result keeps
+    /// once compacted (shopping_real 2026-11-02: 126,437 characters, cut, read as no offer).
+    #[test]
+    fn a_search_result_of_70_offers_fits_a_tool_result() {
+        let data: Value =
+            serde_json::from_str(include_str!("serpapi_recorded/google_shopping_sg.json")).unwrap();
+        let google = crate::serpapi::shopping_offers(&data, "SGD");
+        let shopify = shopify::products_of(
+            &shopify::tool_result(
+                &serde_json::from_str(include_str!("shopify_recorded/catalog_search.json"))
+                    .unwrap(),
+            )
+            .unwrap(),
+        );
+        let mut all: Vec<Value> = Vec::new();
+        for i in 0..40 {
+            let mut o = google[i % google.len()].clone();
+            o["provider"] = json!("google");
+            all.push(o);
+        }
+        for i in 0..30 {
+            let mut o = shopify[i % shopify.len()].clone();
+            o["provider"] = json!("shopify");
+            all.push(o);
+        }
+        let raw = json!({"offers": all}).to_string().len();
+        let mut refs = Vec::new();
+        let out: Vec<Value> = trim(all).iter().map(|o| compact(o, &mut refs)).collect();
+        assert_eq!(out.len(), 2 * PER_PROVIDER);
+        let small = json!({"offers": out}).to_string().len();
+        assert!(small < 25_000, "{small} chars (raw {raw})");
+        assert_eq!(refs.len(), PER_PROVIDER);
+        assert_eq!(out[0]["product_ref"], "p1");
+        assert!(out[0].get("product_token").is_none());
+    }
 
     #[test]
     fn google_shopping_only_when_a_brand_or_a_merchant_is_named() {

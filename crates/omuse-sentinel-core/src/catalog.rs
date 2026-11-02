@@ -208,7 +208,7 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
     add("shop_stores", tool("shopping", "read", "search", "low", "PUBLIC",
         "商品的销售商店（仅供代码机器调用）。The stores selling one Google Shopping product in the user's country (called by \
          the shop_order machine only, never offered to the model): each store's own page, price, shipping and total.",
-        obj(json!({"product_token": {"type": S}, "country": {"type": S}}), &["product_token"])));
+        obj(json!({"product_ref": {"type": S}, "product_token": {"type": S}, "country": {"type": S}}), &[])));
     add("browser_fill_secret", tool("browser", "interact", "type", "high", "PUBLIC",
         "从保险箱填写证件号/会员号/信用卡（每次都要用户批准，你看不到实际内容）。Fill a value stored in the user's \
          vault (ID/passport number, membership number, credit card number/expiry/CVC, holder name) into an input \
