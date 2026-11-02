@@ -44,6 +44,11 @@ pub const NEWS_MAIL: &str = "news_mail";
 pub const TOOLS: [&str; 3] = [NEWS_GATHER, NEWS_PUBLISH, NEWS_MAIL];
 /// The layout tool the machine publishes with (code's own call; not offered to the model).
 pub const REPORT_TOOL: &str = "news_report";
+/// The market quotes the machine fetches with the news (code's own call; not offered to the model): Sentinel's
+/// structured market data, compacted to JSON (`Runtime::market_quotes`).
+pub const MARKET_TOOL: &str = "market_quotes";
+/// At most this many market symbols per edition.
+pub const MARKETS: usize = 6;
 /// How many articles an edition reads (two `browser_read` calls of at most four pages, in one turn).
 pub const ARTICLES: usize = 6;
 /// `browser_read` takes at most four pages per call.
@@ -56,13 +61,15 @@ pub fn tool_schemas() -> Vec<Value> {
     let s = json!({"type": "string"});
     let gather = fn_(
         NEWS_GATHER,
-        "Research the latest news on a subject for a newspaper-style report (also a scheduled edition). Code runs the \
-browser's news search, reads the top articles and returns them as JSON (article number, title, publication, date, url, \
-text). Then write the edition from those articles and call news_publish. status nothing_found: no recent article — say \
+        "Research the latest news on a subject for a newspaper-style report or a regular update (also a scheduled \
+edition; \"monitor the price and news of X\" too, with markets). Code fetches the market prices asked for, runs the \
+browser's news search, reads the top articles and returns them as JSON (prices; article number, title, publication, \
+date, url, text). Then write the edition from those articles and call news_publish. status nothing_found: no recent article — say \
 so; needs_input: ask the user for the subject.",
         json!({
             "subject": {"type": "string", "description": "what the news is about — a company, topic, place or person — without words such as 'latest news', 'report' or 'weekly'"},
-            "window": {"type": "string", "enum": ["day", "week", "month"], "description": "how far back the news goes: day for a daily report, month for a monthly one, else week"}
+            "window": {"type": "string", "enum": ["day", "week", "month"], "description": "how far back the news goes: day for a daily report, month for a monthly one, else week"},
+            "markets": {"type": "array", "items": s.clone(), "description": "the prices to report with the news when the user asks to monitor / track / watch a price (a cryptocurrency, a stock, an index, a currency pair, gold): Yahoo Finance symbols, e.g. BTC-USD, ETH-USD, AAPL, 0700.HK, ^GSPC, GC=F, USDJPY=X; code fetches each price from the market data and shows it with the edition"}
         }),
         &["subject"],
     );
@@ -101,6 +108,37 @@ reply from the JSON result.",
     vec![gather, publish, mail]
 }
 
+/// The catalog entry of [`MARKET_TOOL`] (code's own call: it makes the tool local; [`offered`] withholds it).
+pub fn market_schema() -> Value {
+    fn_(
+        MARKET_TOOL,
+        "The market prices of symbols as JSON (the news machine's own call).",
+        json!({"symbols": {"type": "array", "items": {"type": "string"}}, "range": {"type": "string"}}),
+        &["symbols"],
+    )
+}
+
+/// Sentinel's `/internal/market_data` answer as [`MARKET_TOOL`]'s JSON result: each result's symbol, name, currency,
+/// last price, its time and the day's change; the errors as they came.
+pub fn quotes_of(r: &Value) -> Value {
+    if let Some(e) = r.get("error").filter(|e| truthy(e)) {
+        return json!({"quotes": [], "errors": [e]});
+    }
+    let quotes: Vec<Value> = r
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|q| q.get("last").is_some_and(|l| l.is_number()))
+        .map(|q| {
+            json!({"symbol": get_str(q, "symbol"), "name": get_str(q, "name"), "currency": get_str(q, "currency"),
+                   "last": q["last"], "last_time": get_str(q, "last_time"),
+                   "day_change_pct": q.get("day_change_pct").cloned().unwrap_or(Value::Null)})
+        })
+        .collect();
+    json!({"quotes": quotes, "errors": r.get("errors").cloned().unwrap_or_else(|| json!([]))})
+}
+
 /// `ask_user` in a news-research run before its workflow tool was called: refused, as data (the tool's `needs_input`
 /// says what only the user can give; the window and the schedule have defaults). `events` are the task's.
 pub fn ask_before_tool(events: &[Value]) -> Option<Value> {
@@ -118,8 +156,9 @@ pub fn ask_before_tool(events: &[Value]) -> Option<Value> {
 
 /// Whether the model is offered tool `name` on its next turn: `news_report` is code's own call; on the reply to a
 /// machine's result the news tools are withdrawn, except `news_publish` right after the articles were gathered.
+/// `market_quotes` is code's own call too.
 pub fn offered(transcript: &[Value], name: &str) -> bool {
-    if name == REPORT_TOOL {
+    if name == REPORT_TOOL || name == MARKET_TOOL {
         return false;
     }
     if !TOOLS.contains(&name) || !workflow::reply_turn(transcript) {
@@ -228,7 +267,56 @@ fn check_gather(a: &Value) -> Checked {
         "month" | "monthly" => "month",
         _ => "week",
     };
-    Checked::Valid(json!({"subject": take_chars(&subject, 120), "window": window}))
+    let mut out = json!({"subject": take_chars(&subject, 120), "window": window});
+    let markets = market_symbols(a.get("markets"));
+    if !markets.is_empty() {
+        out["markets"] = json!(markets);
+    }
+    Checked::Valid(out)
+}
+
+/// Cryptocurrency tickers the market data quotes as `<TICKER>-USD` (a bare `BTC` is a different listing there).
+const CRYPTO: [&str; 12] = [
+    "BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "BNB", "LTC", "DOT", "AVAX", "TRX", "LINK",
+];
+
+/// The `markets` argument as market symbols: strings (or one comma-separated string), upper-cased, only the characters
+/// a Yahoo Finance symbol has (letters, digits, `.`, `-`, `^`, `=`), a bare crypto ticker as `<TICKER>-USD`, each
+/// once, at most [`MARKETS`]. Anything else is dropped.
+pub fn market_symbols(v: Option<&Value>) -> Vec<String> {
+    let raw: Vec<String> = match v {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        Some(Value::String(s)) => s.split(',').map(str::to_string).collect(),
+        _ => Vec::new(),
+    };
+    let mut out: Vec<String> = Vec::new();
+    for r in raw {
+        let sym = r.trim().to_uppercase();
+        let ok = !sym.is_empty()
+            && sym.len() <= 20
+            && sym
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '^' | '='));
+        if !ok {
+            continue;
+        }
+        let sym = if CRYPTO.contains(&sym.as_str()) {
+            format!("{sym}-USD")
+        } else {
+            sym
+        };
+        if !out.contains(&sym) {
+            out.push(sym);
+        }
+        if out.len() >= MARKETS {
+            break;
+        }
+    }
+    out
 }
 
 fn check_publish(a: &Value, cx: &Ctx) -> Checked {
@@ -335,6 +423,13 @@ fn check_publish(a: &Value, cx: &Ctx) -> Checked {
             .unwrap_or(8)),
     );
     out.insert("email".into(), json!(a.get("email").is_some_and(truthy)));
+    // the market prices are the gathered ones (code's, from the market data), never the model's
+    if let Some(m) = g.get("markets").filter(|m| m.is_array()) {
+        out.insert("markets".into(), m.clone());
+    }
+    if let Some(p) = g.get("prices").filter(|p| p.is_array()) {
+        out.insert("prices".into(), p.clone());
+    }
     Checked::Valid(Value::Object(out))
 }
 
@@ -649,9 +744,29 @@ fn next_gather(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
     };
     let days = window_days(&window);
     let period_line = period(days, m.today);
-    // 1. the search: the subject; a second, wider one only when the first found no article
+    let markets = market_symbols(args.get("markets"));
+    // 1. the search: the subject; a second, wider one only when the first found no article. The market prices asked
+    // for are fetched in the same turn as the first search.
     let searches = own(t, "browser_news_search");
+    let quoted = !own(t, MARKET_TOOL).is_empty();
     let arts = articles(t);
+    if searches.is_empty() && !markets.is_empty() && !quoted {
+        return Step::Calls(vec![
+            workflow::code_call(
+                PREFIX,
+                n,
+                MARKET_TOOL,
+                json!({"symbols": markets, "range": "5d"}),
+            ),
+            workflow::code_call(
+                PREFIX,
+                n + 1,
+                "browser_news_search",
+                json!({"query": subject, "days": days, "max_results": 10}),
+            ),
+        ]);
+    }
+    let prices = prices_in(t);
     if arts.is_empty() {
         let wider = if subject.to_lowercase().contains("news") {
             subject.clone()
@@ -674,12 +789,15 @@ fn next_gather(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
             _ => {
                 let searched: Vec<String> =
                     searches.iter().map(|(a, _)| sget(a, "query")).collect();
+                let mut show = price_items(&prices, &markets);
+                show.push(S::fact(
+                    "No edition published",
+                    "未发布新一期",
+                    &format!("the news search found no recent articles on {subject}"),
+                ));
                 Step::Done(json!({
                     "status": "nothing_found", "subject": subject, "window": window, "period": period_line,
-                    "searched": searched,
-                    "show": [S::fact("No edition published", "未发布新一期",
-                        &format!("the news search found no recent articles on {subject}"))],
-                    "hints": []
+                    "searched": searched, "prices": prices, "show": show, "hints": []
                 }))
             }
         };
@@ -705,10 +823,102 @@ fn next_gather(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
                    "lead": a.lead, "text": take_chars(&a.text, ARTICLE_CHARS)})
         })
         .collect();
-    Step::Done(json!({
+    let mut out = json!({
         "status": "gathered", "subject": subject, "window": window, "period": period_line, "articles": list,
         "next_tool": NEWS_PUBLISH, "hints": []
-    }))
+    });
+    if !markets.is_empty() {
+        out["markets"] = json!(markets);
+        out["prices"] = json!(prices);
+    }
+    Step::Done(out)
+}
+
+/// The market prices the machine's `market_quotes` call returned (its JSON `quotes`), in the order asked.
+fn prices_in(t: &[Value]) -> Vec<Value> {
+    own(t, MARKET_TOOL)
+        .last()
+        .map(|(_, m)| json_of(m))
+        .and_then(|v| v.get("quotes").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+}
+
+/// A price with thousands separators: two decimals, four under 10.
+pub fn price_text(x: f64) -> String {
+    let dp = if x.abs() < 10.0 { 4 } else { 2 };
+    let s = format!("{:.dp$}", x.abs());
+    let (int, frac) = s.split_once('.').unwrap_or((s.as_str(), ""));
+    let digits: Vec<char> = int.chars().collect();
+    let mut out = String::new();
+    if x < 0.0 {
+        out.push('-');
+    }
+    for (i, ch) in digits.iter().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(*ch);
+    }
+    if frac.is_empty() {
+        out
+    } else {
+        format!("{out}.{frac}")
+    }
+}
+
+/// One market price as the edition and the answer show it: "68,123.45 USD (+1.20% on the day; at 2026-11-02 08:00)".
+pub fn price_line(q: &Value) -> Option<String> {
+    let last = q.get("last").and_then(omuse_common::util::as_f64)?;
+    let mut line = format!("{} {}", price_text(last), get_str(q, "currency"))
+        .trim()
+        .to_string();
+    let mut notes: Vec<String> = Vec::new();
+    if let Some(d) = q.get("day_change_pct").and_then(omuse_common::util::as_f64) {
+        notes.push(format!("{d:+.2}% on the day"));
+    }
+    let at = get_str(q, "last_time");
+    if !at.trim().is_empty() {
+        notes.push(format!("at {}", at.trim()));
+    }
+    if !notes.is_empty() {
+        line = format!("{line} ({})", notes.join("; "));
+    }
+    Some(line)
+}
+
+/// The label of a market price: "Bitcoin USD (BTC-USD)" (the symbol alone when the data has no other name).
+pub fn price_label(q: &Value) -> String {
+    let (sym, name) = (get_str(q, "symbol"), get_str(q, "name"));
+    if name.trim().is_empty() || name == sym {
+        sym
+    } else {
+        format!("{} ({sym})", name.trim())
+    }
+}
+
+/// The `show` items of the market prices: one fact per price, and a fact for each symbol the market data had no
+/// price for.
+fn price_items(prices: &[Value], markets: &[String]) -> Vec<Value> {
+    let mut show: Vec<Value> = prices
+        .iter()
+        .filter_map(|q| {
+            let line = price_line(q)?;
+            Some(S::fact(&price_label(q), &price_label(q), &line))
+        })
+        .collect();
+    for m in markets {
+        let priced = prices
+            .iter()
+            .any(|q| get_str(q, "symbol").eq_ignore_ascii_case(m) && price_line(q).is_some());
+        if !priced {
+            show.push(S::fact(
+                &format!("{m} price"),
+                &format!("{m} 价格"),
+                "not available from the market data now",
+            ));
+        }
+    }
+    show
 }
 
 /// The `news_report` call's arguments from the validated `news_publish` arguments.
@@ -723,8 +933,19 @@ fn report_args(args: &Value) -> Value {
                    "url": get_str(s, "url"), "date": get_str(s, "date")})
         })
         .collect();
-    json!({"subject": sget(args, "subject"), "title": sget(args, "title"), "period": sget(args, "period"),
-           "stories": stories, "insights": args.get("insights").cloned().unwrap_or_else(|| json!([]))})
+    let markets: Vec<Value> = args
+        .get("prices")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|q| Some(json!({"label": price_label(q), "price": price_line(q)?})))
+        .collect();
+    let mut out = json!({"subject": sget(args, "subject"), "title": sget(args, "title"), "period": sget(args, "period"),
+           "stories": stories, "insights": args.get("insights").cloned().unwrap_or_else(|| json!([]))});
+    if !markets.is_empty() {
+        out["markets"] = json!(markets);
+    }
+    out
 }
 
 /// The request's schedule as `newsreport::Ask` (`None`: a one-off edition).
@@ -760,11 +981,19 @@ fn cadence(ask: &Ask) -> String {
 }
 
 /// The scheduled run's goal (natural language for the model of that run): it calls `news_gather` with the same
-/// subject and window, then `news_publish` — with `email: true` when the editions are mailed.
-pub fn schedule_goal(subject: &str, window: &str, email: bool) -> String {
+/// subject, window and market symbols, then `news_publish` — with `email: true` when the editions are mailed.
+pub fn schedule_goal(subject: &str, window: &str, markets: &[String], email: bool) -> String {
+    let markets = if markets.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", markets {}",
+            serde_json::to_string(markets).unwrap_or_default()
+        )
+    };
     format!(
         "News report on {subject}: research the latest news with the {SKILL} skill — {NEWS_GATHER} with subject \"{subject}\" \
-and window \"{window}\" — and publish the newspaper edition with {NEWS_PUBLISH}{}",
+and window \"{window}\"{markets} — and publish the newspaper edition with {NEWS_PUBLISH}{}",
         if email {
             " (email: true — email it to me)"
         } else {
@@ -805,12 +1034,12 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
             n,
             "schedule_create",
             json!({"name": format!("News report: {subject}"), "kind": "cron", "spec": a.cron().unwrap_or_default(),
-                   "goal": schedule_goal(&subject, &sget(args, "window"), a.email)}),
+                   "goal": schedule_goal(&subject, &sget(args, "window"), &market_symbols(args.get("markets")), a.email)}),
         )]);
     }
-    // 3. the mail to the user's own address, when asked
+    // 3. the mail to the user's own address (the delivery: code's decision, [`delivery`])
     let mailbox = get_str(m.profile, "mailbox");
-    let email = args.get("email").is_some_and(truthy);
+    let (email_asked, email) = delivery(args, m);
     let mails = own(t, "gmail_send");
     if email && !mailbox.is_empty() && mails.is_empty() {
         let n_stories = rep.get("stories").and_then(Value::as_u64).unwrap_or(0);
@@ -844,8 +1073,14 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
             get_str(lead, "publication")
         ));
     }
-    // the editions, the schedule and the mail: appended to the reply by code (agent/show.rs)
-    let mut show = vec![S::link("HTML edition", "HTML 版", &title, &html)];
+    // the prices, the editions, the schedule and the delivery: appended to the reply by code (agent/show.rs)
+    let prices: Vec<Value> = args
+        .get("prices")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut show = price_items(&prices, &market_symbols(args.get("markets")));
+    show.push(S::link("HTML edition", "HTML 版", &title, &html));
     if !pdf.is_empty() {
         show.push(S::link("PDF edition", "PDF 版", &title, &pdf));
     }
@@ -853,6 +1088,9 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
         "status": "published", "subject": subject, "title": title, "period": sget(args, "period"),
         "stories": stories, "html_url": html, "pdf_url": pdf, "schedule": null, "mailed": null,
     });
+    if !prices.is_empty() {
+        out["prices"] = json!(prices);
+    }
     if pdf.is_empty() {
         out["pdf_error"] = json!(get_str(&rep, "pdf_error"));
     }
@@ -870,8 +1108,15 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
                 .map(|c| c[1].trim().to_string())
                 .unwrap_or_default();
             let every = cadence(a);
-            out["schedule"] =
-                json!({"every": every, "spec": a.cron(), "next_run": next_run, "email": a.email});
+            // each scheduled edition: in its chat, and by email when a mailbox is connected (decided again at
+            // every run from the connection)
+            let channels: Vec<&str> = if mailbox.is_empty() {
+                vec!["chat"]
+            } else {
+                vec!["chat", "email"]
+            };
+            out["schedule"] = json!({"every": every, "spec": a.cron(), "next_run": next_run, "email": a.email,
+                                     "delivery": channels});
             show.push(S::fact(
                 "New edition",
                 "新一期",
@@ -884,6 +1129,7 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
         }
     }
     if email {
+        out["delivery"] = json!({"chat": true, "email": mailbox});
         match mails.last() {
             Some((ma, mm)) if !failed(mm) => {
                 let to = sget(ma, "to");
@@ -900,21 +1146,35 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
                 out["mail_error"] = json!(why);
                 show.push(S::fact("Not emailed", "邮件未发送", &why));
             }
-            None => {
-                out["mail_error"] = json!("no mailbox is connected");
-                show.push(S::fact(
-                    "Not emailed",
-                    "邮件未发送",
-                    "no mailbox is connected (connect one on the Connections page)",
-                ));
-            }
+            None => {}
         }
+    } else if email_asked {
+        // "send me" with no mailbox connected: the edition is delivered here, in the chat
+        out["delivery"] = json!({"chat": true, "email": null});
+        show.push(S::fact(
+            "Delivered",
+            "送达",
+            if ask.is_some() {
+                "here in this chat, each new edition too (connect a mailbox on the Connections page to get them by email as well)"
+            } else {
+                "here in this chat (connect a mailbox on the Connections page to get it by email as well)"
+            },
+        ));
     } else if !mailbox.is_empty() && !m.scheduled {
         out["next_question"] = json!(format!("email this edition (PDF attached) to {mailbox}?"));
     }
     out["show"] = json!(show);
     out["hints"] = json!(must);
     Step::Done(out)
+}
+
+/// The delivery of an edition, decided in code: `(asked, email)`. It is asked to be sent when the model's `email` says
+/// so ("send me …"), for an edition on a schedule (made now, or a schedule's own run). It goes by email only when a
+/// mailbox is connected (the profile's `mailbox`); otherwise it is delivered in the chat only. Every edition is in
+/// the chat either way.
+pub fn delivery(args: &Value, m: &Machine) -> (bool, bool) {
+    let asked = args.get("email").is_some_and(truthy) || ask_of(args).is_some() || m.scheduled;
+    (asked, asked && !get_str(m.profile, "mailbox").is_empty())
 }
 
 fn next_mail(args: &Value, t: &[Value], n: usize) -> Step {

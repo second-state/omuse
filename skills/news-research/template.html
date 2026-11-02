@@ -20,6 +20,9 @@
   .lead { display: grid; grid-template-columns: 2fr 1fr; gap: 26px; padding: 18px 0; border-bottom: 1px solid var(--rule); }
   .lead h2 { font: 800 34px/1.12 Georgia, serif; margin: 0 0 10px; }
   .lead p.summary { font-size: 17px; margin: 0 0 8px; }
+  .markets { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 8px 2px; border-bottom: 1px solid var(--rule);
+              font: 13px/1.4 "Helvetica Neue", Arial, sans-serif; }
+  .markets b { font-weight: 700; }
   .meta { font: 12px/1.4 "Helvetica Neue", Arial, sans-serif; color: var(--muted); }
   .meta a { color: var(--accent); text-decoration: none; }
   aside.insights { border-left: 1px solid var(--rule); padding-left: 18px; }
@@ -51,6 +54,7 @@
     <h1 class="name">{{title}}</h1>
     <div class="dateline"><span>{{date}}</span><span>{{subject}}</span><span>{{edition}}</span></div>
   </header>
+  {{markets}}
   <section class="lead">
     <div>{{lead}}</div>
     <aside class="insights">

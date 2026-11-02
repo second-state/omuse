@@ -44,8 +44,9 @@ pub const SUBAGENT_TOOLS: [&str; 28] = [
 /// A concurrent batch is sent to Sentinel with `no_ask`: a read that would need an approval (`browser_read` of a URL
 /// carrying data in a tainted task) comes back as an error telling the model to call it alone next turn, so no
 /// approval dialog is ever left behind for a call the task is not waiting on.
-pub const PARALLEL_TOOLS: [&str; 41] = [
+pub const PARALLEL_TOOLS: [&str; 42] = [
     "delegate",
+    "market_quotes",
     "calculate",
     "emergency_contacts",
     "visa_rules",
@@ -240,6 +241,8 @@ fn local_tools() -> Vec<Value> {
     // the small code tools whose JSON results carry the facts the reply must carry (agent/facts.rs)
     tools.extend(fact_tool_schemas());
     tools.extend(super::news::tool_schemas());
+    // the news machine's market prices (code's own call, never offered to the model: `news::offered`)
+    tools.push(super::news::market_schema());
     tools.extend(super::claims::tool_schemas());
     tools.extend(super::driver::tool_schemas());
     tools.extend(super::apdt::tool_schemas());
