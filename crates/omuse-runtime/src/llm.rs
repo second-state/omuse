@@ -388,6 +388,11 @@ fn describe_reqwest_error(e: reqwest::Error) -> String {
 pub type Hook = Arc<dyn Fn(Value) -> BoxFuture<'static, ()> + Send + Sync>;
 /// `get_settings()`: the settings in force (`store.settings()`).
 pub type SettingsFn = Arc<dyn Fn() -> Value + Send + Sync>;
+/// `is_cancelled(task_id)`: the task was stopped by the user, so no model call is made for it any more.
+pub type CancelFn = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// The error of a model call refused because its task was stopped (see [`Llm::cancelled`]).
+pub const CANCELLED_MSG: &str = "任务已停止 (task stopped)";
 
 /// Per-call options of [`Llm::chat`] (the Python keyword arguments).
 #[derive(Debug, Clone)]
@@ -639,6 +644,9 @@ pub struct Llm {
     transport: Arc<dyn LlmTransport>,
     /// Tests: called with the delay instead of sleeping.
     pub sleep_hook: Option<Arc<dyn Fn(f64) + Send + Sync>>,
+    /// The runtime's stop check: a call for a stopped task (`ChatOpts::task_id`) fails at once, before it is sent and
+    /// before each retry, so nothing reaches the model after the user pressed Stop.
+    pub cancelled: Option<CancelFn>,
 }
 
 /// `llm_concurrency` from the settings, 1..=8 (default 4: parallel sub-agents each hold a slot while their model
@@ -689,6 +697,17 @@ impl Llm {
             fallback: parking_lot::Mutex::new(HashMap::new()),
             transport,
             sleep_hook: None,
+            cancelled: None,
+        }
+    }
+
+    /// `Err` when the call's task was stopped (no request is sent for it any more).
+    fn stop_check(&self, o: &ChatOpts) -> Result<(), LlmError> {
+        match &self.cancelled {
+            Some(f) if !o.task_id.is_empty() && f(&o.task_id) => {
+                Err(LlmError::Failed(CANCELLED_MSG.to_string()))
+            }
+            _ => Ok(()),
         }
     }
 
@@ -941,6 +960,7 @@ impl Llm {
         tools: Option<&[Value]>,
         o: &ChatOpts,
     ) -> Result<ChatReply, LlmError> {
+        self.stop_check(o)?;
         let s = (self.get_settings)();
         let base = get_str(&s, "model_base_url")
             .trim_end_matches('/')
@@ -1026,6 +1046,7 @@ impl Llm {
         let wait_s = round2(now_ts() - queued);
         let mut t0;
         let data = loop {
+            self.stop_check(o)?;
             t0 = now_ts();
             let req = HttpRequest {
                 method: "POST",

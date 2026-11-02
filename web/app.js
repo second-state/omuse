@@ -834,6 +834,12 @@ function taskCard(t) {
 function traceBox(t) {
   const det = h('details', { class: 'trace' }, h('summary', null, T('执行过程 Activity')));
   const tl = h('div', { class: 'timeline', id: 'tl-' + t.id }, h('span', { class: 'small muted' }, T('加载中…')));
+  // the way out of a task that loops: a quiet Stop, only in the opened panel of a task still at work
+  if (!['COMPLETED', 'FAILED', 'CANCELLED'].includes(t.status)) {
+    const btn = h('button', { class: 'btn small stop-task', title: T('停止这个任务：不再调用模型和工具') }, T('■ 停止 Stop'));
+    btn.onclick = safe(async () => { btn.disabled = true; btn.textContent = T('停止中…'); await stopTask(t.id); });
+    det.append(h('div', { class: 'stoprow' }, btn));
+  }
   det.append(tl);
   det.addEventListener('toggle', async () => {
     if (!det.open) return;
@@ -842,6 +848,21 @@ function traceBox(t) {
     fillTimeline(tl, r.events);
   });
   return det;
+}
+
+// Stop a task from its chat card (POST cancel): the card shows it stopped and the reply bubble goes at once; the
+// task_update event that follows says the same
+async function stopTask(id) {
+  await api('tasks/' + id + '/cancel', { method: 'POST', body: {} });
+  const now = Date.now() / 1000;
+  const t = S.tasks[id];
+  if (t && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(t.status)) {
+    S.tasks[id] = { ...t, status: 'CANCELLED', updated_at: now, finished_at: now };
+    const card = document.getElementById('tc-' + id);
+    if (card && S.view === 'chat') card.parentElement.replaceWith(taskCard(S.tasks[id]));
+    syncLive(S.tasks[id]);
+    renderNav();
+  }
 }
 
 function evLine(e) {
@@ -863,6 +884,9 @@ function evLine(e) {
     case 'subagent_done': body = h('details', null, h('summary', null, (d.ok === false ? '⚠️ ' : '') +
       Tf("🧩 子 Agent 完成 ({0}{1}{2})", d.role, d.step ? ' · ' + d.step : '', d.secs ? ' · ' + d.secs + ' s' : '')), h('pre', null, d.report)); break;
     case 'final': body = h('span', null, T('🏁 完成 Final')); break;
+    case 'cancelled': body = h('span', { style: 'color:var(--warn)' }, T('⏹ 已停止 Stopped')); break;
+    case 'call_stopped': body = h('span', { class: 'muted' }, d.started ? Tf("⏹ 已中断（任务已停止）：{0}", d.name) : Tf("⏹ 未执行（任务已停止）：{0}", d.name)); break;
+    case 'handoff_cancelled': body = h('span', { class: 'muted' }, T('⏹ 交给助手的任务也已停止')); break;
     case 'memory_saved': body = h('span', null, [
       (d.facts || []).length ? T('🧠 记住了：') + d.facts.join(T('；')) : '',
       (d.recent || []).length ? ' ' + T('⏳ 近期记忆：') + d.recent.join(T('；')) : '',

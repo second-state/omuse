@@ -151,13 +151,18 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
   port nothing listens on, so these suites stay off the internet (browser pages that need a site use `example.com`).
   After every suite `tests/args_guard.py` checks the recorded tool calls: no search with a price cap ≤ 0 or fewer than
   1 traveller, no skill refused as another bot's. They cover what needs nothing but the app: the run loop (`retry_e2e`,
-  `loop_e2e`, `stuck_e2e`, `batch1_e2e` forced outages, `e2e_027` step budget, `stream_e2e`, `title_e2e`), approvals
+  `loop_e2e`, `stuck_e2e`, `stop_ui` Stop, `batch1_e2e` forced outages, `e2e_027` step budget, `stream_e2e`, `title_e2e`), approvals
   and security (`integration`, `memory_vault_e2e`, `sendfile_e2e`, `attach_media_e2e`, `pdf_e2e`), takeovers
   (`takeover_burst`, `takeover_tabs_ui`), memory (`batch2_e2e`), bots (`bots_e2e`, `bots_ui`), skills (`skills_e2e`,
   `city_guides_e2e`), media (`imagegen_e2e`, `videogen_e2e`), PDF forms (`e2e_0212`, its form in `tests/fixtures/`),
   models and settings (`models_e2e`, `models_ui`, `settings_media_ui`, `e2e_028`, `e2e_029`), and the web UI
   (`*_ui.py`: navigation, cards before a key, profile, chat, resize, idle, live updates, brand, run-pending).
   `python3 tests/i18n_check.py` must report no missing or stale translations after any UI string change.
+- Stop: the chat's task card has a quiet Stop button in its opened Activity panel (`POST /api/tasks/{id}/cancel`, like
+  the Tasks page's Cancel). `Runtime::cancel` sets the flag that every model call (`Llm::cancelled`), tool call
+  (`exec_call`, which also drops a call still waiting), code-machine step and sub-agent turn checks; the status stays
+  CANCELLED (`set_status` never leaves it) and the bot task it handed over to is cancelled too. Unit tests `stop_*` in
+  `agent/tests.rs`; `tests/stop_ui.py` (LOOPFOREVER in `tests/fake_llm.py`) stops a never-ending task from the chat.
 - E2e suites (`*_real.py`, real model; billed): `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh
   -j 3 real` (`realdata` for `REAL_DATA_SUITES` only). They act as the user, no exceptions: `tests/user_common.py`
   drives the web UI (types into the chat, answers approval dialogs, takes over and hands back the browser) and the checks

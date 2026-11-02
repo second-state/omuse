@@ -2898,7 +2898,9 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             .subagent_run(parent, role, task, &s, &catalog, lane)
             .await;
         let ok = !out.starts_with("ERROR");
-        if !step.is_empty() {
+        // stopped with its parent: recorded as such (the parent's plan is left as it was)
+        let stopped = self.is_cancelled(&pid);
+        if !step.is_empty() && !stopped {
             self.set_step_status(&pid, step, if ok { "done" } else { "failed" })
                 .await;
         }
@@ -2906,7 +2908,7 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             &pid,
             "subagent_done",
             json!({"role": role, "report": truncate(&out, 1500), "step": step, "lane": lane,
-                   "ok": ok, "secs": ((now_ts() - started) * 10.0).round() / 10.0}),
+                   "ok": ok, "cancelled": stopped, "secs": ((now_ts() - started) * 10.0).round() / 10.0}),
         )
         .await;
         // the lane's browser page is not needed any more: the broker may recycle it (best effort)
@@ -2972,11 +2974,15 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             {
                 Some(Ok(r)) => r,
                 Some(Err(e)) => return format!("ERROR: {}: {}", e.name(), e),
-                None => return "ERROR: 任务已取消 (task cancelled)".into(),
+                None => return format!("ERROR: {}", crate::llm::CANCELLED_MSG),
             };
             if !resp.tool_calls.is_empty() && !force {
                 transcript.push(assistant_with_calls(&resp.content, &resp.tool_calls));
                 for c in &resp.tool_calls {
+                    // the parent was stopped: the sub-agent's remaining calls never run
+                    if self.is_cancelled(&pid) {
+                        return format!("ERROR: {}", crate::llm::CANCELLED_MSG);
+                    }
                     let _ = self
                         .exec_call(
                             parent,
@@ -2992,6 +2998,9 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
                             },
                         )
                         .await;
+                }
+                if self.is_cancelled(&pid) {
+                    return format!("ERROR: {}", crate::llm::CANCELLED_MSG);
                 }
                 transcript = self.compress(transcript, None);
                 continue;

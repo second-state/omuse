@@ -222,10 +222,16 @@ impl Runtime {
             });
             let get_settings: crate::llm::SettingsFn =
                 Arc::new(move || st.settings().unwrap_or_else(|_| json!({})));
-            let llm = Arc::new(match transport {
+            let mut llm = match transport {
                 Some(tr) => Llm::with_transport(get_settings, Some(on_call), Some(on_retry), tr),
                 None => Llm::new(get_settings, Some(on_call), Some(on_retry)),
-            });
+            };
+            // no model call for a stopped task, whoever makes it (the loop, a sub-agent, a judgement, a review)
+            let w3 = weak.clone();
+            llm.cancelled = Some(Arc::new(move |tid: &str| {
+                w3.upgrade().is_some_and(|rt| rt.is_cancelled(tid))
+            }));
+            let llm = Arc::new(llm);
             Runtime {
                 me: weak.clone(),
                 image_budget: AtomicI64::new(crate::imagegen::image_budget(&cfg) as i64),
@@ -804,13 +810,29 @@ message to use as written) stays in that language. Output only the rewritten rep
         tools: Option<&[Value]>,
         o: &ChatOpts,
     ) -> Option<Result<ChatReply, LlmError>> {
-        let fut = self.llm.chat(msgs, tools, o);
+        self.until_cancelled(task_id, self.llm.chat(msgs, tools, o))
+            .await
+    }
+
+    /// Whether the user stopped this task (`POST /api/tasks/{id}/cancel`). Checked before every model call, tool
+    /// call and code-machine step; sub-agents run under their parent's id, so they stop with it.
+    pub fn is_cancelled(&self, task_id: &str) -> bool {
+        !task_id.is_empty() && self.cancel_flags.lock().contains(task_id)
+    }
+
+    /// `fut`, abandoned (dropped, `None`) as soon as the task is stopped: a model call queued for a slot or sleeping on
+    /// a Retry-After, a tool call waiting on Sentinel (a page load, a video job being polled, a phone call), any wait.
+    pub(crate) async fn until_cancelled<F: std::future::Future>(
+        &self,
+        task_id: &str,
+        fut: F,
+    ) -> Option<F::Output> {
         tokio::pin!(fut);
         loop {
             let notified = self.cancel_notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if self.cancel_flags.lock().contains(task_id) {
+            if self.is_cancelled(task_id) {
                 return None;
             }
             tokio::select! {
@@ -1083,6 +1105,19 @@ message to use as written) stays in that language. Output only the rewritten rep
     /// `set_status(task_id, status, **kw)`: update, publish the brief, audit; terminal states notify the health
     /// watch and let the browser recycle the task's page.
     pub async fn set_status(&self, task_id: &str, status: &str, kw: Value) {
+        // a stopped task stays stopped: a step that was already under way when the user pressed Stop (a suspend, the
+        // final answer, a failure) never turns CANCELLED back into something else
+        if status != "CANCELLED"
+            && self
+                .store
+                .task(task_id)
+                .ok()
+                .flatten()
+                .is_some_and(|t| get_str(&t, "status") == "CANCELLED")
+        {
+            println!("[status] {task_id}: stays CANCELLED (not {status})");
+            return;
+        }
         let mut upd = Map::new();
         upd.insert("status".into(), json!(status));
         if let Some(o) = kw.as_object() {
@@ -1264,7 +1299,10 @@ message to use as written) stays in that language. Output only the rewritten rep
             tl = self.request_lang(&task_id, &goal).await.to_string();
         }
         let res = with_langs(tl, fl, self.run(&task_id)).await;
-        if let Err(e) = res {
+        if let (Err(e), true) = (&res, self.is_cancelled(&task_id)) {
+            // stopped by the user meanwhile: what broke off is not a failure (no FAILED, no error message)
+            println!("[runtime] task {} stopped: {:#}", task_id, e);
+        } else if let Err(e) = res {
             let name = e
                 .downcast_ref::<LlmError>()
                 .map(|l| l.name())
@@ -1358,7 +1396,10 @@ message to use as written) stays in that language. Output only the rewritten rep
         }
     }
 
-    /// Cancel a task (and expire its pending approval / takeover).
+    /// Cancel (stop) a task: the flag is seen before its next model call, tool call or code-machine step, and wakes
+    /// whatever it is waiting on (`until_cancelled`); the status is CANCELLED at once and stays so. Its sub-agents run
+    /// under its id and stop with it; the bot task it handed over to is cancelled too. A pending approval / takeover
+    /// expires.
     pub async fn cancel(&self, task_id: &str, reason: &str) {
         self.cancel_flags.lock().insert(task_id.to_string());
         self.cancel_notify.notify_waiters();
@@ -1375,23 +1416,28 @@ message to use as written) stays in that language. Output only the rewritten rep
             json!({"finished_at": now_ts(), "error": reason})
         };
         self.set_status(task_id, "CANCELLED", kw).await;
-        if status == super::bots::WAITING_BOT {
-            self.cancel_handoff(&t.get("waiting").cloned().unwrap_or(Value::Null), reason)
-                .await;
+        // the sub-agents still working (started, not done): they see the parent's flag and stop at their next step
+        let evs = self.store.events(task_id, 0).unwrap_or_default();
+        let count = |ty: &str| evs.iter().filter(|e| get_str(e, "type") == ty).count();
+        let subagents = count("subagent_start").saturating_sub(count("subagent_done"));
+        let mut data = json!({});
+        if !reason.is_empty() {
+            data["reason"] = json!(reason);
         }
-        self.event(
+        if subagents > 0 {
+            data["subagents"] = json!(subagents);
+        }
+        self.event(task_id, "cancelled", data).await;
+        self.cancel_handoff(
             task_id,
-            "cancelled",
-            if reason.is_empty() {
-                json!({})
-            } else {
-                json!({"reason": reason})
-            },
+            &t.get("waiting").cloned().unwrap_or(Value::Null),
+            reason,
         )
         .await;
-        if super::WAITING.contains(&status.as_str()) {
+        {
             // don't leave an orphan approval behind: approving it later would run an action for a dead task
-            // (Sentinel also ends a takeover of this task's page)
+            // (Sentinel also ends a takeover of this task's page). Also for a running task: a call dropped mid-way may
+            // have just asked for one
             let why = if reason.is_empty() {
                 "任务已取消 (task cancelled)"
             } else {
@@ -2452,6 +2498,9 @@ yourself; ask_bot is not available for it."
                     .update_task(task_id, &json!({"pending": null, "transcript": transcript}))?;
                 let rest = &calls[1..];
                 for (i, call) in rest.iter().enumerate() {
+                    if self.is_cancelled(task_id) {
+                        return self.stopped(task_id, &transcript);
+                    }
                     if let Err(sp) = self
                         .exec_call(
                             &t,
@@ -2634,6 +2683,9 @@ yourself; ask_bot is not available for it."
                 .or_else(|| super::workflow::active(&transcript, &super::flightstatus::TOOLS))
                 .map(|(from, tool, args)| Machine::Workflow { tool, args, from });
             let driven = match &machine {
+                Some(_) if self.is_cancelled(task_id) => {
+                    return self.stopped(task_id, &transcript);
+                }
                 Some(m) if !force_final => {
                     match self.drive(task_id, m, &mut transcript, &catalog, lg).await {
                         Some(r) => Some(r),
@@ -2693,6 +2745,10 @@ yourself; ask_bot is not available for it."
                 }
                 called
             };
+            if self.is_cancelled(task_id) {
+                // stopped while the model wrote this turn: nothing of it is acted on
+                return self.stopped(task_id, &transcript);
+            }
             let resp: ChatReply = match called {
                 None => return Ok(()), // cancelled while waiting for the model (e.g. sleeping on a Retry-After)
                 Some(Ok(r)) => r,
@@ -2853,6 +2909,10 @@ yourself; ask_bot is not available for it."
                 let runs = concurrent_runs(&shape);
                 let mut i = 0;
                 while i < calls.len() {
+                    // stopped between two calls of this turn (or two code calls of a machine's step): the rest never run
+                    if self.is_cancelled(task_id) {
+                        return self.stopped(task_id, &transcript);
+                    }
                     if let Some(run) = runs.iter().find(|r| r.start == i) {
                         let batch = &calls[run.clone()];
                         self.event(
@@ -2929,6 +2989,9 @@ yourself; ask_bot is not available for it."
                         Err(sp) => return self.suspend(task_id, sp, transcript).await,
                     }
                     i += 1;
+                }
+                if self.is_cancelled(task_id) {
+                    return self.stopped(task_id, &transcript);
                 }
                 self.store
                     .update_task(task_id, &json!({"transcript": transcript}))?;
@@ -3229,6 +3292,10 @@ yourself; ask_bot is not available for it."
                     || (a.is_object() && get_str(a, "kind") == "purchase")
             }) {
                 self.ledger_confirm(task_id, &oc, &final_).await;
+            }
+            if self.is_cancelled(task_id) {
+                // stopped while the answer was being finished: no answer is posted for a stopped task
+                return self.stopped(task_id, &transcript);
             }
             transcript.push(json!({"role": "assistant", "content": final_}));
             let mut plan = t.get("plan").cloned().unwrap_or_else(|| json!({}));
@@ -3561,7 +3628,53 @@ try a clearly different query or source, or say in the answer that it wasn't fou
             .await;
     }
 
+    /// The run ends because the user stopped the task: the transcript so far is kept, nothing else happens (the status
+    /// is already CANCELLED, set by [`Runtime::cancel`]).
+    fn stopped(&self, task_id: &str, transcript: &[Value]) -> Result<()> {
+        // the calls of the last turn that never ran are answered as stopped (the transcript stays well-formed)
+        let mut transcript = transcript.to_vec();
+        if let Some(i) = transcript
+            .iter()
+            .rposition(|m| get_str(m, "role") == "assistant" && !tool_calls(m).is_empty())
+        {
+            let unanswered: Vec<String> = tool_calls(&transcript[i])
+                .iter()
+                .map(|tc| get_str(tc, "id"))
+                .filter(|id| {
+                    !transcript[i + 1..]
+                        .iter()
+                        .any(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == *id)
+                })
+                .collect();
+            for id in unanswered {
+                transcript.push(json!({"role": "tool", "tool_call_id": id,
+                                       "content": format!("ERROR: {} — not run.", crate::llm::CANCELLED_MSG)}));
+            }
+        }
+        self.store
+            .update_task(task_id, &json!({"transcript": transcript}))?;
+        Ok(())
+    }
+
     async fn suspend(&self, task_id: &str, sp: Suspend, transcript: Vec<Value>) -> Result<()> {
+        if self.is_cancelled(task_id) {
+            // stopped while the call that asks the user ran: no card, no wait; an approval it left behind expires and a
+            // bot task it created never starts
+            self.stopped(task_id, &transcript)?;
+            if sp.status == super::bots::WAITING_BOT {
+                self.cancel_handoff(task_id, &sp.waiting, "").await;
+            } else {
+                let _ = self
+                    .sentinel(
+                        "POST",
+                        "/internal/expire_approvals",
+                        Some(json!({"task_id": task_id, "reason": "任务已取消 (task cancelled)"})),
+                        15.0,
+                    )
+                    .await;
+            }
+            return Ok(());
+        }
         let mut waiting = sp.waiting;
         let pending = waiting
             .as_object_mut()
