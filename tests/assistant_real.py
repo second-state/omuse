@@ -18,6 +18,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tests import arrival_common as A  # noqa: E402
 from tests import shop_common as S  # noqa: E402
 from tests import user_common as U  # noqa: E402
 from tests.user_common import check  # noqa: E402
@@ -74,7 +75,11 @@ async def main():
         print(f"INFO Memory page (facts): {facts(mem)!r}")
         check("learned: the Memory page shows the shoe size (42), picked up without being asked", re.search(r"\b42\b", mem), facts(mem))
 
-        # ---- 3. a scheduled job
+        # ---- 3. a scheduled job — on the user's own inbox (the test inbox, read-only: the run summarises in the chat,
+        # nothing is sent; without a mailbox the model may rightly decline)
+        if not A.connect_mailbox():
+            print("SKIP the scheduled job: no test inbox (OMUSE_E2E_IMAP_* in the env file)")
+            return
         a = await u.ask("Every weekday at 8 am, summarise my new emails for me.", label="schedule")
         card = await S.automation_card(u, "8")
         print(f"INFO Automations card: {card!r}")
