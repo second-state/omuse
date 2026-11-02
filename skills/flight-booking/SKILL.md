@@ -1,6 +1,6 @@
 ---
 name: flight-booking
-description: 订机票：用 travel_search(kind=flight) 查航班比价，用 travel_book 预订——把用户的要求作为参数（日期写成 YYYY-MM-DD），代码搜索一次、按规则挑选、展示卡片、打开预订页交给 browser-use 技能（付款由用户点）；回复按结果 JSON 写（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search and compare flights with travel_search(kind=flight) and book with travel_book — the user's details as JSON arguments; code runs ONE search, picks by rule, shows the cards, opens the booking page for the browser-use skill (the Pay click is the user's); you word the reply from the JSON result.
+description: 订机票：用 travel_search(kind=flight) 查航班比价，用 travel_book 预订——把用户的要求作为参数（日期写成 YYYY-MM-DD），代码搜索一次并列出当天的全部航班，由你用 travel_pick 按用户的要求选出航班（不擅自挑最便宜的），代码展示、打开预订页交给 browser-use 技能（付款由用户点）；回复按结果 JSON 写（东京、大阪、首尔、新加坡、香港、曼谷、台北、上海…）Search and compare flights with travel_search(kind=flight) and book with travel_book — the user's details as JSON arguments; code runs ONE search and lists every flight of the day, you pick exactly the flights the user asked for with travel_pick (their offer ids), code shows them, opens the booking page for the browser-use skill (the Pay click is the user's); you word the reply from the JSON result.
 
 form: on
 ---
@@ -11,7 +11,7 @@ Code does the work; you turn the user's words into the tool's arguments and the 
 ## 1. Call the tool — once, with every detail as an argument
 - **Search / compare** ("cheapest flight…", "show me flights…", "which is the fastest…") → `travel_search` with
   `kind: "flight"`. **Book** ("book it", "book the SQ 638", a choice card's "I choose: …" after a search in this chat) →
-  `travel_book` with the same arguments, plus `pick` = the label the user chose (empty: code picks by rule). Never
+  `travel_book` with the same arguments, plus `pick` = the label or offer_id the user chose (empty: the search's flights come back for travel_pick). Never
   `flights_search`, `present_choices`, `purchase_confirm` or the browser yourself for this: the tool runs them.
 - `date`: the departure day as YYYY-MM-DD — resolve "next Friday", "in 3 weeks", "tomorrow" from today's date in the
   live state. `return_date` makes it a round trip. Any day of a range ("between 1 and 10 December", "flexible next
@@ -66,11 +66,17 @@ Code does the work; you turn the user's words into the tool's arguments and the 
   again with every field. `{"status": "invalid", "problems": [...]}` → fix the arguments and call again.
 - `{"status": "running"}` → code is working (it may stop for the user's approval or the hand-over); the JSON result
   follows as `travel_search_result` / `travel_book_result`.
+- `{"status": "pick_needed", "flights": [...]}` → every flight the search found (offer_id, departure and arrival with
+  airport and local time, `arrives_days_later`, stops, price). Read them against the user's words and call
+  `travel_pick` with the offer_ids of exactly the flights asked for, in the order to show: ONE id for a request that
+  names one flight ("the last flight that lands before midnight" = the latest-leaving flight with `arrives_days_later`
+  0), several only when the user asked for options. Never add a cheaper or "better" flight; the cheapest only when
+  the user gave no criterion. None meets the request → do not call it; say so.
 
 ## 3. Write the reply from the result
 - The facts in `show` are appended to the reply by code (names, prices with currency, links, references).
-- `shown`: the options (airline, flight numbers, times, stops, price and each offer's `booking_url`, `book_at` the
-  airline's own site), the pick and its rule, the cabin searched (`cabin_searched`), `days_searched` for a range, the
+- `shown`: the flights picked (airline, flight numbers, times, stops, price and each offer's `booking_url`, `book_at`
+  the airline's own site) — only those, the first is the pick — the cabin searched (`cabin_searched`), `days_searched` for a range, the
   Kayak `links.compare_url` once, `sellers` when present. The cards are already on screen. Offer to book ("say book
   it"). `next_items` → offer the next search ("Shall I search the hotel now?").
 - `nothing_found`: say so and what was searched; `next_question: "search_all_airlines"` → ask whether to search all

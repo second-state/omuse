@@ -44,6 +44,7 @@ fn valid(tool: &str, args: Value, user: &str, p: &Value) -> Value {
             profile: p,
             today: today(),
             user_texts: &texts,
+            transcript: &[],
         },
     ) {
         Checked::Valid(a) => a,
@@ -83,13 +84,25 @@ impl Env<'_> {
 fn run(
     tool: &str,
     args: &Value,
+    t: Vec<Value>,
+    env: &Env,
+    answer: impl Fn(&str, &Value, &[Value]) -> String,
+) -> (Vec<Value>, Value) {
+    run_call("call_w", tool, args, t, env, answer)
+}
+
+/// [`run`] from the workflow call with id `call`.
+fn run_call(
+    call: &str,
+    tool: &str,
+    args: &Value,
     mut t: Vec<Value>,
     env: &Env,
     answer: impl Fn(&str, &Value, &[Value]) -> String,
 ) -> (Vec<Value>, Value) {
     let from = t
         .iter()
-        .rposition(|m| tool_calls(m).iter().any(|tc| get_str(tc, "id") == "call_w"))
+        .rposition(|m| tool_calls(m).iter().any(|tc| get_str(tc, "id") == call))
         .unwrap_or(0);
     for _ in 0..60 {
         let first = t[..from]
@@ -133,6 +146,60 @@ fn must(v: &Value) -> String {
     super::super::show::lines(v, false).join("\n")
 }
 
+/// The offer ids of a `pick_needed` result's flights for which `which` holds, in the result's order.
+fn ids_where(res: &Value, which: impl Fn(&Value) -> bool) -> Vec<String> {
+    res["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| which(f))
+        .map(|f| get_str(f, "offer_id"))
+        .collect()
+}
+
+/// A flight search run to its `pick_needed` result, then the model's `travel_pick` with the ids `choose` gives (as the
+/// run loop does it: the result exchange, the call validated against the transcript, `running`), run to its result.
+/// Returns the whole transcript, the `pick_needed` result and the pick's result.
+fn search_then_pick(
+    tool: &str,
+    args: &Value,
+    user: &str,
+    env: &Env,
+    answer: impl Fn(&str, &Value, &[Value]) -> String,
+    choose: impl Fn(&Value) -> Vec<String>,
+) -> (Vec<Value>, Value, Value) {
+    let (mut t, listed) = run(tool, args, started(tool, args, user), env, &answer);
+    assert_eq!(listed["status"], PICK_NEEDED, "{listed}");
+    // nothing is shown before the pick: no card, no facts
+    assert!(names(&t).iter().all(|n| n != "present_choices"));
+    assert_eq!(listed["show"], json!([]));
+    let ex = workflow::result_exchange(&t, tool, &listed);
+    t.extend(ex);
+    let pa = pick_args(&t, json!({"offer_ids": choose(&listed)}), env.profile);
+    t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_p", "type": "function",
+           "function": {"name": TRAVEL_PICK, "arguments": json!({"offer_ids": pa["offer_ids"]}).to_string()}}]}));
+    t.push(json!({"role": "tool", "tool_call_id": "call_p", "content": json!({"status": "running", "args": pa}).to_string()}));
+    let (t, res) = run_call("call_p", TRAVEL_PICK, &pa, t, env, &answer);
+    (t, listed, res)
+}
+
+/// `travel_pick`'s arguments validated against the transcript.
+fn pick_args(t: &[Value], args: Value, p: &Value) -> Value {
+    match check(
+        TRAVEL_PICK,
+        &args,
+        &Ctx {
+            profile: p,
+            today: today(),
+            user_texts: &[],
+            transcript: t,
+        },
+    ) {
+        Checked::Valid(a) => a,
+        other => panic!("not valid: {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------- validation
 
 #[test]
@@ -167,8 +234,9 @@ fn the_flight_arguments_are_validated_and_normalised() {
             s["max_price"].as_f64(),
             s["sort"].as_str()
         ),
-        (Some("nonstop"), Some(1500.0), Some("price"))
+        (Some("nonstop"), Some(1500.0), None)
     );
+    // no sort asked of the API: every flight is fetched and the pick is made over all of them
     // IATA-shaped codes pass as they are; a city list too
     let a = valid(
         TRAVEL_SEARCH,
@@ -227,6 +295,7 @@ fn bad_fields_are_problems_and_user_only_fields_are_asked_before_any_page() {
         profile: &p,
         today: today(),
         user_texts: &ctx_texts,
+        transcript: &[],
     };
     let probs = |a: Value| match check(TRAVEL_SEARCH, &a, &cx) {
         Checked::Invalid(p) => p,
@@ -340,7 +409,7 @@ fn flight_result() -> String {
 }
 
 #[test]
-fn a_flight_comparison_picks_by_rule_and_books_nothing() {
+fn a_flight_comparison_shows_the_models_pick_and_books_nothing() {
     let p = profile();
     let ask = "Find me the cheapest direct flight from Singapore to Tokyo on 3 December 2026.";
     let a = valid(
@@ -349,15 +418,28 @@ fn a_flight_comparison_picks_by_rule_and_books_nothing() {
         ask,
         &p,
     );
-    let (t, res) = run(
+    let (t, listed, res) = search_then_pick(
         TRAVEL_SEARCH,
         &a,
-        started(TRAVEL_SEARCH, &a, ask),
+        ask,
         &Env::of(&p),
         |name, _, _| match name {
             "flights_search" => flight_result(),
             _ => "{\"shown\": 3, \"verified\": true}".into(),
         },
+        // the model reads the direct flights and names the cheapest, as the user asked
+        |r| ids_where(r, |f| f["flight"] == "Japan Airlines JL 36"),
+    );
+    // the direct flights only (the user's structured limit), every one of them for the model
+    let listed_names: Vec<String> = listed["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| get_str(f, "flight"))
+        .collect();
+    assert_eq!(
+        listed_names,
+        ["Singapore Airlines SQ 638", "Japan Airlines JL 36"]
     );
     let search = &args_of(&t, "flights_search")[0];
     assert_eq!(
@@ -374,29 +456,25 @@ fn a_flight_comparison_picks_by_rule_and_books_nothing() {
             Some("nonstop")
         )
     );
-    let pc = &args_of(&t, "present_choices")[0];
-    assert_eq!(pc["picked"], "Japan Airlines JL 36");
+    // one flight picked: no choice card of alternatives
+    assert!(args_of(&t, "present_choices").is_empty());
     assert!(names(&t)
         .iter()
         .all(|n| !n.starts_with("browser_") && n != "purchase_confirm"));
     assert_eq!(res["status"], "shown");
-    assert_eq!(
-        res["pick"],
-        json!({"label": "Japan Airlines JL 36", "rule": "direct, the cheapest"})
-    );
+    assert_eq!(res["pick"]["label"], "Japan Airlines JL 36");
+    assert_eq!(res["pick"]["offer_id"], "F-SIN-HND-20261203-3");
+    assert_eq!(res["options"].as_array().unwrap().len(), 1);
     assert_eq!(
         res["options"][0]["booking_url"],
         format!("{TT}/book/flight/F-SIN-HND-20261203-3")
     );
-    assert!(res["options"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|o| o["label"] != "Cathay Pacific CX 712"));
     let m = must(&res);
     assert!(
-        m.contains("- Picked: Japan Airlines JL 36 — SGD 455.00 (direct, the cheapest)")
-            && m.contains("- Book Japan Airlines JL 36: [https://booking.example/book/flight/F-SIN-HND-20261203-3]"),
+        m.contains("- Flight: Japan Airlines JL 36 — SGD 455.00")
+            && m.contains("- Book Japan Airlines JL 36: [https://booking.example/book/flight/F-SIN-HND-20261203-3]")
+            && !m.contains("SQ 638")
+            && !m.contains("cheapest"),
         "{m}"
     );
 }
@@ -406,7 +484,7 @@ fn a_refused_purchase_books_nothing_and_hands_nothing_over() {
     let p = profile();
     let a = valid(
         TRAVEL_BOOK,
-        json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03"}),
+        json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03", "pick": "Japan Airlines JL 36"}),
         "book",
         &p,
     );
@@ -450,10 +528,11 @@ fn the_purchase_is_approved_on_the_booking_page_the_link_landed_on() {
         "book",
         &p,
     );
-    let (t, res) = run(
+    // no pick given: every flight comes back, the model picks one (travel_pick) and the booking goes on with it
+    let (t, _, res) = search_then_pick(
         TRAVEL_BOOK,
         &a,
-        started(TRAVEL_BOOK, &a, "book"),
+        "book",
         &Env::of(&p),
         |name, _, _| match name {
             "flights_search" => flight_result(),
@@ -465,7 +544,16 @@ fn the_purchase_is_approved_on_the_booking_page_the_link_landed_on() {
             ),
             _ => "{}".into(),
         },
+        |r| ids_where(r, |f| f["flight"] == "Singapore Airlines SQ 638"),
     );
+    assert_eq!(
+        args_of(&t, "browser_navigate")[0]["url"],
+        format!("{TT}/book/flight/F-SIN-HND-20261203-2")
+    );
+    assert!(args_of(&t, "purchase_confirm")[0]["items"][0]["name"]
+        .as_str()
+        .unwrap()
+        .starts_with("Singapore Airlines SQ 638"));
     let seq = names(&t);
     let nav = seq.iter().position(|n| n == "browser_navigate");
     let confirm = seq.iter().position(|n| n == "purchase_confirm");
@@ -499,7 +587,8 @@ fn search_results_in_their_envelopes_are_read_and_the_connector_is_used_when_ask
             _ => "{\"shown\": 3, \"verified\": true}".into(),
         },
     );
-    assert_eq!(res["pick"]["label"], "Japan Airlines JL 36");
+    assert_eq!(res["status"], PICK_NEEDED);
+    assert_eq!(res["flights"][1]["flight"], "Japan Airlines JL 36");
     let a = valid(
         TRAVEL_SEARCH,
         json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03", "nonstop": true, "use_connector": true}),
@@ -520,7 +609,8 @@ fn search_results_in_their_envelopes_are_read_and_the_connector_is_used_when_ask
         },
     );
     assert_eq!(args_of(&t, "mcp_travel__flights_search").len(), 1);
-    assert_eq!(res["pick"]["label"], "Japan Airlines JL 36");
+    assert_eq!(res["status"], PICK_NEEDED);
+    assert_eq!(res["count"], 2);
 }
 
 /// A tool result as the run loop stores it: the untrusted envelope inside the `<untrusted_content>` tag.
@@ -594,18 +684,20 @@ fn a_kiwi_result_gives_each_offers_booking_link_and_airline_site_and_the_next_it
     let res_text = kiwi_result(sq_cx(), json!({"cabin": "economy"}), json!({}));
     let mut env = Env::of(&p);
     env.available = vec!["flights_search".into(), "flight_offer".into()];
-    let (t, res) = run(
+    let (t, listed, res) = search_then_pick(
         TRAVEL_SEARCH,
         &a,
-        started(TRAVEL_SEARCH, &a, "x"),
+        "x",
         &env,
         |name, _, _| match name {
             "flights_search" => res_text.clone(),
             _ => "{\"shown\": 2, \"verified\": true}".into(),
         },
+        |r| ids_where(r, |f| f["offer_id"] == "kw_cx"),
     );
+    assert_eq!(listed["next_items"], json!(["hotel", "car"]));
     // no flight_offer for a Kiwi.com offer: its booking link and the airline's site are in the search result
-    assert_eq!(names(&t)[1..], ["flights_search", "present_choices"]);
+    assert!(!names(&t).iter().any(|n| n == "flight_offer"));
     assert_eq!(res["source"], "Kiwi.com");
     assert_eq!(res["options"][0]["book_at"], json!(["cathaypacific.com"]));
     assert_eq!(res["next_items"], json!(["hotel", "car"]));
@@ -615,7 +707,7 @@ fn a_kiwi_result_gives_each_offers_booking_link_and_airline_site_and_the_next_it
     );
     let m = must(&res);
     assert!(
-        m.contains("— SGD 510 (or on cathaypacific.com) (the cheapest)")
+        m.contains("- Flight: Cathay Pacific CX710, CX500 — SGD 510 (or on cathaypacific.com)\n")
             && m.contains("- Book Cathay Pacific CX710, CX500: [https://kiwi.com/u/def456](https://kiwi.com/u/def456)"),
         "{m}"
     );
@@ -639,15 +731,16 @@ fn a_business_search_names_the_cabin_searched_and_the_preferred_airline() {
         json!({"cabin": "business", "preferred_found": 1}),
         json!({}),
     );
-    let (t, res) = run(
+    let (t, _, res) = search_then_pick(
         TRAVEL_SEARCH,
         &a,
-        started(TRAVEL_SEARCH, &a, "x"),
+        "x",
         &Env::of(&p),
         |name, _, _| match name {
             "flights_search" => res_text.clone(),
             _ => "{}".into(),
         },
+        |r| ids_where(r, |f| f["preferred_airline"] == true),
     );
     assert_eq!(
         args_of(&t, "flights_search")[0]["airlines"],
@@ -718,16 +811,18 @@ fn a_range_of_days_is_one_search_and_the_result_counts_the_days() {
         .map(|d| json!({"date": format!("2026-12-{d:02}"), "price": 500 + d}))
         .collect();
     let res_text = kiwi_result(offers, json!({}), json!({"by_date": by_date}));
-    let (t, res) = run(
+    let (t, listed, res) = search_then_pick(
         TRAVEL_SEARCH,
         &a,
-        started(TRAVEL_SEARCH, &a, "x"),
+        "x",
         &Env::of(&p),
         |name, _, _| match name {
             "flights_search" => res_text.clone(),
             _ => "{}".into(),
         },
+        |r| ids_where(r, |f| f["date"] == "2026-12-10"),
     );
+    assert_eq!(listed["flights"][1]["date"], "2026-12-10");
     assert_eq!(args_of(&t, "flights_search").len(), 1);
     assert_eq!(
         res["days_searched"],
@@ -757,10 +852,10 @@ fn a_google_offer_gets_its_sellers() {
     );
     let mut env = Env::of(&p);
     env.available = vec!["flights_search".into(), "flight_offer".into()];
-    let (t, res) = run(
+    let (t, _, res) = search_then_pick(
         TRAVEL_SEARCH,
         &a,
-        started(TRAVEL_SEARCH, &a, "x"),
+        "x",
         &env,
         |name, _, _| {
             match name {
@@ -770,6 +865,7 @@ fn a_google_offer_gets_its_sellers() {
         _ => "{}".into(),
     }
         },
+        |r| ids_where(r, |f| f["offer_id"] == "fl_1"),
     );
     assert_eq!(
         args_of(&t, "flight_offer")[0],
@@ -791,17 +887,46 @@ fn the_options_are_mailed_only_with_a_connected_mail_account() {
         ask,
         &p,
     );
+    // the user asked for the options: the model picks every flight, the cheapest first
+    let all = |r: &Value| {
+        let mut f: Vec<Value> = r["flights"].as_array().unwrap().clone();
+        f.sort_by(|a, b| {
+            a["price"]
+                .as_f64()
+                .unwrap()
+                .total_cmp(&b["price"].as_f64().unwrap())
+        });
+        f.iter().map(|x| get_str(x, "offer_id")).collect::<Vec<_>>()
+    };
     // no mail account: nothing is sent, the result says so
-    let (t, res) = run(
+    let (t, _, res) = search_then_pick(
         TRAVEL_SEARCH,
         &a,
-        started(TRAVEL_SEARCH, &a, ask),
+        ask,
         &Env::of(&p),
         |name, _, _| match name {
             "flights_search" => flight_result(),
             _ => "{\"shown\": 3}".into(),
         },
+        all,
     );
+    // several flights picked: the choice card lists exactly them, in the model's order
+    let pc = &args_of(&t, "present_choices")[0];
+    let labels: Vec<String> = pc["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| get_str(o, "label"))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "Cathay Pacific CX 712",
+            "Japan Airlines JL 36",
+            "Singapore Airlines SQ 638"
+        ]
+    );
+    assert!(must(&res).contains("- Flight 3: Singapore Airlines SQ 638"));
     assert!(!names(&t).iter().any(|n| n == "gmail_send"));
     assert_eq!(
         res["mailed"],
@@ -811,16 +936,17 @@ fn the_options_are_mailed_only_with_a_connected_mail_account() {
     // connected: the list goes out
     let mut env = Env::of(&p);
     env.mail_ready = true;
-    let (t, res) = run(
+    let (t, _, res) = search_then_pick(
         TRAVEL_SEARCH,
         &a,
-        started(TRAVEL_SEARCH, &a, ask),
+        ask,
         &env,
         |name, _, _| match name {
             "flights_search" => flight_result(),
             "gmail_send" => "{\"status\": \"sent\", \"id\": \"m1\"}".into(),
             _ => "{\"shown\": 3}".into(),
         },
+        all,
     );
     let mail = &args_of(&t, "gmail_send")[0];
     assert_eq!(mail["to"], "mei@example.com");
@@ -853,7 +979,7 @@ fn the_e_ticket_goes_to_the_email_the_user_gave_when_the_profile_has_none() {
     let ask = "Book it. I'm Lucas Lu, lucas@example.com, +65 8000 0000.";
     let a = valid(
         TRAVEL_BOOK,
-        json!({"kind": "flight", "origin": "SIN", "destination": "TYO", "date": "2026-12-03",
+        json!({"kind": "flight", "origin": "SIN", "destination": "TYO", "date": "2026-12-03", "pick": "Japan Airlines JL 36",
                "contact": {"name": "Lucas Lu", "email": "lucas@example.com", "phone": "+65 8000 0000"}}),
         ask,
         &p,
@@ -1018,7 +1144,7 @@ fn a_charged_booking_handed_over_shows_no_second_amount() {
     let ask = "Book it.";
     let a = valid(
         TRAVEL_BOOK,
-        json!({"kind": "flight", "origin": "SIN", "destination": "TYO", "date": "2026-12-03"}),
+        json!({"kind": "flight", "origin": "SIN", "destination": "TYO", "date": "2026-12-03", "pick": "F-SIN-HND-20261203-3"}),
         ask,
         &p,
     );
@@ -1344,10 +1470,8 @@ fn a_choice_cards_pick_is_booked_by_its_label() {
             _ => "{}".into(),
         },
     );
-    assert_eq!(
-        args_of(&t, "present_choices")[0]["options"][0]["note"],
-        "picked: your pick"
-    );
+    // the user's own pick: booked as it is, no card of alternatives beside it
+    assert!(args_of(&t, "present_choices").is_empty());
     assert_eq!(
         args_of(&t, "browser_navigate")[0]["url"],
         format!("{TT}/book/flight/F-SIN-HND-20261203-2")
@@ -1415,7 +1539,7 @@ fn the_booking_stage_carries_on_when_the_search_result_was_compressed() {
     env.available = vec!["mcp_travel__flights_search".into()];
     let a = valid(
         TRAVEL_BOOK,
-        json!({"kind": "flight", "destination": "TYO", "date": "2026-11-06", "use_connector": true}),
+        json!({"kind": "flight", "destination": "TYO", "date": "2026-11-06", "use_connector": true, "pick": "Cathay Pacific CX 712"}),
         "x",
         &p,
     );
@@ -1520,9 +1644,10 @@ fn a_second_run_in_one_task_reads_only_its_own_calls_and_its_ids_go_on() {
         _ => "{}".into(),
     }
     });
+    // the flight search showed no card (its flights went to the model's pick): the hotel's own card is the one
     assert_eq!(
         args_of(&t, "present_choices").len(),
-        2,
+        1,
         "the hotel's own card"
     );
     assert_eq!(res["pick"]["label"], "Hotel A");
@@ -1624,9 +1749,8 @@ fn ask_user_while_a_handed_page_is_filled_is_refused() {
 }
 
 #[test]
-fn a_flight_pick_carries_its_times_the_day_searched_and_the_preferred_airlines_fare() {
-    // travel_kiwi_real 2026-11-01: the reply gave neither the day nor the times; travel_ask_real: the preferred airline
-    // (ANA) was in the results but not the cheapest and went unmentioned
+fn a_flight_pick_carries_its_times_and_the_day_searched() {
+    // travel_kiwi_real 2026-11-01: the reply gave neither the day nor the times
     let p = profile();
     let a = valid(
         TRAVEL_SEARCH,
@@ -1634,57 +1758,38 @@ fn a_flight_pick_carries_its_times_the_day_searched_and_the_preferred_airlines_f
         "x",
         &p,
     );
+    let mut offers = sq_cx();
+    offers[0]["preferred"] = json!(true);
     let res_text = kiwi_result(
-        sq_cx(),
+        offers,
         json!({"cabin": "economy", "preferred_found": 1}),
         json!({}),
     );
-    let (_, res) = run(
+    let (_, listed, res) = search_then_pick(
         TRAVEL_SEARCH,
         &a,
-        started(TRAVEL_SEARCH, &a, "x"),
+        "x",
         &Env::of(&p),
         |name, _, _| match name {
             "flights_search" => res_text.clone(),
             _ => "{}".into(),
         },
+        |r| ids_where(r, |f| f["offer_id"] == "kw_cx"),
     );
+    // the model reads which flight is on the preferred airline from the JSON
+    assert_eq!(listed["flights"][0]["offer_id"], "kw_sq");
+    assert_eq!(listed["flights"][0]["preferred_airline"], true);
     assert_eq!(res["pick"]["label"], "Cathay Pacific CX710, CX500");
     let m = must(&res);
     assert!(m.contains("- Searched: SIN to TYO on 2026-12-03"), "{m}");
     assert!(
-        m.contains("- Cathay Pacific CX710, CX500: ")
-            && m.contains("09:25")
-            && !m.contains("09:25:00"),
+        m.contains("- Cathay Pacific CX710, CX500: SIN 2026-12-03 09:25 → NRT 2026-12-03 17:15"),
         "{m}"
     );
+    // exactly the flight picked: no other airline's fare added beside it
     assert!(
-        m.contains(
-            "- Your preferred airline Singapore Airlines: Singapore Airlines SQ638 — SGD 620"
-        ),
+        !m.contains("Your preferred airline") && !m.contains("SQ638"),
         "{m}"
-    );
-    // none of the preferred airline in the results: said so
-    let a = valid(
-        TRAVEL_SEARCH,
-        json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03", "airlines": ["ANA"]}),
-        "x",
-        &p,
-    );
-    let (_, res) = run(
-        TRAVEL_SEARCH,
-        &a,
-        started(TRAVEL_SEARCH, &a, "x"),
-        &Env::of(&p),
-        |name, _, _| match name {
-            "flights_search" => res_text.clone(),
-            _ => "{}".into(),
-        },
-    );
-    assert!(
-        must(&res).contains("- Your preferred airline ANA: no flight in the results"),
-        "{}",
-        must(&res)
     );
 }
 
@@ -1817,4 +1922,435 @@ fn the_providers_flags_decide_not_its_texts() {
         &m(json!({"name": "H", "closed": "open daily except Monday holidays"})),
         "Monday"
     ));
+}
+
+// ---------------------------------------------------------------- the model's pick over every flight
+
+/// Google Flights' Hong Kong → Singapore day of 2026-11-03 (SerpApi, deep search, read 2026-11-02; UO 777 added as a
+/// cheap flight landing after midnight), as `omuse_apps::serpapi::compact_itinerary` gives it: (offer id, flight
+/// numbers, depart, arrive, stops, HKD).
+const HKG_SIN: &[(&str, &str, &str, &str, u64, f64)] = &[
+    (
+        "fl_tr983",
+        "TR 983",
+        "2026-11-03 22:00",
+        "2026-11-04 02:15",
+        0,
+        1016.0,
+    ),
+    (
+        "fl_cx691",
+        "CX 691",
+        "2026-11-03 07:50",
+        "2026-11-03 11:50",
+        0,
+        2694.0,
+    ),
+    (
+        "fl_sq899",
+        "SQ 899",
+        "2026-11-03 09:05",
+        "2026-11-03 12:55",
+        0,
+        2715.0,
+    ),
+    (
+        "fl_9g531",
+        "9G 531, 9G 1203, 9G 729",
+        "2026-11-03 12:55",
+        "2026-11-04 13:20",
+        2,
+        1171.0,
+    ),
+    (
+        "fl_hu706",
+        "HU 706, HU 7909",
+        "2026-11-03 10:15",
+        "2026-11-04 03:10",
+        1,
+        1207.0,
+    ),
+    (
+        "fl_cx659",
+        "CX 659",
+        "2026-11-03 01:40",
+        "2026-11-03 05:40",
+        0,
+        3604.0,
+    ),
+    (
+        "fl_cx759",
+        "CX 759",
+        "2026-11-03 09:00",
+        "2026-11-03 13:00",
+        0,
+        3604.0,
+    ),
+    (
+        "fl_tg601",
+        "TG 601, TG 409",
+        "2026-11-03 12:55",
+        "2026-11-03 19:55",
+        1,
+        2282.0,
+    ),
+    (
+        "fl_sq883",
+        "SQ 883",
+        "2026-11-03 14:10",
+        "2026-11-03 18:15",
+        0,
+        3645.0,
+    ),
+    (
+        "fl_sq875",
+        "SQ 875",
+        "2026-11-03 12:30",
+        "2026-11-03 16:30",
+        0,
+        4505.0,
+    ),
+    (
+        "fl_cx739",
+        "CX 739",
+        "2026-11-03 11:40",
+        "2026-11-03 15:40",
+        0,
+        5284.0,
+    ),
+    (
+        "fl_cx715",
+        "CX 715",
+        "2026-11-03 20:15",
+        "2026-11-04 00:20",
+        0,
+        5284.0,
+    ),
+    (
+        "fl_sq893",
+        "SQ 893",
+        "2026-11-03 15:45",
+        "2026-11-03 19:50",
+        0,
+        5915.0,
+    ),
+    (
+        "fl_sq895",
+        "SQ 895",
+        "2026-11-03 18:50",
+        "2026-11-03 22:50",
+        0,
+        5915.0,
+    ),
+    (
+        "fl_cx657",
+        "CX 657",
+        "2026-11-03 16:05",
+        "2026-11-03 20:05",
+        0,
+        6744.0,
+    ),
+    (
+        "fl_uo777",
+        "UO 777",
+        "2026-11-03 21:30",
+        "2026-11-04 00:30",
+        0,
+        980.0,
+    ),
+];
+
+fn hkg_sin_google() -> String {
+    let offers: Vec<Value> = HKG_SIN
+        .iter()
+        .map(|(id, nos, dep, arr, stops, price)| {
+            let nos: Vec<&str> = nos.split(", ").collect();
+            let airline = match &nos[0][..2] {
+                "SQ" => "Singapore Airlines",
+                "CX" => "Cathay Pacific",
+                _ => "Other Air",
+            };
+            let n = nos.len();
+            let legs: Vec<Value> = nos
+                .iter()
+                .enumerate()
+                .map(|(i, no)| {
+                    json!({"airline": airline, "flight_number": no,
+                           "from": if i == 0 { "HKG" } else { "BKK" }, "depart": if i == 0 { *dep } else { "" },
+                           "to": if i + 1 == n { "SIN" } else { "BKK" }, "arrive": if i + 1 == n { *arr } else { "" }})
+                })
+                .collect();
+            json!({"offer_id": id, "airlines": airline, "route": format!("{airline} {} HKG {dep} → SIN {arr}", nos[0]),
+                   "stops": stops, "layovers": [], "price": price, "currency": "HKD", "legs": legs,
+                   "booking_url": format!("https://www.google.com/travel/flights/booking?tfs={id}")})
+        })
+        .collect();
+    enveloped(
+        "Google Flights",
+        json!({"count": offers.len(), "currency": "HKD", "offers": offers, "data": "Google Flights",
+               "searched": {"cabin": "economy"}, "compare_url": "https://www.kayak.com/flights/HKG-SIN/2026-11-03?sort=price_a"}),
+    )
+}
+
+/// The model's reading of "the last flight that lands before midnight" over the JSON: the flights that land on the
+/// departure day, the latest to leave.
+fn last_landing_before_midnight(r: &Value) -> Vec<String> {
+    r["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["arrives_days_later"] == 0)
+        .max_by_key(|f| get_str(&f["departure"], "time"))
+        .map(|f| vec![get_str(f, "offer_id")])
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest() {
+    // the user, 2026-11-02: "I need to go from HK to singapore tomorrow. Find me the last flight that lands before
+    // midnight" → OMuse showed the cheapest and other suggestions, none of them the last flight
+    let p = json!({"home_city": "HKG", "home_country": "HK"});
+    let ask = "I need to go from HK to singapore tomorrow. Find me the last flight that lands before midnight";
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "origin": "HKG", "destination": "Singapore", "date": "2026-11-03"}),
+        ask,
+        &p,
+    );
+    let mut env = Env::of(&p);
+    env.available = vec!["flights_search".into(), "flight_offer".into()];
+    let (t, listed, res) = search_then_pick(
+        TRAVEL_SEARCH,
+        &a,
+        ask,
+        &env,
+        |name, _, _| {
+            match name {
+            "flights_search" => hkg_sin_google(),
+            "flight_offer" => json!({"options": [{"book_with": "Singapore Airlines", "price": 5915, "currency": "HKD"}]}).to_string(),
+            _ => "{}".into(),
+        }
+        },
+        last_landing_before_midnight,
+    );
+    // no sort asked of the API; EVERY flight of the day goes to the model, with structured times
+    let search = &args_of(&t, "flights_search")[0];
+    assert!(search.get("sort").is_none(), "{search}");
+    assert_eq!(listed["count"], HKG_SIN.len());
+    let f = |id: &str| {
+        listed["flights"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["offer_id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        f("fl_sq895")["departure"],
+        json!({"airport": "HKG", "time": "2026-11-03 18:50"})
+    );
+    assert_eq!(f("fl_sq895")["arrival"]["time"], "2026-11-03 22:50");
+    assert_eq!(f("fl_sq895")["arrives_days_later"], 0);
+    // 00:20 and 00:30 the next day do not land before midnight
+    assert_eq!(f("fl_cx715")["arrives_days_later"], 1);
+    assert_eq!(f("fl_uo777")["arrives_days_later"], 1);
+    // in departure order, not price order
+    let deps: Vec<String> = listed["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| get_str(&f["departure"], "time"))
+        .collect();
+    let mut sorted = deps.clone();
+    sorted.sort();
+    assert_eq!(deps, sorted);
+    // the pick: SQ 895 — neither the cheapest (UO 777) nor the latest departure (TR 983 lands at 02:15)
+    assert_eq!(res["status"], "shown");
+    assert_eq!(res["pick"]["offer_id"], "fl_sq895");
+    let shown: Vec<String> = res["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| get_str(o, "label"))
+        .collect();
+    assert_eq!(shown, ["Singapore Airlines SQ 895"]);
+    // ONE flight: no card of alternatives, nothing else suggested
+    assert!(args_of(&t, "present_choices").is_empty());
+    let m = must(&res);
+    assert!(
+        m.contains("- Flight: Singapore Airlines SQ 895 — HKD 5,915")
+            && m.contains("- Singapore Airlines SQ 895: HKG 2026-11-03 18:50 → SIN 2026-11-03 22:50")
+            && m.contains("- Book Singapore Airlines SQ 895: [https://www.google.com/travel/flights/booking?tfs=fl_sq895]"),
+        "{m}"
+    );
+    for other in ["TR 983", "CX 715", "UO 777", "SQ 893", "cheapest"] {
+        assert!(!m.contains(other), "{other} in {m}");
+    }
+    // the pick's sellers (Google Flights) are read for that flight only
+    assert_eq!(args_of(&t, "flight_offer")[0]["offer_id"], "fl_sq895");
+}
+
+#[test]
+fn the_earliest_arrival_and_a_list_of_options_are_shown_exactly_as_picked() {
+    let p = json!({"home_city": "HKG", "home_country": "HK"});
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03"}),
+        "x",
+        &p,
+    );
+    let answer = |name: &str, _: &Value, _: &[Value]| -> String {
+        match name {
+            "flights_search" => hkg_sin_google(),
+            _ => "{}".into(),
+        }
+    };
+    // "the earliest arrival": one flight
+    let (_, _, res) = search_then_pick(TRAVEL_SEARCH, &a, "x", &Env::of(&p), answer, |r| {
+        r["flights"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .min_by_key(|f| get_str(&f["arrival"], "time"))
+            .map(|f| vec![get_str(f, "offer_id")])
+            .unwrap()
+    });
+    assert_eq!(res["pick"]["offer_id"], "fl_cx659");
+    assert_eq!(res["options"].as_array().unwrap().len(), 1);
+    // no criterion: the cheapest (the model's default, as the tool says)
+    let (_, _, res) = search_then_pick(TRAVEL_SEARCH, &a, "x", &Env::of(&p), answer, |r| {
+        r["flights"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .min_by(|a, b| {
+                a["price"]
+                    .as_f64()
+                    .unwrap()
+                    .total_cmp(&b["price"].as_f64().unwrap())
+            })
+            .map(|f| vec![get_str(f, "offer_id")])
+            .unwrap()
+    });
+    assert_eq!(res["pick"]["offer_id"], "fl_uo777");
+    // "show me the direct Singapore Airlines flights": several, in the model's order, on one card, nothing else
+    let (t, _, res) = search_then_pick(TRAVEL_SEARCH, &a, "x", &Env::of(&p), answer, |_| {
+        vec!["fl_sq895".into(), "fl_sq899".into(), "fl_sq883".into()]
+    });
+    let card: Vec<String> = args_of(&t, "present_choices")[0]["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| get_str(o, "label"))
+        .collect();
+    assert_eq!(
+        card,
+        [
+            "Singapore Airlines SQ 895",
+            "Singapore Airlines SQ 899",
+            "Singapore Airlines SQ 883"
+        ]
+    );
+    assert_eq!(res["pick"]["offer_id"], "fl_sq895");
+    let m = must(&res);
+    assert!(
+        m.contains("- Flight 1: Singapore Airlines SQ 895")
+            && m.contains("- Flight 3: Singapore Airlines SQ 883"),
+        "{m}"
+    );
+    assert!(!m.contains("CX ") && !m.contains("TR 983"), "{m}");
+}
+
+#[test]
+fn a_pick_names_only_flights_of_the_search_and_is_offered_only_after_one() {
+    let p = json!({"home_city": "HKG", "home_country": "HK"});
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03"}),
+        "x",
+        &p,
+    );
+    let (mut t, listed) = run(
+        TRAVEL_SEARCH,
+        &a,
+        started(TRAVEL_SEARCH, &a, "x"),
+        &Env::of(&p),
+        |name, _, _| match name {
+            "flights_search" => hkg_sin_google(),
+            _ => "{}".into(),
+        },
+    );
+    let cx = |t: &[Value], ids: Value| {
+        check(
+            TRAVEL_PICK,
+            &json!({"offer_ids": ids}),
+            &Ctx {
+                profile: &p,
+                today: today(),
+                user_texts: &[],
+                transcript: t,
+            },
+        )
+    };
+    // before the result exchange: no search to pick from, and travel_pick is not offered
+    assert!(matches!(cx(&t, json!(["fl_sq895"])), Checked::Invalid(_)));
+    assert!(!offered(&t, TRAVEL_PICK));
+    let ex = workflow::result_exchange(&t, TRAVEL_SEARCH, &listed);
+    t.extend(ex);
+    // the reply to the every-flight result: travel_pick is offered
+    assert!(offered(&t, TRAVEL_PICK) && offered(&t, TRAVEL_SEARCH));
+    // an id the search did not give, or none: the model fixes the call
+    match cx(&t, json!(["fl_sq895", "fl_made_up"])) {
+        Checked::Invalid(p) => assert!(p[0].contains("fl_made_up"), "{p:?}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(cx(&t, json!([])), Checked::Invalid(_)));
+    // a good pick carries the flights picked, in the model's order, and the search's own arguments
+    match cx(&t, json!(["fl_sq895", "fl_sq895", "fl_cx657"])) {
+        Checked::Valid(v) => {
+            assert_eq!(v["offer_ids"], json!(["fl_sq895", "fl_cx657"]));
+            assert_eq!(v["offers"][0]["arrive"], "2026-11-03 22:50");
+            assert_eq!(v["request"]["destination"], "SIN");
+            assert_eq!(
+                v["result"]["compare_url"],
+                "https://www.kayak.com/flights/HKG-SIN/2026-11-03?sort=price_a"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // after the pick's result: not offered any more
+    let ex = workflow::result_exchange(&t, TRAVEL_PICK, &json!({"status": "shown"}));
+    t.extend(ex);
+    assert!(!offered(&t, TRAVEL_PICK));
+}
+
+#[test]
+fn a_flights_times_come_from_the_apis_fields_never_from_prose() {
+    // Kiwi.com: the offer's own departure / arrival (seconds dropped)
+    let o = offer_of(
+        Kind::Flight,
+        &json!({"airlines": "Scoot", "legs": [{"flight_number": "TR983"}], "price": 1060.0,
+                "departure": {"airport": "HKG", "time": "2026-11-03 22:00:00"},
+                "arrival": {"airport": "SIN", "time": "2026-11-04T02:15:00"}}),
+        "HKD",
+    );
+    assert_eq!(
+        (
+            o.dep_airport.as_str(),
+            o.depart.as_str(),
+            o.arr_airport.as_str(),
+            o.arrive.as_str()
+        ),
+        ("HKG", "2026-11-03 22:00", "SIN", "2026-11-04 02:15")
+    );
+    assert_eq!(days_later(&o), Some(1));
+    // a prose schedule is never read for the times
+    let o = offer_of(
+        Kind::Flight,
+        &json!({"title": "X 1", "fare_amount": 300, "schedule": "HKG 21:00 - SIN 23:59"}),
+        "HKD",
+    );
+    assert!(o.depart.is_empty() && o.arrive.is_empty() && days_later(&o).is_none());
+    assert!(flight_json(&o).get("arrival").is_none());
 }

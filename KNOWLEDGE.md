@@ -101,6 +101,17 @@ says to ask the user what to change); nothing else is searched — no web search
 public MCP server itself (`omuse_apps::kiwi`, `https://mcp.kiwi.com/`, one JSON-RPC request per search — its server is stateless, so no `initialize` — no key, no connector
 registration) and compacts the itineraries — airlines, flight numbers, local times, stops, price, baggage.
 
+**Every flight of the day, the model's pick (2026-11-02).** "Find me the last flight that lands before midnight" got
+the cheapest and other suggestions: Kiwi.com answers only 12–15 itineraries per request (the cheapest), Google's list
+was cut at 12, and the booking machine sorted by price. Now the search fetches every flight — Google Flights with
+`deep_search` and no cut; Kiwi.com, for one day, hour by hour of departure (`dtime_from` / `dtime_to`, 6 at a time; a
+full hour asked again for direct flights; merged by Kiwi's `id`) — and `travel_search` / `travel_book` without a pick
+return them all as JSON (`status: pick_needed`: offer_id, departure and arrival with airport and local time from the
+APIs' own fields, `arrives_days_later`, stops, price). The model answers with `travel_pick {offer_ids}` (offered only on
+that reply turn; ids checked against the search); code shows exactly those flights — one flight: no choice card, its
+times and booking link in the appended block; several: one card with them in the model's order. No "cheapest" label,
+no other airline's fare added. Hotels and restaurants keep their pick by rule.
+
 Every flight and hotel result carries a `booking_url`, at no extra cost: a Kiwi.com offer its Kiwi booking page
 (`kiwi.com/u/…`, kept only for `kiwi.com` hosts; `book_at` is the airline's own site), a Google Flights offer Google
 Flights' own page for that itinerary (`serpapi::itinerary_url`: the search's `google_flights_url` with the itinerary's

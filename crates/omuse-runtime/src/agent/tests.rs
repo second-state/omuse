@@ -3465,6 +3465,152 @@ async fn a_workflow_call_runs_its_machine_then_the_model_words_the_result_and_co
     );
 }
 
+/// A day of Hong Kong → Singapore flights as Google Flights gives them (offer id, flight, depart, arrive, HKD).
+const HKG_SIN_DAY: &[(&str, &str, &str, &str, f64)] = &[
+    (
+        "fl_tr983",
+        "TR 983",
+        "2030-11-03 22:00",
+        "2030-11-04 02:15",
+        1016.0,
+    ),
+    (
+        "fl_cx691",
+        "CX 691",
+        "2030-11-03 07:50",
+        "2030-11-03 11:50",
+        2694.0,
+    ),
+    (
+        "fl_sq895",
+        "SQ 895",
+        "2030-11-03 18:50",
+        "2030-11-03 22:50",
+        5915.0,
+    ),
+    (
+        "fl_cx715",
+        "CX 715",
+        "2030-11-03 20:15",
+        "2030-11-04 00:20",
+        5284.0,
+    ),
+    (
+        "fl_sq893",
+        "SQ 893",
+        "2030-11-03 15:45",
+        "2030-11-03 19:50",
+        5915.0,
+    ),
+];
+
+#[tokio::test]
+async fn a_flight_search_gives_every_flight_to_the_model_whose_json_pick_is_shown_exactly() {
+    // the user, 2026-11-02: "Find me the last flight that lands before midnight" got the cheapest and other
+    // suggestions. Now: the result lists every flight as JSON, the model answers with travel_pick {offer_ids}, code
+    // shows exactly that flight
+    let (rt, _d, seen) = scripted_rt(
+        |body| {
+            let sys = system_of(body);
+            if sys.starts_with("You check an assistant") {
+                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let tools = tool_msgs(body);
+            let Some(last) = tools.last() else {
+                return call_msg(
+                    "c1",
+                    "travel_search",
+                    r#"{"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2030-11-03"}"#,
+                );
+            };
+            let res: Value = serde_json::from_str(&get_str(last, "content")).unwrap_or(Value::Null);
+            match get_str(&res, "status").as_str() {
+                // the model reads the flights (JSON) and answers with the ids (JSON): the last one landing that day
+                "pick_needed" => {
+                    let id = res["flights"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|f| f["arrives_days_later"] == 0)
+                        .max_by_key(|f| get_str(&f["departure"], "time"))
+                        .map(|f| get_str(f, "offer_id"))
+                        .unwrap();
+                    call_msg("c2", "travel_pick", &json!({"offer_ids": [id]}).to_string())
+                }
+                "shown" => json!({"role": "assistant", "content": "The last flight that lands before midnight is SQ 895."}),
+                s => panic!("unexpected result {s}: {res}"),
+            }
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    rt.set_sentinel_hook(Some(Arc::new(|_, path, payload| {
+        let p = payload.unwrap_or(Value::Null);
+        let r = match (path.as_str(), get_str(&p, "tool").as_str()) {
+            ("/internal/catalog", _) => {
+                json!({"tools": tools(&["flights_search", "flight_offer"]), "connections": {}})
+            }
+            ("/internal/act", "flights_search") => {
+                let offers: Vec<Value> = HKG_SIN_DAY
+                    .iter()
+                    .map(|(id, no, dep, arr, price)| {
+                        json!({"offer_id": id, "airlines": "Air", "stops": 0, "price": price, "currency": "HKD",
+                               "legs": [{"airline": "Air", "flight_number": no, "from": "HKG", "depart": dep, "to": "SIN", "arrive": arr}],
+                               "booking_url": format!("https://www.google.com/travel/flights/booking?tfs={id}")})
+                    })
+                    .collect();
+                json!({"status": "ok", "result": {"currency": "HKD", "data": "Google Flights", "offers": offers}})
+            }
+            ("/internal/act", "flight_offer") => json!({"status": "ok", "result": {"options": []}}),
+            _ => json!({}),
+        };
+        Box::pin(async move { Ok(r) })
+    })));
+    let (t, evs) = run_in_bot(
+        &rt,
+        "travel",
+        "I need to go from HK to singapore tomorrow. Find me the last flight that lands before midnight",
+    )
+    .await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    let res: Vec<Value> = events_of(&evs, "workflow_result")
+        .into_iter()
+        .map(|e| e["result"].clone())
+        .collect();
+    assert_eq!(res[0]["status"], "pick_needed", "{res:?}");
+    assert_eq!(res[0]["count"], HKG_SIN_DAY.len());
+    // the pick's turn offers travel_pick; the search tools are not offered again on it
+    let ex = executor_calls(&seen);
+    let pick_turn = ex
+        .iter()
+        .find(|b| offered(b).iter().any(|n| n == "travel_pick"))
+        .expect("travel_pick offered on the reply to the every-flight result");
+    assert!(!offered(pick_turn).iter().any(|n| n == "travel_search"));
+    assert!(!offered(&ex[0]).iter().any(|n| n == "travel_pick"));
+    // exactly the flight the model named, nothing added
+    assert_eq!(res[1]["status"], "shown");
+    let labels: Vec<String> = res[1]["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| get_str(o, "label"))
+        .collect();
+    assert_eq!(labels, ["Air SQ 895"]);
+    let answer = get_str(&t, "result");
+    let (_, block) = answer.rsplit_once("\n---\n").expect("the appended block");
+    assert!(
+        block.contains("- Flight: Air SQ 895 — HKD 5,915")
+            && block.contains("HKG 2030-11-03 18:50 → SIN 2030-11-03 22:50"),
+        "{answer}"
+    );
+    for other in ["TR 983", "CX 715", "SQ 893", "cheapest"] {
+        assert!(!block.contains(other), "{other} in {answer}");
+    }
+}
+
 #[tokio::test]
 async fn bad_workflow_json_is_regenerated_by_the_planner_then_invalid_then_asked() {
     let (rt, _d, _seen) = scripted_rt(
