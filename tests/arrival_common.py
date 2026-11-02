@@ -69,9 +69,15 @@ class Card:
     trip: bool = True         # the request carries the trip (the UK ETA asks no trip)
     # the address of the form flow on the real site: the page handed over is inside it (not the home page)
     path: str = ""
+    # the flight that leaves the country, for a card that requires it (Taiwan's itinerary step: the departure by air
+    # needs its flight code and number); "" = one way
+    leave: str = ""
 
     def flight_text(self) -> str:
         o, d = self.origin, self.dest
+        if self.leave:
+            return (f"I fly {self.flight} from {o[0]} ({o[1]}) to {d[0]} ({d[1]}), arriving on {ARRIVE.isoformat()}, and "
+                    f"fly back on {self.leave} on {DEPART.isoformat()}.")
         return f"I fly {self.flight} from {o[0]} ({o[1]}) to {d[0]} ({d[1]}), arriving on {ARRIVE.isoformat()}, one way."
 
     def details(self) -> str:
@@ -111,7 +117,7 @@ CARDS = {
     "tw": Card("tw", "Please fill in my Taiwan Arrival Card for my trip to Taipei — it's a holiday.",
                "https://twac.immigration.gov.tw/", "CI 52",
                ("Sydney", "SYD"), ("Taipei Taoyuan", "TPE"), ("Xinyi Park Hotel", "6 Songshou Road, Xinyi District, Taipei 110"),
-               handover="email", email_code=True, then_form=True),
+               handover="email", email_code=True, then_form=True, leave="CI 51"),
     # four steps saved on Next: the page handed over is the declaration step
     "id": Card("id", "Please fill in my All Indonesia arrival card for my trip to Bali — it's a holiday.",
                "https://allindonesia.imigrasi.go.id/", "GA 715",
@@ -345,12 +351,22 @@ def card_checks(label: str, card: Card, to: Takeover, a: U.Answer, *, mailbox: b
           or a.shows("nothing has been submitted") or a.shows("Your step"), a.block[:300])
 
 
+# cards not run for now, with why (each prints a SKIP line; the card and its form function stay): the user's decision
+# 2026-11-02 — Indonesia and Cambodia stop early on the real site (Indonesia at step 3 of 4, Cambodia on the Profile
+# step) and hand over with the honest "stopped early" line; they are finished after 0.6.0
+DEFERRED = {"id": "deferred to after 0.6.0 (stops early on the real site)",
+            "kh": "deferred to after 0.6.0 (stops early on the real site)"}
+
+
 def run_cards(keys: list[str], *, mailbox: bool = False) -> None:
     """A suite of cards: one chat per card."""
     # OMUSE_E2E_ONLY=kr (run_in_docker.sh): only these cards, to rerun one with its trace
     only = os.environ.get("OMUSE_E2E_ONLY", "").strip()
     if only:
         keys = [k for k in keys if k in only.split(",")]
+    for k in [k for k in keys if k in DEFERRED]:
+        print(f"SKIP {k}: {DEFERRED[k]}")
+    keys = [k for k in keys if k not in DEFERRED]
     connected = world(mailbox=mailbox)
 
     async def main():

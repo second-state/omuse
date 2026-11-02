@@ -1604,6 +1604,12 @@ const TW_VISA_EXEMPT: &[&str] = &[
     "ISR",
 ];
 
+/// The Taiwan Arrival Card's occupation (`#traveler1_occupation`, a native select with a fixed list, read from the live
+/// site's bundle 2026-11-02): the general business person, option value "10" (" 商/執行長/總裁/BUSINESS/DIRECTOR/CEO").
+/// The user's decision (2026-11-02): every card with a fixed occupation list gets that list's general business-person
+/// option, by its fixed value — no model choice, no guess from the profile's job title.
+pub const TW_OCCUPATION_BUSINESS: &str = "10";
+
 /// Letters, digits, spaces and . , - only (Taiwan's address box), upper case.
 fn tw_text(s: &str) -> String {
     s.chars()
@@ -1690,6 +1696,19 @@ fn tw_arrival_card(i: &Inputs) -> Vec<Op> {
             .trim_end_matches(" : ")
             .to_string()
     };
+    // the flight that leaves Taiwan (its "Expected Mode of Departure" by air requires its code and number): the same
+    // react-select as the arrival's; with the arrival's airline the same typed text, else the code alone
+    let (leave_airline, leave_number) = flight_parts(&i.arg("departure_flight_no"));
+    let leave_code = if leave_airline.is_empty() {
+        String::new()
+    } else {
+        format!("{leave_airline} :")
+    };
+    let leave_typed = if leave_airline == airline {
+        flight_typed.clone()
+    } else {
+        leave_airline.clone()
+    };
     vec![
         // the landing page: Submit Arrival Card → the notice's START → /submit (not there once on the form: skipped)
         choose("submit_card", "", "Submit Arrival Card"),
@@ -1718,8 +1737,7 @@ fn tw_arrival_card(i: &Inputs) -> Vec<Op> {
         text("dob", "#traveler1_birthDate", &date(i.birthday(), "%d/%m/%Y")),
         pick("nationality", "#traveler1_nation", &nat, &nat),
         // the country of birth (only from the profile) and of residence (the home country's code): the same list as the
-        // nationality, "AUS,AUSTRALIA" (a row not found leaves the box for the user). The occupation is a fixed list
-        // the user picks from (mapped 2026-11-02)
+        // nationality, "AUS,AUSTRALIA" (a row not found leaves the box for the user)
         wait(500),
         pick("place_of_birth", "#traveler1_birthPlace1", &birth, &birth),
         wait(500),
@@ -1727,6 +1745,8 @@ fn tw_arrival_card(i: &Inputs) -> Vec<Op> {
         radio("visa_type", "visaTypeRadio", visa),
         pick("country_code", "#traveler1_phoneCountryCode", &calling, &calling),
         text("mobile", "#traveler1_phoneNumber", &mobile),
+        // the occupation (required by NEXT): the list's general business person, by its fixed value
+        select("occupation", "#traveler1_occupation", TW_OCCUPATION_BUSINESS),
         text("email", "#traveler1_email", &i.email()),
         button("next_to_itinerary", "NEXT"),
         wait(2000),
@@ -1734,6 +1754,9 @@ fn tw_arrival_card(i: &Inputs) -> Vec<Op> {
         radio("entry_mode", "arrivalTravelModeFlag", if airline.is_empty() { "" } else { "AIR" }),
         pick("flight_code", "#traveler1_arrivalFlightCode", &flight_typed, &flight_code),
         text("flight_number", "#traveler1_arrivalFlightNumber", &number),
+        radio("exit_mode", "departureTravelModeFlag", if leave_airline.is_empty() { "" } else { "AIR" }),
+        pick("exit_flight_code", "#traveler1_departureFlightCode", &leave_typed, &leave_code),
+        text("exit_flight_number", "#traveler1_departureFlightNumber", &leave_number),
         select("purpose", "#traveler1_reason", purpose),
         radio("accommodation_type", "hotelFlag", stay_flag),
         text("address", "#traveler1_address", &address),
@@ -2490,7 +2513,7 @@ mod tests {
         let facts = Facts::from_args(
             &json!({"flight_no": "CI 52", "arrival_date": "2026-11-02", "airline": "China Airlines",
                                              "stay_name": "Xinyi Park Hotel", "stay_address": "6 Songshou Road, Xinyi District, Taipei 110",
-                                             "stay_kind": "hotel", "purpose": "holiday"}),
+                                             "stay_kind": "hotel", "purpose": "holiday", "departure_flight_no": "CI 51"}),
         );
         let p = profile();
         let plan: Vec<Value> = tw_arrival_card(&Inputs {
@@ -2526,7 +2549,35 @@ mod tests {
             (json!("CI : CHINA AIRLINES"), json!("CI :"))
         );
         assert_eq!(by("flight_number")["value"], "52");
+        // the flight leaving Taiwan (required by the itinerary's departure mode AIR): the same airline's typed text
+        assert!(by("exit_mode")["sel"]
+            .as_str()
+            .unwrap_or("")
+            .contains("departureTravelModeFlag"));
+        assert_eq!(
+            (
+                by("exit_flight_code")["type"].clone(),
+                by("exit_flight_code")["value"].clone()
+            ),
+            (json!("CI : CHINA AIRLINES"), json!("CI :"))
+        );
+        assert_eq!(by("exit_flight_number")["value"], "51");
         assert_eq!(by("address")["value"], "XINYI PARK HOTEL");
+        // the occupation NEXT requires (arrival_cards2_real 2026-11-02: "Occupation: Please fill in the field above"):
+        // the fixed list's general business person by its value, before the traveller step's NEXT — also with no job
+        // title in the profile
+        assert_eq!(
+            (
+                by("occupation")["op"].clone(),
+                by("occupation")["sel"].clone(),
+                by("occupation")["value"].clone()
+            ),
+            (json!("select"), json!("#traveler1_occupation"), json!("10"))
+        );
+        assert!(
+            at(&|o| o["field"] == "occupation") < at(&|o| o["field"] == "next_to_itinerary"),
+            "{plan:?}"
+        );
         // a nationality not on the visa-exempt list: the visa type is left for the user
         let p2 = json!({"name_en": "A B", "nationality": "India"});
         let plan2: Vec<Value> = tw_arrival_card(&Inputs {

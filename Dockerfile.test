@@ -12,9 +12,25 @@ COPY skills ./skills
 COPY bots ./bots
 ARG OMUSE_VERSION=
 ENV OMUSE_VERSION=$OMUSE_VERSION
+# The target cache mount is shared by every build (any branch, any worktree). Cargo decides what to rebuild by file
+# mtimes, so sources older than the artifacts another checkout left in the cache were taken as built and an old binary
+# shipped (2026-10-28, 2026-11-02). So: every source file is touched first (the workspace crates always compile from
+# the sources copied in; the registry crates stay cached), the build stamp — a hash of those sources — is compiled in,
+# the binary is copied out of the cache mount in the same RUN, and the build fails unless the copied binary reports
+# that stamp (`omuse --build-stamp`).
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,sharing=locked \
-    cargo build --release --locked --bin omuse && cp /src/target/release/omuse /omuse-bin
+    set -eu; \
+    find Cargo.toml Cargo.lock crates web skills bots -type f -exec touch {} +; \
+    OMUSE_BUILD_STAMP="$(find Cargo.toml Cargo.lock crates web skills bots -type f -print0 | sort -z \
+      | xargs -0 sha256sum | sha256sum | cut -c1-16)"; \
+    export OMUSE_BUILD_STAMP; \
+    cargo build --release --locked --bin omuse; \
+    cp /src/target/release/omuse /omuse-bin; \
+    echo "$OMUSE_BUILD_STAMP" > /omuse-stamp; \
+    test "$(/omuse-bin --build-stamp)" = "$OMUSE_BUILD_STAMP" \
+      || { echo "stale omuse binary: it reports '$(/omuse-bin --build-stamp)', the sources are $OMUSE_BUILD_STAMP" >&2; exit 1; }; \
+    echo "omuse build stamp $OMUSE_BUILD_STAMP"
 
 FROM ${TEST_BASE}
 USER root
@@ -26,7 +42,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends tini tzdata cur
 COPY tests/requirements.txt /tmp/req/requirements.txt
 RUN pip install --no-cache-dir --break-system-packages -r /tmp/req/requirements.txt
 COPY --from=builder /omuse-bin /opt/omuse/bin/omuse
-RUN chmod 0755 /opt/omuse/bin/omuse
+COPY --from=builder /omuse-stamp /opt/omuse/build-stamp
+# the binary in the image is the one just built: it reports the stamp of the sources it was built from
+RUN chmod 0755 /opt/omuse/bin/omuse \
+    && test "$(/opt/omuse/bin/omuse --build-stamp)" = "$(cat /opt/omuse/build-stamp)" \
+    && echo "omuse build stamp $(cat /opt/omuse/build-stamp)"
 ENV OMUSE_BIN=/opt/omuse/bin/omuse TZ=UTC
 ENTRYPOINT ["tini", "--"]
 CMD ["bash"]

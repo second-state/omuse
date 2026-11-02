@@ -32,10 +32,24 @@ struct Args {
     /// Validate the config file and print the effective paths, then exit
     #[arg(long)]
     check: bool,
+    /// Print the build stamp baked in at compile time (`OMUSE_BUILD_STAMP`, Dockerfile.test: a hash of the sources
+    /// built), then exit — the test image checks it to prove its binary was compiled from the current sources
+    #[arg(long)]
+    build_stamp: bool,
 }
+
+/// The build stamp: `OMUSE_BUILD_STAMP` at compile time (empty for a plain `cargo build`).
+const BUILD_STAMP: &str = match option_env!("OMUSE_BUILD_STAMP") {
+    Some(s) => s,
+    None => "",
+};
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.build_stamp {
+        println!("{BUILD_STAMP}");
+        return Ok(());
+    }
     let path = Config::resolve_path(args.config.as_deref());
     let cfg = Config::load(&path).with_context(|| {
         format!(

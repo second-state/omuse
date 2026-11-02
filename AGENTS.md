@@ -147,6 +147,15 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
   travel connector, MCP, Microsoft, Telegram, telephony, voice), the HTTPS stand-ins of official sites, `tests/pages/`
   and the test IMAP/SMTP server are gone. The only fake is the scripted model `tests/fake_llm.py`. Do not add a fake
   server, a stand-in page or recorded responses back; a use case is tested on the real site.
+- The test image (`Dockerfile.test`) always compiles the current sources: its cargo target cache is shared by every
+  build (any branch or worktree) and cargo rebuilds by file mtimes, so an older checkout's sources once shipped a
+  newer build's stale binary. The builder touches every source file before `cargo build`, compiles in a build stamp
+  (`OMUSE_BUILD_STAMP`, a hash of `Cargo.*`, `crates/`, `web/`, `skills/`, `bots/`), copies the binary out of the
+  cache mount in the same `RUN` and fails unless `omuse --build-stamp` prints that stamp; the final stage checks it
+  again against `/opt/omuse/build-stamp` and prints it. To check an image: `docker run --rm --entrypoint sh <image> -c
+  'omuse_stamp=$(/opt/omuse/bin/omuse --build-stamp); cat /opt/omuse/build-stamp; echo $omuse_stamp'`. Build from a
+  worktree with the context on stdin, e.g. `tar --exclude=./target --exclude=./.git -cf - . | docker build -f
+  Dockerfile.test -t omuse-test -`.
 - Scripted (fake-model) suites — fast, never counted as e2e: `bash tests/run_in_docker.sh` (every `*_e2e.py`, `*_ui.py`,
   `e2e_0*.py`, `integration`, `takeover_burst`, `i18n_check`; fresh stack per suite, `-j 4` to spread them). The stack
   (`tests/run_local.sh`) is the app and the scripted model only; web search, travel data and market data point at a
@@ -202,8 +211,11 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
     step — TDAC: the Cloudflare check on its home page; Visit Japan Web and eTravel: the sign-in to the user's account
     (the email put in); China: the passport photo of step 1; Taiwan and the UK ETA: the emailed code (`email_code`,
     agent/email_code.rs — with the test inbox connected from `OMUSE_E2E_IMAP_*` code sends the code, the model reads it
-    from the mail and code types it; without one a SKIP line and the hand-over at the email step); SG, MDAC, Korea,
-    Indonesia, Cambodia: the filled form for the user's review and Submit. Fake traveller data (`tests/arrival_common.py`
+    from the mail and code types it; without one a SKIP line and the hand-over at the email step; Taiwan's traveller form
+    then needs the occupation from its fixed list — code selects the list's general business person, a fixed option
+    value per site, the user's decision 2026-11-02); SG, MDAC, Korea: the filled form for the user's review and Submit.
+    Indonesia and Cambodia are deferred to after 0.6.0 (they stop early on the real site and hand over saying so):
+    `arrival_cards3_real` prints a SKIP line for them (`arrival_common.DEFERRED`). Fake traveller data (`tests/arrival_common.py`
     `PROFILE`, a fake passport in the Vault; the email is the test inbox). Success (user's decision 2026-11-02, the same
     for any multi-page form suite): the run reached the form's final page — the one with the user's Submit, found by its
     element — and handed it over, nothing submitted; or, where the site stops earlier at a user step, the hand-over at
