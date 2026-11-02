@@ -105,6 +105,165 @@ pub fn time_window(a: &Value) -> TimeWindow {
     }
 }
 
+/// A SerpApi request checked against the engine's documented parameters before it is sent (a refused request still
+/// uses a search credit): the engine, the ids and dates each needs, their formats and ranges, and how they fit
+/// together. `earliest` is the first allowed date (the day before today in UTC: the user's day may be behind).
+/// Empty values are not sent, so they count as absent.
+pub fn valid_request(params: &[(&str, String)], earliest: chrono::NaiveDate) -> Result<(), String> {
+    use chrono::NaiveDate;
+    let get = |k: &str| {
+        params
+            .iter()
+            .find(|(n, _)| *n == k)
+            .map(|(_, v)| v.as_str())
+            .filter(|v| !v.is_empty())
+    };
+    let need = |k: &str| get(k).ok_or_else(|| format!("{k} is required"));
+    let date = |k: &str| -> Result<Option<NaiveDate>, String> {
+        get(k)
+            .map(|v| {
+                NaiveDate::parse_from_str(v, "%Y-%m-%d")
+                    .map_err(|_| format!("{k} {v:?} is not YYYY-MM-DD"))
+            })
+            .transpose()
+    };
+    let not_past = |k: &str, d: NaiveDate| {
+        if d < earliest {
+            Err(format!("{k} {d} is in the past"))
+        } else if d > earliest + chrono::Duration::days(367) {
+            Err(format!("{k} {d} is more than a year ahead"))
+        } else {
+            Ok(())
+        }
+    };
+    let int_in = |k: &str, lo: i64, hi: i64| -> Result<(), String> {
+        match get(k) {
+            None => Ok(()),
+            Some(v) => match v.parse::<i64>() {
+                Ok(n) if (lo..=hi).contains(&n) => Ok(()),
+                _ => Err(format!("{k} {v:?} is not a whole number {lo}–{hi}")),
+            },
+        }
+    };
+    let flag = |k: &str| match get(k) {
+        None | Some("true") | Some("false") => Ok(()),
+        Some(v) => Err(format!("{k} {v:?} is not true or false")),
+    };
+    if let Some(c) = get("currency") {
+        if c.len() != 3 || !c.bytes().all(|b| b.is_ascii_uppercase()) {
+            return Err(format!("currency {c:?} is not a 3-letter code"));
+        }
+    }
+    match get("engine") {
+        Some("google_flights") => {
+            let place = |k: &str| -> Result<Vec<&str>, String> {
+                let v = need(k)?;
+                let ids: Vec<&str> = v.split(',').collect();
+                let ok = |id: &str| {
+                    (id.len() == 3 && id.bytes().all(|b| b.is_ascii_uppercase()))
+                        || (id.starts_with("/m/") && id.len() > 3)
+                };
+                if ids.iter().all(|id| ok(id)) {
+                    Ok(ids)
+                } else {
+                    Err(format!(
+                        "{k} {v:?} is not IATA codes (or Google place ids), comma-separated"
+                    ))
+                }
+            };
+            let (from, to) = (place("departure_id")?, place("arrival_id")?);
+            if from.iter().any(|f| to.contains(f)) {
+                return Err("departure_id and arrival_id are the same place".into());
+            }
+            let out = date("outbound_date")?.ok_or("outbound_date is required")?;
+            // booking options repeat a search already run: its date may have turned yesterday since
+            if get("booking_token").is_none() {
+                not_past("outbound_date", out)?;
+            }
+            let ret = date("return_date")?;
+            match (get("type").unwrap_or("1"), ret) {
+                ("1", None) => return Err("type 1 (round trip) needs a return_date".into()),
+                ("1", Some(r)) if r < out => {
+                    return Err(format!("return_date {r} is before outbound_date {out}"))
+                }
+                ("2", Some(_)) => return Err("type 2 (one way) takes no return_date".into()),
+                ("1" | "2", _) => {}
+                ("3", _) => return Err("type 3 (multi-city) is not used".into()),
+                (t, _) => return Err(format!("type {t:?} is not 1 or 2")),
+            }
+            int_in("adults", 1, 9)?;
+            int_in("travel_class", 1, 4)?;
+            int_in("sort_by", 1, 6)?;
+            int_in("stops", 0, 3)?;
+            int_in("max_price", 1, 1_000_000)?;
+            flag("deep_search")?;
+            if let Some(t) = get("outbound_times") {
+                let h: Vec<Option<u32>> = t
+                    .split(',')
+                    .map(|x| x.parse::<u32>().ok().filter(|n| *n <= 23))
+                    .collect();
+                let pairs_ok = h.iter().all(Option::is_some)
+                    && (h.len() == 2 || h.len() == 4)
+                    && h.chunks(2).all(|p| p[0] <= p[1]);
+                if !pairs_ok {
+                    return Err(format!(
+                        "outbound_times {t:?} is not 2 or 4 hours 0–23, each pair from ≤ to"
+                    ));
+                }
+            }
+            if let Some(al) = get("include_airlines") {
+                let ok = |x: &str| {
+                    matches!(x, "STAR_ALLIANCE" | "SKYTEAM" | "ONEWORLD")
+                        || (x.len() == 2
+                            && x.bytes()
+                                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+                };
+                if !al.split(',').all(ok) {
+                    return Err(format!(
+                        "include_airlines {al:?} is not airline codes or an alliance"
+                    ));
+                }
+            }
+            Ok(())
+        }
+        Some("google_hotels") => {
+            if get("q").is_none() && get("property_token").is_none() {
+                return Err("q (or property_token) is required".into());
+            }
+            let cin = date("check_in_date")?.ok_or("check_in_date is required")?;
+            let cout = date("check_out_date")?.ok_or("check_out_date is required")?;
+            not_past("check_in_date", cin)?;
+            if cout <= cin {
+                return Err(format!(
+                    "check_out_date {cout} is not after check_in_date {cin}"
+                ));
+            }
+            int_in("adults", 1, 20)?;
+            int_in("max_price", 1, 1_000_000)?;
+            flag("free_cancellation")?;
+            if let Some(c) = get("hotel_class") {
+                if !c.split(',').all(|x| matches!(x, "2" | "3" | "4" | "5")) {
+                    return Err(format!("hotel_class {c:?} is not stars 2–5"));
+                }
+            }
+            Ok(())
+        }
+        Some("google_maps") => {
+            if get("place_id").is_none() && !(get("type") == Some("search") && get("q").is_some()) {
+                return Err("a place_id, or type search with q, is required".into());
+            }
+            if let Some(r) = get("min_rating") {
+                if !r.parse::<f64>().is_ok_and(|x| (2.0..=4.5).contains(&x)) {
+                    return Err(format!("min_rating {r:?} is not 2.0–4.5"));
+                }
+            }
+            Ok(())
+        }
+        Some(e) => Err(format!("engine {e:?} is not one OMuse uses")),
+        None => Err("engine is required".into()),
+    }
+}
+
 /// SerpApi's deep search for a flight search (every flight Google Flights' own page lists; slower): unless the
 /// model's `comprehensive` is false — an ordinary search gets the faster, shorter list.
 pub fn deep_search(a: &Value) -> bool {
@@ -1164,8 +1323,19 @@ impl SerpApi {
     }
 
     async fn get(&self, path: &str, params: &[(&str, String)]) -> Result<Value, SerpError> {
+        let sent: Vec<(&str, String)> = params
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .cloned()
+            .collect();
+        // every search costs a credit, a refused one too: the request is checked against SerpApi's own rules first
+        if path == "search.json" {
+            let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+            valid_request(&sent, yesterday)
+                .map_err(|e| SerpError(format!("not sent to SerpApi: {e}")))?;
+        }
         let mut q: Vec<(&str, String)> = vec![("api_key", self.key.clone())];
-        q.extend(params.iter().filter(|(_, v)| !v.is_empty()).cloned());
+        q.extend(sent);
         let r = self
             .client
             .get(format!("{}/{}", self.base, path))
@@ -1790,6 +1960,92 @@ mod tests {
         assert_eq!(m["by_date"][2]["count"], 0);
         assert_eq!(m["searched"]["dates"], "2026-12-01 to 2026-12-03 (3 days)");
         assert_eq!(m["searched"]["cabin"], "business");
+    }
+
+    /// A request SerpApi would refuse (still a credit spent) is caught before it is sent; the requests OMuse builds
+    /// pass.
+    #[test]
+    fn a_serpapi_request_is_checked_before_it_is_sent() {
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        let p = |kv: &[(&'static str, &str)]| -> Vec<(&'static str, String)> {
+            kv.iter().map(|(k, v)| (*k, v.to_string())).collect()
+        };
+        let flight = [
+            ("engine", "google_flights"),
+            ("departure_id", "HKG"),
+            ("arrival_id", "SIN"),
+            ("outbound_date", "2026-11-03"),
+            ("type", "2"),
+            ("adults", "1"),
+            ("travel_class", "1"),
+            ("currency", "HKD"),
+            ("hl", "en"),
+            ("sort_by", "1"),
+            ("deep_search", "true"),
+            ("outbound_times", "0,23,18,23"),
+            ("include_airlines", "STAR_ALLIANCE,SQ"),
+        ];
+        assert_eq!(valid_request(&p(&flight), day), Ok(()));
+        let with = |k: &'static str, v: &str| {
+            let mut x = p(&flight);
+            x.retain(|(n, _)| *n != k);
+            x.push((k, v.to_string()));
+            valid_request(&x, day)
+        };
+        for (k, v) in [
+            ("departure_id", "Hong Kong"),
+            ("arrival_id", "HKG"),
+            ("outbound_date", "2026-11-01"),
+            ("outbound_date", "03/11/2026"),
+            ("return_date", "2026-11-05"),
+            ("type", "3"),
+            ("adults", "0"),
+            ("travel_class", "5"),
+            ("outbound_times", "18,6"),
+            ("outbound_times", "0,24"),
+            ("currency", "usd"),
+            ("include_airlines", "Star Alliance"),
+            ("deep_search", "yes"),
+        ] {
+            assert!(with(k, v).is_err(), "{k}={v} passed");
+        }
+        // a round trip needs its return, not before the outbound day
+        let mut rt = p(&flight);
+        rt.retain(|(n, _)| *n != "type");
+        rt.push(("type", "1".into()));
+        assert!(valid_request(&rt, day).is_err());
+        rt.push(("return_date", "2026-11-02".into()));
+        assert!(valid_request(&rt, day).is_err());
+        rt.retain(|(n, _)| *n != "return_date");
+        rt.push(("return_date", "2026-11-08".into()));
+        assert_eq!(valid_request(&rt, day), Ok(()));
+        // hotels and places
+        let hotel = [
+            ("engine", "google_hotels"),
+            ("q", "hotels near Ginza, Tokyo"),
+            ("check_in_date", "2026-12-02"),
+            ("check_out_date", "2026-12-05"),
+            ("adults", "2"),
+            ("hotel_class", "4,5"),
+        ];
+        assert_eq!(valid_request(&p(&hotel), day), Ok(()));
+        let mut h = p(&hotel);
+        h.retain(|(n, _)| *n != "check_out_date");
+        h.push(("check_out_date", "2026-12-02".into()));
+        assert!(valid_request(&h, day).is_err());
+        assert_eq!(
+            valid_request(
+                &p(&[
+                    ("engine", "google_maps"),
+                    ("type", "search"),
+                    ("q", "ramen in Tokyo")
+                ]),
+                day
+            ),
+            Ok(())
+        );
+        assert!(valid_request(&p(&[("engine", "google_maps"), ("type", "search")]), day).is_err());
+        assert!(valid_request(&p(&[("engine", "bing")]), day).is_err());
     }
 
     #[test]
