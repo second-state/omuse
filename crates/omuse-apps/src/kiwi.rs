@@ -287,11 +287,7 @@ impl KiwiMcp {
             "first" => "FIRST_CLASS",
             _ => "ECONOMY",
         };
-        let sort = match get_str(a, "sort").to_lowercase().as_str() {
-            "duration" => "duration",
-            "best" | "quality" => "quality",
-            _ => "price",
-        };
+        let sort = kiwi_sort(a);
         let currency = {
             let c = get_str(a, "currency").to_uppercase();
             if c.is_empty() {
@@ -422,6 +418,21 @@ impl KiwiMcp {
     }
 }
 
+/// Kiwi's result order. Kiwi answers about 15 itineraries in that order: with a time window, departure order
+/// ("date"), so the window's own flights come back — in price order the cheap one-stop connections fill the list and
+/// push the direct flights out (mcp.kiwi.com 2026-11-02: HKG → SIN after 18:00 by price had no SQ 895, by date it
+/// does). Otherwise the sort asked for, else price.
+pub fn kiwi_sort(a: &Value) -> &'static str {
+    if !kiwi_times(a).is_empty() {
+        return "date";
+    }
+    match get_str(a, "sort").to_lowercase().as_str() {
+        "duration" => "duration",
+        "best" | "quality" => "quality",
+        _ => "price",
+    }
+}
+
 /// The request's local time window (`depart_after` / `depart_before` / `arrive_after` / `arrive_before`, HH:MM) as
 /// Kiwi's hour filters (`dtime_from` / `dtime_to`, `atime_from` / `atime_to`, 0–23, local at each airport). Checked on
 /// mcp.kiwi.com 2026-11-02: `dtime_to` h takes departures up to h:00 and 23 is its largest value — so an end is rounded
@@ -449,6 +460,19 @@ pub fn kiwi_times(a: &Value) -> Vec<(&'static str, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_time_window_is_searched_in_departure_order() {
+        // the cheapest first crowded out the evening's direct flights (Kiwi answers ~15 itineraries)
+        assert_eq!(
+            kiwi_sort(&json!({"depart_after": "18:00", "arrive_before": "23:59"})),
+            "date"
+        );
+        assert_eq!(kiwi_sort(&json!({})), "price");
+        assert_eq!(kiwi_sort(&json!({"sort": "duration"})), "duration");
+        // a window that sets no Kiwi filter (the whole day) keeps the order asked for
+        assert_eq!(kiwi_sort(&json!({"arrive_before": "23:59"})), "price");
+    }
 
     #[test]
     fn the_users_time_window_becomes_kiwis_hour_filters() {
