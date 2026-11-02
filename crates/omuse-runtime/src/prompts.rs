@@ -229,7 +229,16 @@ one (e.g. 'Flight to Tokyo booked', 'Q3 sales report'), not what the user litera
 /// that `lang`. A reply that is not JSON is taken as the title itself (a title is display text; nothing is decided on
 /// it).
 pub fn parse_title(raw: &str, fallback: &str, fixed: Option<&str>) -> (String, String) {
-    let (title, lang) = match crate::llm::extract_json(raw).filter(Value::is_object) {
+    // the JSON as the model gave it, or repaired (a reply cut short at the token limit); JSON that cannot be read is
+    // no title — never its text (the Insurance chat's title came out as the raw JSON, 2026-11-02)
+    let parsed = crate::llm::extract_json(raw)
+        .filter(Value::is_object)
+        .or_else(|| {
+            crate::agent::json_in::extract(raw)
+                .map(|(v, _)| v)
+                .filter(Value::is_object)
+        });
+    let (title, lang) = match parsed {
         Some(v) => (
             v.get("title")
                 .and_then(Value::as_str)
@@ -240,6 +249,7 @@ pub fn parse_title(raw: &str, fallback: &str, fixed: Option<&str>) -> (String, S
                 .map(|l| l.trim().to_lowercase())
                 .unwrap_or_default(),
         ),
+        None if raw.contains('{') => (String::new(), String::new()),
         None => (raw.to_string(), String::new()),
     };
     let lang = if TITLE_LANGS.contains(&lang.as_str()) {
@@ -1143,6 +1153,17 @@ mod tests {
             parse_title(r#"{"title": "", "lang": "en"}"#, "zh", None).0,
             ""
         );
+        // a reply cut short at the token limit is repaired; JSON that cannot be read gives no title, never its text
+        assert_eq!(
+            parse_title(
+                r#"{"title": "Lost passport in Tokyo", "lang": "e"#,
+                "en",
+                None
+            )
+            .0,
+            "Lost passport in Tokyo"
+        );
+        assert_eq!(parse_title(r#"{"lang": "en", ]}"#, "en", None).0, "");
         // the setting fixes the language: its length limit holds whatever `lang` says
         let long = "a".repeat(60);
         let (t, _) = parse_title(

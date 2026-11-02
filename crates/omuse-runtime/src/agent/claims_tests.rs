@@ -868,6 +868,24 @@ fn the_purchase_quotes_picks_by_rule_and_hands_the_declaration_over() {
         &[],
     );
     assert_eq!(args["destination"], "Japan");
+    // the destination's country from a code, a country's name or a city of the table; anything else is sent back
+    // (insurance_real 2026-11-02: "Tokyo, Japan" left FWD's region blank)
+    for d in ["JP", "jp", "Japan", "Tokyo"] {
+        let mut x = json!({"market": "sg", "action": "compare", "depart": "2026-11-25", "return": "2026-12-02",
+                           "travellers": 1});
+        x["destination"] = json!(d);
+        assert_eq!(
+            valid(INSURANCE_BUY, x, false, &[])["destination"],
+            "Japan",
+            "{d}"
+        );
+    }
+    let bad = json!({"market": "sg", "action": "compare", "destination": "Tokyo, Japan", "depart": "2026-11-25",
+                     "return": "2026-12-02", "travellers": 1});
+    match check(INSURANCE_BUY, &bad, &cx(&json!({}), false, &[])) {
+        Checked::Invalid(p) => assert!(p.iter().any(|x| x.starts_with("destination")), "{p:?}"),
+        other => panic!("{other:?}"),
+    }
     let (mut t, from) = started(
         Vec::new(),
         "Get me the cheapest FWD plan with at least SGD 10,000 trip cancellation.",
@@ -987,31 +1005,26 @@ fn the_bag_is_looked_up_on_the_airlines_worldtracer_page_and_its_answer_shown() 
         other => panic!("{other}"),
     }
     });
+    // no record for that reference: no check is made on it (claims_real 2026-11-02)
     assert_eq!(
         names(&calls),
-        [
-            "browser_navigate",
-            "form_fill",
-            "browser_read_elements",
-            "schedule_create"
-        ]
+        ["browser_navigate", "form_fill", "browser_read_elements"]
     );
     assert_eq!(sget(&calls[0].args, "url"), MANAGE);
     assert_eq!(calls[1].args, json!({"file_ref": "NRTNH12345"}));
-    assert_eq!(sget(&calls[3].args, "spec"), "720");
     assert!(calls.iter().all(super::super::guards::code_call));
     assert_eq!(res["status"], "no_file");
     let m = must(&res);
     assert!(
         m.contains("- WorldTracer file: **NRTNH12345**\n- Bag status: WorldTracer says: No record was found with that reference number and family name combination")
             && m.contains("- Treated as lost after: 20 November 2026 (21 days after 30 October 2026)")
-            && m.contains("- Bag check: twice a day"),
+            && m.contains("- Bag check: not set up — WorldTracer has no file"),
         "{m}"
     );
     // the report opened (the sign-in form gone)
     let args = valid(
         BAG_TRACE,
-        json!({"file_ref": "NRTNH12345", "family_name": "tan"}),
+        json!({"file_ref": "NRTNH12345", "family_name": "tan", "watch": true}),
         false,
         &[],
     );
@@ -1028,12 +1041,17 @@ fn the_bag_is_looked_up_on_the_airlines_worldtracer_page_and_its_answer_shown() 
                 json!({"error_head": [], "error_text": [], "login": []}),
             ),
             "form_fill" => "{\"url\": \"x\", \"filled\": []}".into(),
+            "schedule_create" => "created".into(),
             _ => page(MANAGE, "Manage your delayed baggage report"),
         },
     );
     assert_eq!(calls[1].args["family_name"], "TAN");
+    // the file is found: the check twice a day is made
+    assert_eq!(names(&calls)[3], "schedule_create");
+    assert_eq!(sget(&calls[3].args, "spec"), "720");
     assert_eq!(res["status"], "traced");
     assert!(must(&res).contains("WorldTracer has the report"));
+    assert!(must(&res).contains("- Bag check: twice a day"));
     // a failed page: the result says so, no retry
     let (mut t, from) = started(Vec::new(), "where is my bag", BAG_TRACE, &args);
     let (calls, res) = run(BAG_TRACE, &args, &mut t, from, &profile, |_, _| {

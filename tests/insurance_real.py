@@ -63,9 +63,8 @@ async def buy(u: U.User) -> None:
         await u.view_picture(os.path.join(OUT, "insurance_quote.png") if OUT else None)
         print(f"INFO takeover: {request!r} url {seen['url']!r}")
 
-    a = await u.ask(f"I need travel insurance from FWD for my trip to Tokyo next month, just me: SQ 636 Singapore to Tokyo Haneda on {D1}, "
-                    f"back on SQ 637 on {D2}. Get me the cheapest plan with at least SGD 10,000 trip cancellation; "
-                    "I'll answer FWD's questions and pay myself.",
+    # the Insurance bot's example in the UI (bots/insurance.md), word for word
+    a = await u.ask("I need FWD travel insurance for my trip to Tokyo, just me: SQ 636 to Tokyo Haneda in 3 weeks, back a week later. Find the cheapest plan with at least SGD 10,000 trip cancellation.",
                     label="buy", on_takeover=look_then_hand_back, timeout=1200)
     answers = [a]
     if not a.takeovers and not a.timed_out:
@@ -109,9 +108,8 @@ async def claim(u: U.User) -> None:
         await u.view_picture(os.path.join(OUT, "insurance_claim.png") if OUT else None)
         print(f"INFO takeover: {request!r} url {seen['url']!r}")
 
-    a = await u.ask(f"My flight SQ 636 to Tokyo on {INC} was scheduled at 10:30 and left at 17:45. Please claim the delay on my FWD travel "
-                    f"insurance, policy {POLICY} (SGD 100 for every 6 hours of delay; claims within 30 days). Fill in FWD's claim form; "
-                    "I'll check it and submit it myself.", label="claim", on_takeover=look_then_hand_back, timeout=1200)
+    # the Insurance bot's example in the UI (bots/insurance.md), word for word ("two days ago" = INC)
+    a = await u.ask("My flight SQ 636 to Tokyo two days ago was scheduled at 10:30 and left at 17:45. Please claim the delay on my FWD travel insurance, policy PNTR20123456, and fill in the claim form for me.", label="claim", on_takeover=look_then_hand_back, timeout=1200)
     answers = [a]
     if not a.takeovers and not a.timed_out:
         a = await u.ask("All the other details are in my profile; nothing else to add. Please go ahead and fill in the claim form.",

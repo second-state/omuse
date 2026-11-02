@@ -22,9 +22,7 @@ use omuse_common::util::{get_str, truthy};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
-use super::driver::{
-    country_of_city, handed_back, json_of, pos, results_of, stopped, walk_messages, Step,
-};
+use super::driver::{handed_back, json_of, pos, results_of, stopped, walk_messages, Step};
 use super::show as S;
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
@@ -290,7 +288,7 @@ JSON result, using its hints (code appends the facts in show to the reply).",
         json!({
             "market": {"type": "string", "enum": ["sg", "hk"], "description": "where the user lives and buys (FWD Singapore or FWD Hong Kong)"},
             "action": {"type": "string", "enum": ["compare", "buy"], "description": "compare: show the plans only; buy: also fill the application"},
-            "destination": {"type": "string", "description": "the destination country or city"},
+            "destination": {"type": "string", "description": "the destination COUNTRY's ISO 3166 2-letter code (JP for a trip to Tokyo)"},
             "depart": date("the departure day"),
             "return": date("the return day"),
             "travellers": {"type": "integer"},
@@ -755,22 +753,23 @@ fn check_buy(a: &Value, cx: &Ctx) -> Checks {
     if market == "hk" {
         return (out, problems, missing);
     }
-    // the destination's country ("Tokyo" → Japan; "Hong Kong" as two words first, then the first word alone)
+    // the destination's country, from the structured value: an ISO code, a country's name or a city of the table,
+    // each compared whole; anything else goes back to the model (FWD's region is picked by the country — "Tokyo,
+    // Japan" left it blank and the quote never opened, insurance_real 2026-11-02)
     let dest = s_arg(a, "destination");
     if !dest.is_empty() {
-        let first = dest.split(' ').next().unwrap_or("").to_string();
-        let country = match country_of_city(&dest) {
-            "" => country_of_city(&first),
-            c => c,
-        };
-        out.insert(
-            "destination".into(),
-            json!(if country.is_empty() {
-                dest.clone()
-            } else {
-                country.to_string()
-            }),
-        );
+        let iso = crate::places::country(&dest)
+            .map(|c| c.iso)
+            .or_else(|| Some(crate::places::iso_of(&dest)).filter(|c| !c.is_empty()))
+            .or_else(|| crate::places::city_named(&dest).map(|c| c.country));
+        match iso.and_then(crate::places::country) {
+            Some(c) => {
+                out.insert("destination".into(), json!(c.name));
+            }
+            None => problems.push(format!(
+                "destination: \"{dest}\" — give the destination country's 2-letter code (JP for Tokyo)"
+            )),
+        }
     } else {
         missing.push("destination".into());
     }
@@ -2442,7 +2441,10 @@ fn next_bag(args: &Value, run: &[Value], ids: &Ids) -> Step {
         return ids.one("browser_read_elements", bagtrace::read_args());
     };
     let trace = bagtrace::trace_of(read, &file_ref);
-    if watch && results_of(run, "schedule_create").is_empty() {
+    // a check twice a day only on a file WorldTracer has (claims_real 2026-11-02: a check was made on a file it did not
+    // find, the model deleted it, and the block still said there was one)
+    let found = trace.as_ref().is_some_and(|t| t.found);
+    if watch && found && results_of(run, "schedule_create").is_empty() {
         return ids.one(
             "schedule_create",
             json!({"name": format!("Bag {file_ref} check"),
@@ -2471,11 +2473,17 @@ fn next_bag(args: &Value, run: &[Value], ids: &Ids) -> Step {
             &page,
         ),
     ];
-    if watch {
+    if watch && t.found {
         show.push(S::fact(
             "Bag check",
             "行李查询",
             "twice a day; you are told when its status changes",
+        ));
+    } else if watch {
+        show.push(S::fact(
+            "Bag check",
+            "行李查询",
+            "not set up — WorldTracer has no file with that reference and family name",
         ));
     }
     done(if t.found { "traced" } else { "no_file" }, show, &page)

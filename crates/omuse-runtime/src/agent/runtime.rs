@@ -649,6 +649,19 @@ impl Runtime {
                     json!({"tool": tool, "status": get_str(&result, "status"), "result": result}),
                 )
                 .await;
+                // one flight shown for a search: its runner-ups are a second model call, started now and run
+                // while the reply streams; the card follows the reply (agent/runnerups.rs)
+                if tool == super::booking::TRAVEL_PICK {
+                    let request = transcript
+                        .iter()
+                        .rev()
+                        .find(|m| get_str(m, "role") == "user")
+                        .map(content_of)
+                        .unwrap_or_default();
+                    if let Some(ru) = super::booking::runner_ups(transcript, &result, &request) {
+                        super::runnerups::start(self.arc(), task_id, ru);
+                    }
+                }
                 let ex = super::workflow::result_exchange(transcript, &tool, &result);
                 transcript.extend(ex);
                 return None;
@@ -1032,7 +1045,7 @@ message to use as written) stays in that language. Output only the rewritten rep
             .collect::<Vec<_>>()
             .join("\n\n");
         let o = ChatOpts {
-            max_tokens: Some(80),
+            max_tokens: Some(120),
             temperature: Some(0.0),
             no_think: true,
             ..opts("title", task_id)
@@ -3378,7 +3391,9 @@ yourself; ask_bot is not available for it."
             // machine's result, emergency_contacts, visa_rules, fx_convert, loan_payment, confirm_reference …) and the
             // run's structured facts, appended by code after the reply — never read from or written into its prose
             // (a Vault card without its catalog id: the model picks the row as a JSON choice, the facts read it)
-            if !final_.is_empty() && asked.is_none() {
+            // also after a question: what a machine already found stays under it (claims_real 2026-11-02: WorldTracer's
+            // answer and the 21-day rule were lost when the model then asked for the family name)
+            if !final_.is_empty() {
                 let mut fact_view = transcript.clone();
                 fact_view.extend(self.attach_card_ids(task_id, &transcript).await);
                 let items = super::facts::show_items(
@@ -3492,6 +3507,26 @@ yourself; ask_bot is not available for it."
                 .add_msg(&conv_id, "assistant", &final_, task_id, None)?;
             self.publish(json!({"kind": "conv_update", "conv_id": conv_id}))
                 .await;
+            // the runner-ups card, held until the reply was out (agent/runnerups.rs); not after a question
+            if asked.is_some() {
+                super::runnerups::drop_for(task_id);
+            } else if let Some(card) = super::runnerups::take(task_id).await {
+                match self.local(&t, "present_choices", &card).await {
+                    Ok(_) => {
+                        self.event(task_id, "runner_ups", card).await;
+                        self.publish(json!({"kind": "conv_update", "conv_id": conv_id}))
+                            .await;
+                    }
+                    Err(e) => {
+                        self.event(
+                            task_id,
+                            "runner_ups_error",
+                            json!({"message": e.to_string()}),
+                        )
+                        .await;
+                    }
+                }
+            }
             if let Some(subject) = self.store.subject_by_conv(&conv_id)? {
                 let n = crate::library::index_subject(&self.store, &self.workspace, &subject)?;
                 let runs = subject
@@ -3762,6 +3797,7 @@ try a clearly different query or source, or say in the answer that it wasn't fou
     /// The run ends because the user stopped the task: the transcript so far is kept, nothing else happens (the status
     /// is already CANCELLED, set by [`Runtime::cancel`]).
     fn stopped(&self, task_id: &str, transcript: &[Value]) -> Result<()> {
+        super::runnerups::drop_for(task_id);
         // the calls of the last turn that never ran are answered as stopped (the transcript stays well-formed)
         let mut transcript = transcript.to_vec();
         if let Some(i) = transcript

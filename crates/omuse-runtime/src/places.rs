@@ -131,7 +131,13 @@ pub fn clean_value(key: &str, value: &str) -> Option<String> {
         return Some(String::new());
     }
     if key == "home_city" {
-        return city(v).map(|c| c.code.to_string());
+        // free text (the user's own city); one of the table's, by code or whole name, is kept as its code so the
+        // defaults that read it (a flight's origin, the currency) work
+        return Some(
+            city_named(v)
+                .map(|c| c.code.to_string())
+                .unwrap_or_else(|| v.chars().take(80).collect()),
+        );
     }
     if key == "home_country" || key.starts_with("address_country:") {
         return country(v).map(|c| c.iso.to_string());
@@ -139,9 +145,21 @@ pub fn clean_value(key: &str, value: &str) -> Option<String> {
     Some(v.to_string())
 }
 
-/// The user's home city (the profile's `home_city`).
+/// The city of the table a structured value names: its code, or its name or one of its names compared whole (any
+/// case) — never searched in prose.
+pub fn city_named(v: &str) -> Option<&'static City> {
+    let lc = v.trim().to_lowercase();
+    city(v).or_else(|| {
+        CITIES
+            .iter()
+            .find(|c| c.name.to_lowercase() == lc || c.words.contains(&lc.as_str()))
+    })
+}
+
+/// The user's home city (the profile's `home_city`) when it is one of the table's; a city typed that is not in it
+/// gives `None` (the home country then comes from `home_country`).
 pub fn home_city(profile: &Value) -> Option<&'static City> {
-    city(&get_str(profile, "home_city"))
+    city_named(&get_str(profile, "home_city"))
 }
 
 /// The user's home country (the profile's `home_country`, else the home city's country), "" when unknown.
@@ -184,8 +202,21 @@ mod tests {
 
     #[test]
     fn place_fields_are_codes_of_the_tables() {
+        // the home city is free text; a city of the table, by code or whole name, is kept as its code
         assert_eq!(clean_value("home_city", "sin").as_deref(), Some("SIN"));
-        assert_eq!(clean_value("home_city", "Singapore"), None);
+        assert_eq!(
+            clean_value("home_city", "Singapore").as_deref(),
+            Some("SIN")
+        );
+        assert_eq!(
+            clean_value("home_city", " Kuala Lumpur ").as_deref(),
+            Some("KUL")
+        );
+        assert_eq!(clean_value("home_city", " Ipoh ").as_deref(), Some("Ipoh"));
+        let p = serde_json::json!({"home_city": "Singapore"});
+        assert_eq!(home_city(&p).map(|c| c.code), Some("SIN"));
+        assert_eq!(home_country(&p), "SG");
+        assert!(home_city(&serde_json::json!({"home_city": "Ipoh"})).is_none());
         assert_eq!(clean_value("home_country", "hk").as_deref(), Some("HK"));
         assert_eq!(clean_value("address_country:flat", "Hong Kong"), None);
         assert_eq!(clean_value("home_country", "").as_deref(), Some(""));

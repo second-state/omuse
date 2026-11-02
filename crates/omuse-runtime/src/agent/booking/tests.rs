@@ -1634,6 +1634,48 @@ fn search_then_choose(args: Value, choices: Value) -> (Value, Vec<Value>, Value)
 }
 
 #[test]
+fn shopping_ships_to_the_profiles_home_country_or_asks_for_it() {
+    let check_with = |args: Value, p: &Value| {
+        check(
+            SHOP_ORDER,
+            &args,
+            &Ctx {
+                profile: p,
+                today: today(),
+                user_texts: &[],
+                transcript: &[],
+            },
+        )
+    };
+    let shoes = json!({"query": "running shoes", "action": "compare"});
+    // the profile's home country (or its home city's)
+    match check_with(shoes.clone(), &json!({"home_country": "SG"})) {
+        Checked::Valid(a) => assert_eq!(a["country"], "SG"),
+        other => panic!("{other:?}"),
+    }
+    match check_with(shoes.clone(), &json!({"home_city": "HKG"})) {
+        Checked::Valid(a) => assert_eq!(a["country"], "HK"),
+        other => panic!("{other:?}"),
+    }
+    // a country the user named wins over the profile's
+    let mut to_jp = shoes.clone();
+    to_jp["country"] = json!("jp");
+    match check_with(to_jp, &json!({"home_country": "SG"})) {
+        Checked::Valid(a) => assert_eq!(a["country"], "JP"),
+        other => panic!("{other:?}"),
+    }
+    // neither: asked before any search
+    match check_with(shoes.clone(), &json!({})) {
+        Checked::NeedsInput(m) => assert!(m[0].starts_with("country"), "{m:?}"),
+        other => panic!("{other:?}"),
+    }
+    // not a country code: the model fixes it
+    let mut bad = shoes;
+    bad["country"] = json!("Singapore");
+    assert!(matches!(check_with(bad, &json!({})), Checked::Invalid(_)));
+}
+
+#[test]
 fn a_shopping_pick_to_buy_links_the_stores_checkout() {
     // the user picks an offer to buy: code links that variant's checkout on the store (pay in the browser); no page
     // opened, nothing bought
@@ -2609,6 +2651,68 @@ fn how_complete_a_flight_search_is_is_the_models_flag() {
         let req = Req::from_args(&a);
         assert_eq!(req.search_args(Kind::Flight)["comprehensive"], want);
     }
+}
+
+#[test]
+fn one_flight_shown_gets_runner_ups_from_the_same_search_on_a_card_after_the_reply() {
+    // the user, 2026-11-02: one search; the best match is shown and the reply streams; a second call picks runner-ups
+    // from the same flights, and code shows them on a card (best match first) after the reply
+    let p = json!({"home_city": "HKG", "home_country": "HK"});
+    let ask = "I need to go from HK to singapore tomorrow. Find me the last flight that lands before midnight";
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03", "arrive_before": "23:59"}),
+        ask,
+        &p,
+    );
+    let mut env = Env::of(&p);
+    env.available = vec!["flights_search".into()];
+    let answer = |name: &str, _: &Value, _: &[Value]| match name {
+        "flights_search" => hkg_sin_google(),
+        _ => "{}".into(),
+    };
+    let (t, _, res) = search_then_pick(
+        TRAVEL_SEARCH,
+        &a,
+        ask,
+        &env,
+        answer,
+        last_landing_before_midnight,
+    );
+    let ru = runner_ups(&t, &res, ask).expect("runner-ups for one flight shown");
+    // the choices are the search's other flights (same day, window kept), never the best match
+    assert!(
+        !ru.choices.is_empty() && !ru.choices.iter().any(|c| c == "fl_sq895"),
+        "{:?}",
+        ru.choices
+    );
+    assert!(
+        !ru.choices.iter().any(|c| c == "fl_cx715"),
+        "a next-day arrival is no runner-up"
+    );
+    let ctx: Value = serde_json::from_str(&ru.context).unwrap();
+    assert_eq!(ctx["best_match"]["offer_id"], "fl_sq895");
+    assert_eq!(ctx["request"], ask);
+    // the card: the best match first and marked, then the chosen runner-ups; ids not offered are ignored
+    let card = ru.card(&["fl_sq893".into(), "made_up".into()]).unwrap();
+    let opts = card["options"].as_array().unwrap();
+    assert_eq!(
+        (get_str(&opts[0], "label"), get_str(&opts[0], "note")),
+        (
+            "Singapore Airlines SQ 895".into(),
+            "best match for your request".into()
+        )
+    );
+    assert_eq!(get_str(&opts[1], "label"), "Singapore Airlines SQ 893");
+    assert_eq!(opts.len(), 2);
+    assert_eq!(card["_code"], true);
+    // none chosen: no card
+    assert!(ru.card(&[]).is_none());
+    // several flights picked (the user asked for options): they are the card already, no runner-ups
+    let (t2, _, res2) = search_then_pick(TRAVEL_SEARCH, &a, ask, &env, answer, |_| {
+        vec!["fl_sq895".into(), "fl_sq893".into()]
+    });
+    assert!(runner_ups(&t2, &res2, ask).is_none());
 }
 
 #[test]

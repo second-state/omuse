@@ -227,6 +227,7 @@ from the JSON result (code appends the facts in show to the reply).",
             "query": {"type": "string", "description": "what to look for, as product words (\"running shoes\"); the same words again with choices or a pick"},
             "url": {"type": "string", "description": "a shop's link the user gave in this chat (only reported back: shops are searched by API, never opened)"},
             "stores": {"type": "array", "items": s.clone(), "description": "stores the user named to search (\"Shopify\"); empty = the stores for the user's location"},
+            "country": {"type": "string", "description": "ISO 3166 2-letter code of the country to ship to, ONLY when the user named one (in this request, or answering the question for it); empty = the profile's home country"},
             "choices": {"type": "array", "items": s.clone(), "description": "after a review result: the offer_ids of the 3 to 5 offers that best fit the request, best first"},
             "action": {"type": "string", "enum": ["compare", "cart", "buy"]},
             "by": {"type": "string", "enum": ["rating", "price", "ratings"], "description": "best-rated, cheapest or most-reviewed first"},
@@ -328,7 +329,7 @@ static HHMM: LazyLock<Regex> =
 /// the fields only the user can give.
 pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
     match tool {
-        SHOP_ORDER => check_shop(args),
+        SHOP_ORDER => check_shop(args, cx.profile),
         TRAVEL_PICK => check_pick(args, cx.transcript),
         TRAVEL_BOOK => check_travel(args, cx, true),
         _ => check_travel(args, cx, false),
@@ -719,9 +720,33 @@ fn check_travel(a: &Value, cx: &Ctx, book: bool) -> Checked {
     Checked::Valid(Value::Object(out))
 }
 
-fn check_shop(a: &Value) -> Checked {
+fn check_shop(a: &Value, profile: &Value) -> Checked {
     let mut problems = Vec::new();
     let mut out = Map::new();
+    // where it ships: the country the user named, else the profile's home country; neither → asked once, before any
+    // search (results are only for what ships there, priced in its currency)
+    let named = s_arg(a, "country");
+    let country = if named.is_empty() {
+        crate::places::home_country(profile)
+    } else {
+        match crate::places::country(&named) {
+            Some(c) => c.iso.to_string(),
+            None => {
+                problems.push(format!(
+                    "country: \"{named}\" is not a 2-letter country code (e.g. SG, HK, US)"
+                ));
+                String::new()
+            }
+        }
+    };
+    if country.is_empty() && named.is_empty() && s_arg(a, "url").is_empty() {
+        return Checked::NeedsInput(vec![
+            "country: the country to ship to (the profile has no home country)".into(),
+        ]);
+    }
+    if !country.is_empty() {
+        out.insert("country".into(), json!(country));
+    }
     let url = s_arg(a, "url");
     let query = s_arg(a, "query");
     let pick = s_arg(a, "pick");
@@ -963,6 +988,92 @@ fn pick_needed(req: &Req, searched: &Value, offers: &[Offer], compare: &str) -> 
 /// The flight search a `travel_pick` picks from: the validated arguments of the `travel_search` / `travel_book` call
 /// whose result (the latest of those two) is `pick_needed`, the flights it listed — rebuilt from the machine's own
 /// search call (never compressed) exactly as the result listed them — and the search result's own facts.
+/// The runner-ups to a flight shown alone (the model's `travel_pick` of one flight): what the second model call reads —
+/// the request, the best match and the other flights the search listed, as JSON — and the card built from its choice.
+/// That call runs while the reply streams; code shows the card after the reply (agent/runnerups.rs).
+pub struct RunnerUps {
+    pub question: String,
+    pub context: String,
+    /// the other flights' offer ids, the choices
+    pub choices: Vec<String>,
+    best: Offer,
+    others: Vec<Offer>,
+    title: String,
+}
+
+/// The most flights the runner-ups call reads.
+const RUNNER_UP_POOL: usize = 30;
+/// The most runner-ups on the card.
+pub const RUNNER_UPS_MAX: usize = 3;
+
+impl RunnerUps {
+    /// The comparison card: the best match first (marked), then the runner-ups chosen (in the search's order), at most
+    /// three; `None` when none was chosen.
+    pub fn card(&self, chosen: &[String]) -> Option<Value> {
+        let runners: Vec<&Offer> = self
+            .others
+            .iter()
+            .filter(|o| chosen.contains(&o.id))
+            .take(RUNNER_UPS_MAX)
+            .collect();
+        if runners.is_empty() {
+            return None;
+        }
+        let option = |o: &Offer, note: &str| json!({"label": o.label, "details": o.details, "source_url": o.url, "note": note});
+        let mut options = vec![option(&self.best, "best match for your request")];
+        options.extend(runners.into_iter().map(|o| option(o, "")));
+        // built from the search's structured result: a code card (`_code`), nothing to verify against pages
+        Some(
+            json!({"question": self.title, "kind": "comparison", "options": options,
+                    "picked": self.best.label, "_code": true}),
+        )
+    }
+}
+
+/// The runner-ups query after a `travel_pick` result that showed ONE flight for a search (not a booking, not several
+/// flights the user asked for): `None` otherwise. `request` is the user's words, for the model only.
+pub fn runner_ups(t: &[Value], pick_result: &Value, request: &str) -> Option<RunnerUps> {
+    if get_str(pick_result, "status") != "shown"
+        || pick_result["options"].as_array().map_or(0, Vec::len) != 1
+    {
+        return None;
+    }
+    let src = pick_source(t)?;
+    let req = Req::from_args(&src.args);
+    if req.book {
+        return None;
+    }
+    let best_id = get_str(&pick_result["pick"], "offer_id");
+    let best = src.flights.iter().find(|o| o.id == best_id)?.clone();
+    let others: Vec<Offer> = src
+        .flights
+        .into_iter()
+        .filter(|o| o.id != best_id)
+        .take(RUNNER_UP_POOL)
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    let context = json!({"request": request, "best_match": flight_json(&best),
+                         "flights": others.iter().map(flight_json).collect::<Vec<_>>()});
+    Some(RunnerUps {
+        question: format!(
+            "The best match for the user's request is {}. Which of the other flights also meet the request well enough to \
+             offer as runner-ups? Choose up to {RUNNER_UPS_MAX}, best first; none when no other flight meets it.",
+            best.label
+        ),
+        context: context.to_string(),
+        choices: others.iter().map(|o| o.id.clone()).collect(),
+        title: format!(
+            "{} for {}",
+            choice_title(Kind::Flight),
+            searched_line(Kind::Flight, &req)
+        ),
+        best,
+        others,
+    })
+}
+
 struct PickFrom {
     args: Value,
     flights: Vec<Offer>,
@@ -1404,6 +1515,8 @@ pub struct ShopReq {
     pub stores: Vec<String>,
     /// the offer ids the model chose after a review result
     pub choices: Vec<String>,
+    /// where it ships (ISO 2): the country the user named, else the profile's home country (checked)
+    pub country: String,
 }
 
 impl ShopReq {
@@ -1432,6 +1545,7 @@ impl ShopReq {
             query: s_arg(a, "query"),
             stores: list_arg(a, "stores"),
             choices: list_arg(a, "choices"),
+            country: s_arg(a, "country"),
         }
     }
 }
