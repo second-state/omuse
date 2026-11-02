@@ -3538,7 +3538,7 @@ const HKG_SIN_DAY: &[(&str, &str, &str, &str, f64)] = &[
 #[tokio::test]
 async fn a_flight_search_gives_every_flight_to_the_model_whose_json_pick_is_shown_exactly() {
     // the user, 2026-11-02: "Find me the last flight that lands before midnight" got the cheapest and other
-    // suggestions. Now: the result lists every flight as JSON, the model answers with travel_pick {offer_id, runner_ups}, code
+    // suggestions. Now: the result lists every flight as JSON, the model answers with travel_pick {offer_ids}, code
     // shows exactly that flight
     let (rt, _d, seen) = scripted_rt(
         |body| {
@@ -3569,7 +3569,7 @@ async fn a_flight_search_gives_every_flight_to_the_model_whose_json_pick_is_show
                         .max_by_key(|f| get_str(&f["departure"], "time"))
                         .map(|f| get_str(f, "offer_id"))
                         .unwrap();
-                    call_msg("c2", "travel_pick", &json!({"offer_id": id}).to_string())
+                    call_msg("c2", "travel_pick", &json!({"offer_ids": [id]}).to_string())
                 }
                 "shown" => json!({"role": "assistant", "content": "The last flight that lands before midnight is SQ 895."}),
                 s => panic!("unexpected result {s}: {res}"),

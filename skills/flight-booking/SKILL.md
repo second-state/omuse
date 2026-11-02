@@ -75,10 +75,10 @@ Code does the work; you turn the user's words into the tool's arguments and the 
   follows as `travel_search_result` / `travel_book_result`.
 - `{"status": "pick_needed", "flights": [...]}` → every flight the search found (offer_id, departure and arrival with
   airport and local time, `arrives_days_later`, stops, price). Read them against the user's words and call
-  `travel_pick` once: `offer_id` = the flight that best meets the request ("the last flight that lands before
-  midnight" = the latest-leaving flight with `arrives_days_later` 0; the cheapest only when the user gave no
-  criterion), `runner_ups` = up to 3 other flights that also meet it, best first. Never a flight that breaks the
-  request. None meets the request → do not call it; say so.
+  `travel_pick` with the offer_ids of exactly the flights asked for, in the order to show: ONE id for a request that
+  names one flight ("the last flight that lands before midnight" = the latest-leaving flight with `arrives_days_later`
+  0), several only when the user asked for options. Never add a cheaper or "better" flight; the cheapest only when
+  the user gave no criterion. None meets the request → do not call it; say so.
 
 ## 3. Write the reply from the result
 - The facts in `show` are appended to the reply by code (names, prices with currency, links, references).

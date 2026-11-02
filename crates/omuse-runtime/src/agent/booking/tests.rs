@@ -176,12 +176,9 @@ fn search_then_pick(
     assert_eq!(listed["show"], json!([]));
     let ex = workflow::result_exchange(&t, tool, &listed);
     t.extend(ex);
-    // the model's one call: the best match and the runner-ups
-    let ids = choose(&listed);
-    let call = json!({"offer_id": ids.first().cloned().unwrap_or_default(), "runner_ups": ids.get(1..).unwrap_or(&[])});
-    let pa = pick_args(&t, call.clone(), env.profile);
+    let pa = pick_args(&t, json!({"offer_ids": choose(&listed)}), env.profile);
     t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_p", "type": "function",
-           "function": {"name": TRAVEL_PICK, "arguments": call.to_string()}}]}));
+           "function": {"name": TRAVEL_PICK, "arguments": json!({"offer_ids": pa["offer_ids"]}).to_string()}}]}));
     t.push(json!({"role": "tool", "tool_call_id": "call_p", "content": json!({"status": "running", "args": pa}).to_string()}));
     let (t, res) = run_call("call_p", TRAVEL_PICK, &pa, t, env, &answer);
     (t, listed, res)
@@ -935,14 +932,7 @@ fn the_options_are_mailed_only_with_a_connected_mail_account() {
             "Singapore Airlines SQ 638"
         ]
     );
-    // the best match with its link, the runner-ups in one line
-    let m = must(&res);
-    assert!(
-        m.contains("- Flight: Cathay Pacific CX 712")
-            && m.contains("- Runner-ups: Japan Airlines JL 36")
-            && m.contains("Singapore Airlines SQ 638"),
-        "{m}"
-    );
+    assert!(must(&res).contains("- Flight 3: Singapore Airlines SQ 638"));
     assert!(!names(&t).iter().any(|n| n == "gmail_send"));
     assert_eq!(
         res["mailed"],
@@ -2712,8 +2702,7 @@ fn the_earliest_arrival_and_a_list_of_options_are_shown_exactly_as_picked() {
             .unwrap()
     });
     assert_eq!(res["pick"]["offer_id"], "fl_uo777");
-    // "show me the direct Singapore Airlines flights": the best match and runner-ups, in the model's order, on one
-    // card (the best match marked), nothing else
+    // "show me the direct Singapore Airlines flights": several, in the model's order, on one card, nothing else
     let (t, _, res) = search_then_pick(TRAVEL_SEARCH, &a, "x", &Env::of(&p), answer, |_| {
         vec!["fl_sq895".into(), "fl_sq899".into(), "fl_sq883".into()]
     });
@@ -2731,24 +2720,14 @@ fn the_earliest_arrival_and_a_list_of_options_are_shown_exactly_as_picked() {
             "Singapore Airlines SQ 883"
         ]
     );
-    assert_eq!(
-        args_of(&t, "present_choices")[0]["options"][0]["note"],
-        "best match for your request"
-    );
     assert_eq!(res["pick"]["offer_id"], "fl_sq895");
     let m = must(&res);
     assert!(
-        m.contains("- Flight: Singapore Airlines SQ 895")
-            && m.contains("- Runner-ups: Singapore Airlines SQ 899")
-            && m.contains("Singapore Airlines SQ 883"),
+        m.contains("- Flight 1: Singapore Airlines SQ 895")
+            && m.contains("- Flight 3: Singapore Airlines SQ 883"),
         "{m}"
     );
     assert!(!m.contains("CX ") && !m.contains("TR 983"), "{m}");
-    // the call's own form: the best match and the runner-ups
-    let (_, _, res2) = search_then_pick(TRAVEL_SEARCH, &a, "x", &Env::of(&p), answer, |_| {
-        vec!["fl_sq895".into(), "fl_sq899".into()]
-    });
-    assert_eq!(res2["pick"]["offer_id"], "fl_sq895");
 }
 
 #[test]
