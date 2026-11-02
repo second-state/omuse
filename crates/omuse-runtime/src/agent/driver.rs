@@ -307,6 +307,13 @@ impl CardSpec {
     pub fn needs_trip(&self) -> bool {
         self.skill != "uk-eta"
     }
+
+    /// The card requires the flight that leaves the country: Taiwan's itinerary step (its "Expected Mode of Departure"
+    /// by air needs the departure flight's code and number, mapped from the live site 2026-11-02) — never invented, so
+    /// asked before the form opens (`needs_input`) when the user did not give it.
+    pub fn needs_departure_flight(&self) -> bool {
+        self.skill == "tw-arrival-card"
+    }
 }
 
 // ---------------------------------------------------------------- the workflow tool
@@ -357,6 +364,7 @@ invalid: fix the arguments and call again. Write the reply from the result, usin
             "purpose": {"type": "string", "enum": ["holiday", "business", "family", "study", "transit"]},
             "departure_date": date("the day the user leaves the country, when a return or onward flight or the user gives it"),
             "next_city": {"type": "string", "description": "the next city after the country, when an onward flight or the user gives it"},
+            "departure_flight_no": {"type": "string", "description": "the flight that LEAVES the country (the return or onward flight), when the user or a booking gives it: airline code and number (\"CI 51\")"},
             "occupation": {"type": "string", "description": "the user's job, only when they gave it — optional: a card that asks for it leaves the box for the user's review, so it is never asked for (needs_input lists everything that is)"}
         }),
         &["country"],
@@ -411,6 +419,7 @@ const FACT_KEYS: &[&str] = &[
     "departure_date",
     "next_city",
     "occupation",
+    "departure_flight_no",
 ];
 
 static FLIGHT_NO: LazyLock<Regex> =
@@ -521,6 +530,21 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
         }
     };
     put("flight_no", flight.clone());
+    let leave = s_arg(&a, "departure_flight_no");
+    let leave = if leave.is_empty() {
+        String::new()
+    } else {
+        match norm_flight(&leave) {
+            Some(f) => f,
+            None => {
+                problems.push(format!(
+                    "departure_flight_no: {leave:?} is not an airline code and a number (\"CI 51\")"
+                ));
+                String::new()
+            }
+        }
+    };
+    put("departure_flight_no", leave.clone());
     let arrival = match s_arg(&a, "arrival_date") {
         v if v.is_empty() => None,
         v => match date_of(&v) {
@@ -646,6 +670,12 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
             card.country
         ));
     }
+    if leave.is_empty() && card.needs_departure_flight() {
+        missing.push(format!(
+            "departure_flight_no (the flight leaving {} and its date: the card requires it)",
+            card.country
+        ));
+    }
     if !missing.is_empty() {
         if purpose.is_empty() {
             missing.push("purpose (holiday, business, family, study or transit)".into());
@@ -685,6 +715,7 @@ pub struct Trip {
     pub departure_date: String,
     pub next_city: String,
     pub occupation: String,
+    pub departure_flight_no: String,
 }
 
 impl Trip {
@@ -705,6 +736,7 @@ impl Trip {
             departure_date: g("departure_date"),
             next_city: g("next_city"),
             occupation: g("occupation"),
+            departure_flight_no: g("departure_flight_no"),
         }
     }
 
@@ -715,7 +747,7 @@ impl Trip {
             "origin_country": self.origin_country, "arrival_airport": self.arrival_airport, "airline": self.airline,
             "stay_name": self.stay_name, "stay_address": self.stay_address, "stay_kind": self.stay_kind,
             "purpose": self.purpose, "departure_date": self.departure_date, "next_city": self.next_city,
-            "occupation": self.occupation,
+            "occupation": self.occupation, "departure_flight_no": self.departure_flight_no,
         })
     }
 
@@ -1969,13 +2001,43 @@ mod tests {
         assert_eq!(c[0].name, "browser_navigate");
     }
 
+    /// Taiwan's itinerary requires the flight that leaves the country (arrival_cards2_real 2026-11-02: "Expected Mode
+    /// of Departure: Please choose an option." on step 3): never invented — asked before the form opens, and passed on
+    /// to the form function once given (a malformed one is the model's to fix).
+    #[test]
+    fn taiwan_asks_for_the_departure_flight_before_the_form_opens() {
+        let p = json!({});
+        let base = json!({"country": "Taiwan", "flight_no": "CI 52", "arrival_date": "2026-11-02",
+                          "stay_name": "Xinyi Park Hotel", "purpose": "holiday"});
+        match checked(base.clone(), &p, false, &[]) {
+            Checked::NeedsInput(m) => assert!(
+                m.iter().any(|x| x.starts_with("departure_flight_no")),
+                "{m:?}"
+            ),
+            other => panic!("not needs_input: {other:?}"),
+        }
+        let mut with = base.clone();
+        with["departure_flight_no"] = json!("ci51");
+        let a = valid(with, &p, false, &[]);
+        assert_eq!(a["departure_flight_no"], "CI 51");
+        assert_eq!(Trip::from_args(&a).args()["departure_flight_no"], "CI 51");
+        let mut bad = base;
+        bad["departure_flight_no"] = json!("tomorrow");
+        assert!(matches!(checked(bad, &p, false, &[]), Checked::Invalid(_)));
+        // a card that does not need it: no question
+        let sg = json!({"country": "Singapore", "flight_no": "SQ 231", "arrival_date": "2026-11-02",
+                        "stay_name": "Marina Bay Sands", "purpose": "holiday"});
+        assert!(matches!(checked(sg, &p, false, &[]), Checked::Valid(_)));
+    }
+
     #[test]
     fn every_card_fills_from_its_arguments_and_asks_nothing_after_the_page_opens() {
         let p = json!({});
         for c in CARDS {
             let args = valid(
                 json!({"country": c.country, "flight_no": "XX 100", "arrival_date": "2026-11-02",
-                       "stay_name": "Test Hotel", "purpose": "holiday", "occupation": "Engineer"}),
+                       "stay_name": "Test Hotel", "purpose": "holiday", "occupation": "Engineer",
+                       "departure_flight_no": "XX 101"}),
                 &p,
                 false,
                 &[],
@@ -2038,7 +2100,7 @@ mod tests {
         let p = json!({"email_personal": "michael@michaelyuan.com"});
         let args = valid(
             json!({"country": "Taiwan", "flight_no": "CI 52", "arrival_date": "2026-11-02", "origin_city": "Sydney",
-                   "stay_name": "Xinyi Park Hotel", "purpose": "holiday"}),
+                   "stay_name": "Xinyi Park Hotel", "purpose": "holiday", "departure_flight_no": "CI 51"}),
             &p,
             false,
             &[],

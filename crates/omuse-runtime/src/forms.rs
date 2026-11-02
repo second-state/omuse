@@ -1696,6 +1696,19 @@ fn tw_arrival_card(i: &Inputs) -> Vec<Op> {
             .trim_end_matches(" : ")
             .to_string()
     };
+    // the flight that leaves Taiwan (its "Expected Mode of Departure" by air requires its code and number): the same
+    // react-select as the arrival's; with the arrival's airline the same typed text, else the code alone
+    let (leave_airline, leave_number) = flight_parts(&i.arg("departure_flight_no"));
+    let leave_code = if leave_airline.is_empty() {
+        String::new()
+    } else {
+        format!("{leave_airline} :")
+    };
+    let leave_typed = if leave_airline == airline {
+        flight_typed.clone()
+    } else {
+        leave_airline.clone()
+    };
     vec![
         // the landing page: Submit Arrival Card → the notice's START → /submit (not there once on the form: skipped)
         choose("submit_card", "", "Submit Arrival Card"),
@@ -1741,6 +1754,9 @@ fn tw_arrival_card(i: &Inputs) -> Vec<Op> {
         radio("entry_mode", "arrivalTravelModeFlag", if airline.is_empty() { "" } else { "AIR" }),
         pick("flight_code", "#traveler1_arrivalFlightCode", &flight_typed, &flight_code),
         text("flight_number", "#traveler1_arrivalFlightNumber", &number),
+        radio("exit_mode", "departureTravelModeFlag", if leave_airline.is_empty() { "" } else { "AIR" }),
+        pick("exit_flight_code", "#traveler1_departureFlightCode", &leave_typed, &leave_code),
+        text("exit_flight_number", "#traveler1_departureFlightNumber", &leave_number),
         select("purpose", "#traveler1_reason", purpose),
         radio("accommodation_type", "hotelFlag", stay_flag),
         text("address", "#traveler1_address", &address),
@@ -2497,7 +2513,7 @@ mod tests {
         let facts = Facts::from_args(
             &json!({"flight_no": "CI 52", "arrival_date": "2026-11-02", "airline": "China Airlines",
                                              "stay_name": "Xinyi Park Hotel", "stay_address": "6 Songshou Road, Xinyi District, Taipei 110",
-                                             "stay_kind": "hotel", "purpose": "holiday"}),
+                                             "stay_kind": "hotel", "purpose": "holiday", "departure_flight_no": "CI 51"}),
         );
         let p = profile();
         let plan: Vec<Value> = tw_arrival_card(&Inputs {
@@ -2533,6 +2549,19 @@ mod tests {
             (json!("CI : CHINA AIRLINES"), json!("CI :"))
         );
         assert_eq!(by("flight_number")["value"], "52");
+        // the flight leaving Taiwan (required by the itinerary's departure mode AIR): the same airline's typed text
+        assert!(by("exit_mode")["sel"]
+            .as_str()
+            .unwrap_or("")
+            .contains("departureTravelModeFlag"));
+        assert_eq!(
+            (
+                by("exit_flight_code")["type"].clone(),
+                by("exit_flight_code")["value"].clone()
+            ),
+            (json!("CI : CHINA AIRLINES"), json!("CI :"))
+        );
+        assert_eq!(by("exit_flight_number")["value"], "51");
         assert_eq!(by("address")["value"], "XINYI PARK HOTEL");
         // the occupation NEXT requires (arrival_cards2_real 2026-11-02: "Occupation: Please fill in the field above"):
         // the fixed list's general business person by its value, before the traveller step's NEXT — also with no job

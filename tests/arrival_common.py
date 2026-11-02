@@ -69,9 +69,15 @@ class Card:
     trip: bool = True         # the request carries the trip (the UK ETA asks no trip)
     # the address of the form flow on the real site: the page handed over is inside it (not the home page)
     path: str = ""
+    # the flight that leaves the country, for a card that requires it (Taiwan's itinerary step: the departure by air
+    # needs its flight code and number); "" = one way
+    leave: str = ""
 
     def flight_text(self) -> str:
         o, d = self.origin, self.dest
+        if self.leave:
+            return (f"I fly {self.flight} from {o[0]} ({o[1]}) to {d[0]} ({d[1]}), arriving on {ARRIVE.isoformat()}, and "
+                    f"fly back on {self.leave} on {DEPART.isoformat()}.")
         return f"I fly {self.flight} from {o[0]} ({o[1]}) to {d[0]} ({d[1]}), arriving on {ARRIVE.isoformat()}, one way."
 
     def details(self) -> str:
@@ -111,7 +117,7 @@ CARDS = {
     "tw": Card("tw", "Please fill in my Taiwan Arrival Card for my trip to Taipei — it's a holiday.",
                "https://twac.immigration.gov.tw/", "CI 52",
                ("Sydney", "SYD"), ("Taipei Taoyuan", "TPE"), ("Xinyi Park Hotel", "6 Songshou Road, Xinyi District, Taipei 110"),
-               handover="email", email_code=True, then_form=True),
+               handover="email", email_code=True, then_form=True, leave="CI 51"),
     # four steps saved on Next: the page handed over is the declaration step
     "id": Card("id", "Please fill in my All Indonesia arrival card for my trip to Bali — it's a holiday.",
                "https://allindonesia.imigrasi.go.id/", "GA 715",
