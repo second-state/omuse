@@ -48,7 +48,8 @@ def links(label: str, a: U.Answer) -> None:
 async def main():
     async with U.User() as u:
         # 1. today's last flight that lands before midnight
-        a = await u.ask("What is today's last flight from Hong Kong to Singapore that arrives before mid-night?", label="flight")
+        # (this request is also the Travel bot's example in the UI — bots/travel.md, checked by bots.rs tests)
+        a = await u.ask("Find the last flight from HK to singapore tonight. It must arrive before mid-night.", label="flight")
         quiet("flight", a)
         links("flight", a)
 

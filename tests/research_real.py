@@ -30,8 +30,9 @@ def dead(url: str) -> str:
 
 async def main():
     async with U.User() as u:
-        a = await u.ask("Research the pros and cons of heat pumps versus gas boilers for heating a small house in the UK. "
-                        "Search the web and give me a short summary with links to your sources.", label="heatpump")
+        # (one literal: this request is also Main's example in the UI — bots/main.md, checked by bots.rs tests)
+        a = await u.ask("Research the pros and cons of heat pumps versus gas boilers for heating a small house in the UK. Search the web and give me a short summary with links to your sources.",
+                        label="heatpump")
         cited = sorted({x.rstrip(".;:") for x in a.links + URL.findall(a.text) if "127.0.0.1:8080" not in x})
         print(f"INFO cited {cited}")
         check("heatpump: the answer cites its sources as links", bool(cited), a.text[-600:])

@@ -47,8 +47,9 @@ async def entry(u: U.User) -> None:
 
 async def narita(u: U.User) -> None:
     await u.open_bot("Travel")
-    a = await u.ask("I land at Narita Terminal 1 tomorrow at about 7 in the morning with two big suitcases. How do I get to Tokyo Station — "
-                    "what time are the trains and how much does it cost?", label="narita", new_chat=False)
+    # (one literal: this request is also the Travel bot's example in the UI — bots/travel.md, checked by bots.rs tests)
+    a = await u.ask("I land at Narita Terminal 1 tomorrow at about 7 in the morning with two big suitcases. How do I get to Tokyo Station — what time are the trains and how much does it cost?",
+                    label="narita", new_chat=False)
     T2.answered("narita", a)
     line = next((x for x in a.block.splitlines() if re.search(r"Narita Express|N'?EX", x)), "")
     times = re.findall(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", line.split(":", 1)[-1])
