@@ -3782,7 +3782,26 @@ fn facts_the_card_catalogs_date_rows_fees_and_missing_cards() {
         "{:?}",
         unverified_cards_fact(&t, false)
     );
-    assert_eq!(unverified_cards_fact(&t[1..], false), None);
+    // cards_markets_real 2026-11-01: the user named the cards in the chat and the model never added them to the Vault
+    // during the run (the Vault got them when the request ended): no card of the user's is known as a catalog row, so
+    // the seed rows of the Singapore table the run read are said to be unverified — still a structured fact, still
+    // appended by code
+    assert_eq!(
+        unverified_cards_fact(&t[1..], false).as_deref(),
+        Some("The catalog's Singapore rows are unverified seeds; check them on the issuer's page.")
+    );
+    // a verified market's table alone (HK, US): nothing to say
+    let hk_table = crate::skills::BUILTIN
+        .get_file("credit-card-picker/cards/hk.md")
+        .and_then(|f| f.contents_utf8())
+        .unwrap();
+    assert_eq!(unverified_cards_fact(&[tool(hk_table)], false), None);
+    // a known card of the user's that is verified: the per-card rule decides, no market line
+    let verified = [
+        tool("- id=vlt_1 · Hang Seng Travel+ Visa Signature · issued in Hong Kong · card · card_id=hk-hang-seng-travel-visa-signature-card · UNKNOWN"),
+        tool(sg),
+    ];
+    assert_eq!(unverified_cards_fact(&verified, false), None);
 }
 
 #[test]
@@ -4519,4 +4538,198 @@ async fn stop_drops_a_tool_call_that_is_still_waiting() {
         .iter()
         .any(|m| get_str(m, "tool_call_id") == "c1"
             && get_str(m, "content").contains("task stopped")));
+}
+
+// ---------------------------------------------------------------- the compulsory workflow call (agent/required.rs)
+
+/// The script of a run in the Travel bot that loads the entry-requirements skill and answers without its workflow call;
+/// `obey`: whether the model makes the call when the request forces it (`tool_choice`).
+fn entry_script(obey: bool, arrive: String) -> impl Fn(&Value) -> Value + Send + Sync + 'static {
+    move |body: &Value| {
+        let sys = system_of(body);
+        if sys.starts_with("You check an assistant") {
+            return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
+        }
+        if let Some(r) = helper_reply(body) {
+            return r;
+        }
+        if forced_choice(body) {
+            // the forced request offers the required tool alone, by name
+            assert_eq!(offered(body), ["entry_requirements"], "{body}");
+            assert_eq!(
+                body["tool_choice"],
+                json!({"type": "function", "function": {"name": "entry_requirements"}})
+            );
+            if !obey {
+                return json!({"role": "assistant", "content": "You need a TDAC for Thailand."});
+            }
+            return call_msg(
+                "c2",
+                "entry_requirements",
+                &json!({"destinations": [{"place": "Bangkok", "arrive": arrive}]}).to_string(),
+            );
+        }
+        match tool_msgs(body).last() {
+            None => call_msg(
+                "c1",
+                "load_skill",
+                &json!({"name": "entry-requirements"}).to_string(),
+            ),
+            Some(m) if get_str(m, "tool_call_id").starts_with("res_") => {
+                json!({"role": "assistant", "content": "Here is what Thailand asks of you."})
+            }
+            // the answer without the workflow call
+            Some(_) => json!({"role": "assistant", "content": "You need a TDAC for Thailand."}),
+        }
+    }
+}
+
+/// Whether a request forces the tool choice.
+fn forced_choice(body: &Value) -> bool {
+    body.get("tool_choice")
+        .is_some_and(|c| c != "auto" && !c.is_null())
+}
+
+fn next_week() -> String {
+    (chrono::Local::now().date_naive() + chrono::Duration::days(7))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_skills_answer_without_its_workflow_call_is_not_taken_the_call_is_forced() {
+    // travel_info_real 2026-11-02: the entry skill was loaded and the model answered without looking the visa days up;
+    // code does not take that answer: the same request again with tool_choice forced to the skill's tool, the call
+    // runs its machine, and the reply's block carries the table's days and the card's official site
+    let (rt, _d, seen) =
+        scripted_rt(entry_script(true, next_week()), json!({"language": "en"})).await;
+    rt.store
+        .set_profile("nationality", "Australia", "user")
+        .unwrap();
+    let (t, evs) = run_in_bot(&rt, "travel", "What do I need to enter Thailand next week?").await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    let req = events_of(&evs, "workflow_required");
+    assert_eq!(req.len(), 1, "{evs:?}");
+    assert_eq!(req[0]["tools"], json!(["entry_requirements"]));
+    assert!(events_of(&evs, "workflow_required_unmet").is_empty());
+    assert_eq!(seen.lock().iter().filter(|b| forced_choice(b)).count(), 1);
+    let answer = get_str(&t, "result");
+    let (prose, block) = answer.rsplit_once("\n---\n").expect("the appended block");
+    // the answer without the call was dropped; the reply is the one written from the result
+    assert_eq!(prose.trim(), "Here is what Thailand asks of you.");
+    assert!(
+        block.contains("- Visa-free stay in Thailand (Australia passport): up to 30 days")
+            && block.contains("](https://tdac.immigration.go.th/)")
+            && block.contains("- Thailand Digital Arrival Card (TDAC): file from "),
+        "{answer}"
+    );
+    assert!(!block.contains("Not checked"), "{answer}");
+    // the dropped answer's text does not ride on the forced call
+    let tr = t["transcript"].as_array().unwrap();
+    assert!(tr.iter().any(|m| crate::agent::util::tool_calls(m)
+        .iter()
+        .any(|tc| get_str(tc, "id") == "c2")
+        && get_str(m, "content").is_empty()));
+}
+
+#[tokio::test]
+async fn a_forced_call_the_model_does_not_make_ends_with_the_fixed_not_checked_line() {
+    // the provider gives no call even when forced: the answer is kept and code appends the fixed line saying the
+    // check could not be done (never a claim that it was)
+    let (rt, _d, seen) =
+        scripted_rt(entry_script(false, next_week()), json!({"language": "en"})).await;
+    let (t, evs) = run_in_bot(&rt, "travel", "What do I need to enter Thailand next week?").await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    assert_eq!(events_of(&evs, "workflow_required").len(), 1);
+    assert_eq!(
+        events_of(&evs, "workflow_required_unmet")[0]["reason"],
+        "no_call"
+    );
+    assert_eq!(
+        seen.lock().iter().filter(|b| forced_choice(b)).count(),
+        1,
+        "one forced try when the model makes no call"
+    );
+    let answer = get_str(&t, "result");
+    let (prose, block) = answer.rsplit_once("\n---\n").expect("the appended block");
+    assert_eq!(prose.trim(), "You need a TDAC for Thailand.");
+    assert!(
+        block.contains("- Not checked: OMuse could not look up the entry requirements"),
+        "{answer}"
+    );
+}
+
+#[tokio::test]
+async fn a_forced_call_with_bad_json_goes_through_the_json_layer_to_needs_input() {
+    // the forced call's JSON is checked like any workflow call: an unreadable date → the planner's regeneration (no
+    // JSON here) → invalid → the model answers again without a valid call → forced once more → the second invalid is
+    // needs_input and the model asks the user — no fixed line, since the tool asked
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            let sys = system_of(body);
+            if sys.starts_with("You check an assistant") {
+                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let tools = tool_msgs(body);
+            if forced_choice(body) {
+                return call_msg(
+                    &format!("f{}", tools.len()),
+                    "entry_requirements",
+                    &json!({"destinations": [{"place": "Bangkok", "arrive": "2020-01-01"}]})
+                        .to_string(),
+                );
+            }
+            match tools.last() {
+                None => call_msg(
+                    "c1",
+                    "load_skill",
+                    &json!({"name": "entry-requirements"}).to_string(),
+                ),
+                Some(m) if get_str(m, "content").contains("needs_input") => {
+                    json!({"role": "assistant", "content": "When do you arrive in Bangkok?"})
+                }
+                Some(_) => json!({"role": "assistant", "content": "You need a TDAC."}),
+            }
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let (t, evs) = run_in_bot(&rt, "travel", "What do I need for Bangkok?").await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    assert_eq!(events_of(&evs, "workflow_required").len(), 2, "{evs:?}");
+    let calls = events_of(&evs, "workflow_call");
+    assert_eq!(calls[0]["result"]["status"], "invalid", "{calls:?}");
+    assert_eq!(calls[1]["result"]["status"], "needs_input", "{calls:?}");
+    assert!(!events_of(&evs, "json_regenerated").is_empty());
+    let answer = get_str(&t, "result");
+    assert!(
+        answer.starts_with("When do you arrive in Bangkok?"),
+        "{answer}"
+    );
+    assert!(!answer.contains("Not checked"), "{answer}");
+}
+
+#[tokio::test]
+async fn a_skill_without_a_workflow_tool_forces_nothing() {
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            assert!(!forced_choice(body), "{body}");
+            match tool_msgs(body).last() {
+                None => call_msg("c1", "load_skill", &json!({"name": "tokyo"}).to_string()),
+                Some(_) => json!({"role": "assistant", "content": "Tokyo tips."}),
+            }
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let (t, evs) = run_in_bot(&rt, "travel", "Tips for Tokyo?").await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    assert!(events_of(&evs, "workflow_required").is_empty());
+    assert_eq!(get_str(&t, "result"), "Tokyo tips.");
 }

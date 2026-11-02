@@ -245,6 +245,7 @@ fn local_tools() -> Vec<Value> {
     tools.extend(super::apdt::tool_schemas());
     tools.extend(super::trains::tool_schemas());
     tools.extend(super::flightstatus::tool_schemas());
+    tools.extend(super::entry::tool_schemas());
     // an unknown site's confirmation reference, read by the model after the hand-back and passed as JSON
     tools.push(super::confirm::schema());
     tools
