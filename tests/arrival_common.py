@@ -345,12 +345,22 @@ def card_checks(label: str, card: Card, to: Takeover, a: U.Answer, *, mailbox: b
           or a.shows("nothing has been submitted") or a.shows("Your step"), a.block[:300])
 
 
+# cards not run for now, with why (each prints a SKIP line; the card and its form function stay): the user's decision
+# 2026-11-02 — Indonesia and Cambodia stop early on the real site (Indonesia at step 3 of 4, Cambodia on the Profile
+# step) and hand over with the honest "stopped early" line; they are finished after 0.6.0
+DEFERRED = {"id": "deferred to after 0.6.0 (stops early on the real site)",
+            "kh": "deferred to after 0.6.0 (stops early on the real site)"}
+
+
 def run_cards(keys: list[str], *, mailbox: bool = False) -> None:
     """A suite of cards: one chat per card."""
     # OMUSE_E2E_ONLY=kr (run_in_docker.sh): only these cards, to rerun one with its trace
     only = os.environ.get("OMUSE_E2E_ONLY", "").strip()
     if only:
         keys = [k for k in keys if k in only.split(",")]
+    for k in [k for k in keys if k in DEFERRED]:
+        print(f"SKIP {k}: {DEFERRED[k]}")
+    keys = [k for k in keys if k not in DEFERRED]
     connected = world(mailbox=mailbox)
 
     async def main():

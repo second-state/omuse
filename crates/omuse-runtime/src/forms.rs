@@ -1604,6 +1604,12 @@ const TW_VISA_EXEMPT: &[&str] = &[
     "ISR",
 ];
 
+/// The Taiwan Arrival Card's occupation (`#traveler1_occupation`, a native select with a fixed list, read from the live
+/// site's bundle 2026-11-02): the general business person, option value "10" (" 商/執行長/總裁/BUSINESS/DIRECTOR/CEO").
+/// The user's decision (2026-11-02): every card with a fixed occupation list gets that list's general business-person
+/// option, by its fixed value — no model choice, no guess from the profile's job title.
+pub const TW_OCCUPATION_BUSINESS: &str = "10";
+
 /// Letters, digits, spaces and . , - only (Taiwan's address box), upper case.
 fn tw_text(s: &str) -> String {
     s.chars()
@@ -1718,8 +1724,7 @@ fn tw_arrival_card(i: &Inputs) -> Vec<Op> {
         text("dob", "#traveler1_birthDate", &date(i.birthday(), "%d/%m/%Y")),
         pick("nationality", "#traveler1_nation", &nat, &nat),
         // the country of birth (only from the profile) and of residence (the home country's code): the same list as the
-        // nationality, "AUS,AUSTRALIA" (a row not found leaves the box for the user). The occupation is a fixed list
-        // the user picks from (mapped 2026-11-02)
+        // nationality, "AUS,AUSTRALIA" (a row not found leaves the box for the user)
         wait(500),
         pick("place_of_birth", "#traveler1_birthPlace1", &birth, &birth),
         wait(500),
@@ -1727,6 +1732,8 @@ fn tw_arrival_card(i: &Inputs) -> Vec<Op> {
         radio("visa_type", "visaTypeRadio", visa),
         pick("country_code", "#traveler1_phoneCountryCode", &calling, &calling),
         text("mobile", "#traveler1_phoneNumber", &mobile),
+        // the occupation (required by NEXT): the list's general business person, by its fixed value
+        select("occupation", "#traveler1_occupation", TW_OCCUPATION_BUSINESS),
         text("email", "#traveler1_email", &i.email()),
         button("next_to_itinerary", "NEXT"),
         wait(2000),
@@ -2527,6 +2534,21 @@ mod tests {
         );
         assert_eq!(by("flight_number")["value"], "52");
         assert_eq!(by("address")["value"], "XINYI PARK HOTEL");
+        // the occupation NEXT requires (arrival_cards2_real 2026-11-02: "Occupation: Please fill in the field above"):
+        // the fixed list's general business person by its value, before the traveller step's NEXT — also with no job
+        // title in the profile
+        assert_eq!(
+            (
+                by("occupation")["op"].clone(),
+                by("occupation")["sel"].clone(),
+                by("occupation")["value"].clone()
+            ),
+            (json!("select"), json!("#traveler1_occupation"), json!("10"))
+        );
+        assert!(
+            at(&|o| o["field"] == "occupation") < at(&|o| o["field"] == "next_to_itinerary"),
+            "{plan:?}"
+        );
         // a nationality not on the visa-exempt list: the visa type is left for the user
         let p2 = json!({"name_en": "A B", "nationality": "India"});
         let plan2: Vec<Value> = tw_arrival_card(&Inputs {
