@@ -488,6 +488,8 @@ impl Shopify {
             .client
             .post(format!("{}/auth/access_token", self.auth))
             .timeout(Duration::from_secs(30))
+            // without a User-Agent Shopify's edge answers 403 "Access denied" (shopping_real 2026-11-02, from Docker)
+            .header("User-Agent", UA)
             .json(
                 &json!({"client_id": self.client_id, "client_secret": self.secret,
                           "grant_type": "client_credentials"}),
@@ -659,6 +661,37 @@ mod tests {
             _ => unreachable!(),
         };
         serde_json::from_str(s).unwrap()
+    }
+
+    /// The token request names us (User-Agent): Shopify's edge refuses one without (403 "Access denied" — every
+    /// shopping_real search said "token refused" on 2026-11-02).
+    #[tokio::test]
+    async fn the_token_request_carries_a_user_agent() {
+        use axum::{http::HeaderMap, routing::post, Json, Router};
+        let app = Router::new().route(
+            "/auth/access_token",
+            post(|h: HeaderMap| async move {
+                if h.get("user-agent").is_none() {
+                    return (axum::http::StatusCode::FORBIDDEN, Json(json!({})));
+                }
+                (
+                    axum::http::StatusCode::OK,
+                    Json(json!({"access_token": "t", "token_type": "Bearer"})),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let s = Shopify::new(
+            reqwest::Client::new(),
+            &base,
+            &base,
+            "",
+            "ua-test-id",
+            "secret",
+        );
+        assert_eq!(s.token().await.unwrap(), "t");
     }
 
     #[test]
