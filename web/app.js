@@ -375,6 +375,11 @@ async function deleteConv(id) {
   await loadConvs(); renderConvList();
   toast(T('已删除 Deleted'));
 }
+// what a workflow step is, beside its tool name in the task panel (travel_search is the request as JSON, not a search)
+const stepNote = n => ({
+  travel_search: T('你的请求转成的 JSON（不是搜索）'), travel_book: T('你的请求转成的 JSON（不是搜索）'),
+  flights_search: T('实际的航班搜索'), hotels_search: T('实际的酒店搜索'), travel_pick: T('模型从搜索结果中挑选'),
+})[n];
 // window.confirm is fine inside the app window
 function confirmInline(msg) { try { return window.confirm(msg); } catch (e) { return true; } }
 
@@ -877,7 +882,8 @@ function evLine(e) {
     case 'reasoning': body = h('details', null, h('summary', { class: 'muted' }, T('💭 推理 reasoning')), h('pre', null, d.text)); break;
     case 'message': body = h('span', null, '💬 ', d.text); break;
     case 'tool_call': body = h('div', null, d.sub ? '↳ ' : d.batch ? '⇶ ' : '🔧 ', d.lane ? h('span', { class: 'small muted' }, d.lane + ' ') : null,
-      h('span', { class: 'tool' }, d.name), h('pre', null, JSON.stringify(d.args, null, 1))); break;
+      h('span', { class: 'tool' }, d.name), stepNote(d.name) ? h('span', { class: 'small muted' }, ' — ' + stepNote(d.name)) : null,
+      h('pre', null, JSON.stringify(d.args, null, 1))); break;
     case 'parallel_calls': body = h('span', { class: 'muted' }, Tf("⇶ 同时执行 {0} 个调用：{1}", (d.calls || []).length, (d.calls || []).map(x => x.name).join(', '))); break;
     case 'tool_result': body = h('details', null, h('summary', null, (d.ok === false ? '⚠️ ' : '✅ ') + d.name + T(' 结果 result')), h('pre', null, d.preview)); break;
     case 'waiting': body = h('span', { style: 'color:var(--approve)' }, d.type === 'approval' ? Tf("🛡 等待审批：{0}", B((d.summary || {}).title || d.tool)) : Tf("🖐 等待接管：{0}", (d.reason || ''))); break;
