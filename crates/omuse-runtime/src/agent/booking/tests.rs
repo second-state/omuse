@@ -1339,6 +1339,66 @@ fn an_empty_search_is_nothing_found() {
 // ---------------------------------------------------------------- restaurants
 
 #[test]
+fn michelin_without_the_travel_connector_searches_the_web_and_says_so() {
+    // travel_ask_real 2026-11-02: no travel connector — the guide's search ran as "unknown tool" and the answer said
+    // "nothing found"
+    let p = profile();
+    let ask =
+        "I need to book a Michelin 3 star restaurant in Tokyo next Friday. What are my options?";
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "michelin", "city": "Tokyo", "date": "2026-11-06", "distinction": "3 stars"}),
+        ask,
+        &p,
+    );
+    let mut env = Env::of(&p);
+    env.available = vec!["web_search".into(), "places_search".into()];
+    let (t, res) = run(
+        TRAVEL_SEARCH,
+        &a,
+        started(TRAVEL_SEARCH, &a, ask),
+        &env,
+        |name, _, _| {
+            match name {
+        "web_search" => json!({"results": [
+            {"title": "Tokyo – the MICHELIN Guide 3 Stars", "url": "https://guide.michelin.com/en/tokyo-region/tokyo/restaurants/3-stars-michelin", "snippet": "Three Stars"}]})
+        .to_string(),
+        _ => "{}".into(),
+    }
+        },
+    );
+    assert!(
+        names(&t).iter().all(|n| !n.contains("michelin_search")),
+        "{:?}",
+        names(&t)
+    );
+    let q = sget(&args_of(&t, "web_search")[0], "query");
+    assert!(
+        q.contains("Michelin Guide") && q.contains("Tokyo") && q.contains("3 stars"),
+        "{q}"
+    );
+    assert_eq!(res["status"], "shown");
+    let m = must(&res);
+    assert!(m.contains("Michelin Guide search: not connected"), "{m}");
+    assert!(
+        m.contains("https://guide.michelin.com/en/tokyo-region/tokyo/restaurants/3-stars-michelin"),
+        "{m}"
+    );
+
+    // no web search either: said so, nothing searched
+    env.available = vec!["places_search".into()];
+    let (t, res) = run(
+        TRAVEL_SEARCH,
+        &a,
+        started(TRAVEL_SEARCH, &a, ask),
+        &env,
+        |_, _, _| "{}".into(),
+    );
+    assert!(args_of(&t, "web_search").is_empty());
+    assert_eq!(res["status"], "not_connected");
+}
+
+#[test]
 fn a_michelin_table_takes_the_next_candidate_when_full_and_the_deposit_is_confirmed() {
     let p = profile();
     let a = valid(

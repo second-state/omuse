@@ -2426,6 +2426,49 @@ fn last_after<'a>(transcript: &'a [Value], base: &str, after: usize) -> Option<(
         .rfind(|(_, m)| pos(transcript, m) > after)
 }
 
+/// Michelin restaurants without the travel connector's guide search: one web search for the guide's restaurants in the
+/// city, its pages shown as web pages (no table is booked from them); without web search either, said so.
+fn michelin_on_the_web(req: &Req, t: &[Value], m: &Machine, ids: &Ids, searched: &Value) -> Step {
+    let not_connected = S::fact(
+        "Michelin Guide search",
+        "米其林指南搜索",
+        "not connected (a travel connector on Connections) — these are web pages about it",
+    );
+    let Some((_, msg)) = calls_of(t, "web_search").into_iter().last() else {
+        if !m.available.iter().any(|n| n == "web_search") {
+            return Step::Done(json!({"status": "not_connected", "searched": searched,
+                "show": [S::fact("Michelin Guide search", "米其林指南搜索", "not connected (a travel connector on Connections)")],
+                "hints": []}));
+        }
+        let stars = if req.distinction.is_empty() {
+            String::new()
+        } else {
+            format!("{} ", req.distinction)
+        };
+        let query = format!("Michelin Guide {stars}restaurants {}", req.city);
+        return ids.calls(
+            "web_search",
+            json!({"query": query.trim(), "max_results": 8}),
+        );
+    };
+    let pages = web_pages(&data_of(msg));
+    if pages.is_empty() {
+        return Step::Done(json!({"status": "nothing_found", "searched": searched,
+            "show": [not_connected, S::fact("Nothing found", "没有找到结果", &searched_line(Kind::Michelin, req))],
+            "hints": []}));
+    }
+    let mut show = vec![not_connected];
+    show.extend(
+        pages
+            .iter()
+            .map(|p| S::link("Web page", "网页", &get_str(p, "title"), &get_str(p, "url"))),
+    );
+    Step::Done(
+        json!({"status": "shown", "source": "web", "searched": searched,
+                      "options": [], "web_pages": pages, "show": show, "hints": []}),
+    )
+}
+
 /// The tool to call for `base`: the native one when the catalog has it, else a travel MCP connector's
 /// (`mcp_<server>__<base>`), else the native name (`michelin_search` and `restaurant_availability` only exist on a
 /// connector: `mcp_travel__…` by default).
@@ -2546,6 +2589,15 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     let searched = req.searched(kind);
     // 1. one search, on the user's connector when the arguments say so (the data tools follow the search)
     let searches = calls_of(t, spec.search);
+    // the Michelin Guide's search lives on a travel connector only: without one, a web search for the guide's
+    // restaurants (travel_ask_real 2026-11-02: the connector's tool ran as "unknown tool", the answer said "nothing
+    // found")
+    if kind == Kind::Michelin && searches.is_empty() {
+        let tool = tool_for(spec.search, m.available, true);
+        if !m.available.is_empty() && !m.available.contains(&tool) {
+            return michelin_on_the_web(req, t, m, ids, &searched);
+        }
+    }
     let connector = req.use_connector
         || searches
             .last()
@@ -2570,7 +2622,10 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     if offers.is_empty() {
         // the native search found nothing priced: the user's travel connector next, once
         let mcp = tool_for(spec.search, m.available, true);
-        if mcp.starts_with("mcp_") && !search_name(t, search_msg).starts_with("mcp_") {
+        if mcp.starts_with("mcp_")
+            && (m.available.is_empty() || m.available.contains(&mcp))
+            && !search_name(t, search_msg).starts_with("mcp_")
+        {
             return ids.calls(&mcp, req.search_args(kind));
         }
         // the flight / hotel APIs failed and a search fell back to the web: the pages it read
