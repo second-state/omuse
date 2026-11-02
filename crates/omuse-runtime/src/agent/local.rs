@@ -236,6 +236,7 @@ request — keep it short and leave out what the request does not need. The skil
                 // a listing searched and not shown yet: the options first, the question after
                 let events = self.store.events(&tid, 0).unwrap_or_default();
                 if let Some(refusal) = super::guards::ask_before_listing(&events)
+                    .or_else(|| ask_before_any_skill(self.bot_of(t), &events))
                     .or_else(|| super::booking::ask_before_tool(&events))
                     .or_else(|| super::booking::ask_in_browser_use(&events))
                     .or_else(|| super::news::ask_before_tool(&events))
@@ -3168,6 +3169,26 @@ pub(crate) fn goal_args_from_trigger(a: &Value, success: &str) -> Value {
 }
 
 /// A code machine's own `present_choices` (`_code`, set only by the run loop for a `bkg_` call).
+/// `ask_user` in a one-off workflow bot's task (Travel, Shopping, Insurance) before any skill was loaded or any
+/// workflow tool called: refused once, as data — the request's skill and its tool come first, and the tool asks for
+/// what only the user can give (arrival_cards4_real 2026-11-02: "Do I need ETIAS for Paris?" got "What date do you
+/// arrive?" — entry_requirements needs no date). A second ask is let through.
+fn ask_before_any_skill(bot: &crate::bots::Bot, events: &[Value]) -> Option<Value> {
+    if !super::runtime::one_off(bot) {
+        return None;
+    }
+    let started = events.iter().any(|e| {
+        let ty = get_str(e, "type");
+        ty == "workflow_call"
+            || (ty == "tool_call" && get_str(&e["data"], "name") == "load_skill")
+            || (ty == "ask_user_refused" && get_str(&e["data"], "refused") == "load_skill_first")
+    });
+    (!started).then(|| {
+        json!({"refused": "load_skill_first",
+               "why": "load the skill for this request and call its workflow tool with what the user gave: the tool answers or lists what only the user can give (needs_input)"})
+    })
+}
+
 fn code_card_of(a: &Value) -> bool {
     a.get("_code").and_then(Value::as_bool) == Some(true)
 }
@@ -3204,6 +3225,28 @@ pub fn listed_vault_cards(text: &str) -> Vec<super::guards::SeenCard> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_question_before_any_skill_in_a_one_off_bot_is_refused_once() {
+        // arrival_cards4_real 2026-11-02: "Do I need ETIAS for Paris?" → "What date do you arrive?", no skill loaded
+        let ev = |ty: &str, data: Value| json!({"type": ty, "data": data});
+        let travel = crate::bots::get("travel").unwrap();
+        let r = ask_before_any_skill(travel, &[]).expect("refused");
+        assert_eq!(r["refused"], "load_skill_first");
+        // a skill loaded, a workflow called, or already refused once: let through
+        assert!(ask_before_any_skill(
+            travel,
+            &[ev(
+                "tool_call",
+                json!({"name": "load_skill", "args": {"name": "entry-requirements"}})
+            )]
+        )
+        .is_none());
+        assert!(ask_before_any_skill(travel, &[ev("workflow_call", json!({}))]).is_none());
+        assert!(ask_before_any_skill(travel, &[ev("ask_user_refused", r.clone())]).is_none());
+        // Main is no one-off bot
+        assert!(ask_before_any_skill(crate::bots::get("main").unwrap(), &[]).is_none());
+    }
 
     #[test]
     fn a_trigger_with_until_becomes_a_daily_goal() {
