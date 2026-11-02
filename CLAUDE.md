@@ -11,13 +11,15 @@ to do. When you fix a problem, always prefer a fix in code over a change to a sk
   answers), dates and deadlines, amounts, links, fees, which page is handed over and when, what an answer must
   contain (a reference number, a link, a fee), input validation and argument fixes.
 - Use the mechanisms already there: argument fixes where tool calls are parsed, Sentinel policy, a runtime step done
-  in code (the automatic hand-over), a final-answer guard that adds what is missing, a one-time note or hint, and
+  in code (the automatic hand-over), the result's `show` items that code appends to the answer, a one-time note or hint, and
   structured data (the card catalog's `fx_fee_pct`). See KNOWLEDGE.md, "Guarantees in code".
 - Only the hand-over (the final pay / submit / confirm click is the user's) and secrets (Vault values, passwords) are
   hard stops; other checks fix the input or add a note and let the action run.
 - Change instruction text only for what genuinely needs judgement, and when you do, check that code does not already
   decide it differently (skills must not contradict code).
 - Every fix gets a unit test that reproduces the failure, and the real-model suite that found it is rerun.
+- When a test fails, first decide whether the test is needed at all (see AGENTS.md, "Tests"): a check on the model's
+  optional wording, on pages or ids we invented, or a duplicate is removed, not fixed for.
 
 ## Natural language is the model's; code tools work only on JSON
 
@@ -41,8 +43,9 @@ JSON data:
   text into JSON. Use as little regex as possible: regex is for checking a value that is already structured (an ISO
   date, an email's shape, a reference's format), not for finding data in a page's text.
 
-The design that implements this rule (the workflow tools, the protocol in the run loop, `must_say`, how to add a
-machine) is `docs/json-tools.md`: read it before changing a skill, a code machine or the run loop.
+The design that implements this rule (the workflow tools, the protocol in the run loop, `show` — the facts the user
+must read, appended to the answer by code — and the optional `hints`, how to add a machine) is `docs/json-tools.md`:
+read it before changing a skill, a code machine or the run loop.
 
 ## Skills: code decides, the model chooses from JSON, prose only for the user
 
@@ -72,8 +75,11 @@ user's data, computed as a default, or asked once *before* the form opens); noth
 on the form's response — the only pauses are the user's own steps (sign-in, emailed code, CAPTCHA, photo, Submit/Pay).
 
 Natural language the model writes is used for ONE thing: the reply the user reads. Anything in a test that checks
-the model's words to decide the next step marks a step that belongs in code (or in a JSON choice). The final
-natural-language answer is itself reviewed once by the model, as the user would read it (`Runtime::review_answer`).
+the model's words to decide the next step marks a step that belongs in code (or in a JSON choice). Every fact the user
+must read (a reference, a link, an amount, a deadline) is a `show` item that code appends after the reply — never
+something the model must copy, and no review enforces facts in the prose; tests check the appended block, never the
+model's wording. The final natural-language answer is reviewed once by the model, as the user would read it, only for
+coherence and the language rule (`Runtime::review_answer`).
 
 ## Repository: second-state/omuse only
 

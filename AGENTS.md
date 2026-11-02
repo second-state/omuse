@@ -1,6 +1,6 @@
 # Notes for coding agents working on this repo
 
-**Natural language is the model's; code tools work only on JSON (hard rule).** The model turns the user's words (and any natural language: mail text, a page's prose) into a code tool's JSON arguments; the code tool uses only that JSON, runs every step in code and returns JSON; it never calls the model; the model words the result for the user. Known websites and their HTML are code's (form functions with fixed ids, the fixed parts of known pages). No regex or keyword list over natural language, anywhere. Read `docs/json-tools.md` (the design: workflow tools, the run-loop protocol, `must_say`, the API for adding a machine) before changing a skill, a machine or the run loop. The rule is in `CLAUDE.md` ("Natural language is the model's; code tools work only on JSON").
+**Natural language is the model's; code tools work only on JSON (hard rule).** The model turns the user's words (and any natural language: mail text, a page's prose) into a code tool's JSON arguments; the code tool uses only that JSON, runs every step in code and returns JSON; it never calls the model; the model words the result for the user. Known websites and their HTML are code's (form functions with fixed ids, the fixed parts of known pages). No regex or keyword list over natural language, anywhere. Read `docs/json-tools.md` (the design: workflow tools, the run-loop protocol, `show` — the facts code appends to the answer — and the optional `hints`, the API for adding a machine) before changing a skill, a machine or the run loop. The rule is in `CLAUDE.md` ("Natural language is the model's; code tools work only on JSON").
 
 **Skills are code first.** A skill uses code tools for every step that can be computed; a decision the model must make is a JSON multiple choice; the model's prose is only the reply to the user. The full rule is in `CLAUDE.md` ("Skills: code decides").
 
@@ -135,6 +135,9 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
 scenario (`tests/parallel_steps_e2e.py`).
 
 ## Tests
+
+**When a test fails, first decide whether the test is needed at all.** Keep it only if it checks something real from the user's point of view: real pages and real data, or a code path whose input and output are structured. Remove it (and say so) when it checks the model's optional wording, depends on pages or ids we invented (a stand-in's confirmation page, a made-up shop's selectors), or duplicates another check. A test on our own fake pages is a fake test, never an e2e test, and is listed as such. Only a test worth keeping gets the product fixed for it.
+
 
 - Rust: `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --check`.
 - Full local suite: `tests/run_in_docker.sh` (fresh stack per suite). After every suite `tests/args_guard.py` checks
