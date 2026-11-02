@@ -74,6 +74,60 @@ pub fn price_cap(a: &Value, key: &str) -> Option<i64> {
         .map(|m| m.floor() as i64)
 }
 
+/// The request's local time window, in minutes after midnight (local at each airport): the model's JSON fields
+/// `depart_after` / `depart_before` and `arrive_after` / `arrive_before` (HH:MM). A side the request does not limit
+/// (no field, a value that is no HH:MM, or the whole day) is `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeWindow {
+    pub depart: Option<(u32, u32)>,
+    pub arrive: Option<(u32, u32)>,
+}
+
+fn hhmm(a: &Value, k: &str) -> Option<u32> {
+    let s = get_str(a, k);
+    let (h, m) = s.trim().split_once(':')?;
+    let (h, m): (u32, u32) = (h.trim().parse().ok()?, m.trim().parse().ok()?);
+    (h < 24 && m < 60).then_some(h * 60 + m)
+}
+
+pub fn time_window(a: &Value) -> TimeWindow {
+    let side = |after: &str, before: &str| {
+        let (from, to) = (hhmm(a, after), hhmm(a, before));
+        if from.is_none() && to.is_none() {
+            return None;
+        }
+        let (from, to) = (from.unwrap_or(0), to.unwrap_or(23 * 60 + 59));
+        (from <= to && (from, to) != (0, 23 * 60 + 59)).then_some((from, to))
+    };
+    TimeWindow {
+        depart: side("depart_after", "depart_before"),
+        arrive: side("arrive_after", "arrive_before"),
+    }
+}
+
+/// The window as Google Flights' `outbound_times` (SerpApi: two or four comma-separated hours, each the beginning of an
+/// hour — `4,18` = departing 4:00 AM–7:00 PM, `4,18,3,19` adds arriving 3:00 AM–8:00 PM): the start's hour, and the
+/// hour the end falls in (an end on the hour, the hour before). `None` without a window.
+pub fn outbound_times(a: &Value) -> Option<String> {
+    let w = time_window(a);
+    let hours = |(from, to): (u32, u32)| {
+        let end = if to % 60 == 0 && to > 0 {
+            to / 60 - 1
+        } else {
+            to / 60
+        };
+        (from / 60, end.max(from / 60))
+    };
+    match (w.depart.map(hours), w.arrive.map(hours)) {
+        (None, None) => None,
+        (Some((d1, d2)), None) => Some(format!("{d1},{d2}")),
+        (d, Some((a1, a2))) => {
+            let (d1, d2) = d.unwrap_or((0, 23));
+            Some(format!("{d1},{d2},{a1},{a2}"))
+        }
+    }
+}
+
 /// What was searched, in the words the answer should use — appended to every flights result so the cabin, the
 /// stop limit and the date the user asked for are never mixed up with another search.
 pub fn searched(a: &Value, from: &str, to: &str) -> Value {
@@ -90,7 +144,18 @@ pub fn searched(a: &Value, from: &str, to: &str) -> Value {
         None => "any number of stops",
     };
     let ret = get_str(a, "return_date");
-    json!({
+    let mut times = Map::new();
+    for k in [
+        "depart_after",
+        "depart_before",
+        "arrive_after",
+        "arrive_before",
+    ] {
+        if hhmm(a, k).is_some() {
+            times.insert(k.into(), json!(get_str(a, k).trim()));
+        }
+    }
+    let mut out = json!({
         "origin": from, "destination": to, "date": get_str(a, "date"),
         "trip": if ret.is_empty() { "one way".to_string() } else { format!("round trip, return {ret}") },
         "adults": people(a, "adults", 1, 9),
@@ -99,7 +164,12 @@ pub fn searched(a: &Value, from: &str, to: &str) -> Value {
         "rule": format!("every offer below is a {cabin} fare with {stops}; answer in these terms — name the cabin ({cabin}) and the stop limit in the answer — and if the user asked for a different cabin, date or stop limit, search again instead of presenting these{}{}",
             if cabin == "economy" { String::new() } else { format!("; an itinerary whose main legs are in this cabin but with a lower-cabin leg (a short economy connection, `cabin_mix`) counts as a {cabin} itinerary — keep it, and say which legs are in which cabin") },
             if pref_list(a, "airlines").is_empty() { "" } else { "; this search used the user's preferred airlines (offers marked preferred are on them) and is the only one — do not search again without them; when no preferred offer is good (preferred_found 0, or none fits the request), answer with what was found and ask whether to search all airlines" }),
-    })
+    });
+    // the local time window the search was limited to (the source's own filter, by the hour)
+    if !times.is_empty() {
+        out["times"] = Value::Object(times);
+    }
+    out
 }
 
 fn join_ids(ids: &[u64]) -> String {
@@ -1199,6 +1269,10 @@ impl SerpApi {
         if let Some(st) = stops_param(a) {
             params.push(("stops", st.to_string()));
         }
+        // the user's time window (the model's JSON) as Google Flights' own departure / arrival hour filter
+        if let Some(t) = outbound_times(a) {
+            params.push(("outbound_times", t));
+        }
         if let Some(m) = price_cap(a, "max_price") {
             params.push(("max_price", m.to_string()));
         }
@@ -1707,6 +1781,36 @@ mod tests {
         assert_eq!(m["by_date"][2]["count"], 0);
         assert_eq!(m["searched"]["dates"], "2026-12-01 to 2026-12-03 (3 days)");
         assert_eq!(m["searched"]["cabin"], "business");
+    }
+
+    #[test]
+    fn the_users_time_window_becomes_google_flights_outbound_times() {
+        // "lands before midnight", narrowed by the model to arrivals from 18:00: arrival hours 18–23, any departure
+        let a = json!({"arrive_after": "18:00", "arrive_before": "23:59"});
+        assert_eq!(outbound_times(&a).as_deref(), Some("0,23,18,23"));
+        // departures only: two numbers; an end on the hour takes the hour before
+        let a = json!({"depart_after": "06:30", "depart_before": "12:00"});
+        assert_eq!(outbound_times(&a).as_deref(), Some("6,11"));
+        // both sides
+        let a = json!({"depart_after": "17:00", "arrive_before": "22:30"});
+        assert_eq!(outbound_times(&a).as_deref(), Some("17,23,0,22"));
+        // no time words, the whole day, a value that is no time: no filter
+        for a in [
+            json!({}),
+            json!({"depart_after": "00:00", "depart_before": "23:59"}),
+            json!({"arrive_before": "midnight"}),
+            json!({"depart_after": "20:00", "depart_before": "08:00"}),
+        ] {
+            assert_eq!(outbound_times(&a), None, "{a}");
+        }
+        // the window is echoed in what was searched
+        let s = searched(
+            &json!({"date": "2026-11-03", "arrive_before": "23:59"}),
+            "HKG",
+            "SIN",
+        );
+        assert_eq!(s["times"], json!({"arrive_before": "23:59"}));
+        assert!(searched(&json!({}), "HKG", "SIN").get("times").is_none());
     }
 
     #[test]

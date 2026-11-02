@@ -2061,8 +2061,15 @@ const HKG_SIN: &[(&str, &str, &str, &str, u64, f64)] = &[
 ];
 
 fn hkg_sin_google() -> String {
+    hkg_sin_google_arriving_from(0)
+}
+
+/// The day as Google Flights answers it with `outbound_times` …,`hour`,23: the flights whose arrival HOUR (local, any
+/// date — the filter knows no day) is `hour` or later.
+fn hkg_sin_google_arriving_from(hour: u32) -> String {
     let offers: Vec<Value> = HKG_SIN
         .iter()
+        .filter(|(_, _, _, arr, _, _)| arr[11..13].parse::<u32>().unwrap() >= hour)
         .map(|(id, nos, dep, arr, stops, price)| {
             let nos: Vec<&str> = nos.split(", ").collect();
             let airline = match &nos[0][..2] {
@@ -2111,32 +2118,51 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
     // midnight" → OMuse showed the cheapest and other suggestions, none of them the last flight
     let p = json!({"home_city": "HKG", "home_country": "HK"});
     let ask = "I need to go from HK to singapore tomorrow. Find me the last flight that lands before midnight";
+    // the model copies "lands before midnight" (arrive_before 23:59) and narrows "the last" to the evening
     let a = valid(
         TRAVEL_SEARCH,
-        json!({"kind": "flight", "origin": "HKG", "destination": "Singapore", "date": "2026-11-03"}),
+        json!({"kind": "flight", "origin": "HKG", "destination": "Singapore", "date": "2026-11-03",
+               "arrive_after": "18:00", "arrive_before": "23:59"}),
         ask,
         &p,
     );
     let mut env = Env::of(&p);
     env.available = vec!["flights_search".into(), "flight_offer".into()];
+    // the source answers by its own time filter (the window in the search's arguments)
+    let answer = |name: &str, args: &Value, _: &[Value]| -> String {
+        match name {
+            "flights_search" => match sget(args, "arrive_after").as_str() {
+                "18:00" => hkg_sin_google_arriving_from(18),
+                _ => hkg_sin_google(),
+            },
+            "flight_offer" => json!({"options": [{"book_with": "Singapore Airlines", "price": 5915, "currency": "HKD"}]}).to_string(),
+            _ => "{}".into(),
+        }
+    };
     let (t, listed, res) = search_then_pick(
         TRAVEL_SEARCH,
         &a,
         ask,
         &env,
-        |name, _, _| {
-            match name {
-            "flights_search" => hkg_sin_google(),
-            "flight_offer" => json!({"options": [{"book_with": "Singapore Airlines", "price": 5915, "currency": "HKD"}]}).to_string(),
-            _ => "{}".into(),
-        }
-        },
+        answer,
         last_landing_before_midnight,
     );
-    // no sort asked of the API; EVERY flight of the day goes to the model, with structured times
-    let search = &args_of(&t, "flights_search")[0];
+    // ONE search, the window in its arguments (the source's own time filter); no sort asked of the API
+    let searches = args_of(&t, "flights_search");
+    assert_eq!(searches.len(), 1);
+    let search = &searches[0];
     assert!(search.get("sort").is_none(), "{search}");
-    assert_eq!(listed["count"], HKG_SIN.len());
+    assert_eq!(
+        (
+            search["arrive_after"].as_str(),
+            search["arrive_before"].as_str()
+        ),
+        (Some("18:00"), Some("23:59"))
+    );
+    assert!(search.get("depart_after").is_none());
+    assert_eq!(listed["searched"]["arrive_before"], "23:59");
+    // every flight of the windowed result goes to the model (the evening's arrivals): no cut
+    assert_eq!(listed["count"], 5, "{listed}");
     let f = |id: &str| {
         listed["flights"]
             .as_array()
@@ -2152,9 +2178,6 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
     );
     assert_eq!(f("fl_sq895")["arrival"]["time"], "2026-11-03 22:50");
     assert_eq!(f("fl_sq895")["arrives_days_later"], 0);
-    // 00:20 and 00:30 the next day do not land before midnight
-    assert_eq!(f("fl_cx715")["arrives_days_later"], 1);
-    assert_eq!(f("fl_uo777")["arrives_days_later"], 1);
     // in departure order, not price order
     let deps: Vec<String> = listed["flights"]
         .as_array()
@@ -2189,6 +2212,91 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
     }
     // the pick's sellers (Google Flights) are read for that flight only
     assert_eq!(args_of(&t, "flight_offer")[0]["offer_id"], "fl_sq895");
+    // the block names what was searched, the window included
+    assert!(
+        m.contains("- Searched: HKG to SIN on 2026-11-03, economy, 1 adult, arriving 18:00–23:59"),
+        "{m}"
+    );
+
+    // the model copies only "lands before midnight": one normal search of the whole day; the next-day arrivals are
+    // marked so, and the pick is the same
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03", "arrive_before": "23:59"}),
+        ask,
+        &p,
+    );
+    let (t, listed, res) = search_then_pick(
+        TRAVEL_SEARCH,
+        &a,
+        ask,
+        &env,
+        answer,
+        last_landing_before_midnight,
+    );
+    assert_eq!(args_of(&t, "flights_search").len(), 1);
+    assert_eq!(listed["count"], HKG_SIN.len());
+    let f = |id: &str| {
+        listed["flights"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["offer_id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    // 00:20 and 00:30 the next day do not land before midnight
+    assert_eq!(f("fl_cx715")["arrives_days_later"], 1);
+    assert_eq!(f("fl_uo777")["arrives_days_later"], 1);
+    assert_eq!(res["pick"]["offer_id"], "fl_sq895");
+}
+
+#[test]
+fn a_time_window_must_be_hh_mm_and_belongs_to_flights_only() {
+    let p = profile();
+    let texts: Vec<String> = Vec::new();
+    let cx = Ctx {
+        profile: &p,
+        today: today(),
+        user_texts: &texts,
+        transcript: &[],
+    };
+    match check(
+        TRAVEL_SEARCH,
+        &json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03", "depart_after": "7:05", "arrive_before": "midnight"}),
+        &cx,
+    ) {
+        Checked::Invalid(p) => assert!(p.iter().any(|x| x.starts_with("arrive_before")), "{p:?}"),
+        other => panic!("{other:?}"),
+    }
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03", "depart_after": "7:05"}),
+        "x",
+        &p,
+    );
+    assert_eq!(a["depart_after"], "07:05");
+    assert_eq!(
+        Req::from_args(&a).search_args(Kind::Flight)["depart_after"],
+        "07:05"
+    );
+    // no time words: nothing in the search
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03"}),
+        "x",
+        &p,
+    );
+    let s = Req::from_args(&a).search_args(Kind::Flight);
+    assert!(TIME_KEYS.iter().all(|k| s.get(*k).is_none()), "{s}");
+    // a hotel never takes it
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "hotel", "city": "Tokyo", "date": "2026-12-03", "check_out": "2026-12-05", "arrive_after": "18:00"}),
+        "x",
+        &p,
+    );
+    assert!(a.get("arrive_after").is_none());
 }
 
 #[test]

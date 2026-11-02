@@ -14,7 +14,9 @@
 //!   removed;
 //! * currency: not a three-letter code → removed (the tool's default); airlines and brands: a list of names, empty and
 //!   repeated ones dropped; dates written `2026/11/20` or `2026-11-5` → `2026-11-20`, `2026-11-05`;
-//! * `max_results` of the web searches: not 1–20 → 8.
+//! * `max_results` of the web searches: not 1–20 → 8;
+//! * a flight's time window (`depart_after`, `depart_before`, `arrive_after`, `arrive_before`): HH:MM (`7:5` → `07:05`),
+//!   anything else removed (no limit on that side).
 //!
 //! What cannot be guessed is refused with a message that says how to fix it (`Err`): a missing or impossible date, a
 //! date in the past, a return before the departure, a range that ends before it starts, check-out on or before
@@ -380,6 +382,33 @@ pub fn validate(tool: &str, args: &Value, today: NaiveDate) -> Result<Checked, S
             );
             v.currency();
             v.names("airlines");
+            // the local time window: HH:MM (7:05 → 07:05), else removed (no limit on that side)
+            for k in [
+                "depart_after",
+                "depart_before",
+                "arrive_after",
+                "arrive_before",
+            ] {
+                if !v.m.contains_key(k) {
+                    continue;
+                }
+                let t = text(&v.m, k);
+                let hm = t
+                    .split_once(':')
+                    .and_then(|(h, m)| {
+                        Some((h.trim().parse::<u32>().ok()?, m.trim().parse::<u32>().ok()?))
+                    })
+                    .filter(|(h, m)| *h < 24 && *m < 60);
+                match hm {
+                    Some((h, m)) => {
+                        let norm = format!("{h:02}:{m:02}");
+                        if t != norm {
+                            v.set(k, json!(norm));
+                        }
+                    }
+                    None => v.drop(k, "removed (not a time of day HH:MM: no limit)"),
+                }
+            }
         }
         "flight_offer" => {
             v.need("offer_id", "use an offer_id from flights_search")?;
@@ -566,6 +595,23 @@ mod tests {
                           "adults": 2, "max_price": 900, "cabin": "business", "stops": "any", "currency": "SGD"});
         let c = ok("flights_search", good.clone());
         assert_eq!((c.args, c.fixed.len()), (good, 0));
+    }
+
+    #[test]
+    fn flights_time_window_is_hh_mm_or_removed() {
+        let c = ok(
+            "flights_search",
+            json!({"origin": "HKG", "destination": "SIN", "date": "2026-12-03",
+                   "depart_after": "7:5", "arrive_before": "23:59", "arrive_after": "evening"}),
+        );
+        assert_eq!(c.args["depart_after"], "07:05");
+        assert_eq!(c.args["arrive_before"], "23:59");
+        assert!(c.args.get("arrive_after").is_none());
+        assert!(
+            c.fixed.iter().any(|f| f.starts_with("arrive_after")),
+            "{:?}",
+            c.fixed
+        );
     }
 
     #[test]

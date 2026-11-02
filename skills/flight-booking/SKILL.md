@@ -51,6 +51,11 @@ Code does the work; you turn the user's words into the tool's arguments and the 
   BUE = Buenos Aires (EZE, AEP)
 - `cabin`: business for "business class / C class / lie-flat", first, premium_economy, else economy. `nonstop: true`
   for "direct / nonstop". `party`: the number of adults when the user said it. `max_price`: the budget per adult.
+- Time words → the window, HH:MM local at each airport: `depart_after` / `depart_before` ("after 6 pm" → 18:00,
+  "before noon" → 12:00), `arrive_after` / `arrive_before` ("lands before midnight" → `arrive_before` 23:59, "by 8 pm" →
+  20:00). For "the last flight …" you may add `arrive_after` / `depart_after` 18:00 so the evening's flights are in the
+  search; for "the first flight" `depart_before` 12:00. No time words: leave them out. The search filters by the hour;
+  you still pick from its flights.
 - `airlines`: the airlines or alliances the user asked for ("on Singapore Airlines", "Star Alliance so I earn miles");
   leave it out to use the profile's standing preference (code adds it). `all_airlines: true` when the user asks for
   every airline ("any airline", "not just Star Alliance").

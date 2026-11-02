@@ -103,9 +103,13 @@ registration) and compacts the itineraries — airlines, flight numbers, local t
 
 **Every flight of the day, the model's pick (2026-11-02).** "Find me the last flight that lands before midnight" got
 the cheapest and other suggestions: Kiwi.com answers only 12–15 itineraries per request (the cheapest), Google's list
-was cut at 12, and the booking machine sorted by price. Now the search fetches every flight — Google Flights with
-`deep_search` and no cut; Kiwi.com, for one day, hour by hour of departure (`dtime_from` / `dtime_to`, 6 at a time; a
-full hour asked again for direct flights; merged by Kiwi's `id`) — and `travel_search` / `travel_book` without a pick
+was cut at 12, and the booking machine sorted by price. Now the model turns the request's time words into the search's
+JSON window (`depart_after` / `depart_before` / `arrive_after` / `arrive_before`, HH:MM local: "lands before midnight" →
+`arrive_before` 23:59, and for "the last flight" it may narrow to `arrive_after` 18:00), and code passes it to each
+source's own time filter in the ONE search — Google Flights' `outbound_times` (departure / arrival hour ranges), Kiwi's
+`dtime_from` / `dtime_to` / `atime_from` / `atime_to` (hours; an end rounded up, an end after 23:00 no end: checked on
+mcp.kiwi.com 2026-11-02, `dtime_to` h = up to h:00). No time words: one normal search. Google Flights also asks
+`deep_search` and nothing is cut; no price sort is asked. `travel_search` / `travel_book` without a pick
 return them all as JSON (`status: pick_needed`: offer_id, departure and arrival with airport and local time from the
 APIs' own fields, `arrives_days_later`, stops, price). The model answers with `travel_pick {offer_ids}` (offered only on
 that reply turn; ids checked against the search); code shows exactly those flights — one flight: no choice card, its
