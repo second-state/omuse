@@ -6,10 +6,12 @@ profile: nationality
 # Entry requirements / 入境准备
 
 Rules change often and depend on the passport. Facts below were checked in October 2026 and carry that date. Call
-`visa_rules` with the destinations first: its JSON gives each one's official page and, where the official table has
-the passport, the visa-free days (code appends its show facts to the answer). Before quoting any other rule, browser_read the
-official page named here and say the date you checked. A fee for an arrival card is
-always a scam — only the government sites named here.
+`entry_requirements` first, ONE call with every destination of the trip in order (`place`, `arrive`, `leave` as
+YYYY-MM-DD; the nationality defaults to the profile's): code looks up each destination's visa-free days in the official
+table with its official page, and its electronic arrival card — the official site and the day its filing window opens —
+and appends those facts to your answer. Its `reminders` are the days to file each card. A final answer without that
+call is not taken. Before quoting any other rule, browser_read the official page named here and say the date you
+checked. A fee for an arrival card is always a scam — only the government sites named here.
 
 ## 1. What you need from the user (profile / memory first, then ask once)
 Passport nationality: call profile_get (field `nationality`) first, then memory_search "passport" — never ask the user
@@ -47,9 +49,9 @@ multi-year).
 - **Onward / return ticket and hotel proof** are asked for at some borders; have the booking emails ready.
 
 ## 3. Act
-- A timed plan: "file TDAC on <arrival−2>", "file SGAC on <arrival−2>", "apply K-ETA now (takes up to 72 h)",
-  "Yakkan Shoumei by <date>". Offer schedule_create reminders (one per item) and calendar notes; create them only
-  when the user says yes.
+- A timed plan from the `entry_requirements` result: each card on its `reminders` day ("file the TDAC on <on>"),
+  "apply K-ETA now (takes up to 72 h)", "Yakkan Shoumei by <date>". When the user asks for reminders, schedule_create
+  one per item on that day; otherwise offer them (and calendar notes) and create them only when the user says yes.
 - Forms that need passport data: fill only the Singapore card yourself (`sg-arrival-card`); for the others give the
   official link and the list of values the user will need (from mail / profile), unless the user asks you to fill a
   specific one — then the same rules as the Singapore skill (vault for the passport number, confirm before submit,

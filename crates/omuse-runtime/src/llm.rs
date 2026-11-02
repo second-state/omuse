@@ -406,6 +406,9 @@ pub struct ChatOpts {
     /// Where the answer goes while the model writes it (`stream: true`): the visible text so far, each time it
     /// grows. `None` = one request, one reply. See [`StreamDelta`].
     pub stream_to: Option<tokio::sync::mpsc::UnboundedSender<StreamDelta>>,
+    /// The request's `tool_choice` when tools are sent (OpenAI format: `"required"`, or `{"type": "function",
+    /// "function": {"name": …}}` for one tool); `None` = `"auto"`. An endpoint that rejects it gets `"auto"`.
+    pub tool_choice: Option<Value>,
 }
 
 impl Default for ChatOpts {
@@ -418,6 +421,7 @@ impl Default for ChatOpts {
             model: None,
             no_think: false,
             stream_to: None,
+            tool_choice: None,
         }
     }
 }
@@ -1009,7 +1013,10 @@ impl Llm {
         let has_tools = tools.is_some_and(|t| !t.is_empty());
         if let Some(t) = tools.filter(|t| !t.is_empty()) {
             body.insert("tools".into(), Value::Array(t.to_vec()));
-            body.insert("tool_choice".into(), json!("auto"));
+            body.insert(
+                "tool_choice".into(),
+                o.tool_choice.clone().unwrap_or_else(|| json!("auto")),
+            );
         }
         // fast mode and reasoning, in the OpenAI request format (the settings in force decide: the config's for
         // the system's models, the user's own in Settings → Models)
@@ -1169,6 +1176,12 @@ impl Llm {
                 {
                     // an endpoint that does not know service_tier / reasoning_effort: the request without it
                     body.remove(*k);
+                    continue;
+                } else if r.text.contains("tool_choice")
+                    && body.get("tool_choice").is_some_and(|c| c != "auto")
+                {
+                    // an endpoint that cannot force a tool: the plain choice (the caller sees no call and says so)
+                    body.insert("tool_choice".into(), json!("auto"));
                     continue;
                 } else if body.contains_key("chat_template_kwargs") && !stripped_kwargs {
                     stripped_kwargs = true;

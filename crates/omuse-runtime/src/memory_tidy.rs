@@ -307,6 +307,7 @@ async fn plan_llm(
             model: None,
             no_think: true,
             stream_to: None,
+            tool_choice: None,
         };
         let data = match llm
             .chat(&[json!({"role": "user", "content": prompt})], None, &opts)
@@ -531,6 +532,7 @@ pub async fn plan_classify(
             model: None,
             no_think: true,
             stream_to: None,
+            tool_choice: None,
         };
         let data = match llm
             .chat(&[json!({"role": "user", "content": prompt})], None, &opts)
