@@ -141,8 +141,12 @@ pub fn spec_of(kind: Kind) -> &'static BookingSpec {
 pub const TRAVEL_SEARCH: &str = "travel_search";
 pub const TRAVEL_BOOK: &str = "travel_book";
 pub const SHOP_ORDER: &str = "shop_order";
+/// The model's pick over a flight search's flights (`status: pick_needed`): the offer ids, as JSON.
+pub const TRAVEL_PICK: &str = "travel_pick";
 /// The workflow tools this machine runs.
-pub const TOOLS: [&str; 3] = [TRAVEL_SEARCH, TRAVEL_BOOK, SHOP_ORDER];
+pub const TOOLS: [&str; 4] = [TRAVEL_SEARCH, TRAVEL_BOOK, SHOP_ORDER, TRAVEL_PICK];
+/// The status of a flight search's result that lists every flight found for the model to pick from.
+pub const PICK_NEEDED: &str = "pick_needed";
 
 /// The catalog entries of the workflow tools (JSON schemas; the descriptions say what the tool does).
 pub fn tool_schemas() -> Vec<Value> {
@@ -184,15 +188,17 @@ pub fn tool_schemas() -> Vec<Value> {
     });
     let search = fn_(
         TRAVEL_SEARCH,
-        "Search and compare flights, hotels, MICHELIN restaurants or restaurants. Code runs ONE search with these arguments, \
-picks by rule (the cheapest, or the user's criteria), shows the options as choice cards and returns the result as JSON \
-(options, the pick and its rule, links, show, hints). Nothing is booked. Write the reply from the result, using its hints \
-(code appends the facts in show to the reply). status needs_input: ask the user for the missing fields, then call again with every field; invalid: fix \
-the arguments and call again.",
+        "Search and compare flights, hotels, MICHELIN restaurants or restaurants. Code runs ONE search with these arguments. \
+Flights: the result (status pick_needed) lists EVERY flight found for the day with its offer_id, departure and arrival \
+(airport, local time), price and stops — call travel_pick with the offer_ids of exactly the flights the user asked for. \
+Hotels and restaurants: code picks by rule (the cheapest, or the user's criteria), shows the options as choice cards and \
+returns the result as JSON (options, the pick and its rule, links, show, hints). Nothing is booked. Write the reply from \
+the result, using its hints (code appends the facts in show to the reply). status needs_input: ask the user for the \
+missing fields, then call again with every field; invalid: fix the arguments and call again.",
         travel.clone(),
         &["kind"],
     );
-    travel["pick"] = json!({"type": "string", "description": "the option the user chose: its label exactly as the choice card listed it (the text after \"I choose: \"); empty = the pick by rule"});
+    travel["pick"] = json!({"type": "string", "description": "the option the user chose: its label exactly as the choice card listed it (the text after \"I choose: \") or a flight's offer_id; empty = the pick by rule (a flight: the search's flights come back for travel_pick)"});
     let book = fn_(
         TRAVEL_BOOK,
         "Book a flight, a hotel room or a table — only when the user asks to book. Same arguments as travel_search, plus \
@@ -220,7 +226,22 @@ Place order is the user's. Write the reply from the JSON result, using its hints
         }),
         &["url", "action"],
     );
-    vec![search, book, shop]
+    let pick = fn_(
+        TRAVEL_PICK,
+        "Pick from the flights a travel_search / travel_book result listed (status pick_needed). Read every flight against \
+the user's request and give the offer_ids of exactly the flights that meet it, in the order to show them: ONE id when \
+the request names one flight (the last, the first, the earliest, the latest, the cheapest, the shortest …), several only \
+when the user asked for options or a comparison. Stick to what the user asked: never add a cheaper or \"better\" flight \
+they did not ask for, and default to the cheapest only when the user gave no criterion at all. Times are local at each \
+airport; arrives_days_later 0 = it lands on the departure day (before midnight), 1 = the next day. When no flight meets \
+the request, do not call this: say so. Code shows the flights picked (and books the first after travel_book) and returns \
+the result as JSON; write the reply from it (code appends the facts in show to the reply).",
+        json!({
+            "offer_ids": {"type": "array", "items": {"type": "string"}, "description": "offer_id of each flight that meets the request, as the result listed it, in the order to show"}
+        }),
+        &["offer_ids"],
+    );
+    vec![search, book, shop, pick]
 }
 
 /// `ask_user` in a booking skill's run before its workflow tool was called: refused, as data. What the user must give is
@@ -274,6 +295,8 @@ pub struct Ctx<'a> {
     pub today: NaiveDate,
     /// the user's messages of this chat — only for the exact-substring check of an address the results are mailed to
     pub user_texts: &'a [String],
+    /// the run's transcript: `travel_pick` reads the flight search it picks from (the machine's own calls)
+    pub transcript: &'a [Value],
 }
 
 static EMAIL: LazyLock<Regex> =
@@ -287,6 +310,7 @@ static HHMM: LazyLock<Regex> =
 pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
     match tool {
         SHOP_ORDER => check_shop(args),
+        TRAVEL_PICK => check_pick(args, cx.transcript),
         TRAVEL_BOOK => check_travel(args, cx, true),
         _ => check_travel(args, cx, false),
     }
@@ -710,6 +734,255 @@ fn check_shop(a: &Value) -> Checked {
     Checked::Valid(Value::Object(out))
 }
 
+// ---------------------------------------------------------------- the model's pick over every flight found
+
+/// The flights of a search the model picks from: every offer that meets the request's structured limits (the flights
+/// the user named, direct, the cabin searched, the budget — fields of the arguments, compared with the offer's own
+/// fields), in departure order (no price order: the pick is the model's, against the user's words). An offer without
+/// an id gets `opt<n>` so each can be named.
+pub fn flight_candidates(req: &Req, offers: &[Offer]) -> Vec<Offer> {
+    let mut keep: Vec<Offer> = offers.to_vec();
+    let named: Vec<Offer> = keep
+        .iter()
+        .filter(|o| mentioned(Kind::Flight, o, &req.named))
+        .cloned()
+        .collect();
+    if !named.is_empty() {
+        keep = named;
+    }
+    if req.nonstop {
+        keep.retain(|o| o.stops == Some(0));
+    }
+    keep.retain(|o| {
+        !o.details
+            .iter()
+            .any(|d| d.contains("not the cabin searched"))
+    });
+    if let Some(m) = req.max_price {
+        keep.retain(|o| o.price.is_some_and(|p| p <= m));
+    }
+    // departure order; an offer without times after the others (stable: the search's own order among equals)
+    keep.sort_by(|a, b| {
+        (a.depart.is_empty(), &a.depart, &a.arrive).cmp(&(
+            b.depart.is_empty(),
+            &b.depart,
+            &b.arrive,
+        ))
+    });
+    for (i, o) in keep.iter_mut().enumerate() {
+        if o.id.is_empty() {
+            o.id = format!("opt{}", i + 1);
+        }
+    }
+    keep
+}
+
+/// The days between a flight's departure and arrival dates (local at each airport): 0 = it lands on the day it
+/// leaves. `None` without both times.
+fn days_later(o: &Offer) -> Option<i64> {
+    let d = |s: &str| NaiveDate::parse_from_str(s.get(..10)?, "%Y-%m-%d").ok();
+    Some((d(&o.arrive)? - d(&o.depart)?).num_days())
+}
+
+/// One flight as the model reads it to pick: its id, name, times, stops and price — structured fields only.
+fn flight_json(o: &Offer) -> Value {
+    let mut m = Map::new();
+    m.insert("offer_id".into(), json!(o.id));
+    m.insert("flight".into(), json!(o.label));
+    if !o.airline.is_empty() {
+        m.insert("airline".into(), json!(o.airline));
+    }
+    if !o.depart.is_empty() {
+        m.insert(
+            "departure".into(),
+            json!({"airport": o.dep_airport, "time": o.depart}),
+        );
+    }
+    if !o.arrive.is_empty() {
+        m.insert(
+            "arrival".into(),
+            json!({"airport": o.arr_airport, "time": o.arrive}),
+        );
+    }
+    if let Some(n) = days_later(o) {
+        m.insert("arrives_days_later".into(), json!(n));
+    }
+    if let Some(d) = o.duration_min {
+        m.insert("duration_min".into(), json!(d));
+    }
+    if let Some(s) = o.stops {
+        m.insert("stops".into(), json!(s));
+    }
+    if let Some(p) = o.price {
+        m.insert("price".into(), json!(p));
+        m.insert("currency".into(), json!(o.currency));
+    }
+    if !o.date.is_empty() {
+        m.insert("date".into(), json!(o.date));
+    }
+    if o.preferred {
+        m.insert("preferred_airline".into(), json!(true));
+    }
+    Value::Object(m)
+}
+
+/// A flight search's result for the model to pick from (`status: pick_needed`): every flight that meets the request's
+/// structured limits, as JSON; nothing is shown yet. None meets them: `nothing_found`, with the limits unmet.
+fn pick_needed(req: &Req, searched: &Value, offers: &[Offer]) -> Value {
+    let flights = flight_candidates(req, offers);
+    if flights.is_empty() {
+        let mut unmet: Vec<String> = Vec::new();
+        if req.nonstop {
+            unmet.push("direct".into());
+        }
+        if let Some(m) = req.max_price {
+            unmet.push(format!("under {}", money(m).trim_end_matches(".00")));
+        }
+        if unmet.is_empty() {
+            unmet.push(format!("the {} searched", req.cabin.replace('_', " ")));
+        }
+        let unmet = unmet.join(", ");
+        return json!({"status": "nothing_found", "searched": searched, "unmet": unmet,
+            "results": offers.len(),
+            "show": [S::fact(&format!("None of the {} results meets", offers.len()), &format!("{} 个结果都不符合", offers.len()), &unmet)],
+            "hints": []});
+    }
+    let mut out = json!({"status": PICK_NEEDED, "searched": searched, "count": flights.len(),
+        "flights": flights.iter().map(flight_json).collect::<Vec<_>>(),
+        "pick_with": TRAVEL_PICK, "show": [], "hints": []});
+    if !req.next.is_empty() {
+        out["next_items"] = json!(req.next);
+    }
+    out
+}
+
+/// The flight search a `travel_pick` picks from: the validated arguments of the `travel_search` / `travel_book` call
+/// whose result (the latest of those two) is `pick_needed`, the flights it listed — rebuilt from the machine's own
+/// search call (never compressed) exactly as the result listed them — and the search result's own facts.
+struct PickFrom {
+    args: Value,
+    flights: Vec<Offer>,
+    result: Value,
+}
+
+fn pick_source(t: &[Value]) -> Option<PickFrom> {
+    let names = [TRAVEL_SEARCH, TRAVEL_BOOK].map(|n| format!("{n}{}", workflow::RESULT_SUFFIX));
+    let (ri, id) = t
+        .iter()
+        .enumerate()
+        .flat_map(|(i, m)| {
+            tool_calls(m)
+                .iter()
+                .map(move |tc| (i, tc))
+                .collect::<Vec<_>>()
+        })
+        .filter(|(_, tc)| {
+            get_str(tc, "id").starts_with(workflow::RESULT_PREFIX)
+                && names.contains(&stored_call(tc).0)
+        })
+        .map(|(i, tc)| (i, get_str(tc, "id")))
+        .next_back()?;
+    let res = t
+        .iter()
+        .find(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == id)
+        .map(json_of)?;
+    if get_str(&res, "status") != PICK_NEEDED {
+        return None;
+    }
+    let (ci, _, args) = workflow::active(&t[..ri], &[TRAVEL_SEARCH, TRAVEL_BOOK])?;
+    let req = Req::from_args(&args);
+    let (_, msg) = calls_of(&t[ci..ri], spec_of(Kind::Flight).search)
+        .into_iter()
+        .next_back()?;
+    let data = data_of(msg);
+    let flights = flight_candidates(&req, &offers_in(Kind::Flight, &data));
+    let mut result = json!({"searched": data.get("searched").cloned().unwrap_or(Value::Null)});
+    for k in ["by_date", "compare_url", "data"] {
+        if let Some(v) = data.get(k) {
+            result[k] = v.clone();
+        }
+    }
+    Some(PickFrom {
+        args,
+        flights,
+        result,
+    })
+}
+
+/// `travel_pick`: the offer ids must be ids of the flights the latest flight search listed; the validated arguments
+/// carry those flights (in the model's order), the search's arguments and its facts, so the run needs nothing else.
+fn check_pick(a: &Value, t: &[Value]) -> Checked {
+    let Some(src) = pick_source(t) else {
+        return Checked::Invalid(vec![
+            "no flight search to pick from: search with travel_search first (kind flight)".into(),
+        ]);
+    };
+    let mut ids: Vec<String> = Vec::new();
+    for id in list_arg(a, "offer_ids") {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if ids.is_empty() {
+        return Checked::Invalid(vec![
+            "offer_ids: give the offer_id of each flight that meets the request, from the search result's flights (when none meets it, say so instead)".into(),
+        ]);
+    }
+    let mut picked = Vec::new();
+    let mut problems = Vec::new();
+    for id in &ids {
+        match src.flights.iter().find(|o| o.id == *id) {
+            Some(o) => picked.push(o.clone()),
+            None => problems.push(format!(
+                "offer_ids: \"{id}\" is not an offer_id of the search's flights"
+            )),
+        }
+    }
+    if !problems.is_empty() {
+        return Checked::Invalid(problems);
+    }
+    Checked::Valid(json!({"offer_ids": ids, "request": src.args,
+        "offers": serde_json::to_value(&picked).unwrap_or(Value::Null), "result": src.result}))
+}
+
+/// Whether `name` is offered on the model's next turn: `travel_pick` only on the reply to a flight search's
+/// `pick_needed` result (and then it is the one workflow tool offered); every other tool as before.
+pub fn offered(transcript: &[Value], name: &str) -> bool {
+    if name != TRAVEL_PICK {
+        return true;
+    }
+    workflow::reply_turn(transcript)
+        && workflow::latest_result(transcript).is_some_and(|r| get_str(&r, "status") == PICK_NEEDED)
+}
+
+/// The run of a `travel_pick`: exactly the flights the model picked, shown (and the first booked after a
+/// `travel_book`).
+fn next_pick(args: &Value, t: &[Value], m: &Machine, ids: &Ids) -> Step {
+    let req = Req::from_args(&args["request"]);
+    let picked: Vec<Offer> = serde_json::from_value(args["offers"].clone()).unwrap_or_default();
+    let Some(first) = picked.first().cloned() else {
+        return Step::Done(
+            json!({"status": "nothing_found", "searched": req.searched(Kind::Flight),
+            "show": [S::fact("Nothing found", "没有找到结果", &searched_line(Kind::Flight, &req))], "hints": []}),
+        );
+    };
+    let shown = Shown {
+        kind: Kind::Flight,
+        spec: spec_of(Kind::Flight),
+        req: &req,
+        offers: &picked,
+        list: picked.clone(),
+        pick: first,
+        rule: "picked for your request".into(),
+        slot: None,
+        result: &args["result"],
+        search_pos: 0,
+        connector: req.use_connector,
+        exact: true,
+    };
+    present(shown, t, m, ids)
+}
+
 // ---------------------------------------------------------------- cities
 
 use crate::places::{City, CITIES};
@@ -879,7 +1152,7 @@ impl Req {
             Kind::Flight => {
                 let mut a = json!({"origin": self.origin, "destination": self.destination,
                     "date": self.date.map(iso).unwrap_or_default(), "adults": self.party_or(kind),
-                    "cabin": self.cabin, "stops": if self.nonstop { "nonstop" } else { "any" }, "sort": "price"});
+                    "cabin": self.cabin, "stops": if self.nonstop { "nonstop" } else { "any" }});
                 if let Some(d) = self.date_to {
                     a["date_to"] = json!(iso(d));
                 }
@@ -1032,8 +1305,10 @@ impl ShopReq {
 
 // ---------------------------------------------------------------- the structured results
 
-/// One option of a search (a flight, a hotel, a room, a restaurant, a place), as the result gives it.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// One option of a search (a flight, a hotel, a room, a restaurant, a place), as the result gives it. Serialized into
+/// `travel_pick`'s validated arguments (the flights the model picked), so its run needs nothing but them.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Offer {
     pub label: String,
     /// hotel_id / restaurant_id / offer_id / place_id
@@ -1074,6 +1349,56 @@ pub struct Offer {
     pub data: String,
     /// the day of a range search the offer flies
     pub date: String,
+    /// a flight's departure: the airport and its local time ("2026-11-03 18:50"), from the API's own fields
+    pub dep_airport: String,
+    pub depart: String,
+    /// a flight's arrival: the airport and its local time
+    pub arr_airport: String,
+    pub arrive: String,
+    /// a flight's total time, minutes
+    pub duration_min: Option<u64>,
+}
+
+/// A local date-time of an API's field as "YYYY-MM-DD HH:MM" ("2026-11-03T18:50:00" and "2026-11-03 18:50" alike);
+/// "" for anything else.
+fn local_time(v: &str) -> String {
+    let t = v.trim().replace('T', " ");
+    let head: String = t.chars().take(16).collect();
+    match chrono::NaiveDateTime::parse_from_str(&head, "%Y-%m-%d %H:%M") {
+        Ok(d) => d.format("%Y-%m-%d %H:%M").to_string(),
+        Err(_) => String::new(),
+    }
+}
+
+/// A flight offer's departure and arrival (airport, local time) from the result's structured fields: the offer's own
+/// `departure` / `arrival` objects (Kiwi.com, a connector), else its first leg's departure and last leg's arrival
+/// (Google Flights' `legs`: `from` / `depart`, `to` / `arrive`). Never read from a prose line.
+fn flight_ends(o: &Value) -> (String, String, String, String) {
+    let (mut da, mut dt) = (
+        get_str(&o["departure"], "airport"),
+        local_time(&get_str(&o["departure"], "time")),
+    );
+    let (mut aa, mut at) = (
+        get_str(&o["arrival"], "airport"),
+        local_time(&get_str(&o["arrival"], "time")),
+    );
+    let legs: &[Value] = o
+        .get("legs")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
+    if dt.is_empty() {
+        if let Some(l) = legs.first() {
+            da = get_str(l, "from");
+            dt = local_time(&get_str(l, "depart"));
+        }
+    }
+    if at.is_empty() {
+        if let Some(l) = legs.last() {
+            aa = get_str(l, "to");
+            at = local_time(&get_str(l, "arrive"));
+        }
+    }
+    (da, dt, aa, at)
 }
 
 static NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d[\d,]*(?:\.\d+)?").unwrap());
@@ -1278,7 +1603,21 @@ pub fn offer_of(kind: Kind, o: &Value, default_currency: &str) -> Offer {
     if kind == Kind::Flight && details.is_empty() {
         details = flight_details(o, &currency);
     }
+    let (dep_airport, depart, arr_airport, arrive) = if kind == Kind::Flight {
+        flight_ends(o)
+    } else {
+        Default::default()
+    };
     Offer {
+        dep_airport,
+        depart,
+        arr_airport,
+        arrive,
+        duration_min: o
+            .get("duration_min")
+            .and_then(Value::as_f64)
+            .filter(|m| *m > 0.0)
+            .map(|m| m.round() as u64),
         label,
         id: first_str(
             o,
@@ -1736,6 +2075,22 @@ fn schedule_of(o: &Offer) -> Option<String> {
         .map(|d| SECS.replace_all(d, "$1").trim().to_string())
 }
 
+/// A flight's departure → arrival line from its structured times ("HKG 2026-11-03 18:50 → SIN 2026-11-03 22:50"), else
+/// the result's own detail line with a clock time.
+fn times_of(o: &Offer) -> Option<String> {
+    if !o.depart.is_empty() && !o.arrive.is_empty() {
+        return Some(
+            format!(
+                "{} {} → {} {}",
+                o.dep_airport, o.depart, o.arr_airport, o.arrive
+            )
+            .trim()
+            .to_string(),
+        );
+    }
+    schedule_of(o)
+}
+
 /// Whether a flight offer is on one of the user's preferred airlines: the search flagged it, or its airline or label
 /// names one of them (a structured field of the result against the profile's value).
 fn on_airline(o: &Offer, airlines: &[String]) -> bool {
@@ -2025,6 +2380,9 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     if tool == SHOP_ORDER {
         return next_shop(&ShopReq::from_args(args), t, &ids);
     }
+    if tool == TRAVEL_PICK {
+        return next_pick(args, t, m, &ids);
+    }
     next_travel(&Req::from_args(args), t, m, &ids)
 }
 
@@ -2047,7 +2405,7 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     // the booking stage under way and the search result compressed away (a long run: snapshots, the vault): the item
     // from the machine's own calls, whose arguments compression never touches
     if content_of(search_msg).contains(super::guards::COMPRESSED_MARK) {
-        if let Some(item) = resumed_item(t, pos(t, search_msg)) {
+        if let Some(item) = resumed_item(t, pos(t, search_msg), &req.pick) {
             return book(spec, req, t, ids, &item);
         }
     }
@@ -2055,7 +2413,6 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     let offers = offers_in(kind, &result);
     let next_items = json!(req.next);
     let compare = get_str(&result, "compare_url");
-    let source = get_str(&result, "data");
     if offers.is_empty() {
         // the native search found nothing priced: the user's travel connector next, once
         let mcp = tool_for(spec.search, m.available, true);
@@ -2111,8 +2468,31 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     {
         return Step::Done(no_preferred(req, &searched, &offers));
     }
-    let (list, rule) = ranked(kind, req, &offers);
     let chosen = by_label(&offers, &req.pick).cloned();
+    // a flight: EVERY flight found goes back as JSON and the model picks exactly the ones the user asked for
+    // (`travel_pick`) — code never picks a flight by a rule the user did not give ("the last flight that lands before
+    // midnight" came back as the cheapest, 2026-11-02)
+    if kind == Kind::Flight {
+        let Some(o) = chosen else {
+            return Step::Done(pick_needed(req, &searched, &offers));
+        };
+        let exact = Shown {
+            kind,
+            spec,
+            req,
+            offers: &offers,
+            list: vec![o.clone()],
+            pick: o,
+            rule: "your pick".into(),
+            slot: None,
+            result: &result,
+            search_pos: pos(t, search_msg),
+            connector,
+            exact: true,
+        };
+        return present(exact, t, m, ids);
+    }
+    let (list, rule) = ranked(kind, req, &offers);
     let (pick, rule) = match chosen {
         Some(o) => (o, "your pick".to_string()),
         None => match list.first() {
@@ -2185,17 +2565,83 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             }
         }
     }
-    // 3. the choice card with the pick shown (once)
-    let mut shown: Vec<Offer> = vec![pick.clone()];
-    shown.extend(
-        list.iter()
-            .filter(|o| o.label != pick.label)
-            .take(3)
-            .cloned(),
-    );
-    if calls_of(t, "present_choices")
-        .iter()
-        .all(|(_, msg)| pos(t, msg) < search_pos)
+    let shown = Shown {
+        kind,
+        spec,
+        req,
+        offers: &offers,
+        list,
+        pick,
+        rule,
+        slot,
+        result: &result,
+        search_pos,
+        connector,
+        exact: false,
+    };
+    present(shown, t, m, ids)
+}
+
+/// What a search's result shows, once the pick is made.
+struct Shown<'a> {
+    kind: Kind,
+    spec: &'static BookingSpec,
+    req: &'a Req,
+    /// every option of the search
+    offers: &'a [Offer],
+    /// the options that meet the request, in the order to show (`exact`: the ones to show, and only them)
+    list: Vec<Offer>,
+    pick: Offer,
+    rule: String,
+    /// a restaurant's time: (time, booking url, the availability result)
+    slot: Option<(String, String, Value)>,
+    /// the search's result (its `searched`, `by_date`, `compare_url`, `data`)
+    result: &'a Value,
+    /// where the search's result is in the transcript (the machine's calls after it are this run's)
+    search_pos: usize,
+    connector: bool,
+    /// a flight: exactly the flights picked (the model's pick over every flight found, or the user's own), nothing
+    /// added — no other options on the card, no other airline's fare
+    exact: bool,
+}
+
+/// The choice card, the pick's own data, the mail and the result — or, to book, the booking stage.
+fn present(s: Shown, t: &[Value], m: &Machine, ids: &Ids) -> Step {
+    let Shown {
+        kind,
+        spec,
+        req,
+        offers,
+        list,
+        pick,
+        rule,
+        slot,
+        result,
+        search_pos,
+        connector,
+        exact,
+    } = s;
+    let searched = req.searched(kind);
+    let next_items = json!(req.next);
+    let compare = get_str(result, "compare_url");
+    let source = get_str(result, "data");
+    // 3. the choice card with the pick shown (once; exactly the picked flights, and none for a single one)
+    let shown: Vec<Offer> = if exact {
+        list.clone()
+    } else {
+        let mut v = vec![pick.clone()];
+        v.extend(
+            list.iter()
+                .filter(|o| o.label != pick.label)
+                .take(3)
+                .cloned(),
+        );
+        v
+    };
+    if (!exact || shown.len() > 1)
+        && calls_of(t, "present_choices")
+            .iter()
+            .all(|(_, msg)| pos(t, msg) < search_pos)
     {
         let options: Vec<Value> = shown
             .iter()
@@ -2209,7 +2655,7 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
                     }
                 }
                 json!({"label": o.label, "details": details, "source_url": url,
-                       "note": if o.label == pick.label { format!("picked: {rule}") } else { String::new() }})
+                       "note": if o.label == pick.label && !exact { format!("picked: {rule}") } else { String::new() }})
             })
             .collect();
         return ids.calls(
@@ -2223,18 +2669,41 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     let mut out = json!({"status": "shown", "searched": searched,
                          "options": shown.iter().map(option_json).collect::<Vec<_>>(),
                          "pick": {"label": pick.label, "rule": rule}});
+    if !pick.id.is_empty() {
+        out["pick"]["offer_id"] = json!(pick.id);
+    }
     let must: Vec<String> = Vec::new();
     // the facts the user must read: appended to the reply by code (agent/show.rs)
     let mut show: Vec<Value> = vec![S::fact("Searched", "搜索", &searched_line(kind, req))];
-    show.extend(offer_show("Picked", "推荐", &pick, &format!(" ({rule})")));
-    // a flight's departure and arrival times, from the result (travel_kiwi_real 2026-11-01: the reply gave neither the
-    // day nor the times of the pick)
-    if let Some(when) = (kind == Kind::Flight).then(|| schedule_of(&pick)).flatten() {
-        show.push(S::fact(&pick.label, &pick.label, &when));
+    if exact {
+        // exactly the flights picked, each with its times and booking link
+        let many = shown.len() > 1;
+        for (i, o) in shown.iter().enumerate() {
+            let (en, zh) = if many {
+                (format!("Flight {}", i + 1), format!("航班 {}", i + 1))
+            } else {
+                ("Flight".to_string(), "航班".to_string())
+            };
+            show.extend(offer_show(&en, &zh, o, ""));
+            if let Some(when) = times_of(o) {
+                show.push(S::fact(&o.label, &o.label, &when));
+            }
+        }
+    } else {
+        show.extend(offer_show("Picked", "推荐", &pick, &format!(" ({rule})")));
+        // a flight's departure and arrival times, from the result (travel_kiwi_real 2026-11-01: the reply gave
+        // neither the day nor the times of the pick)
+        if let Some(when) = (kind == Kind::Flight).then(|| times_of(&pick)).flatten() {
+            show.push(S::fact(&pick.label, &pick.label, &when));
+        }
     }
     // the user's preferred airline: its best fare in the results, or that it has none (travel_ask_real 2026-11-01:
-    // the cheapest was another airline and ANA went unmentioned)
-    if kind == Kind::Flight && !req.airlines.is_empty() && !on_airline(&pick, &req.airlines) {
+    // the cheapest was another airline and ANA went unmentioned) — not beside flights picked exactly
+    if kind == Kind::Flight
+        && !exact
+        && !req.airlines.is_empty()
+        && !on_airline(&pick, &req.airlines)
+    {
         let names = req.airlines.join(" or ");
         match offers.iter().find(|o| on_airline(o, &req.airlines)) {
             Some(p) => show.extend(offer_show(
@@ -2677,8 +3146,9 @@ fn item_for(
 
 /// The item of a booking stage already under way, from the machine's own calls after the search: the booking link it
 /// opened, and the approved `purchase_confirm` (what, the total, the currency, the delivery) or else the pick shown on
-/// the choice card. `None` before the booking link was opened.
-fn resumed_item(t: &[Value], search_pos: usize) -> Option<Item> {
+/// the choice card, else the user's own pick (`pick`: a flight's pick shows no card). `None` before the booking link
+/// was opened.
+fn resumed_item(t: &[Value], search_pos: usize, pick: &str) -> Option<Item> {
     let (nav, _) = calls_of(t, "browser_navigate")
         .into_iter()
         .find(|(_, msg)| {
@@ -2693,7 +3163,7 @@ fn resumed_item(t: &[Value], search_pos: usize) -> Option<Item> {
         .into_iter()
         .rfind(|(_, msg)| pos(t, msg) > search_pos)
         .map(|(a, _)| sget(&a, "picked"))
-        .unwrap_or_default();
+        .unwrap_or_else(|| pick.to_string());
     Some(match confirm {
         Some(a) => Item {
             name: a["items"][0]

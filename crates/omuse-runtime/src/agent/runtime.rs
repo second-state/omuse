@@ -341,6 +341,7 @@ impl Runtime {
             profile: &profile,
             today,
             user_texts: &user_texts,
+            transcript,
         };
         let check = |a: &Value| -> (Checked, Vec<String>, Vec<String>) {
             if let Some(raw) = a.get(super::json_in::UNPARSED_KEY) {
@@ -2645,7 +2646,8 @@ yourself; ask_bot is not available for it."
                     .into_iter()
                     .filter(|x| {
                         !(reply_turn
-                            && (super::booking::TOOLS.contains(&tool_name(x))
+                            && ((super::booking::TOOLS.contains(&tool_name(x))
+                                && tool_name(x) != super::booking::TRAVEL_PICK)
                                 || super::claims::TOOLS.contains(&tool_name(x))
                                 || super::driver::TOOLS.contains(&tool_name(x))
                                 || super::apdt::TOOLS.contains(&tool_name(x))
@@ -2653,6 +2655,8 @@ yourself; ask_bot is not available for it."
                                 || super::flightstatus::TOOLS.contains(&tool_name(x))
                                 || super::entry::TOOLS.contains(&tool_name(x))))
                             && super::news::offered(&transcript, tool_name(x))
+                            // travel_pick only on the reply to a flight search's every-flight result
+                            && super::booking::offered(&transcript, tool_name(x))
                     })
                     .collect();
                 // ask_bot is the main bot's; a tool a bot file claims (the travel searches) only its bots'

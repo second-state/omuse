@@ -704,13 +704,13 @@ fn compact_itinerary(it: &Value, currency: &str, search_url: Option<&str>) -> Va
     Value::Object(out)
 }
 
-/// The Google Flights reply, compact (best first, at most 12), with Google's own price insight.
+/// The Google Flights reply, compact: EVERY itinerary of the day (`best_flights`, then `other_flights`, none cut — the
+/// pick is made over all of them, not over the top results), with Google's own price insight.
 pub fn compact_flights(data: &Value, currency: &str) -> Value {
     let search_url = get_str(&data["search_metadata"], "google_flights_url");
     let mut offers: Vec<Value> = arr(data, "best_flights")
         .iter()
         .chain(arr(data, "other_flights").iter())
-        .take(12)
         .map(|it| compact_itinerary(it, currency, Some(&search_url)))
         .collect();
     for (i, o) in offers.iter_mut().enumerate() {
@@ -1193,6 +1193,8 @@ impl SerpApi {
             ("currency", currency.clone()),
             ("hl", "en".to_string()),
             ("sort_by", sort.to_string()),
+            // every flight Google Flights' own page lists for the day (SerpApi's deep search), not a shorter list
+            ("deep_search", "true".to_string()),
         ];
         if let Some(st) = stops_param(a) {
             params.push(("stops", st.to_string()));
@@ -1776,6 +1778,10 @@ mod tests {
         });
         let out = compact_flights(&data, "SGD");
         assert_eq!(out["count"], 2);
+        // every itinerary of the day is kept (no top-12 cut): the pick is made over all of them
+        let mut many = data.clone();
+        many["other_flights"] = json!(vec![data["other_flights"][0].clone(); 20]);
+        assert_eq!(compact_flights(&many, "SGD")["count"], 21);
         let first = &out["offers"][0];
         assert_eq!(first["airlines"], "Singapore Airlines");
         assert_eq!(first["stops"], 0);

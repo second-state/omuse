@@ -99,7 +99,7 @@ every `EXTRACT_SYSTEM`, `extract_exchange` and code-written answer text.
 
 | tool | machine | replaces |
 |---|---|---|
-| `travel_search` / `travel_book` (kind flight · hotel · michelin · restaurant) | `agent/booking.rs` | regex request parsing, `search_request`, `follow_up`, `mail_to`, `profile_with_words`, `preferred_airlines`, `HABIT`, `WORK` |
+| `travel_search` / `travel_book` (kind flight · hotel · michelin · restaurant); a flight's every-flight result (`pick_needed`) → `travel_pick {offer_ids}` (the model's JSON pick, shown exactly) | `agent/booking.rs` | regex request parsing, `search_request`, `follow_up`, `mail_to`, `profile_with_words`, `preferred_airlines`, `HABIT`, `WORK` |
 | `shop_order` (a shop's link and the ranking criteria; the page itself goes to `browser-use`) | `agent/booking.rs` (shop) | `shop_ranking` regexes, `known_shop_request` |
 | `arrival_card_fill` (country, trip facts) | `agent/driver.rs` | `user_asks`, `dates_in` over the request, `trip_dates_from_request` |
 | `claim_file` / `insurance_buy` | `agent/claims.rs` | the claims machine's request regexes |

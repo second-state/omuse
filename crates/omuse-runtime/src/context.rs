@@ -99,8 +99,9 @@ pub fn skill_topics(name: &str) -> &'static [&'static str] {
 /// The topics of a tool, by its name.
 pub fn tool_topics(name: &str) -> &'static [&'static str] {
     match name {
-        "travel_search" | "travel_book" | "flights_search" | "flight_offer" | "hotels_search"
-        | "hotel_rooms" | "cars_search" | "bag_trace" | "apdt_refund" | "entry_requirements" => {
+        "travel_search" | "travel_book" | "travel_pick" | "flights_search" | "flight_offer"
+        | "hotels_search" | "hotel_rooms" | "cars_search" | "bag_trace" | "apdt_refund"
+        | "entry_requirements" => {
             &["travel"]
         }
         "arrival_card_fill" => &["travel", "forms"],
