@@ -10,6 +10,7 @@ use futures_util::future::join_all;
 use omuse_common::util::get_str;
 use serde_json::{json, Value};
 
+use crate::serpapi::SerpApi;
 use crate::shopify::{self, Shopify};
 
 /// What a provider is asked: the product words, the price range in the user's currency, the user's location.
@@ -23,6 +24,28 @@ pub struct SearchReq {
     pub min_price: Option<f64>,
     pub max_price: Option<f64>,
     pub limit: u64,
+    /// the user's city, for the providers that search from a place (Google Shopping's `location`); "" = the country
+    pub location: String,
+    /// the brands the user named (the model's JSON): searched with the product words
+    pub brands: Vec<String>,
+    /// the merchants the user named that no provider is (Amazon, Walmart …): Google Shopping keeps only their offers
+    pub merchants: Vec<String>,
+}
+
+impl SearchReq {
+    /// The words searched: the brands the user named before the product words (once each).
+    pub fn words(&self) -> String {
+        let q = self.query.trim().to_string();
+        let lc = q.to_lowercase();
+        let mut out: Vec<String> = self
+            .brands
+            .iter()
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty() && !lc.contains(&b.to_lowercase()))
+            .collect();
+        out.push(q);
+        out.join(" ").trim().to_string()
+    }
 }
 
 /// A store provider.
@@ -30,11 +53,32 @@ pub struct SearchReq {
 pub enum Provider {
     /// Shopify's Global Catalog: products across Shopify merchants that ship to the country
     ShopifyCatalog,
+    /// Google Shopping through SerpApi: every store Google lists for the country (each search costs a SerpApi
+    /// credit — only when the user named a brand or a merchant, or Google itself)
+    GoogleShopping,
 }
 
-/// Every provider: (id, the names a user may call it by, the countries it serves — empty = everywhere).
-const PROVIDERS: &[(Provider, &str, &[&str], &[&str])] =
-    &[(Provider::ShopifyCatalog, "shopify", &["shopify"], &[])];
+/// One provider: its id, the names a user may call it by, the countries it serves (empty = everywhere), whether it is
+/// searched by default (false: only when asked for).
+type ProviderRow = (
+    Provider,
+    &'static str,
+    &'static [&'static str],
+    &'static [&'static str],
+    bool,
+);
+
+/// Every provider.
+const PROVIDERS: &[ProviderRow] = &[
+    (Provider::ShopifyCatalog, "shopify", &["shopify"], &[], true),
+    (
+        Provider::GoogleShopping,
+        "google",
+        &["google", "google shopping"],
+        &[],
+        false,
+    ),
+];
 
 impl Provider {
     pub fn id(self) -> &'static str {
@@ -46,37 +90,66 @@ impl Provider {
     }
 }
 
-/// The providers for a search: the ones the user named (by a provider's own name, any case — the model's JSON), else
-/// every provider that serves the user's country. `Err(names)` lists named stores no provider covers.
-pub fn providers_for(country: &str, named: &[String]) -> Result<Vec<Provider>, Vec<String>> {
+/// The providers for a search and the merchants to keep (the model's JSON, compared whole, any case):
+/// - stores named that are providers → those providers; stores named that are not (Amazon, Walmart …) → merchants,
+///   searched on Google Shopping and kept only from those sellers;
+/// - a brand named → the default providers and Google Shopping;
+/// - nothing named → the default providers for the country (no SerpApi credit spent).
+pub fn providers_for(
+    country: &str,
+    named: &[String],
+    brands: &[String],
+) -> (Vec<Provider>, Vec<String>) {
     let country = country.to_uppercase();
-    if !named.is_empty() {
-        let mut out = Vec::new();
-        let mut unknown = Vec::new();
-        for n in named {
-            let n = n.trim().to_lowercase();
-            match PROVIDERS.iter().find(|p| p.2.iter().any(|a| *a == n)) {
-                Some(p) if !out.contains(&p.0) => out.push(p.0),
-                Some(_) => {}
-                None => unknown.push(n),
-            }
+    let mut out: Vec<Provider> = Vec::new();
+    let mut merchants: Vec<String> = Vec::new();
+    for n in named {
+        let lc = n.trim().to_lowercase();
+        if lc.is_empty() {
+            continue;
         }
-        return if out.is_empty() {
-            Err(unknown)
-        } else {
-            Ok(out)
-        };
+        match PROVIDERS.iter().find(|p| p.2.iter().any(|a| *a == lc)) {
+            Some(p) if !out.contains(&p.0) => out.push(p.0),
+            Some(_) => {}
+            None => merchants.push(n.trim().to_string()),
+        }
     }
-    Ok(PROVIDERS
-        .iter()
-        .filter(|p| p.3.is_empty() || p.3.contains(&country.as_str()))
-        .map(|p| p.0)
-        .collect())
+    let google = !merchants.is_empty() || brands.iter().any(|b| !b.trim().is_empty());
+    if out.is_empty() && merchants.is_empty() {
+        out = PROVIDERS
+            .iter()
+            .filter(|p| p.4 && (p.3.is_empty() || p.3.contains(&country.as_str())))
+            .map(|p| p.0)
+            .collect();
+    }
+    if google && !out.contains(&Provider::GoogleShopping) {
+        out.push(Provider::GoogleShopping);
+    }
+    (out, merchants)
+}
+
+/// A seller is one of the merchants the user named: its name and the merchant's, letters and digits only, any case —
+/// the one starts with the other ("Amazon.sg" is Amazon).
+pub fn seller_is(seller: &str, merchants: &[String]) -> bool {
+    let norm = |s: &str| {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase()
+    };
+    let s = norm(seller);
+    !s.is_empty()
+        && merchants.iter().any(|m| {
+            let m = norm(m);
+            !m.is_empty() && (s.starts_with(&m) || m.starts_with(&s))
+        })
 }
 
 /// The clients the providers use.
 pub struct Clients {
     pub shopify: Shopify,
+    /// the SerpApi client when a key is set
+    pub serpapi: Option<SerpApi>,
 }
 
 async fn search_one(p: Provider, c: &Clients, r: &SearchReq) -> Result<Vec<Value>, String> {
@@ -86,7 +159,7 @@ async fn search_one(p: Provider, c: &Clients, r: &SearchReq) -> Result<Vec<Value
                 return Err("no_credentials".into());
             }
             let req = shopify::search_request(
-                &r.query,
+                &r.words(),
                 &r.country,
                 &r.currency,
                 r.min_price,
@@ -94,6 +167,27 @@ async fn search_one(p: Provider, c: &Clients, r: &SearchReq) -> Result<Vec<Value
                 r.limit,
             );
             c.shopify.catalog_search(req).await.map_err(|e| e.0)
+        }
+        Provider::GoogleShopping => {
+            let Some(s) = &c.serpapi else {
+                return Err("no_key".into());
+            };
+            let mut a = json!({"query": r.words(), "country": r.country, "currency": r.currency,
+                               "location": r.location});
+            if let Some(m) = r.min_price {
+                a["min_price"] = json!(m);
+            }
+            if let Some(m) = r.max_price {
+                a["max_price"] = json!(m);
+            }
+            let list = s.shopping(&a).await.map_err(|e| e.to_string())?;
+            Ok(if r.merchants.is_empty() {
+                list
+            } else {
+                list.into_iter()
+                    .filter(|o| seller_is(&get_str(&o["seller"], "name"), &r.merchants))
+                    .collect()
+            })
         }
     }
 }
@@ -154,16 +248,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn providers_by_location_or_by_the_name_the_user_gave() {
-        assert_eq!(providers_for("SG", &[]), Ok(vec![Provider::ShopifyCatalog]));
+    fn google_shopping_only_when_a_brand_or_a_merchant_is_named() {
+        let none: Vec<String> = Vec::new();
+        // nothing named: Shopify only — no SerpApi credit
         assert_eq!(
-            providers_for("SG", &["Shopify".into()]),
-            Ok(vec![Provider::ShopifyCatalog])
+            providers_for("SG", &none, &none),
+            (vec![Provider::ShopifyCatalog], vec![])
         );
         assert_eq!(
-            providers_for("SG", &["Amazon".into()]),
-            Err(vec!["amazon".to_string()])
+            providers_for("SG", &["Shopify".into()], &none),
+            (vec![Provider::ShopifyCatalog], vec![])
         );
+        // a brand: Shopify and Google Shopping
+        assert_eq!(
+            providers_for("SG", &none, &["Nike".into()]),
+            (
+                vec![Provider::ShopifyCatalog, Provider::GoogleShopping],
+                vec![]
+            )
+        );
+        // a merchant that is no provider: Google Shopping, kept to that seller
+        assert_eq!(
+            providers_for("SG", &["Amazon".into()], &none),
+            (vec![Provider::GoogleShopping], vec!["Amazon".to_string()])
+        );
+        assert_eq!(
+            providers_for("SG", &["google".into()], &none),
+            (vec![Provider::GoogleShopping], vec![])
+        );
+        // a seller is a named merchant by its name, letters and digits only
+        let amazon = vec!["Amazon".to_string()];
+        assert!(seller_is("Amazon.sg", &amazon) && seller_is("amazon", &amazon));
+        assert!(!seller_is("iRUN Singapore", &amazon) && !seller_is("", &amazon));
+        // the brand goes in the words searched, once
+        let r = SearchReq {
+            query: "running shoes".into(),
+            brands: vec!["Nike".into()],
+            ..Default::default()
+        };
+        assert_eq!(r.words(), "Nike running shoes");
+        let r = SearchReq {
+            query: "Nike running shoes".into(),
+            brands: vec!["nike".into()],
+            ..Default::default()
+        };
+        assert_eq!(r.words(), "Nike running shoes");
     }
 
     #[tokio::test]
@@ -177,6 +306,7 @@ mod tests {
                 "",
                 "",
             ),
+            serpapi: None,
         };
         let r = search_all(
             &[Provider::ShopifyCatalog],
@@ -204,6 +334,7 @@ mod tests {
                 "id",
                 "secret",
             ),
+            serpapi: None,
         };
         let t = std::time::Instant::now();
         let r = search_all(

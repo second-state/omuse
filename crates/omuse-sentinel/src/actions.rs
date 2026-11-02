@@ -813,6 +813,9 @@ pub async fn execute(
         return telegram_send(st, take_chars(&text, 3500)).await;
     }
     if connector == "shopping" {
+        if tool == "shop_stores" {
+            return Ok(shop_stores(st, args).await);
+        }
         return Ok(shop_search(st, args).await);
     }
     if connector == "travel" {
@@ -2225,6 +2228,7 @@ pub async fn shop_search(st: &AppState, args: &Value) -> Value {
             &st.cfg.shopping.shopify_client_id,
             &st.cfg.shopping.shopify_client_secret,
         ),
+        serpapi: serpapi_client(st),
     };
     let currency = fstr(args, "currency").to_uppercase();
     let req = SearchReq {
@@ -2234,21 +2238,14 @@ pub async fn shop_search(st: &AppState, args: &Value) -> Value {
         min_price: args.get("min_price").and_then(as_f64),
         max_price: args.get("max_price").and_then(as_f64),
         limit: args.get("limit").and_then(Value::as_u64).unwrap_or(20),
+        location: fstr(args, "location"),
+        brands: strs(args, "brands"),
+        merchants: Vec::new(),
     };
-    let named: Vec<String> = args
-        .get("stores")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    let providers = match shops::providers_for(&req.country, &named) {
-        Ok(p) => p,
-        Err(unknown) => return json!({"offers": [], "providers": [], "not_covered": unknown}),
-    };
+    // Shopify by default; Google Shopping (a SerpApi credit) only when a brand or a merchant is named
+    let (providers, merchants) =
+        shops::providers_for(&req.country, &strs(args, "stores"), &req.brands);
+    let req = SearchReq { merchants, ..req };
     let mut out = shops::search_all(&providers, &clients, &req, Duration::from_secs(9)).await;
     if currency.len() == 3 {
         if let Some(offers) = out.get_mut("offers").and_then(Value::as_array_mut) {
@@ -2265,6 +2262,42 @@ pub async fn shop_search(st: &AppState, args: &Value) -> Value {
         }
     }
     out
+}
+
+/// The strings of an array argument.
+fn strs(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The SerpApi client for the Shopping bot's Google Shopping provider: the Flights & hotels key, `None` without one.
+fn serpapi_client(st: &AppState) -> Option<omuse_apps::serpapi::SerpApi> {
+    let key = serpapi_key(st);
+    (!key.is_empty()).then(|| {
+        omuse_apps::serpapi::SerpApi::new(st.http.clone(), &st.cfg.endpoints.serpapi, &key)
+    })
+}
+
+/// `shop_stores` (the shop_order machine's code call, a pick to buy from Google Shopping): the stores selling that
+/// product in the user's country, each with its own page, price, shipping and total.
+pub async fn shop_stores(st: &AppState, args: &Value) -> Value {
+    let Some(s) = serpapi_client(st) else {
+        return json!({"stores": [], "error": "no_key"});
+    };
+    match s
+        .shopping_stores(&fstr(args, "product_token"), &fstr(args, "country"))
+        .await
+    {
+        Ok(stores) => json!({"stores": stores}),
+        Err(e) => json!({"stores": [], "error": e.to_string()}),
+    }
 }
 
 /// The SerpApi key in force for the Flights & hotels connection: the user's, else the server's default; "" = none.

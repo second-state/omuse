@@ -8,8 +8,10 @@ browser: off
 
 ## Any product request → shop_order (by API, no browser)
 Call `shop_order` with the user's words as JSON arguments — never search or open shops' pages yourself:
-- `query` = the product words ("running shoes"); `stores` = only the stores the user named (else empty: code picks
-  the stores for the user's location); `country` = the ISO code of where to ship ONLY when the user named a place
+- `query` = the product words ("running shoes"); `stores` = only the stores or merchants the user named ("Shopify",
+  "Amazon", "Walmart"; else empty: code picks the stores for the user's location); `brands` = the brands the user
+  named ("Nike"; else empty) — a brand or a merchant named also searches Google Shopping, which costs a search credit,
+  so fill them only from the user's own words; `country` = the ISO code of where to ship ONLY when the user named a place
   ("ship it to Japan" → JP) — else empty: code uses the profile's home country, and asks when there is none; `max_price` / `min_price` in the user's currency; `by` = `rating`, `price` or
   `ratings`; `min_stars`, `min_ratings`, `count` (how many to show), `title_has` (words every chosen name has),
   `title_not`; `action` = `compare` (find / show / which is best) or `buy`.

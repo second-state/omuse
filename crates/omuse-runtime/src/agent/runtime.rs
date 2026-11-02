@@ -2236,6 +2236,7 @@ message to use as written) stays in that language. Output only the rewritten rep
                     && n != "browser_read_elements"
                     // the store providers by API: the shop_order machine's own call
                     && n != "shop_search"
+                    && n != "shop_stores"
                     && allow.is_none_or(|a| a.contains(&n))
             })
             .collect();
@@ -4142,6 +4143,7 @@ pub fn compress_with(
                 || name == "browser_read_elements"
                 // the shopping machine's API answers are its state (the offers)
                 || name == "shop_search"
+                || name == "shop_stores"
         })
         .map(|tc| get_str(tc, "id"))
         .collect();

@@ -226,7 +226,8 @@ from the JSON result (code appends the facts in show to the reply).",
         json!({
             "query": {"type": "string", "description": "what to look for, as product words (\"running shoes\"); the same words again with choices or a pick"},
             "url": {"type": "string", "description": "a shop's link the user gave in this chat (only reported back: shops are searched by API, never opened)"},
-            "stores": {"type": "array", "items": s.clone(), "description": "stores the user named to search (\"Shopify\"); empty = the stores for the user's location"},
+            "stores": {"type": "array", "items": s.clone(), "description": "stores or merchants the user named (\"Shopify\", \"Amazon\", \"Walmart\"); empty = the stores for the user's location"},
+            "brands": {"type": "array", "items": s.clone(), "description": "brands the user named (\"Nike\"); empty when none"},
             "country": {"type": "string", "description": "ISO 3166 2-letter code of the country to ship to, ONLY when the user named one (in this request, or answering the question for it); empty = the profile's home country"},
             "choices": {"type": "array", "items": s.clone(), "description": "after a review result: the offer_ids of the 3 to 5 offers that best fit the request, best first"},
             "action": {"type": "string", "enum": ["compare", "cart", "buy"]},
@@ -766,7 +767,7 @@ fn check_shop(a: &Value, profile: &Value) -> Checked {
     if !query.is_empty() {
         out.insert("query".into(), json!(query));
     }
-    for k in ["stores", "choices"] {
+    for k in ["stores", "choices", "brands"] {
         let v = list_arg(a, k);
         if !v.is_empty() {
             out.insert(k.into(), json!(v));
@@ -1517,6 +1518,8 @@ pub struct ShopReq {
     pub choices: Vec<String>,
     /// where it ships (ISO 2): the country the user named, else the profile's home country (checked)
     pub country: String,
+    /// the brands the user named: Google Shopping is searched too (a SerpApi credit)
+    pub brands: Vec<String>,
 }
 
 impl ShopReq {
@@ -1546,6 +1549,7 @@ impl ShopReq {
             stores: list_arg(a, "stores"),
             choices: list_arg(a, "choices"),
             country: s_arg(a, "country"),
+            brands: list_arg(a, "brands"),
         }
     }
 }

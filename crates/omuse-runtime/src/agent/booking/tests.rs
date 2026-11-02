@@ -1675,6 +1675,93 @@ fn shopping_ships_to_the_profiles_home_country_or_asks_for_it() {
     assert!(matches!(check_with(bad, &json!({})), Checked::Invalid(_)));
 }
 
+/// `shop_search`'s answer from the Google Shopping provider, on a SerpApi search recorded on 2026-11-02 (Singapore,
+/// "Nike running shoes"; omuse-apps/src/serpapi_recorded/). Recorded data, labelled as such.
+fn sg_google_search() -> String {
+    use omuse_apps::{serpapi, shops};
+    let data: Value = serde_json::from_str(include_str!(
+        "../../../../omuse-apps/src/serpapi_recorded/google_shopping_sg.json"
+    ))
+    .unwrap();
+    let offers = shops::tag(
+        shops::Provider::GoogleShopping,
+        serpapi::shopping_offers(&data, "SGD"),
+    );
+    json!({"offers": offers, "providers": [{"provider": "google", "ok": true, "count": 8}]})
+        .to_string()
+}
+
+fn sg_google_stores() -> String {
+    let data: Value = serde_json::from_str(include_str!(
+        "../../../../omuse-apps/src/serpapi_recorded/google_immersive_product_sg.json"
+    ))
+    .unwrap();
+    json!({"stores": omuse_apps::serpapi::shopping_stores(&data)}).to_string()
+}
+
+#[test]
+fn a_brand_brings_in_google_shopping_and_a_pick_links_the_sellers_own_page() {
+    // the user, 2026-11-02: Google Shopping (SerpApi, paid) only when a brand or a merchant is named; delivery from
+    // the home city; the pick links the store's own page with the total and shipping
+    let p = json!({"home_city": "SIN", "home_country": "SG"});
+    let args = json!({"query": "running shoes", "brands": ["Nike"], "action": "compare"});
+    let a = valid(SHOP_ORDER, args.clone(), "x", &p);
+    let answer = |name: &str, _: &Value, _: &[Value]| match name {
+        "shop_search" => sg_google_search(),
+        "shop_stores" => sg_google_stores(),
+        "present_choices" => "{\"shown\": true}".to_string(),
+        _ => "{}".to_string(),
+    };
+    let (mut t, review) = run(
+        SHOP_ORDER,
+        &a,
+        started(SHOP_ORDER, &a, "x"),
+        &Env::of(&p),
+        answer,
+    );
+    let s = &args_of(&t, "shop_search")[0];
+    assert_eq!(s["brands"], json!(["Nike"]));
+    assert_eq!(
+        (s["location"].as_str(), s["country"].as_str()),
+        (Some("Singapore"), Some("SG"))
+    );
+    assert_eq!(review["status"], "review");
+    let o = review["offers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["title"] == "Nike Vomero Plus Men's")
+        .cloned()
+        .expect("the Vomero offer");
+    // the long product token stays out of what the model reads
+    assert!(o.get("product_token").is_none());
+    t.extend(crate::agent::workflow::result_exchange(
+        &t, SHOP_ORDER, &review,
+    ));
+    let mut buy = args;
+    buy["pick"] = o["title"].clone();
+    let b = valid(SHOP_ORDER, buy, "x", &p);
+    t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_b", "type": "function",
+                  "function": {"name": SHOP_ORDER, "arguments": b.to_string()}}]}));
+    t.push(json!({"role": "tool", "tool_call_id": "call_b", "content": json!({"status": "running", "args": b}).to_string()}));
+    let (t2, res) = run_call("call_b", SHOP_ORDER, &b, t, &Env::of(&p), answer);
+    let st = args_of(&t2, "shop_stores");
+    assert_eq!(st.len(), 1, "one stores request, for the pick only");
+    assert!(!get_str(&st[0], "product_token").is_empty());
+    assert_eq!(res["status"], "link", "{res}");
+    let m = must(&res);
+    assert!(
+        m.contains("Buy at iRUN Singapore") && m.contains("https://irunsg.com/"),
+        "{m}"
+    );
+    assert!(m.contains("Total with shipping: SGD 184"), "{m}");
+    assert!(
+        m.contains("the store's checkout confirms your address"),
+        "{m}"
+    );
+    assert!(m.contains("Also sold by: ZALORA Singapore"), "{m}");
+}
+
 #[test]
 fn a_shopping_pick_to_buy_links_the_stores_checkout() {
     // the user picks an offer to buy: code links that variant's checkout on the store (pay in the browser); no page

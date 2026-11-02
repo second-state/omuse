@@ -259,6 +259,21 @@ pub fn valid_request(params: &[(&str, String)], earliest: chrono::NaiveDate) -> 
             }
             Ok(())
         }
+        Some("google_shopping") => {
+            need("q")?;
+            match get("gl") {
+                Some(g) if g.len() == 2 && g.bytes().all(|b| b.is_ascii_lowercase()) => {}
+                Some(g) => return Err(format!("gl {g:?} is not a 2-letter country code")),
+                None => return Err("gl (the country searched from) is required".into()),
+            }
+            int_in("min_price", 0, 1_000_000)?;
+            int_in("max_price", 1, 1_000_000)?;
+            Ok(())
+        }
+        Some("google_immersive_product") => {
+            need("page_token")?;
+            Ok(())
+        }
         Some(e) => Err(format!("engine {e:?} is not one OMuse uses")),
         None => Err("engine is required".into()),
     }
@@ -572,6 +587,57 @@ pub fn merge_days(days: Vec<(String, Value)>, cut: bool, asked_to: &str) -> Valu
 }
 
 /// The SerpApi client for one key.
+/// Google Shopping's offers (`engine=google_shopping`, `shopping_results`), in the store providers' shape: title, price
+/// (the result's number) in `currency` — the country searched (Google gives "$179.00", no code) — seller, rating out
+/// of 5 and the count, Google's page for the product, the token for its stores ([`shopping_stores`]) and the delivery
+/// line when Google gives one. Walked 2026-11-02 (docs/sites/google-shopping.md).
+pub fn shopping_offers(data: &Value, currency: &str) -> Vec<Value> {
+    data["shopping_results"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            let title = get_str(r, "title");
+            let price = r["extracted_price"].as_f64()?;
+            if title.is_empty() {
+                return None;
+            }
+            let mut o = json!({"id": get_str(r, "product_id"), "title": title, "price": price,
+                               "currency": currency, "available": true,
+                               "seller": {"name": get_str(r, "source")},
+                               "url": get_str(r, "product_link"),
+                               "product_token": get_str(r, "immersive_product_page_token")});
+            if let Some(x) = r["rating"].as_f64() {
+                o["rating"] = json!(x);
+                o["ratings"] = json!(r["reviews"].as_u64().unwrap_or(0));
+            }
+            let delivery = get_str(r, "delivery");
+            if !delivery.is_empty() {
+                o["delivery"] = json!(delivery);
+            }
+            Some(o)
+        })
+        .collect()
+}
+
+/// A product's stores (`engine=google_immersive_product`, `product_results.stores`): each store's name, its own page
+/// for the product, price, shipping and total as numbers, and its delivery / returns notes (Google's words, shown as
+/// they are).
+pub fn shopping_stores(data: &Value) -> Vec<Value> {
+    data["product_results"]["stores"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| get_str(s, "link").starts_with("https://"))
+        .map(|s| {
+            json!({"name": get_str(s, "name"), "url": get_str(s, "link"),
+                   "price": s["extracted_price"].as_f64(), "shipping": s["shipping_extracted"].as_f64(),
+                   "total": s["extracted_total"].as_f64(),
+                   "notes": s["details_and_offers"].as_array().cloned().unwrap_or_default()})
+        })
+        .collect()
+}
+
 pub struct SerpApi {
     client: reqwest::Client,
     base: String,
@@ -1364,6 +1430,47 @@ impl SerpApi {
         Ok(body)
     }
 
+    /// `shop_search`'s Google Shopping provider: ONE search for the words, from the user's country (`gl`) and city
+    /// (`location`, when known), the price range in that country's currency.
+    pub async fn shopping(&self, a: &Value) -> Result<Vec<Value>, SerpError> {
+        let country = get_str(a, "country").to_lowercase();
+        let mut params = vec![
+            ("engine", "google_shopping".to_string()),
+            ("q", get_str(a, "query")),
+            ("gl", country),
+            ("hl", "en".to_string()),
+            ("location", get_str(a, "location")),
+        ];
+        if let Some(m) = price_cap(a, "min_price") {
+            params.push(("min_price", m.to_string()));
+        }
+        if let Some(m) = price_cap(a, "max_price") {
+            params.push(("max_price", m.to_string()));
+        }
+        let data = self.get("search.json", &params).await?;
+        Ok(shopping_offers(&data, &get_str(a, "currency")))
+    }
+
+    /// The stores selling one Google Shopping product (its `product_token`), for the user's country.
+    pub async fn shopping_stores(
+        &self,
+        token: &str,
+        country: &str,
+    ) -> Result<Vec<Value>, SerpError> {
+        let data = self
+            .get(
+                "search.json",
+                &[
+                    ("engine", "google_immersive_product".to_string()),
+                    ("page_token", token.to_string()),
+                    ("gl", country.to_lowercase()),
+                    ("hl", "en".to_string()),
+                ],
+            )
+            .await?;
+        Ok(shopping_stores(&data))
+    }
+
     /// The key's plan and remaining searches (`/account.json`).
     pub async fn account(&self) -> Result<Value, SerpError> {
         let a = self.get("account.json", &[]).await?;
@@ -1960,6 +2067,83 @@ mod tests {
         assert_eq!(m["by_date"][2]["count"], 0);
         assert_eq!(m["searched"]["dates"], "2026-12-01 to 2026-12-03 (3 days)");
         assert_eq!(m["searched"]["cabin"], "business");
+    }
+
+    /// Google Shopping, on responses recorded from SerpApi on 2026-11-02 (a Singapore search for "Nike running shoes"
+    /// and one product's stores; serpapi_recorded/, trimmed). Recorded data, labelled as such.
+    #[test]
+    fn google_shopping_offers_and_a_products_stores() {
+        let search: Value =
+            serde_json::from_str(include_str!("serpapi_recorded/google_shopping_sg.json")).unwrap();
+        let offers = shopping_offers(&search, "SGD");
+        assert_eq!(offers.len(), 8);
+        let o = &offers[0];
+        assert_eq!(
+            (
+                get_str(o, "title"),
+                o["price"].as_f64(),
+                get_str(o, "currency")
+            ),
+            (
+                "Nike Vomero Plus Men's".to_string(),
+                Some(179.0),
+                "SGD".to_string()
+            )
+        );
+        assert_eq!(get_str(&o["seller"], "name"), "iRUN Singapore");
+        assert_eq!(
+            (o["rating"].as_f64(), o["ratings"].as_u64()),
+            (Some(4.7), Some(3100))
+        );
+        assert!(!get_str(o, "product_token").is_empty());
+        let product: Value = serde_json::from_str(include_str!(
+            "serpapi_recorded/google_immersive_product_sg.json"
+        ))
+        .unwrap();
+        let stores = shopping_stores(&product);
+        assert_eq!(stores.len(), 4);
+        assert_eq!(get_str(&stores[0], "name"), "iRUN Singapore");
+        assert!(get_str(&stores[0], "url").starts_with("https://irunsg.com/"));
+        assert_eq!(
+            (stores[0]["price"].as_f64(), stores[0]["shipping"].as_f64()),
+            (Some(179.0), Some(5.0))
+        );
+        assert_eq!(get_str(&stores[1], "name"), "ZALORA Singapore");
+        // the requests are valid SerpApi requests (checked before they are sent)
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        let p = |kv: &[(&'static str, &str)]| -> Vec<(&'static str, String)> {
+            kv.iter().map(|(k, v)| (*k, v.to_string())).collect()
+        };
+        assert_eq!(
+            valid_request(
+                &p(&[
+                    ("engine", "google_shopping"),
+                    ("q", "Nike running shoes"),
+                    ("gl", "sg"),
+                    ("hl", "en"),
+                    ("location", "Singapore")
+                ]),
+                day
+            ),
+            Ok(())
+        );
+        assert!(valid_request(
+            &p(&[("engine", "google_shopping"), ("q", "x"), ("gl", "SGP")]),
+            day
+        )
+        .is_err());
+        assert!(valid_request(&p(&[("engine", "google_shopping"), ("gl", "sg")]), day).is_err());
+        assert_eq!(
+            valid_request(
+                &p(&[
+                    ("engine", "google_immersive_product"),
+                    ("page_token", "t"),
+                    ("gl", "sg")
+                ]),
+                day
+            ),
+            Ok(())
+        );
     }
 
     /// A request SerpApi would refuse (still a credit spent) is caught before it is sent; the requests OMuse builds
