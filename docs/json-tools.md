@@ -82,7 +82,7 @@ every `EXTRACT_SYSTEM`, `extract_exchange` and code-written answer text.
 | tool | machine | replaces |
 |---|---|---|
 | `travel_search` / `travel_book` (kind flight · hotel · michelin · restaurant) | `agent/booking.rs` | regex request parsing, `search_request`, `follow_up`, `mail_to`, `profile_with_words`, `preferred_airlines`, `HABIT`, `WORK` |
-| `shop_order` (a known shop's link, the criteria, buy or compare) | `agent/booking.rs` (shop) | `shop_ranking` regexes, `known_shop_request` |
+| `shop_order` (a shop's link and the ranking criteria; the page itself goes to `browser-use`) | `agent/booking.rs` (shop) | `shop_ranking` regexes, `known_shop_request` |
 | `arrival_card_fill` (country, trip facts) | `agent/driver.rs` | `user_asks`, `dates_in` over the request, `trip_dates_from_request` |
 | `claim_file` / `insurance_buy` | `agent/claims.rs` | the claims machine's request regexes |
 | `apdt_refund` | `agent/apdt.rs` | its request regexes |
@@ -103,6 +103,19 @@ the chat title call answers `{"title", "lang"}` (`prompts::parse_title`, `lang` 
 no characters to decide a language; the character classes left in code only strip code's own bilingual strings
 (`prompts::en_only`, `drop_cjk`, `system_text_en`) or report a written file's length (`files_write`).
 
+## Email verification codes (one reusable step)
+
+A site that sends a verification code by email ("enter your email → send code → type the code") is handled by one
+reusable function, `email_code`, used by every machine with such a step (Taiwan and Korea arrival cards, the UK ETA,
+any sign-up later):
+
+1. **A mailbox is connected** (Gmail or IMAP): code fills the user's email and presses Send, then waits for the mail —
+   a structured mailbox query (recent, from the site's sender or domain, after the press), with a timeout.
+2. The mail's body is natural language: the **model extracts `{"code": "…"}`** through the JSON layer (repair, schema,
+   one planner regeneration). Code checks the value's shape, types it and goes on.
+3. **No mailbox, no mail before the timeout, or no valid code**: code fills the email, does not press Send, and hands
+   over at that step.
+
 ## Reading pages
 
 Order of preference for any data on a page (a reference, a price, a status, a timetable, a result row):
@@ -118,7 +131,7 @@ The element rules go through `browser_read_elements{read: [{name, sel, attr?, ce
 `/agent/read_elements`; withdrawn from the model like `browser_fill_form`): each selector's visible matches as text, an
 attribute, or with `cells` each row's cells and links, wrapped as untrusted page content. Every known site's confirmation
 reference is read this way — `ref_sel` (the element) and `ref_re` (the format, checked over the whole value) in
-`booking::SITES`, `claims::SPECS`, `driver::CARDS`; APDT's is the `bizId` of the submit page's address — and a page
+`claims::SPECS`, `driver::CARDS`; APDT's is the `bizId` of the submit page's address — and a page
 without it is `not_confirmed`, never a generic fallback. The FWD quote's plans are its table's cells (`#plans tr`). The
 outcome check and the ledger take the reference from structured JSON only (`confirm::confirmed`: a machine's result →
 `known_page`, `confirm_reference` → `model_read`; the source is kept in the evidence).
@@ -130,15 +143,12 @@ first), and `hidden` (hidden matches too), `max` (40, at most 200). An input's r
 elements their refs (`confirm::refs_args`) — never a label searched in the snapshot's text. The known pages read this
 way:
 
-- Kaya Mobile's results (`.grid .card`: `h2 a` name and link, `.rating`, `.price` → `listings::Listing::from_fields`),
-  its cart lines (`#items .row span`) and, after Add to Cart, the header's count (`#cart`) and the colour chosen
-  (`#colour option:checked`); Stride's price (`main .price`).
 - JR East's station timetable (`table.result_03 tr[id^='time_'] div.timetable_time`: `.train`, `.minute`,
   `data-misc` ◆, the row's hour cell) for `train_times`.
 - WorldTracer's result (`#out tr` cells: Status, Last update, Flight; `#out p` for "No file found").
 - APDT: the error boxes (`.err`), the saved reference (`#refShown`), the upload boxes (`#file_doc`, `#file_inboard`,
   `#file_outboard`, `#file_paydoc`) and card fields (`#card_number`, `#card_valid`, `#card_holder`) by their refs.
-- The card fields of the known booking pages (`booking::SITES.card`), FWD Singapore's application (`claims::CARD_FIELDS`)
+- FWD Singapore's application (`claims::CARD_FIELDS`)
   and claim upload (`#docs`), FWD Hong Kong's claim-form link.
 - News: the engines' rows carry `date` (DuckDuckGo's timestamp) and `source` (Bing News' author); `browser_read`'s page
   has `lead` (the first paragraph under `<article>` / main), `site_name` (`og:site_name`) and `published`
@@ -147,7 +157,7 @@ way:
 A price watch (`watch_create` / `web.page` with `mode=price_below`; `watch_price.rs`, `watchers::evaluate_price`)
 decides when it is made how its price is read, and stores it in its parameters (`scheduler::event_spec` →
 `watch_price::decide_read`): `read=element` with `price_sel` (and `price_attr`) — a known site's rule
-(`watch_price::KNOWN`: Kaya Mobile's `.a-price .a-offscreen`, Stride's `main .price`, Amazon's buy box) or the selector
+(`watch_price::KNOWN`: Amazon's buy box) or the selector
 the model gave — read by Sentinel through `read_elements`, the value checked to be one price
 (`watchers::parse_amount`); else `read=model`: Sentinel answers `{"extract": {text, title, url}}`, the scheduler has
 the model extract `{price, currency, item}` (`watch_price::extract_price`, through `json_in`; `null` = no price for the
@@ -156,9 +166,9 @@ item, an error) and hands it back as `observed`, and Sentinel compares it with t
 price the model read (`current_price`, required there) is the baseline; an element that shows no price switches the
 watch to `read=model` with a note. No price is looked for in a page's text by a pattern.
 
-On an unknown shop the listings are the model's JSON: `present_choices` options with `price`, `price_text`, `stars`
+On a shop the listings are the model's JSON: `present_choices` options with `price`, `price_text`, `stars`
 and `ratings` (up to 40 with `ranking`); code ranks them (`listings::Listing::from_option`) and verifies their texts
-against the pages read. Which button adds a product to the cart on an unknown shop is a `decide` over the snapshot's
+against the pages read. Which button adds a product to the cart is a `decide` over the snapshot's
 buttons by ref (`judgements::snapshot_buttons`). Providers' terms are their flags: `free_cancellation`, `prepaid`, a
 Michelin restaurant's `stars` / `bib_gourmand` / `closed_days` (the texts are shown, not searched).
 3. **Regex** — only to check a value that is already structured (an ISO date, a reference's format), never to find
@@ -281,7 +291,7 @@ runtime), structured tool results and known pages' fixed parts — the transcrip
 for a takeover resumes from the transcript. A page with no form function: `Done({"status": "browser_use", "url"})`;
 the runtime then loads the `browser-use` skill in code and the model fills that page.
 
-**4. The Done JSON.** `status` (shown · booked · in_cart · not_confirmed · handed_over · nothing_found · browser_use ·
+**4. The Done JSON.** `status` (shown · not_confirmed · handed_over · nothing_found · browser_use ·
 error), the data the reply needs (options with their links, the pick and its rule, the booking with reference and
 amount, links, `mailed`, `next_items`, `next_question`), `show`: the facts the user must read as structured items
 (`show::reference`, `show::link`, `show::file`, `show::amount`, `show::fact` — copied from structured data: a reference,
@@ -297,11 +307,11 @@ helper that starts from the transcript the run loop leaves (user message, the to
 question after a page opened) and the JSON (status, data, and the lines its `show` renders to: `show::lines`).
 Protocol tests with the scripted model (`scripted_rt` in `agent/tests.rs`): a call that runs its machine and the reply
 turn without the workflow tools, the `show` block appended after the reply, invalid → planner regeneration → invalid →
-`needs_input`, repaired syntax. In the fake model (`tests/fake_llm.py`) a marker becomes the workflow call with JSON
-arguments (`workflow_args`), and the reply to a `*_result` is written from the JSON (`workflow_reply`); fake suites
-check the call (`skills_common.workflow`), the machine's steps (`work`), the result (`result`) and that the block code
-appended carries every `show` item (`says_all`, `tests/show_common.py`); real suites check the block as the user sees
-it (`Answer.block`, `Answer.shows`). No test checks the model's wording or a hint.
+`needs_input`, repaired syntax. In the fake model (`tests/fake_llm.py`) the reply to a `*_result` is written from the
+JSON (`workflow_reply`); fake suites (app-only: no fake services or pages) can check the call (`skills_common.workflow`),
+the machine's steps (`work`), the result (`result`) and that the block code appended carries every `show` item
+(`says_all`, `tests/show_common.py`); real suites check the block as the user sees it on real sites (`Answer.block`,
+`Answer.shows`). No test checks the model's wording or a hint.
 
 Two runtime rules come with every machine: a machine's own `present_choices` (a `bkg_`-style code call) carries `_code`
 (set by the run loop, never taken from the model) and is not checked against pages read — its cards come from the
