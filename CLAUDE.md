@@ -37,6 +37,11 @@ JSON data:
   processed only by the model. A known website and its HTML is processed by code: form functions with fixed input ids,
   the fixed parts of a known result or confirmation page, structured API and tool results. Regex cannot understand
   natural language; every new phrasing breaks it.
+- **Walk the whole process before coding it.** Before writing or changing a form function or any code tool that drives
+  a real site, go through the ENTIRE real process yourself, screen by screen, with clearly fake data, up to the step
+  that is the user's (Submit, Pay, sign-in, a photo, a code you cannot read). Record every screen: its URL, every
+  input's id/name, required or not, its option list, its validation, and what enables Next. Code the tool only from
+  that complete map, and keep the map with the code. Never discover fields one failed run at a time.
 - **Reading a page: HTML elements first, then the model.** Data on a page is read by deterministic rules on its HTML
   elements first — a selector, an element id, a table's cells, an attribute (the browser service reads them).
   When no element rule can find it (an unknown site, data only in running text), the model extracts it from the page or

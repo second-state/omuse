@@ -135,6 +135,8 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
 
 ## Tests
 
+**Walk the whole real process before coding a form function** (CLAUDE.md, hard rules): every screen mapped (URL, input ids/names, required, options, validation, what enables Next) up to the user's step, with fake data, before any code; the map is kept beside the form function (`docs/sites/<site>.md`).
+
 **Only real-URL e2e tests have meaning.** An e2e test runs the real model against the real site or service (real URLs, real APIs, real official pages) and stops at the first step the user owns (sign-in, emailed code, CAPTCHA, Submit, Pay), with clearly fake test data and nothing paid, submitted or sent. The e2e suites (the real-model ones, `*_real.py`) use no fake pages, fake sites, fixture data or fake workflows at all. The fake tests (the scripted fake-model suites) stay because they are fast, but they are never counted as e2e.
 
 **When a test fails, first decide whether the test is needed at all.** Keep it only if it checks something real from the user's point of view: real pages and real data, or a code path whose input and output are structured. Remove it (and say so) when it checks the model's optional wording, depends on pages or ids we invented (a stand-in's confirmation page, a made-up shop's selectors), or duplicates another check. A test on our own fake pages is a fake test, never an e2e test, and is listed as such. Only a test worth keeping gets the product fixed for it.
