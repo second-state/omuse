@@ -809,6 +809,7 @@ pub fn flight_candidates(req: &Req, offers: &[Offer]) -> Vec<Offer> {
     if let Some(m) = req.max_price {
         keep.retain(|o| o.price.is_some_and(|p| p <= m));
     }
+    keep.retain(|o| in_window(req, o));
     // departure order; an offer without times after the others (stable: the search's own order among equals)
     keep.sort_by(|a, b| {
         (a.depart.is_empty(), &a.depart, &a.arrive).cmp(&(
@@ -823,6 +824,31 @@ pub fn flight_candidates(req: &Req, offers: &[Offer]) -> Vec<Offer> {
         }
     }
     keep
+}
+
+/// The flight meets the request's time window (`depart_after` …, HH:MM local at each airport; the search's own filter
+/// is by the hour and Kiwi's can be wider): a departure limit on its departure time, an arrival limit on its arrival
+/// time and day — one landing a day or more after it leaves is past any `arrive_before` and after any `arrive_after`
+/// (travel_ask_real 2026-11-02: "lands before midnight" listed only next-day arrivals, the model picked none and
+/// nothing was shown). A flight without the times it is checked on stays.
+fn in_window(req: &Req, o: &Offer) -> bool {
+    let hm = |t: &str| t.get(11..16).map(str::to_string);
+    let later = days_later(o);
+    req.times.iter().all(|(k, v)| match k.as_str() {
+        "depart_after" => hm(&o.depart).is_none_or(|t| t >= *v),
+        "depart_before" => hm(&o.depart).is_none_or(|t| t <= *v),
+        "arrive_after" => match (later, hm(&o.arrive)) {
+            (Some(d), _) if d > 0 => true,
+            (_, Some(t)) => t >= *v,
+            _ => true,
+        },
+        "arrive_before" => match (later, hm(&o.arrive)) {
+            (Some(d), _) if d > 0 => false,
+            (_, Some(t)) => t <= *v,
+            _ => true,
+        },
+        _ => true,
+    })
 }
 
 /// The days between a flight's departure and arrival dates (local at each airport): 0 = it lands on the day it
@@ -876,7 +902,7 @@ fn flight_json(o: &Offer) -> Value {
 
 /// A flight search's result for the model to pick from (`status: pick_needed`): every flight that meets the request's
 /// structured limits, as JSON; nothing is shown yet. None meets them: `nothing_found`, with the limits unmet.
-fn pick_needed(req: &Req, searched: &Value, offers: &[Offer]) -> Value {
+fn pick_needed(req: &Req, searched: &Value, offers: &[Offer], compare: &str) -> Value {
     let flights = flight_candidates(req, offers);
     if flights.is_empty() {
         let mut unmet: Vec<String> = Vec::new();
@@ -886,14 +912,32 @@ fn pick_needed(req: &Req, searched: &Value, offers: &[Offer]) -> Value {
         if let Some(m) = req.max_price {
             unmet.push(format!("under {}", money(m).trim_end_matches(".00")));
         }
+        let window = window_words(req);
+        if !window.is_empty() {
+            unmet.push(window.trim_start_matches(", ").to_string());
+        }
         if unmet.is_empty() {
             unmet.push(format!("the {} searched", req.cabin.replace('_', " ")));
         }
         let unmet = unmet.join(", ");
-        return json!({"status": "nothing_found", "searched": searched, "unmet": unmet,
-            "results": offers.len(),
-            "show": [S::fact(&format!("None of the {} results meets", offers.len()), &format!("{} 个结果都不符合", offers.len()), &unmet)],
-            "hints": []});
+        let mut show = vec![S::fact(
+            &format!("None of the {} results meets", offers.len()),
+            &format!("{} 个结果都不符合", offers.len()),
+            &unmet,
+        )];
+        let mut out = json!({"status": "nothing_found", "searched": searched, "unmet": unmet,
+            "results": offers.len(), "hints": []});
+        if !compare.is_empty() {
+            out["links"] = json!({"compare_url": compare});
+            show.push(S::link(
+                "Compare prices on Kayak",
+                "在 Kayak 比价",
+                "Kayak",
+                compare,
+            ));
+        }
+        out["show"] = json!(show);
+        return out;
     }
     let mut out = json!({"status": PICK_NEEDED, "searched": searched, "count": flights.len(),
         "flights": flights.iter().map(flight_json).collect::<Vec<_>>(),
@@ -2568,7 +2612,7 @@ fn next_travel(req: &Req, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     // midnight" came back as the cheapest, 2026-11-02)
     if kind == Kind::Flight {
         let Some(o) = chosen else {
-            return Step::Done(pick_needed(req, &searched, &offers));
+            return Step::Done(pick_needed(req, &searched, &offers, &compare));
         };
         let exact = Shown {
             kind,

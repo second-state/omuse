@@ -787,3 +787,26 @@ async fn artifacts_are_served_to_the_signed_in_user_only() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+/// The shop_order machine's `shop_search` is in the runtime's catalog without any connection (shopping_real
+/// 2026-11-02: left out, the machine's call ran as "unknown tool" and every search said "nothing in stock").
+#[tokio::test]
+async fn catalog_has_the_shopping_search() {
+    let (ctx, _d) = ctx_with("http://127.0.0.1:9", false);
+    let (s, v) = send(
+        &router(ctx),
+        req("GET", "/internal/catalog")
+            .header("X-Persona-Runtime", TOKEN)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let names: Vec<&str> = v["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(names.contains(&"shop_search"), "{names:?}");
+}

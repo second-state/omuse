@@ -1415,7 +1415,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_deleted_schedule_chat_is_made_again_by_the_next_run() {
+    async fn deleting_a_schedules_chat_deletes_the_schedule_and_stops_its_run() {
+        // the user, 2026-11-02: a scheduled task deleted from the bot's chat list must stop and leave the Tasks page
         let rt = FakeRt::new();
         let sch = create_schedule(
             &rt.store,
@@ -1429,18 +1430,43 @@ mod tests {
         )
         .unwrap();
         let (sid, cid) = (get_str(&sch, "id"), get_str(&sch, "conv_id"));
-        rt.store.delete_conv(&cid).unwrap();
-        assert!(rt.store.conv(&cid).unwrap().is_none());
-        let sc = Scheduler::new(rt.clone());
-        sc.run_now(&sid, None, None, "").await.unwrap();
-        let c = rt.store.conv(&cid).unwrap().expect("the chat is back");
-        assert_eq!(c["title"], "⏰ Daily mail");
-        assert_eq!(c["kind"], "schedule");
-        let msgs = rt.store.msgs(&cid, 10).unwrap();
-        assert_eq!(
-            msgs.last().unwrap()["content"],
-            "⏰ 定时运行 Scheduled run: summarise my new emails"
-        );
+        let running = rt
+            .store
+            .create_task("summarise my new emails", &cid, "schedule", &sid, "", None)
+            .unwrap();
+        let done = rt
+            .store
+            .create_task("summarise my new emails", &cid, "schedule", &sid, "", None)
+            .unwrap();
+        rt.store
+            .db
+            .execute(
+                "UPDATE tasks SET status='COMPLETED' WHERE id=?",
+                params![get_str(&done, "id").as_str()],
+            )
+            .unwrap();
+        let open = rt.store.drop_conv_schedules(&cid).unwrap();
+        assert_eq!(open, [get_str(&running, "id")]);
+        assert!(rt.store.schedule(&sid).unwrap().is_none());
+        assert!(rt.store.schedules().unwrap().is_empty());
+        // another chat's delete leaves other schedules alone
+        let other = create_schedule(
+            &rt.store,
+            "Weekly",
+            "x",
+            "cron",
+            &json!("0 9 * * 1"),
+            "UTC",
+            "",
+            "",
+        )
+        .unwrap();
+        assert!(rt
+            .store
+            .drop_conv_schedules("conv_none")
+            .unwrap()
+            .is_empty());
+        assert!(rt.store.schedule(&get_str(&other, "id")).unwrap().is_some());
     }
 
     #[tokio::test]

@@ -2280,6 +2280,32 @@ impl Store {
         Ok(rows)
     }
 
+    /// Deletes the schedules whose chat is `cid` (the user deleted the chat: the scheduled task goes with it, from the
+    /// Tasks page too) and returns the ids of their tasks still running, for the caller to cancel.
+    pub fn drop_conv_schedules(&self, cid: &str) -> Result<Vec<String>> {
+        let sids: Vec<String> = self
+            .db
+            .all("SELECT id FROM schedules WHERE conv_id=?", params![cid])?
+            .iter()
+            .map(|r| get_str(r, "id"))
+            .collect();
+        let mut open = Vec::new();
+        for sid in &sids {
+            let rows = self.db.all(
+                "SELECT id, status FROM tasks WHERE schedule_id=?",
+                params![sid.as_str()],
+            )?;
+            open.extend(
+                rows.iter()
+                    .filter(|r| !crate::agent::is_terminal(&get_str(r, "status")))
+                    .map(|r| get_str(r, "id")),
+            );
+            self.db
+                .execute("DELETE FROM schedules WHERE id=?", params![sid.as_str()])?;
+        }
+        Ok(open)
+    }
+
     pub fn schedule(&self, sid: &str) -> Result<Option<Value>> {
         let mut r = self
             .db

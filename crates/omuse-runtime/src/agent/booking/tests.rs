@@ -2412,8 +2412,8 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
         "{m}"
     );
 
-    // the model copies only "lands before midnight": one normal search of the whole day; the next-day arrivals are
-    // marked so, and the pick is the same
+    // the model copies only "lands before midnight": one normal search of the whole day; code drops the next-day
+    // arrivals (past arrive_before) before the model reads the list, and the pick is the same
     let a = valid(
         TRAVEL_SEARCH,
         json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03", "arrive_before": "23:59"}),
@@ -2429,20 +2429,62 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
         last_landing_before_midnight,
     );
     assert_eq!(args_of(&t, "flights_search").len(), 1);
-    assert_eq!(listed["count"], HKG_SIN.len());
-    let f = |id: &str| {
-        listed["flights"]
-            .as_array()
-            .unwrap()
+    let next_day = HKG_SIN.iter().filter(|f| f.3[..10] != f.2[..10]).count();
+    assert_eq!(listed["count"], HKG_SIN.len() - next_day);
+    let listed_ids: Vec<String> = listed["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| get_str(f, "offer_id"))
+        .collect();
+    // 00:20 and 00:30 the next day do not land before midnight: not listed
+    assert!(
+        !listed_ids
             .iter()
-            .find(|f| f["offer_id"] == id)
-            .cloned()
-            .unwrap()
-    };
-    // 00:20 and 00:30 the next day do not land before midnight
-    assert_eq!(f("fl_cx715")["arrives_days_later"], 1);
-    assert_eq!(f("fl_uo777")["arrives_days_later"], 1);
+            .any(|id| id == "fl_cx715" || id == "fl_uo777"),
+        "{listed_ids:?}"
+    );
+    assert!(listed["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|f| f["arrives_days_later"] == 0));
     assert_eq!(res["pick"]["offer_id"], "fl_sq895");
+
+    // only next-day arrivals in the window (travel_ask_real 2026-11-02, Kiwi.com's evening): nothing for the model to
+    // pick — code says none meets the window and links Kayak to compare
+    let late = |name: &str, _: &Value, _: &[Value]| -> String {
+        match name {
+            "flights_search" => hkg_sin_google_arriving_from(0)
+                .replace("2026-11-03 22:50", "2026-11-04 00:50")
+                .replace("2026-11-03 19:50", "2026-11-04 01:50"),
+            _ => "{}".into(),
+        }
+    };
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03",
+               "depart_after": "18:00", "arrive_before": "23:59"}),
+        ask,
+        &p,
+    );
+    let (_, res) = run(
+        TRAVEL_SEARCH,
+        &a,
+        started(TRAVEL_SEARCH, &a, ask),
+        &env,
+        late,
+    );
+    assert_eq!(res["status"], "nothing_found", "{res}");
+    let m = must(&res);
+    assert!(
+        m.contains("leaving after 18:00, arriving before 23:59"),
+        "{m}"
+    );
+    assert!(
+        m.contains("https://www.kayak.com/flights/HKG-SIN/2026-11-03"),
+        "{m}"
+    );
 }
 
 #[test]

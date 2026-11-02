@@ -157,6 +157,9 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
         }
     }
     status.insert("mcp".into(), mcp);
+    // the Shopping bot's store providers (`shop_search`): the server's API keys, no connection of the user's; the policy
+    // allows them always (omuse_sentinel_core::policy)
+    enabled.insert("shopping".into());
     let read_only = deps::calendar_read_only(store);
     let tools = catalog::snapshot();
     let allowed = |name: &str| -> bool {
@@ -164,8 +167,8 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
             return false;
         };
         let connector = get_str(t, "connector");
-        if connector.starts_with("mcp:") {
-            return true; // sync_catalog only publishes enabled, reviewed, non-"off" tools
+        if connector.starts_with("mcp:") || connector == "shopping" {
+            return true; // sync_catalog only publishes enabled, reviewed, non-"off" tools; shopping: above
         }
         if connector == "calendar" && get_str(t, "capability") == "write" && read_only {
             return false; // read-only iCal feed: don't offer writes the agent can't do
