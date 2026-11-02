@@ -367,7 +367,9 @@ function newChat() {
 async function deleteConv(id) {
   const c = S.convs.find(x => x.id === id);
   if (!c) return;
-  if (!confirmInline(Tf("删除对话「{0}」？任务记录仍保留在「任务」和「审计」里。", (c.title || T('无标题'))))) return;
+  const title = c.title || T('无标题');
+  const q = c.kind === 'schedule' ? Tf("删除定时任务「{0}」？它将停止运行，并从「任务」中移除。", title) : Tf("删除对话「{0}」？任务记录仍保留在「任务」和「审计」里。", title);
+  if (!confirmInline(q)) return;
   await api('conversations/' + id, { method: 'DELETE' });
   if (S.conv === id) newChat();
   await loadConvs(); renderConvList();
