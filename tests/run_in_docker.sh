@@ -18,7 +18,7 @@ set -u
 # REAL_DATA_SUITES: read-only use cases on the real web and the real APIs (search, flights/hotels/cars, market data, …)
 REAL_DATA_SUITES=" travel_user_real travel_kiwi_real travel_brave_real travel_connect_real web_search_real travel_info_real \
 emergency_real tax_refund_real market_real research_real library_real cards_real cards_markets_real news_report_real \
-travel_ask_real stream_real bots_real "
+travel_ask_real stream_real bots_real btc_monitor_real "
 # the other e2e suites: the app with the real model and the real image / video provider, nothing outside faked
 REAL_APP_SUITES="assistant_real automations_real memory_real chat_real docs_real chart_real media_real attach_media_real \
 travel_receipts_real"

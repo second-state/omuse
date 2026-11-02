@@ -97,6 +97,11 @@ fn tools(name: &str, args: &Value) -> String {
             "已创建定时任务 schedule created: id=sch_1, next run 2026-11-02 08:00".into()
         }
         "gmail_send" => json!({"sent": true, "id": "m1"}).to_string(),
+        "market_quotes" => quotes_of(&json!({"results": [
+            {"symbol": "BTC-USD", "name": "Bitcoin USD", "exchange": "CCC", "currency": "USD", "range": "5d",
+             "last": 68123.45, "last_time": "2026-11-01 07:58", "day_change_pct": 1.2, "series": []}],
+            "errors": []}))
+        .to_string(),
         other => panic!("unexpected call {other}"),
     }
 }
@@ -464,7 +469,7 @@ fn a_scheduled_run_makes_no_new_schedule_and_a_one_off_offers_the_mail() {
     );
     assert!(calls_of(&t, "schedule_create").is_empty() && calls_of(&t, "gmail_send").is_empty());
     assert!(sget(&res, "next_question").contains("me@example.com"));
-    // the mail asked for with no mailbox connected: said, not sent
+    // the mail asked for with no mailbox connected: delivered in the chat, nothing sent
     let none = json!({});
     let (t, res) = run(
         NEWS_PUBLISH,
@@ -476,7 +481,8 @@ fn a_scheduled_run_makes_no_new_schedule_and_a_one_off_offers_the_mail() {
     assert!(calls_of(&t, "gmail_send").is_empty());
     assert!(super::super::show::lines(&res, false)
         .iter()
-        .any(|m| m.starts_with("- Not emailed: no mailbox is connected")));
+        .any(|m| m.starts_with("- Delivered: here in this chat")));
+    assert_eq!(res["delivery"], json!({"chat": true, "email": null}));
 }
 
 #[test]
@@ -642,4 +648,181 @@ fn an_articles_date_and_publication_come_from_structured_fields() {
     assert_eq!(opening(&art), "Reuters · 31 October 2026 The body.");
     let art = json!({"title": "T", "lead": "The lead paragraph.", "text": "T\nwhatever"});
     assert_eq!(opening(&art), "The lead paragraph.");
+}
+
+// ---------------------------------------------------------------- monitoring a price with the news ("Monitor BTC price
+// and news. Send me an update with research report every day at 8am.": Main's first example, btc_monitor_real)
+
+#[test]
+fn market_symbols_are_normalised_in_code() {
+    assert_eq!(
+        market_symbols(Some(&json!([
+            "btc",
+            " ETH-USD ",
+            "BTC-USD",
+            "AAPL",
+            "not a symbol!",
+            "^GSPC"
+        ]))),
+        ["BTC-USD", "ETH-USD", "AAPL", "^GSPC"]
+    );
+    assert_eq!(
+        market_symbols(Some(&json!("BTC, gc=f"))),
+        ["BTC-USD", "GC=F"]
+    );
+    assert!(market_symbols(None).is_empty());
+    let p = json!({});
+    let cx = Ctx {
+        profile: &p,
+        gathered: None,
+    };
+    let a = valid(check(
+        NEWS_GATHER,
+        &json!({"subject": "Bitcoin", "window": "day", "markets": ["BTC"]}),
+        &cx,
+    ));
+    assert_eq!(a["markets"], json!(["BTC-USD"]));
+    // no markets asked: the arguments stay as they were
+    assert!(
+        valid(check(NEWS_GATHER, &json!({"subject": "Bitcoin"}), &cx))
+            .get("markets")
+            .is_none()
+    );
+}
+
+#[test]
+fn market_quotes_keep_only_structured_prices() {
+    let q = quotes_of(&json!({"results": [
+        {"symbol": "BTC-USD", "name": "Bitcoin USD", "currency": "USD", "last": 68123.45, "last_time": "2026-11-01 07:58",
+         "day_change_pct": -0.5, "series": [[1, 2]]},
+        {"symbol": "X", "last": null}], "errors": ["NOPE: no data"]}));
+    assert_eq!(
+        q,
+        json!({"quotes": [{"symbol": "BTC-USD", "name": "Bitcoin USD", "currency": "USD", "last": 68123.45,
+                           "last_time": "2026-11-01 07:58", "day_change_pct": -0.5}], "errors": ["NOPE: no data"]})
+    );
+    assert_eq!(
+        price_line(&q["quotes"][0]).unwrap(),
+        "68,123.45 USD (-0.50% on the day; at 2026-11-01 07:58)"
+    );
+    assert_eq!(price_label(&q["quotes"][0]), "Bitcoin USD (BTC-USD)");
+    assert_eq!(price_text(0.123456), "0.1235");
+    assert_eq!(quotes_of(&json!({"error": "down"}))["quotes"], json!([]));
+}
+
+/// The daily BTC update: the prices are fetched in the same turn as the first news search, carried into the edition
+/// (the HTML's markets line) and appended to the reply; the schedule is daily at 08:00 and its goal keeps the symbols.
+fn btc_run(profile: &Value) -> (Vec<Value>, Value, Vec<Value>) {
+    let request =
+        "Monitor BTC price and news. Send me an update with research report every day at 8am.";
+    let gp = json!({});
+    let gargs = valid(check(
+        NEWS_GATHER,
+        &json!({"subject": "Bitcoin", "window": "day", "markets": ["BTC-USD"]}),
+        &Ctx {
+            profile: &gp,
+            gathered: None,
+        },
+    ));
+    let (gt, g) = run(
+        NEWS_GATHER,
+        &gargs,
+        started(request, NEWS_GATHER, &gargs),
+        &machine(&gp, false),
+        tools,
+    );
+    let args = valid(check(
+        NEWS_PUBLISH,
+        &json!({"title": "The Bitcoin Daily", "stories": [{"article": 1, "headline": "h", "summary": "s"}],
+                "schedule": "daily", "hour": 8, "email": true}),
+        &Ctx {
+            profile,
+            gathered: Some(&g),
+        },
+    ));
+    let (t, res) = run(
+        NEWS_PUBLISH,
+        &args,
+        started(request, NEWS_PUBLISH, &args),
+        &machine(profile, false),
+        tools,
+    );
+    (gt, res, t)
+}
+
+#[test]
+fn a_price_monitor_fetches_the_prices_with_the_news_and_shows_them() {
+    let none = json!({});
+    let (gt, res, t) = btc_run(&none);
+    // one turn: the market prices and the first news search
+    let first = gt
+        .iter()
+        .find(|m| !tool_calls(m).is_empty() && get_str(&tool_calls(m)[0], "id").starts_with(PREFIX))
+        .unwrap();
+    let names: Vec<String> = tool_calls(first)
+        .iter()
+        .map(|tc| stored_call(tc).0)
+        .collect();
+    assert_eq!(names, [MARKET_TOOL, "browser_news_search"]);
+    assert_eq!(calls_of(&gt, MARKET_TOOL)[0]["symbols"], json!(["BTC-USD"]));
+    // the edition carries the price (code's line), the schedule is daily at 08:00 and keeps the symbols
+    let rep = &calls_of(&t, "news_report")[0];
+    assert_eq!(
+        rep["markets"],
+        json!([{"label": "Bitcoin USD (BTC-USD)", "price": "68,123.45 USD (+1.20% on the day; at 2026-11-01 07:58)"}])
+    );
+    let sch = &calls_of(&t, "schedule_create")[0];
+    assert_eq!(sch["spec"], "0 8 * * *");
+    assert!(
+        sget(sch, "goal").contains(r#"markets ["BTC-USD"]"#),
+        "{sch}"
+    );
+    let shown = super::super::show::lines(&res, false);
+    assert_eq!(
+        shown[0],
+        "- Bitcoin USD (BTC-USD): 68,123.45 USD (+1.20% on the day; at 2026-11-01 07:58)"
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|l| l.starts_with("- New edition: every day at 08:00")),
+        "{shown:?}"
+    );
+}
+
+/// The delivery is code's, from the connection: no mailbox — the update is in the chat only, nothing is sent, and the
+/// schedule's delivery is the chat; a mailbox — the update is also mailed to the user's own address and the schedule
+/// records email as a channel.
+#[test]
+fn send_me_delivers_in_the_chat_and_by_email_only_when_a_mailbox_is_connected() {
+    let none = json!({});
+    let (_, res, t) = btc_run(&none);
+    assert!(calls_of(&t, "gmail_send").is_empty());
+    assert_eq!(res["delivery"], json!({"chat": true, "email": null}));
+    assert_eq!(res["schedule"]["delivery"], json!(["chat"]));
+    assert!(super::super::show::lines(&res, false)
+        .iter()
+        .any(|l| l.starts_with("- Delivered: here in this chat, each new edition too")));
+
+    let mail = json!({"mailbox": "me@example.com"});
+    let (_, res, t) = btc_run(&mail);
+    assert_eq!(calls_of(&t, "gmail_send")[0]["to"], "me@example.com");
+    assert_eq!(
+        res["delivery"],
+        json!({"chat": true, "email": "me@example.com"})
+    );
+    assert_eq!(res["schedule"]["delivery"], json!(["chat", "email"]));
+
+    // the decision itself: asked by the model's `email`, by a schedule, or in a schedule's own run; sent by email only
+    // with a mailbox
+    let m = |p| machine(p, false);
+    assert_eq!(delivery(&json!({"email": true}), &m(&none)), (true, false));
+    assert_eq!(delivery(&json!({"email": true}), &m(&mail)), (true, true));
+    assert_eq!(
+        delivery(&json!({"subject": "x", "schedule": "daily"}), &m(&mail)),
+        (true, true)
+    );
+    assert_eq!(delivery(&json!({}), &m(&mail)), (false, false));
+    assert_eq!(delivery(&json!({}), &machine(&mail, true)), (true, true));
+    assert_eq!(delivery(&json!({}), &machine(&none, true)), (true, false));
 }
