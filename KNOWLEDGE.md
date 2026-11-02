@@ -492,11 +492,11 @@ suite's model calls are saved as `models-<suite>.json` in `OMUSE_E2E_OUT`.
 | Malaysia MDAC | `my_arrival_card` | the live form | read-only datepicker boxes (`date` op), order: nationality → dialling code, state → city → postcode; the slider puzzle is the user's |
 | Korea e-Arrival card | `kr_arrival_card` | the live form | terms + email first; type-to-filter nationality / airline dropdowns; the address lookup popup, job and contact in Korea are left (best effort); the emailed code and Submit are the user's |
 | All Indonesia | `id_arrival_card` | the live site (every Next saves) | Languages → English → Foreign Visitor; session-suffixed ids (prefix selectors); readonly dropdowns with a Search box; the visa question defaults to No (a visa on arrival); the certification and Submit are the user's |
+| Cambodia e-Arrival | `kh_arrival_card` | the live site, walked end to end 2026-11-02 (`docs/sites/kh-arrival-card.md`) | guest sign-in; Angular Material: `formcontrolname`s, `mat-select`s by the named script `MAT_SELECT`, picker dialogs; the contact block again on step 2; the hotel's phone is required (`stay_phone`); stops on step 5 Confirm Declaration (its box and Submit are the user's) |
 | Taiwan TWAC | `tw_arrival_card` | the live site (steps 2–4 rendered client-side) | step 1 (email, Cloudflare, emailed code) is the user's: the plan `require`s the traveller form and stops until it shows; react-select comboboxes take the exact option text; visa-exempt nationalities as data (`TW_VISA_EXEMPT`) |
 | China arrival card | `cn_arrival_card` | the live site (steps 2–4) | the passport-photo upload (step 1) is the user's (`require` on the Last Name field); Element UI fields found by their labels; visa-free nationalities as data (`CN_VISA_FREE`); the port by airport code; stops before the companion question |
 
-Still on the generic path: Thailand TDAC (behind a Cloudflare check; mapped only from its public code), Cambodia
-(a profile photo; its health questions not captured), Visit Japan Web, eTravel and the UK ETA (behind accounts and
+Still on the generic path: Thailand TDAC (behind a Cloudflare check; mapped only from its public code), Visit Japan Web, eTravel and the UK ETA (behind accounts and
 emailed codes: their fields come from official guides, not live pages). The operations added for these forms: `require`
 (stop for the user's step — the field must be *visible*, not merely in the page: Taiwan's traveller form is in the DOM, hidden, before the email step; 2026-11-01), `option` / text fallbacks that click the deepest visible element with the text, visible
 matches first, and a guard against setting a value on a non-text element. A field-by-field fill on a page a function knows gets a note to call form_fill

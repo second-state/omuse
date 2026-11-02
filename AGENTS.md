@@ -216,9 +216,11 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
     agent/email_code.rs — with the test inbox connected from `OMUSE_E2E_IMAP_*` code sends the code, the model reads it
     from the mail and code types it; without one a SKIP line and the hand-over at the email step; Taiwan's traveller form
     then needs the occupation from its fixed list — code selects the list's general business person, a fixed option
-    value per site, the user's decision 2026-11-02); SG, MDAC, Korea: the filled form for the user's review and Submit.
-    Indonesia and Cambodia are deferred to after 0.6.0 (they stop early on the real site and hand over saying so):
-    `arrival_cards3_real` prints a SKIP line for them (`arrival_common.DEFERRED`). Fake traveller data (`tests/arrival_common.py`
+    value per site, the user's decision 2026-11-02); SG, MDAC, Korea: the filled form for the user's review and Submit;
+    Indonesia and Cambodia (walked end to end 2026-11-02, `docs/sites/id-arrival-card.md`, `kh-arrival-card.md`): the
+    Declaration page and step 5 Confirm Declaration, each by its Submit — Indonesia's hotel must be on the site's own
+    list (the request names Alila Seminyak), Cambodia's travel step needs the hotel's phone (`stay_phone`, in the
+    request; asked before the form opens otherwise). Fake traveller data (`tests/arrival_common.py`
     `PROFILE`, a fake passport in the Vault; the email is the test inbox). Success (user's decision 2026-11-02, the same
     for any multi-page form suite): the run reached the form's final page — the one with the user's Submit, found by its
     element — and handed it over, nothing submitted; or, where the site stops earlier at a user step, the hand-over at
