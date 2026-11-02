@@ -196,7 +196,7 @@ pub fn tool_schemas() -> Vec<Value> {
         TRAVEL_SEARCH,
         "Search and compare flights, hotels, MICHELIN restaurants or restaurants. Code runs ONE search with these arguments. \
 Flights: the result (status pick_needed) lists EVERY flight found for the day with its offer_id, departure and arrival \
-(airport, local time), price and stops — call travel_pick with the offer_ids of exactly the flights the user asked for. \
+(airport, local time), price and stops — call travel_pick once with the best match (offer_id) and up to 3 runner-ups. \
 Hotels and restaurants: code picks by rule (the cheapest, or the user's criteria), shows the options as choice cards and \
 returns the result as JSON (options, the pick and its rule, links, show, hints). Nothing is booked. Write the reply from \
 the result, using its hints (code appends the facts in show to the reply). status needs_input: ask the user for the \
@@ -240,18 +240,19 @@ from the JSON result (code appends the facts in show to the reply).",
     );
     let pick = fn_(
         TRAVEL_PICK,
-        "Pick from the flights a travel_search / travel_book result listed (status pick_needed). Read every flight against \
-the user's request and give the offer_ids of exactly the flights that meet it, in the order to show them: ONE id when \
-the request names one flight (the last, the first, the earliest, the latest, the cheapest, the shortest …), several only \
-when the user asked for options or a comparison. Stick to what the user asked: never add a cheaper or \"better\" flight \
-they did not ask for, and default to the cheapest only when the user gave no criterion at all. Times are local at each \
-airport; arrives_days_later 0 = it lands on the departure day (before midnight), 1 = the next day. When no flight meets \
-the request, do not call this: say so. Code shows the flights picked (and books the first after travel_book) and returns \
+        "Pick from the flights a travel_search / travel_book result listed (status pick_needed), in ONE call. Read every \
+flight against the user's request: offer_id = the ONE flight that best meets it (the last, the first, the earliest, \
+the latest, the cheapest, the shortest … exactly as the user asked; the cheapest only when the user gave no criterion); \
+runner_ups = up to 3 other flights of the same list that also meet the request, best first (empty when none does). \
+Never a flight that breaks the request. Times are local at each airport; arrives_days_later 0 = it lands on the \
+departure day (before midnight), 1 = the next day. When no flight meets the request, do not call this: say so. Code \
+shows the best match with the runner-ups on a comparison card (and books the best match after travel_book) and returns \
 the result as JSON; write the reply from it (code appends the facts in show to the reply).",
         json!({
-            "offer_ids": {"type": "array", "items": {"type": "string"}, "description": "offer_id of each flight that meets the request, as the result listed it, in the order to show"}
+            "offer_id": {"type": "string", "description": "offer_id of the flight that best meets the request, as the result listed it"},
+            "runner_ups": {"type": "array", "items": {"type": "string"}, "maxItems": 3, "description": "offer_ids of up to 3 other flights that also meet the request, best first"}
         }),
-        &["offer_ids"],
+        &["offer_id"],
     );
     vec![search, book, shop, pick]
 }
@@ -1021,15 +1022,24 @@ fn check_pick(a: &Value, t: &[Value]) -> Checked {
             "no flight search to pick from: search with travel_search first (kind flight)".into(),
         ]);
     };
+    // the best match first, then up to 3 runner-ups (`offer_ids`, the earlier form: the first is the best match)
     let mut ids: Vec<String> = Vec::new();
-    for id in list_arg(a, "offer_ids") {
-        if !ids.contains(&id) {
+    let best = s_arg(a, "offer_id");
+    let given: Vec<String> = if best.is_empty() {
+        list_arg(a, "offer_ids")
+    } else {
+        std::iter::once(best)
+            .chain(list_arg(a, "runner_ups"))
+            .collect()
+    };
+    for id in given {
+        if !ids.contains(&id) && ids.len() < 4 {
             ids.push(id);
         }
     }
     if ids.is_empty() {
         return Checked::Invalid(vec![
-            "offer_ids: give the offer_id of each flight that meets the request, from the search result's flights (when none meets it, say so instead)".into(),
+            "offer_id: give the offer_id of the flight that best meets the request, from the search result's flights (when none meets it, say so instead)".into(),
         ]);
     }
     let mut picked = Vec::new();
@@ -1045,8 +1055,10 @@ fn check_pick(a: &Value, t: &[Value]) -> Checked {
     if !problems.is_empty() {
         return Checked::Invalid(problems);
     }
-    Checked::Valid(json!({"offer_ids": ids, "request": src.args,
-        "offers": serde_json::to_value(&picked).unwrap_or(Value::Null), "result": src.result}))
+    Checked::Valid(
+        json!({"offer_id": ids[0], "runner_ups": ids[1..], "offer_ids": ids, "request": src.args,
+        "offers": serde_json::to_value(&picked).unwrap_or(Value::Null), "result": src.result}),
+    )
 }
 
 /// Whether `name` is offered on the model's next turn: `travel_pick` only on the reply to a flight search's
@@ -2867,7 +2879,7 @@ fn present(s: Shown, t: &[Value], m: &Machine, ids: &Ids) -> Step {
                     }
                 }
                 json!({"label": o.label, "details": details, "source_url": url,
-                       "note": if o.label == pick.label && !exact { format!("picked: {rule}") } else { String::new() }})
+                       "note": if o.label != pick.label { String::new() } else if exact { "best match for your request".to_string() } else { format!("picked: {rule}") }})
             })
             .collect();
         return ids.calls(
@@ -2888,18 +2900,21 @@ fn present(s: Shown, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     // the facts the user must read: appended to the reply by code (agent/show.rs)
     let mut show: Vec<Value> = vec![S::fact("Searched", "搜索", &searched_line(kind, req))];
     if exact {
-        // exactly the flights picked, each with its times and booking link
-        let many = shown.len() > 1;
-        for (i, o) in shown.iter().enumerate() {
-            let (en, zh) = if many {
-                (format!("Flight {}", i + 1), format!("航班 {}", i + 1))
-            } else {
-                ("Flight".to_string(), "航班".to_string())
-            };
-            show.extend(offer_show(&en, &zh, o, ""));
-            if let Some(when) = times_of(o) {
-                show.push(S::fact(&o.label, &o.label, &when));
-            }
+        // the model's best match with its times and booking link; the runner-ups (on the card) in one line
+        show.extend(offer_show("Flight", "航班", &pick, ""));
+        if let Some(when) = times_of(&pick) {
+            show.push(S::fact(&pick.label, &pick.label, &when));
+        }
+        let runners: Vec<String> = shown
+            .iter()
+            .skip(1)
+            .map(|o| match (o.depart.get(11..16), o.arrive.get(11..16)) {
+                (Some(d), Some(a)) => format!("{} ({d} → {a})", o.label),
+                _ => o.label.clone(),
+            })
+            .collect();
+        if !runners.is_empty() {
+            show.push(S::fact("Runner-ups", "备选", &runners.join("; ")));
         }
     } else {
         show.extend(offer_show("Picked", "推荐", &pick, &format!(" ({rule})")));
