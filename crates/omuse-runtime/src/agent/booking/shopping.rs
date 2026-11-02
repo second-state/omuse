@@ -9,7 +9,8 @@
 //!    again with `choices` = the offer ids that best fit the request.
 //! 3. Code checks the ids against that review result (unknown ids dropped; none left → the first ones by rule) and
 //!    shows the choice card: the price in the user's currency, the merchant and the product link (`show`).
-//! 4. A pick to buy: the merchant's product page (`status: link`) — the purchase is the user's, on that page.
+//! 4. A pick to buy: the store's checkout for that variant (the catalog's `checkout_url`, Shopify's cart link), else
+//!    the product page (`status: link`) — the user pays there, in their own browser.
 //!
 //! No page is ever opened (the Shopping bot has no browser): a shop's link the user gave is reported back as not
 //! searched (`not_covered`) — only the providers' stores are searched.
@@ -49,6 +50,11 @@ fn offer_json(o: &Value) -> Value {
     let mut out = json!({"offer_id": get_str(o, "offer_id"), "title": get_str(o, "title"),
         "price": price, "currency": cur, "merchant": get_str(&o["seller"], "name"),
         "merchant_site": get_str(&o["seller"], "url"), "url": get_str(o, "url"), "provider": get_str(o, "provider")});
+    // the variant's own checkout (Shopify's cart link to the store's checkout): where the user pays
+    let checkout = get_str(o, "checkout_url");
+    if checkout.starts_with("https://") {
+        out["checkout_url"] = json!(checkout);
+    }
     if local.is_some() && o.get("fx_rate").is_some() {
         out["shop_price"] = o["price"].clone();
         out["shop_currency"] = json!(get_str(o, "currency"));
@@ -265,10 +271,41 @@ fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
                     .iter()
                     .find(|o| get_str(o, "title").to_lowercase() == want)
                 {
-                    return Some(Step::Done(json!({"status": "link", "offer": o,
-                        "show": [S::link("Buy it on the merchant's page", "在商家页面购买", &get_str(o, "title"), &get_str(o, "url")),
-                                 S::amount("Price", "价格", o["price"].as_f64().unwrap_or(0.0), &get_str(o, "currency"))],
-                        "hints": ["nothing has been bought: the purchase is the user's, on the merchant's page"]})));
+                    // the store's checkout for that variant, where the user pays in their own browser (no card is
+                    // ever sent by API: docs/sites/shopify.md, "Trust tier"); else the product page
+                    let checkout = get_str(o, "checkout_url");
+                    let mut show = Vec::new();
+                    if checkout.is_empty() {
+                        show.push(S::link(
+                            "Buy it on the merchant's page",
+                            "在商家页面购买",
+                            &get_str(o, "title"),
+                            &get_str(o, "url"),
+                        ));
+                    } else {
+                        show.push(S::link(
+                            "Check out and pay in your browser",
+                            "在你的浏览器里结账付款",
+                            &get_str(o, "title"),
+                            &checkout,
+                        ));
+                        show.push(S::link(
+                            "Product page",
+                            "商品页面",
+                            &get_str(o, "title"),
+                            &get_str(o, "url"),
+                        ));
+                    }
+                    show.push(S::amount(
+                        "Price",
+                        "价格",
+                        o["price"].as_f64().unwrap_or(0.0),
+                        &get_str(o, "currency"),
+                    ));
+                    return Some(Step::Done(
+                        json!({"status": "link", "offer": o, "show": show,
+                        "hints": ["nothing has been bought: the user pays on the store's checkout"]}),
+                    ));
                 }
             } else {
                 let (picked, unknown) = chosen(&review, &sr.choices, count);

@@ -1634,6 +1634,33 @@ fn search_then_choose(args: Value, choices: Value) -> (Value, Vec<Value>, Value)
 }
 
 #[test]
+fn a_shopping_pick_to_buy_links_the_stores_checkout() {
+    // the user picks an offer to buy: code links that variant's checkout on the store (pay in the browser); no page
+    // opened, nothing bought
+    let p = sg_profile();
+    let args = json!({"query": "running shoes", "action": "compare", "max_price": 150});
+    let (review, mut t, _) = search_then_choose(args.clone(), json!([]));
+    let o = &review["offers"][0];
+    assert!(get_str(o, "checkout_url").starts_with("https://"), "{o}");
+    let mut buy = args;
+    buy["pick"] = o["title"].clone();
+    let b = valid(SHOP_ORDER, buy, "x", &p);
+    t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_b", "type": "function",
+                  "function": {"name": SHOP_ORDER, "arguments": b.to_string()}}]}));
+    t.push(json!({"role": "tool", "tool_call_id": "call_b", "content": json!({"status": "running", "args": b}).to_string()}));
+    let (t2, res) = run_call("call_b", SHOP_ORDER, &b, t, &Env::of(&p), |_, _, _| {
+        "{}".into()
+    });
+    assert_eq!(res["status"], "link", "{res}");
+    let m = must(&res);
+    assert!(
+        m.contains("Check out and pay in your browser") && m.contains(&get_str(o, "checkout_url")),
+        "{m}"
+    );
+    assert!(!names(&t2).iter().any(|n| n.starts_with("browser_")));
+}
+
+#[test]
 fn a_shopping_search_goes_to_the_providers_for_the_users_location() {
     let p = sg_profile();
     let a = valid(
