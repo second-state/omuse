@@ -50,7 +50,7 @@ r = c.put(B + "/api/skills", json={"disabled": off}, headers=H).json()
 check("selection saved", [s["name"] for s in r["skills"] if not s["enabled"]] == off, r)
 listed = run("SKILLCHECK")
 check("disabled skills leave the agent's instructions", listed.startswith("SKILLS=") and not set(off) & set(listed[7:].split(",")) and "reply-email" in listed, listed)
-out = run("LOADSKILL online-shopping")
+out = run("LOADSKILL online-shopping", bot="shopping")   # the Shopping bot's skill
 check("load_skill refuses a disabled skill", "turned off" in out, out)
 out = run("LOADSKILL reply-email")
 check("load_skill still works for an enabled one", "LOADED=---" in out and "reply-email" in out, out)

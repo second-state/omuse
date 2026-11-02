@@ -488,7 +488,8 @@ impl Runtime {
                 || super::driver::TOOLS.contains(&name)
                 || super::apdt::TOOLS.contains(&name)
                 || super::trains::TOOLS.contains(&name)
-                || super::flightstatus::TOOLS.contains(&name))
+                || super::flightstatus::TOOLS.contains(&name)
+                || super::entry::TOOLS.contains(&name))
                 && crate::bots::has_tool(self.bot_of(t), name)
             {
                 // a workflow tool: its arguments checked by the JSON layer (repair, schema, the tool's field checks, the

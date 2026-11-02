@@ -68,6 +68,8 @@ if [ ! -s "$CONFIG" ]; then
       for s in "${skills[@]}"; do s=$(echo "$s" | xargs); [ -n "$s" ] && { printf '%s%s' "$sep" "$(toml_str "$s")"; sep=", "; }; done
       echo "]"
     fi
+    echo "[shopping]"
+    kv shopify_client_id OMUSE_SHOPIFY_CLIENT_ID; kv shopify_client_secret OMUSE_SHOPIFY_CLIENT_SECRET
     echo "[stripe]"
     kv api_key OMUSE_STRIPE_API_KEY; kv customer_id OMUSE_STRIPE_CUSTOMER_ID; kv subscription_id OMUSE_STRIPE_SUBSCRIPTION_ID
   } > "$CONFIG"

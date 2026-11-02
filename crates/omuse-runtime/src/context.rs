@@ -99,8 +99,9 @@ pub fn skill_topics(name: &str) -> &'static [&'static str] {
 /// The topics of a tool, by its name.
 pub fn tool_topics(name: &str) -> &'static [&'static str] {
     match name {
-        "travel_search" | "travel_book" | "flights_search" | "flight_offer" | "hotels_search"
-        | "hotel_rooms" | "cars_search" | "bag_trace" | "apdt_refund" => &["travel"],
+        "travel_search" | "travel_book" | "travel_pick" | "flights_search" | "flight_offer"
+        | "hotels_search" | "hotel_rooms" | "cars_search" | "bag_trace" | "apdt_refund"
+        | "entry_requirements" => &["travel"],
         "arrival_card_fill" => &["travel", "forms"],
         "claim_file" | "insurance_buy" => &["travel", "finance"],
         "shop_order" | "orders_list" => &["shopping"],
@@ -410,6 +411,7 @@ pub async fn relevance(
         model: None,
         no_think: true,
         stream_to: None,
+        tool_choice: None,
     };
     let mut msgs = vec![
         json!({"role": "system", "content": crate::prompts::MEMORY_RELEVANCE}),

@@ -1,4 +1,4 @@
-"""The hand-over on a real booking or shop page, as the user sees it (travel_book_real, shop_real; on top of
+"""The hand-over on a real booking or shop page, as the user sees it (travel_book_real; on top of
 tests/user_common.py).
 
 A booking or an order is never finished in an e2e run: OMuse searches, code picks, code opens the REAL booking page (an

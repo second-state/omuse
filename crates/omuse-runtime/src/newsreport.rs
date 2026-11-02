@@ -24,6 +24,9 @@ pub struct Report {
     pub period: String,
     pub stories: Vec<Story>,
     pub insights: Vec<String>,
+    /// the market prices shown under the masthead: (label, price line), from the market data (code's, never the
+    /// model's)
+    pub markets: Vec<(String, String)>,
 }
 
 fn story(v: &Value) -> Option<Story> {
@@ -75,6 +78,20 @@ impl Report {
             .filter(|s| !s.is_empty())
             .take(8)
             .collect();
+        let markets: Vec<(String, String)> = a
+            .get("markets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|m| {
+                (
+                    take_chars(get_str(m, "label").trim(), 80).to_string(),
+                    take_chars(get_str(m, "price").trim(), 120).to_string(),
+                )
+            })
+            .filter(|(l, p)| !l.is_empty() && !p.is_empty())
+            .take(8)
+            .collect();
         let title = take_chars(get_str(a, "title").trim(), 80).to_string();
         let period = take_chars(get_str(a, "period").trim(), 80).to_string();
         Ok(Self {
@@ -91,6 +108,7 @@ impl Report {
             subject,
             stories: stories.into_iter().take(12).collect(),
             insights,
+            markets,
         })
     }
 }
@@ -190,6 +208,17 @@ pub fn render(template: &str, r: &Report, issued: DateTime<Local>) -> String {
             })
             .collect::<String>()
     );
+    let markets = if r.markets.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<section class=\"markets\">{}</section>",
+            r.markets
+                .iter()
+                .map(|(l, p)| format!("<span><b>{}</b> {}</span>", esc(l), esc(p)))
+                .collect::<String>()
+        )
+    };
     let edition = format!(
         "{} {}",
         r.stories.len(),
@@ -208,6 +237,7 @@ pub fn render(template: &str, r: &Report, issued: DateTime<Local>) -> String {
         )
         .replace("{{period}}", &esc(&r.period))
         .replace("{{edition}}", &edition)
+        .replace("{{markets}}", &markets)
         .replace("{{lead}}", &lead_html)
         .replace("{{stories}}", &stories)
         .replace("{{insights}}", &insights)
@@ -323,6 +353,26 @@ mod tests {
                    {"headline": "Same article", "summary": "dup", "url": "https://example.com/a?x=1&y=2"},
                    {"headline": "Price falls", "summary": "Costs drop 20%.", "source": "FT", "url": "https://ft.example/b"}],
                "insights": ["Expect wider use by 2028.", ""]})
+    }
+
+    #[test]
+    fn the_market_prices_are_shown_under_the_masthead() {
+        let mut a = args();
+        a["markets"] = json!([{"label": "Bitcoin USD (BTC-USD)", "price": "68,123.45 USD"}, {"label": "", "price": "x"}]);
+        let r = Report::from_args(&a).unwrap();
+        assert_eq!(r.markets.len(), 1);
+        let issued = Local.with_ymd_and_hms(2026, 11, 2, 8, 0, 0).unwrap();
+        let html = render(
+            "<h1>{{title}}</h1>{{markets}}<div>{{lead}}</div>",
+            &r,
+            issued,
+        );
+        assert!(html.contains(
+            "<section class=\"markets\"><span><b>Bitcoin USD (BTC-USD)</b> 68,123.45 USD</span></section>"
+        ));
+        // without prices the placeholder is empty
+        let r = Report::from_args(&args()).unwrap();
+        assert!(!render("{{markets}}", &r, issued).contains("markets"));
     }
 
     #[test]

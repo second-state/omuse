@@ -15,6 +15,10 @@ to do. When you fix a problem, always prefer a fix in code over a change to a sk
   structured data (the card catalog's `fx_fee_pct`). See KNOWLEDGE.md, "Guarantees in code".
 - Only the hand-over (the final pay / submit / confirm click is the user's) and secrets (Vault values, passwords) are
   hard stops; other checks fix the input or add a note and let the action run.
+- One exception to the hand-over, decided by the user (2026-11-03): a purchase through Shopify's UCP checkout API may be
+  completed by code when the user's card is in the Vault, the API accepts it in a supported way, and the user approved
+  the purchase (item, store, total) in the app's purchase approval. Without a usable card the user gets the checkout's
+  continue_url to pay in their own browser. Every other Pay / Submit stays the user's click.
 - Change instruction text only for what genuinely needs judgement, and when you do, check that code does not already
   decide it differently (skills must not contradict code).
 - Every fix gets a unit test that reproduces the failure, and the real-model suite that found it is rerun.

@@ -227,6 +227,7 @@ const BOT_BADGES = {   // each drawn in a 10 × 10 box, placed on the badge
   dollar: '<path class="bgs" d="M7.1 2.7C6.6 2 5.8 1.7 5 1.7c-1.3 0-2.1.7-2.1 1.6 0 2.2 4.3 1.2 4.3 3.4 0 .9-.9 1.6-2.2 1.6-.9 0-1.7-.4-2.2-1M5 .4v9.2"/>',
   card: '<rect class="bg" x=".5" y="1.8" width="9" height="6.4" rx="1.1"/><rect class="bb-fill" x=".5" y="3.2" width="9" height="1.4"/>',
   camera: '<rect class="bg" x=".5" y="2.6" width="9" height="6.4" rx="1.3"/><rect class="bg" x="3.2" y="1.1" width="3.6" height="2.2" rx=".5"/><circle class="bb-fill" cx="5" cy="5.8" r="1.9"/>',
+  cart: '<path class="bg" d="M.4 1.2h1.7l1.3 5.2h5l1.2-3.9H2.6Z"/><circle class="bg" cx="3.9" cy="8.4" r="1"/><circle class="bg" cx="7.7" cy="8.4" r="1"/>',
 };
 function botIcon(b) {
   const el = h('span', { class: 'ic boticon', 'aria-hidden': 'true' });
@@ -366,7 +367,9 @@ function newChat() {
 async function deleteConv(id) {
   const c = S.convs.find(x => x.id === id);
   if (!c) return;
-  if (!confirmInline(Tf("删除对话「{0}」？任务记录仍保留在「任务」和「审计」里。", (c.title || T('无标题'))))) return;
+  const title = c.title || T('无标题');
+  const q = c.kind === 'schedule' ? Tf("删除定时任务「{0}」？它将停止运行，并从「任务」中移除。", title) : Tf("删除对话「{0}」？任务记录仍保留在「任务」和「审计」里。", title);
+  if (!confirmInline(q)) return;
   await api('conversations/' + id, { method: 'DELETE' });
   if (S.conv === id) newChat();
   await loadConvs(); renderConvList();

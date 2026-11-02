@@ -74,6 +74,24 @@ final review's verdict.
    `{"status": "browser_use", "url": ...}`; the model loads the `browser-use` skill and fills that one page (the one
    place the model uses the input tools; untested).
 
+### The compulsory workflow call (`agent/required.rs`)
+
+A skill that asks through a workflow tool needs that tool's call before a final answer: the booking skills
+(`travel_search` / `travel_book`, `shop_order`), the arrival cards (`arrival_card_fill`), the claims, the insurance and
+the bag trace (`claim_file`, `insurance_buy`, `bag_trace`), the departure-tax refund (`apdt_refund`), the news
+(`news_gather`) and `entry-requirements` / `arrival-cards` (`entry_requirements`). The map is read from the machines'
+own tables (`required::tools_of`). The trigger is structured: the skills this request loaded (a `load_skill` whose
+result is the sheet), never the request's or the reply's words. It is met by any answered call of one of the loaded
+skills' tools (not an error, not `invalid`; a `needs_input` is the tool asking the user).
+
+When the model answers without the call, the run loop does not take the answer: it sends the same request again with
+only those tools and the provider's forced `tool_choice` (the tool by name; `required` when several skills' tools are
+owed, so the model picks one of the listed tools), event `workflow_required`. The call then runs like any workflow
+call, through the JSON layer (repair → schema → planner regeneration → `invalid` and one more forced try →
+`needs_input`). No call even when forced (or the tool not offered, or the budget spent): the answer is kept and code
+appends the fixed line "Not checked: OMuse could not look up … in code for this answer" (`required::unmet_item`,
+event `workflow_required_unmet`). `ChatOpts::tool_choice` carries the choice; an endpoint that rejects it gets `auto`.
+
 `Step` becomes `Calls(Vec<ToolCall>) | Done(Value)`. `Step::Final(prose)` and `Step::Extract` go away, and with them
 every `EXTRACT_SYSTEM`, `extract_exchange` and code-written answer text.
 
@@ -81,14 +99,15 @@ every `EXTRACT_SYSTEM`, `extract_exchange` and code-written answer text.
 
 | tool | machine | replaces |
 |---|---|---|
-| `travel_search` / `travel_book` (kind flight · hotel · michelin · restaurant) | `agent/booking.rs` | regex request parsing, `search_request`, `follow_up`, `mail_to`, `profile_with_words`, `preferred_airlines`, `HABIT`, `WORK` |
-| `shop_order` (a shop's link and the ranking criteria; the page itself goes to `browser-use`) | `agent/booking.rs` (shop) | `shop_ranking` regexes, `known_shop_request` |
+| `travel_search` / `travel_book` (kind flight · hotel · michelin · restaurant); a flight's every-flight result (`pick_needed`) → `travel_pick {offer_ids}` (the model's JSON pick, shown exactly) | `agent/booking.rs` | regex request parsing, `search_request`, `follow_up`, `mail_to`, `profile_with_words`, `preferred_airlines`, `HABIT`, `WORK` |
+| `shop_order` (the Shopping bot: the product words, the criteria, `choices` = the offer ids the model picks from a `review` result; no browser: a shop's link is not searched, `not_covered`) | `agent/booking/shopping.rs` (`shop_search`: the store providers for the user's location by API, `omuse_apps::shops`; docs/sites/shopify.md) | `shop_ranking` regexes, `known_shop_request` |
 | `arrival_card_fill` (country, trip facts) | `agent/driver.rs` | `user_asks`, `dates_in` over the request, `trip_dates_from_request` |
 | `claim_file` / `insurance_buy` | `agent/claims.rs` | the claims machine's request regexes |
 | `apdt_refund` | `agent/apdt.rs` | its request regexes |
 | `bag_trace` (file reference, family name) | `agent/bagtrace.rs` | the reference/name patterns over words and mails |
-| `news_gather` (subject, window) → `news_publish` (the model's stories as JSON) | `agent/news.rs` | the subject regexes and the in-code writing call |
+| `news_gather` (subject, window, markets) → `news_publish` (the model's stories as JSON) | `agent/news.rs` | the subject regexes and the in-code writing call; the prices of `markets` (Yahoo symbols such as `BTC-USD`) are code's own `market_quotes` call (Sentinel's structured market data), shown in the edition and in `show`; the delivery is code's (`news::delivery`: chat always, email when a mailbox is connected, for "send me" and every scheduled edition) |
 | `flight_status` (flight, date) | `agent/flightstatus.rs` | the prose regex for "Scheduled … Estimated" over any page (`flight_times_fact`): the airline's status page opened by code, its table's rows read by element (`browser_read_elements`, cells) |
+| `entry_requirements` (destinations with arrival dates, nationality = the profile's) | `agent/entry.rs` | the model's own `visa_rules` call and the arrival-card windows in the skill text: each destination's visa-free days from the official table and its page (`facts::visa_rules`), its arrival card's official site and the day the window opens (`driver::CARDS`), as `show`, and `reminders` |
 | `train_times` (line, date, after) | `agent/trains.rs` | the model's web searches for a timetable (JR East's Narita Express page read by code, weekday / holiday table from a fixed calendar) |
 
 Mail text is natural language too: a reference or a date inside a mail is read by the model (it passes them as tool

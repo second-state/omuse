@@ -1,6 +1,6 @@
 ---
 name: news-research
-description: 深度新闻研究报告：用 news_gather 搜索并读取最新新闻（代码执行），按文章写成 JSON 交给 news_publish，生成报纸版式的 HTML 和 PDF（放在 /artifacts/），可按天/周/月定时、发到用户的 Gmail Deep news research on any subject — news_gather (code searches and reads the latest news in the browser and returns the articles as JSON), then news_publish with the stories written as JSON; code lays out a newspaper-style report as HTML and PDF under /artifacts/, makes the schedule (daily, weekly, monthly) and emails it to the user's own address when asked. Use it for "research the news on X", "a report / briefing / newsletter on X", "send me a weekly news report on X"; for a quick "what's the latest on X" use news-search.
+description: 深度新闻研究报告：用 news_gather 搜索并读取最新新闻（代码执行），按文章写成 JSON 交给 news_publish，生成报纸版式的 HTML 和 PDF（放在 /artifacts/），可按天/周/月定时、发到用户的 Gmail Deep news research on any subject — news_gather (code searches and reads the latest news in the browser and returns the articles as JSON), then news_publish with the stories written as JSON; code lays out a newspaper-style report as HTML and PDF under /artifacts/, makes the schedule (daily, weekly, monthly) and emails it to the user's own address when asked. Use it for "research the news on X", "a report / briefing / newsletter on X", "send me a weekly news report on X", "monitor the BTC price and news, send me an update every day" (with markets); for a quick "what's the latest on X" use news-search.
 steps: 30
 ---
 # News research report / 新闻研究报告
@@ -11,6 +11,9 @@ tools' JSON into the edition and the reply.
 ## 1. `news_gather`
 - `subject`: what the news is about (a company, topic, place or person), without "latest news", "report", "weekly".
 - `window`: `day` for a daily report, `month` for a monthly one, else `week`.
+- `markets`: when the user asks to monitor / track / watch a price with the news (a cryptocurrency, a stock, an index,
+  a currency pair, gold), its Yahoo Finance symbols (`BTC-USD`, `AAPL`, `^GSPC`, `GC=F`). Code fetches the prices from
+  the market data, shows them with the edition and appends them to the reply.
 - Code runs the browser's news search, reads the top articles and returns them: `articles` with `article` (its
   number), `title`, `publication`, `date`, `url`, `text`. `nothing_found`: say no recent article was found and that no
   edition was published. `needs_input`: ask the user for the subject.
@@ -23,7 +26,9 @@ tools' JSON into the edition and the reply.
 - `insights`: 3–5 short points across the stories (trends, what changed, what to watch).
 - `schedule`: `daily` / `weekly` / `monthly` when the user asked for regular editions ("every week" = weekly), else
   `once`; `weekday` (0 = Sunday) and `hour` only when the user named them.
-- `email: true` when the user asked for the edition (or each edition) by email: it goes to their own connected address.
+- `email: true` when the user asked for the edition to be sent to them ("send me", "email me"). Code decides the
+  delivery: every edition is in the chat; it is also emailed to the user's own address when a mailbox is connected
+  (scheduled editions too); with no mailbox it is delivered in the chat only.
 - Links, publications and dates are code's (from the gathered articles); the schedule and the mail are made by code.
 
 ## 3. The reply

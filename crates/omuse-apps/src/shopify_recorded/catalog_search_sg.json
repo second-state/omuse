@@ -1,0 +1,823 @@
+{
+ "jsonrpc": "2.0",
+ "id": 1,
+ "result": {
+  "structuredContent": {
+   "ucp": {
+    "version": "2026-08-25",
+    "capabilities": {
+     "dev.ucp.shopping.catalog.search": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/catalog/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/catalog_search.json"
+      }
+     ],
+     "dev.ucp.shopping.catalog.lookup": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/catalog/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/catalog_lookup.json"
+      }
+     ],
+     "dev.shopify.catalog.global": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://shopify.dev/docs/agents/catalog/global-catalog",
+       "schema": "https://shopify.dev/ucp/schemas/2026-08-25/shopify_catalog_global.json",
+       "extends": [
+        "dev.ucp.shopping.catalog.search",
+        "dev.ucp.shopping.catalog.lookup"
+       ],
+       "requires": {
+        "protocol": {
+         "min": "2026-08-25"
+        }
+       }
+      }
+     ]
+    },
+    "status": "success"
+   },
+   "products": [
+    {
+     "id": "gid://shopify/p/4iw3XFMT6jl4JdKi2WcCNv",
+     "title": "Prio - Men",
+     "handle": "prio-men",
+     "rating": {
+      "value": 4.6,
+      "scale_min": 1,
+      "scale_max": 5,
+      "count": 9704
+     },
+     "options": [
+      {
+       "name": "Size",
+       "values": [
+        {
+         "label": "6.5"
+        },
+        {
+         "label": "7"
+        },
+        {
+         "label": "7.5"
+        },
+        {
+         "label": "8"
+        },
+        {
+         "label": "8.5"
+        },
+        {
+         "label": "9"
+        },
+        {
+         "label": "9.5"
+        },
+        {
+         "label": "10"
+        },
+        {
+         "label": "10.5"
+        },
+        {
+         "label": "11"
+        },
+        {
+         "label": "11.5"
+        },
+        {
+         "label": "12"
+        },
+        {
+         "label": "12.5"
+        },
+        {
+         "label": "13"
+        },
+        {
+         "label": "14"
+        },
+        {
+         "label": "15"
+        },
+        {
+         "label": "16"
+        },
+        {
+         "label": "17"
+        }
+       ]
+      },
+      {
+       "name": "Style",
+       "values": [
+        {
+         "label": "Alloy"
+        },
+        {
+         "label": "Black"
+        },
+        {
+         "label": "Black / Gum"
+        },
+        {
+         "label": "Black / White"
+        },
+        {
+         "label": "Colorado Flag"
+        },
+        {
+         "label": "Fallen Rock"
+        },
+        {
+         "label": "Holiday Sweater Red"
+        },
+        {
+         "label": "Lunar"
+        },
+        {
+         "label": "Steel Gray"
+        },
+        {
+         "label": "Stormy Weather (Mesh / Suede)"
+        },
+        {
+         "label": "Vintage Indigo"
+        },
+        {
+         "label": "Whitecap Gray / Navy / Brick (Mesh / Suede)"
+        }
+       ]
+      }
+     ],
+     "variants": [
+      {
+       "id": "gid://shopify/ProductVariant/46572223103154",
+       "title": "Prio - Men",
+       "handle": "prio-men",
+       "url": "https://xeroshoes.com/products/prio-men?variant=46572223103154&_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "price": {
+        "amount": 9999,
+        "currency": "USD"
+       },
+       "availability": {
+        "available": true
+       },
+       "options": [
+        {
+         "name": "Style",
+         "label": "Steel Gray"
+        },
+        {
+         "name": "Size",
+         "label": "6.5"
+        }
+       ],
+       "seller": {
+        "id": "gid://shopify/Shop/71494926514",
+        "name": "Xero Shoes",
+        "url": "https://xeroshoes.com",
+        "domain": "shopxeroshoes.myshopify.com"
+       },
+       "checkout_url": "https://xeroshoes.com/cart/46572223103154:1?_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "rating": {
+        "value": 4.8,
+        "scale_min": 1,
+        "scale_max": 5,
+        "count": 175
+       },
+       "condition": [
+        "new"
+       ],
+       "eligible": {
+        "native_checkout": false
+       },
+       "source": "shopify"
+      }
+     ],
+     "price_range": {
+      "min": {
+       "amount": 9999,
+       "currency": "USD"
+      },
+      "max": {
+       "amount": 9999,
+       "currency": "USD"
+      }
+     }
+    },
+    {
+     "id": "gid://shopify/p/72jvzwmo30fV6vgPOQTBQN",
+     "title": "adidas Adizero Adios 9 Mens Running Shoes - Yellow",
+     "handle": "adidas-adizero-adios-9-mens-running-shoes-yellow",
+     "rating": {
+      "value": 5.0,
+      "scale_min": 1,
+      "scale_max": 5,
+      "count": 13
+     },
+     "options": [
+      {
+       "name": "Shoe size",
+       "values": [
+        {
+         "label": "UK 7"
+        },
+        {
+         "label": "UK 7.5"
+        },
+        {
+         "label": "UK 8"
+        },
+        {
+         "label": "UK 8.5"
+        },
+        {
+         "label": "UK 9"
+        },
+        {
+         "label": "UK 9.5"
+        },
+        {
+         "label": "UK 10"
+        },
+        {
+         "label": "UK 10.5"
+        },
+        {
+         "label": "UK 11"
+        },
+        {
+         "label": "UK 11.5"
+        },
+        {
+         "label": "UK 12"
+        },
+        {
+         "label": "UK 12.5"
+        }
+       ]
+      },
+      {
+       "name": "Color",
+       "values": [
+        {
+         "label": "Purple"
+        },
+        {
+         "label": "Red"
+        },
+        {
+         "label": "White"
+        },
+        {
+         "label": "Yellow"
+        }
+       ]
+      }
+     ],
+     "variants": [
+      {
+       "id": "gid://shopify/ProductVariant/44366835384528",
+       "title": "adidas Adizero Adios 9 Mens Running Shoes - Yellow",
+       "handle": "adidas-adizero-adios-9-mens-running-shoes-yellow",
+       "url": "https://startfitness.co.uk/products/adidas-adizero-adios-9-mens-running-shoes-yellow?variant=44366835384528&_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "price": {
+        "amount": 7000,
+        "currency": "GBP"
+       },
+       "availability": {
+        "available": true
+       },
+       "options": [
+        {
+         "name": "Color",
+         "label": "Yellow"
+        },
+        {
+         "name": "Shoe size",
+         "label": "UK 7"
+        }
+       ],
+       "seller": {
+        "id": "gid://shopify/Shop/56495210704",
+        "name": "Start Fitness",
+        "url": "https://startfitness.co.uk",
+        "domain": "start-new-fitness.myshopify.com"
+       },
+       "checkout_url": "https://startfitness.co.uk/cart/44366835384528:1?_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "rating": {
+        "value": 4.6,
+        "scale_min": 1,
+        "scale_max": 5,
+        "count": 9
+       },
+       "condition": [
+        "new"
+       ],
+       "eligible": {
+        "native_checkout": false
+       },
+       "source": "shopify"
+      }
+     ],
+     "price_range": {
+      "min": {
+       "amount": 7000,
+       "currency": "GBP"
+      },
+      "max": {
+       "amount": 7000,
+       "currency": "GBP"
+      }
+     }
+    },
+    {
+     "id": "gid://shopify/p/57DxzLF3qX7ktb4hRAkkH3",
+     "title": "adidas Men's Adizero SL2 Running Shoes",
+     "handle": "adidas-mens-adizero-sl2-running-shoes-1",
+     "rating": {
+      "value": 4.8,
+      "scale_min": 1,
+      "scale_max": 5,
+      "count": 188
+     },
+     "options": [
+      {
+       "name": "Color",
+       "values": [
+        {
+         "label": "Core Black / Cloud White / Carbon"
+        }
+       ]
+      }
+     ],
+     "variants": [
+      {
+       "id": "gid://shopify/ProductVariant/43993870303292",
+       "title": "adidas Men's Adizero SL2 Running Shoes",
+       "handle": "adidas-mens-adizero-sl2-running-shoes-1",
+       "url": "https://www.leagueoutfitters.com/products/adidas-mens-adizero-sl2-running-shoes-1?variant=43993870303292&_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "price": {
+        "amount": 12400,
+        "currency": "SGD"
+       },
+       "list_price": {
+        "amount": 16900,
+        "currency": "SGD"
+       },
+       "availability": {
+        "available": true
+       },
+       "seller": {
+        "id": "gid://shopify/Shop/2400529",
+        "name": "League Outfitters",
+        "url": "https://www.leagueoutfitters.com",
+        "domain": "league-outfitters.myshopify.com"
+       },
+       "checkout_url": "https://www.leagueoutfitters.com/cart/43993870303292:1?_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "rating": {
+        "value": 5.0,
+        "scale_min": 1,
+        "scale_max": 5,
+        "count": 2
+       },
+       "condition": [
+        "new"
+       ],
+       "eligible": {
+        "native_checkout": false
+       },
+       "source": "shopify"
+      }
+     ],
+     "price_range": {
+      "min": {
+       "amount": 12400,
+       "currency": "SGD"
+      },
+      "max": {
+       "amount": 12400,
+       "currency": "SGD"
+      }
+     }
+    },
+    {
+     "id": "gid://shopify/p/4QRVbFvr8AQKAlaH6v4yq4",
+     "title": "Men's Tracksmith Eliot Runner",
+     "handle": "m-tracksmith-eliot-runner",
+     "rating": {
+      "value": 4.6,
+      "scale_min": 1,
+      "scale_max": 5,
+      "count": 551
+     },
+     "options": [
+      {
+       "name": "Size",
+       "values": [
+        {
+         "label": "7"
+        },
+        {
+         "label": "7.5"
+        },
+        {
+         "label": "8"
+        },
+        {
+         "label": "8.5"
+        },
+        {
+         "label": "9"
+        },
+        {
+         "label": "9.5"
+        },
+        {
+         "label": "10"
+        },
+        {
+         "label": "10.5"
+        },
+        {
+         "label": "11"
+        },
+        {
+         "label": "11.5"
+        },
+        {
+         "label": "12"
+        },
+        {
+         "label": "13"
+        }
+       ]
+      },
+      {
+       "name": "Color",
+       "values": [
+        {
+         "label": "Anemone/Ivory"
+        },
+        {
+         "label": "Apple Butter/Ivory"
+        },
+        {
+         "label": "Bering Sea/Ivory"
+        },
+        {
+         "label": "Black"
+        },
+        {
+         "label": "Brown Rice/Petrified Oak"
+        },
+        {
+         "label": "Forest/Ivory"
+        },
+        {
+         "label": "Ivory/Ivory"
+        },
+        {
+         "label": "Ivory/Royal"
+        },
+        {
+         "label": "Navy/White"
+        },
+        {
+         "label": "Purple/Ivory"
+        },
+        {
+         "label": "Royal/Ivory"
+        },
+        {
+         "label": "Warm Gray/Pewter"
+        },
+        {
+         "label": "White/Navy"
+        },
+        {
+         "label": "Wine/Ivory"
+        }
+       ]
+      },
+      {
+       "name": "Sizing",
+       "values": [
+        {
+         "label": "US Men"
+        }
+       ]
+      }
+     ],
+     "variants": [
+      {
+       "id": "gid://shopify/ProductVariant/41940659044439",
+       "title": "Men's Tracksmith Eliot Runner",
+       "handle": "m-tracksmith-eliot-runner",
+       "url": "https://www.tracksmith.com/products/m-tracksmith-eliot-runner?_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "price": {
+        "amount": 16000,
+        "currency": "SGD"
+       },
+       "list_price": {
+        "amount": 28500,
+        "currency": "SGD"
+       },
+       "availability": {
+        "available": true
+       },
+       "options": [
+        {
+         "name": "Color",
+         "label": "Apple Butter/Ivory"
+        },
+        {
+         "name": "Sizing",
+         "label": "US Men"
+        },
+        {
+         "name": "Size",
+         "label": "7"
+        }
+       ],
+       "seller": {
+        "id": "gid://shopify/Shop/15944353",
+        "name": "Tracksmith",
+        "url": "https://checkout.tracksmith.com",
+        "domain": "tracksmith-v2.myshopify.com"
+       },
+       "checkout_url": "https://tracksmith-v2.myshopify.com/cart/41940659044439:1?channel=headless&_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "rating": {
+        "value": 4.9,
+        "scale_min": 1,
+        "scale_max": 5,
+        "count": 129
+       },
+       "condition": [
+        "new"
+       ],
+       "eligible": {
+        "native_checkout": false
+       },
+       "source": "shopify"
+      }
+     ],
+     "price_range": {
+      "min": {
+       "amount": 16000,
+       "currency": "SGD"
+      },
+      "max": {
+       "amount": 16000,
+       "currency": "SGD"
+      }
+     }
+    },
+    {
+     "id": "gid://shopify/p/J6v93zzYuzJcr1AxFeAt8",
+     "title": "adidas Adizero SL 2 Mens Running Shoes - Yellow",
+     "handle": "adidas-adizero-sl-2-mens-running-shoes-yellow",
+     "rating": {
+      "value": 4.8,
+      "scale_min": 1,
+      "scale_max": 5,
+      "count": 41
+     },
+     "options": [
+      {
+       "name": "Shoe size",
+       "values": [
+        {
+         "label": "UK 7"
+        },
+        {
+         "label": "UK 7.5"
+        },
+        {
+         "label": "UK 8"
+        },
+        {
+         "label": "UK 8.5"
+        },
+        {
+         "label": "UK 9"
+        },
+        {
+         "label": "UK 9.5"
+        },
+        {
+         "label": "UK 10"
+        },
+        {
+         "label": "UK 10.5"
+        },
+        {
+         "label": "UK 11"
+        },
+        {
+         "label": "UK 11.5"
+        },
+        {
+         "label": "UK 12"
+        },
+        {
+         "label": "UK 12.5"
+        },
+        {
+         "label": "UK 13"
+        }
+       ]
+      },
+      {
+       "name": "Color",
+       "values": [
+        {
+         "label": "Carbon / Solar Turbo / Brown"
+        },
+        {
+         "label": "Core Black"
+        },
+        {
+         "label": "Core Black / Cloud White / Grey Five"
+        },
+        {
+         "label": "Dash Grey / Impact Orange / Lucid Blue"
+        },
+        {
+         "label": "Flash Aqua / Lucid Lemon / Mint Ton"
+        },
+        {
+         "label": "Lucid Blue / Cloud White / Lime Burst"
+        },
+        {
+         "label": "Lucid Lemon / Core Black / White"
+        },
+        {
+         "label": "Lucid Red / Silver Metallic / Purple Burst"
+        },
+        {
+         "label": "Solar Yellow / Aurora Plum / Powder Plum"
+        }
+       ]
+      }
+     ],
+     "variants": [
+      {
+       "id": "gid://shopify/ProductVariant/44367799910608",
+       "title": "adidas Adizero SL 2 Mens Running Shoes - Yellow",
+       "handle": "adidas-adizero-sl-2-mens-running-shoes-yellow",
+       "url": "https://startfitness.co.uk/products/adidas-adizero-sl-2-mens-running-shoes-yellow?variant=44367799910608&_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "price": {
+        "amount": 6417,
+        "currency": "GBP"
+       },
+       "availability": {
+        "available": true
+       },
+       "options": [
+        {
+         "name": "Color",
+         "label": "Lucid Lemon / Core Black / White"
+        },
+        {
+         "name": "Shoe size",
+         "label": "UK 7.5"
+        }
+       ],
+       "seller": {
+        "id": "gid://shopify/Shop/56495210704",
+        "name": "Start Fitness",
+        "url": "https://startfitness.co.uk",
+        "domain": "start-new-fitness.myshopify.com"
+       },
+       "checkout_url": "https://startfitness.co.uk/cart/44367799910608:1?_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "rating": {
+        "value": 4.0,
+        "scale_min": 1,
+        "scale_max": 5,
+        "count": 2
+       },
+       "condition": [
+        "new"
+       ],
+       "eligible": {
+        "native_checkout": false
+       },
+       "source": "shopify"
+      }
+     ],
+     "price_range": {
+      "min": {
+       "amount": 6417,
+       "currency": "GBP"
+      },
+      "max": {
+       "amount": 6417,
+       "currency": "GBP"
+      }
+     }
+    },
+    {
+     "id": "gid://shopify/p/6GRshY1lsqT6fKHY4hZDPA",
+     "title": "adidas Supernova Rise Mens Running Shoes - White",
+     "handle": "adidas-supernova-rise-mens-running-shoes-white-1",
+     "rating": {
+      "value": 4.8,
+      "scale_min": 1,
+      "scale_max": 5,
+      "count": 17
+     },
+     "options": [
+      {
+       "name": "Shoe size",
+       "values": [
+        {
+         "label": "UK 7"
+        },
+        {
+         "label": "UK 8"
+        }
+       ]
+      }
+     ],
+     "variants": [
+      {
+       "id": "gid://shopify/ProductVariant/44024267604176",
+       "title": "adidas Supernova Rise Mens Running Shoes - White",
+       "handle": "adidas-supernova-rise-mens-running-shoes-white-1",
+       "url": "https://startfitness.co.uk/products/adidas-supernova-rise-mens-running-shoes-white-1?variant=44024267604176&_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "price": {
+        "amount": 4158,
+        "currency": "GBP"
+       },
+       "availability": {
+        "available": true
+       },
+       "options": [
+        {
+         "name": "Shoe size",
+         "label": "UK 7"
+        }
+       ],
+       "seller": {
+        "id": "gid://shopify/Shop/56495210704",
+        "name": "Start Fitness",
+        "url": "https://startfitness.co.uk",
+        "domain": "start-new-fitness.myshopify.com"
+       },
+       "checkout_url": "https://startfitness.co.uk/cart/44024267604176:1?_gsid=rcAnTk1caYvT&utm_source=shopify&utm_medium=catalog",
+       "rating": {
+        "value": 4.7,
+        "scale_min": 1,
+        "scale_max": 5,
+        "count": 18
+       },
+       "condition": [
+        "new"
+       ],
+       "eligible": {
+        "native_checkout": false
+       },
+       "source": "shopify"
+      }
+     ],
+     "price_range": {
+      "min": {
+       "amount": 4158,
+       "currency": "GBP"
+      },
+      "max": {
+       "amount": 4158,
+       "currency": "GBP"
+      }
+     }
+    }
+   ],
+   "messages": [
+    {
+     "type": "info",
+     "code": "price_filter_applied",
+     "path": "$.filters.price",
+     "content": "Price filtering was applied on a USD basis; returned prices are contextualized to the buyer's market and may differ.",
+     "data": {
+      "request_currency": "SGD",
+      "applied_usd": {
+       "max": 117.29925
+      },
+      "conversion": {
+       "max": "fx_converted"
+      }
+     }
+    }
+   ],
+   "pagination": {
+    "has_next_page": true,
+    "total_count": 397,
+    "cursor": "eyJvZmZzZXQiOjEwLCJ0b3RhbF9jb3VudCI6Mzk3LCJyZXR1cm5lZCI6MTB9"
+   }
+  }
+ }
+}

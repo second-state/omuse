@@ -183,12 +183,11 @@ pub fn compact_itinerary(it: &Value, currency: &str, self_transfer: bool) -> Val
     Value::Object(out)
 }
 
-/// The whole reply, compact (at most 12 itineraries).
+/// The whole reply, compact: every itinerary (none cut — the pick is made over all of them).
 pub fn compact_flights(data: &Value, self_transfer: bool) -> Value {
     let currency = get_str(data, "currency");
     let mut offers: Vec<Value> = arr(data, "itineraries")
         .iter()
-        .take(12)
         .map(|it| compact_itinerary(it, &currency, self_transfer))
         .collect();
     for (i, o) in offers.iter_mut().enumerate() {
@@ -346,6 +345,30 @@ impl KiwiMcp {
                 args["select_airlines"] = json!(codes.join(","));
             }
         }
+        // the user's time window (the model's JSON: depart_after … arrive_before) as Kiwi's own hour filters, in the
+        // same ONE request
+        for (k, v) in kiwi_times(a) {
+            args[k] = json!(v);
+        }
+        let data = self.call(&args).await?;
+        let mut out = compact_flights(&data, self_transfer);
+        let found = crate::serpapi::mark_preferred(
+            &mut out["offers"],
+            &crate::serpapi::with_codes(&prefs, &filter),
+            "airlines",
+        );
+        crate::serpapi::tag_cabins(&mut out["offers"], a);
+        out["searched"] = crate::serpapi::searched(a, &from, &to);
+        if !prefs.is_empty() {
+            out["searched"]["airlines"] = json!(prefs);
+            out["searched"]["preferred_found"] = json!(found);
+            out["searched"]["airline_filter"] = crate::serpapi::airline_filter_note(&filter);
+        }
+        Ok(out)
+    }
+
+    /// One `search-flight` request: Kiwi's reply data (`{currency, itineraries, …}`).
+    async fn call(&self, args: &Value) -> Result<Value, KiwiError> {
         let post = |body: Value| {
             self.client
                 .post(&self.url)
@@ -355,8 +378,8 @@ impl KiwiMcp {
                 .timeout(self.timeout)
                 .send()
         };
-        // ONE request per search: Kiwi's server is stateless and answers tools/call without the MCP handshake (checked
-        // 2026-10-29), so the `initialize` round trip is skipped
+        // Kiwi's server is stateless and answers tools/call without the MCP handshake (checked 2026-10-29), so the
+        // `initialize` round trip is skipped
         let r = post(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "search-flight", "arguments": args}}))
             .await
             .map_err(|e| KiwiError(format!("Kiwi: {e}")))?;
@@ -390,32 +413,65 @@ impl KiwiMcp {
                 content.chars().take(200).collect::<String>()
             )));
         }
-        let data: Value = serde_json::from_str(content.trim()).map_err(|_| {
+        serde_json::from_str(content.trim()).map_err(|_| {
             KiwiError(format!(
                 "Kiwi: unexpected reply: {}",
                 content.chars().take(120).collect::<String>()
             ))
-        })?;
-        let mut out = compact_flights(&data, self_transfer);
-        let found = crate::serpapi::mark_preferred(
-            &mut out["offers"],
-            &crate::serpapi::with_codes(&prefs, &filter),
-            "airlines",
-        );
-        crate::serpapi::tag_cabins(&mut out["offers"], a);
-        out["searched"] = crate::serpapi::searched(a, &from, &to);
-        if !prefs.is_empty() {
-            out["searched"]["airlines"] = json!(prefs);
-            out["searched"]["preferred_found"] = json!(found);
-            out["searched"]["airline_filter"] = crate::serpapi::airline_filter_note(&filter);
-        }
-        Ok(out)
+        })
     }
+}
+
+/// The request's local time window (`depart_after` / `depart_before` / `arrive_after` / `arrive_before`, HH:MM) as
+/// Kiwi's hour filters (`dtime_from` / `dtime_to`, `atime_from` / `atime_to`, 0–23, local at each airport). Checked on
+/// mcp.kiwi.com 2026-11-02: `dtime_to` h takes departures up to h:00 and 23 is its largest value — so an end is rounded
+/// up to the next hour (never cutting a flight inside the window) and an end after 23:00 is no end; a start is its
+/// hour (00 is no start). The window is a superset at most an hour wider: the pick over the result is the model's.
+pub fn kiwi_times(a: &Value) -> Vec<(&'static str, u32)> {
+    let w = crate::serpapi::time_window(a);
+    let mut out = Vec::new();
+    for (range, from_k, to_k) in [
+        (w.depart, "dtime_from", "dtime_to"),
+        (w.arrive, "atime_from", "atime_to"),
+    ] {
+        let Some((from, to)) = range else { continue };
+        if from / 60 > 0 {
+            out.push((from_k, from / 60));
+        }
+        let end = to.div_ceil(60);
+        if end <= 23 {
+            out.push((to_k, end));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_users_time_window_becomes_kiwis_hour_filters() {
+        // "the last flight that lands before midnight", narrowed by the model to arrivals from 18:00
+        let w = kiwi_times(&json!({"arrive_after": "18:00", "arrive_before": "23:59"}));
+        assert_eq!(
+            w,
+            [("atime_from", 18)],
+            "23:59 is no end (dtime_to 23 would cut 23:01–23:59)"
+        );
+        // an end is rounded up to the next hour; a start of 00:00 is no start
+        let w = kiwi_times(
+            &json!({"depart_after": "00:00", "depart_before": "09:30", "arrive_after": "06:15"}),
+        );
+        assert_eq!(w, [("dtime_to", 10), ("atime_from", 6)]);
+        assert_eq!(
+            kiwi_times(&json!({"depart_before": "18:00"})),
+            [("dtime_to", 18)]
+        );
+        // no time words: no filter (one normal search)
+        assert!(kiwi_times(&json!({"origin": "HKG"})).is_empty());
+        assert!(kiwi_times(&json!({"depart_after": "late"})).is_empty());
+    }
 
     #[test]
     fn kiwi_itineraries_compact_with_the_kiwi_booking_link() {

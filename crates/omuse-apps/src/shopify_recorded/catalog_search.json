@@ -1,0 +1,465 @@
+{
+ "jsonrpc": "2.0",
+ "id": 1,
+ "result": {
+  "structuredContent": {
+   "ucp": {
+    "version": "2026-08-25",
+    "capabilities": {
+     "dev.ucp.shopping.catalog.search": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/catalog/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/catalog_search.json"
+      }
+     ],
+     "dev.ucp.shopping.catalog.lookup": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://ucp.dev/2026-08-25/specification/shopping/catalog/",
+       "schema": "https://ucp.dev/2026-08-25/schemas/shopping/catalog_lookup.json"
+      }
+     ],
+     "dev.shopify.catalog.global": [
+      {
+       "version": "2026-08-25",
+       "spec": "https://shopify.dev/docs/agents/catalog/global-catalog",
+       "schema": "https://shopify.dev/ucp/schemas/2026-08-25/shopify_catalog_global.json",
+       "extends": [
+        "dev.ucp.shopping.catalog.search",
+        "dev.ucp.shopping.catalog.lookup"
+       ],
+       "requires": {
+        "protocol": {
+         "min": "2026-08-25"
+        }
+       }
+      }
+     ]
+    },
+    "status": "success"
+   },
+   "products": [
+    {
+     "id": "gid://shopify/p/373KEiTesCX9KxCQk7uoMk",
+     "title": "Men's Wool Runner - Natural Grey (Light Grey Sole)",
+     "handle": "mens-wool-runners",
+     "rating": {
+      "value": 4.6,
+      "scale_min": 1,
+      "scale_max": 5,
+      "count": 7064
+     },
+     "options": [
+      {
+       "name": "Size",
+       "values": [
+        {
+         "label": "9"
+        },
+        {
+         "label": "10"
+        },
+        {
+         "label": "11"
+        },
+        {
+         "label": "12"
+        },
+        {
+         "label": "13"
+        }
+       ]
+      },
+      {
+       "name": "Color",
+       "values": [
+        {
+         "label": "Natural Grey (Light Grey Sole)"
+        }
+       ]
+      }
+     ],
+     "variants": [
+      {
+       "id": "gid://shopify/ProductVariant/30674260033616",
+       "title": "Men's Wool Runner - Natural Grey (Light Grey Sole)",
+       "handle": "mens-wool-runners",
+       "url": "https://www.allbirds.com/products/mens-wool-runners?variant=30674260033616&_gsid=vq3NCQBmhtLE&utm_source=shopify&utm_medium=catalog",
+       "price": {
+        "amount": 11000,
+        "currency": "USD"
+       },
+       "availability": {
+        "available": true
+       },
+       "options": [
+        {
+         "name": "Color",
+         "label": "Natural Grey (Light Grey Sole)"
+        },
+        {
+         "name": "Size",
+         "label": "10"
+        }
+       ],
+       "seller": {
+        "id": "gid://shopify/Shop/11044168",
+        "name": "Allbirds",
+        "url": "https://www.allbirds.com",
+        "domain": "weareallbirds.myshopify.com"
+       },
+       "checkout_url": "https://weareallbirds.myshopify.com/cart/30674260033616:1?_gsid=vq3NCQBmhtLE&utm_source=shopify&utm_medium=catalog",
+       "rating": {
+        "value": 4.5,
+        "scale_min": 1,
+        "scale_max": 5,
+        "count": 1189
+       },
+       "condition": [
+        "new"
+       ],
+       "eligible": {
+        "native_checkout": false
+       },
+       "source": "shopify"
+      }
+     ],
+     "price_range": {
+      "min": {
+       "amount": 11000,
+       "currency": "USD"
+      },
+      "max": {
+       "amount": 11000,
+       "currency": "USD"
+      }
+     }
+    },
+    {
+     "id": "gid://shopify/p/2aTwYxqPnwZxrDFYbUpcL5",
+     "title": "Women's Wool Runner - Natural Black (Black Sole)",
+     "handle": "womens-wool-runners-natural-black",
+     "rating": {
+      "value": 4.7,
+      "scale_min": 1,
+      "scale_max": 5,
+      "count": 25285
+     },
+     "options": [
+      {
+       "name": "Numeric shoe size",
+       "values": [
+        {
+         "label": "5"
+        }
+       ]
+      },
+      {
+       "name": "Color",
+       "values": [
+        {
+         "label": "Natural Grey (Light Grey Sole)"
+        }
+       ]
+      }
+     ],
+     "variants": [
+      {
+       "id": "gid://shopify/ProductVariant/32262292013136",
+       "title": "Women's Wool Runner - Natural Black (Black Sole)",
+       "handle": "womens-wool-runners-natural-black",
+       "url": "https://www.allbirds.com/products/womens-wool-runners-natural-black?variant=32262292013136&_gsid=vq3NCQBmhtLE&utm_source=shopify&utm_medium=catalog",
+       "price": {
+        "amount": 11000,
+        "currency": "USD"
+       },
+       "availability": {
+        "available": true
+       },
+       "options": [
+        {
+         "name": "Color",
+         "label": "Natural Black (Black Sole)"
+        },
+        {
+         "name": "Numeric shoe size",
+         "label": "5"
+        }
+       ],
+       "seller": {
+        "id": "gid://shopify/Shop/11044168",
+        "name": "Allbirds",
+        "url": "https://www.allbirds.com",
+        "domain": "weareallbirds.myshopify.com"
+       },
+       "checkout_url": "https://weareallbirds.myshopify.com/cart/32262292013136:1?_gsid=vq3NCQBmhtLE&utm_source=shopify&utm_medium=catalog",
+       "rating": {
+        "value": 4.5,
+        "scale_min": 1,
+        "scale_max": 5,
+        "count": 539
+       },
+       "condition": [
+        "new"
+       ],
+       "eligible": {
+        "native_checkout": false
+       },
+       "source": "shopify"
+      }
+     ],
+     "price_range": {
+      "min": {
+       "amount": 11000,
+       "currency": "USD"
+      },
+      "max": {
+       "amount": 11000,
+       "currency": "USD"
+      }
+     }
+    },
+    {
+     "id": "gid://shopify/p/3dJhOVRZhuaMxAWt9Hmzvl",
+     "title": "Women's Wool Runner NZ - Natural Black (Natural Black Sole)",
+     "handle": "womens-wool-runner-nz-natural-black",
+     "rating": {
+      "value": 4.7,
+      "scale_min": 1,
+      "scale_max": 5,
+      "count": 225
+     },
+     "options": [
+      {
+       "name": "Numeric shoe size",
+       "values": [
+        {
+         "label": "5"
+        },
+        {
+         "label": "5.5"
+        },
+        {
+         "label": "6"
+        },
+        {
+         "label": "6.5"
+        },
+        {
+         "label": "7"
+        },
+        {
+         "label": "7.5"
+        },
+        {
+         "label": "8.5"
+        },
+        {
+         "label": "9"
+        },
+        {
+         "label": "10.5"
+        },
+        {
+         "label": "11"
+        }
+       ]
+      },
+      {
+       "name": "Color",
+       "values": [
+        {
+         "label": "Natural Black (Natural Black Sole)"
+        }
+       ]
+      }
+     ],
+     "variants": [
+      {
+       "id": "gid://shopify/ProductVariant/41243659927632",
+       "title": "Women's Wool Runner NZ - Natural Black (Natural Black Sole)",
+       "handle": "womens-wool-runner-nz-natural-black",
+       "url": "https://www.allbirds.com/products/womens-wool-runner-nz-natural-black?variant=41243659927632&_gsid=vq3NCQBmhtLE&utm_source=shopify&utm_medium=catalog",
+       "price": {
+        "amount": 11000,
+        "currency": "USD"
+       },
+       "availability": {
+        "available": true
+       },
+       "options": [
+        {
+         "name": "Color",
+         "label": "Natural Black (Natural Black Sole)"
+        },
+        {
+         "name": "Numeric shoe size",
+         "label": "5"
+        }
+       ],
+       "seller": {
+        "id": "gid://shopify/Shop/11044168",
+        "name": "Allbirds",
+        "url": "https://www.allbirds.com",
+        "domain": "weareallbirds.myshopify.com"
+       },
+       "checkout_url": "https://weareallbirds.myshopify.com/cart/41243659927632:1?_gsid=vq3NCQBmhtLE&utm_source=shopify&utm_medium=catalog",
+       "rating": {
+        "value": 5.0,
+        "scale_min": 1,
+        "scale_max": 5,
+        "count": 7
+       },
+       "condition": [
+        "new"
+       ],
+       "eligible": {
+        "native_checkout": false
+       },
+       "source": "shopify"
+      }
+     ],
+     "price_range": {
+      "min": {
+       "amount": 11000,
+       "currency": "USD"
+      },
+      "max": {
+       "amount": 11000,
+       "currency": "USD"
+      }
+     }
+    },
+    {
+     "id": "gid://shopify/p/6C71cxCxTs7YtuxYFdCiAP",
+     "title": "Allbirds Women's Wool Runner Go Shoe",
+     "handle": "allbirds-womens-wool-runner-go",
+     "options": [
+      {
+       "name": "Numeric shoe size",
+       "values": [
+        {
+         "label": "6"
+        },
+        {
+         "label": "6.5"
+        },
+        {
+         "label": "7.5"
+        },
+        {
+         "label": "8"
+        },
+        {
+         "label": "8.5"
+        },
+        {
+         "label": "9.5"
+        }
+       ]
+      },
+      {
+       "name": "Color",
+       "values": [
+        {
+         "label": "Hazy Indigo (Blizzard Sole)"
+        },
+        {
+         "label": "Stony Beige (Dark Grey Sole)"
+        }
+       ]
+      },
+      {
+       "name": "Shoe fit",
+       "values": [
+        {
+         "label": "Medium"
+        }
+       ]
+      }
+     ],
+     "variants": [
+      {
+       "id": "gid://shopify/ProductVariant/52013213843730",
+       "title": "Allbirds Women's Wool Runner Go Shoe",
+       "handle": "allbirds-womens-wool-runner-go",
+       "url": "https://thelatestdrop.com/products/allbirds-womens-wool-runner-go?variant=52013213843730&_gsid=vq3NCQBmhtLE&utm_source=shopify&utm_medium=catalog",
+       "price": {
+        "amount": 4945,
+        "currency": "USD"
+       },
+       "list_price": {
+        "amount": 11000,
+        "currency": "USD"
+       },
+       "availability": {
+        "available": true
+       },
+       "options": [
+        {
+         "name": "Shoe fit",
+         "label": "Medium"
+        },
+        {
+         "name": "Color",
+         "label": "Hazy Indigo (Blizzard Sole)"
+        },
+        {
+         "name": "Numeric shoe size",
+         "label": "6"
+        }
+       ],
+       "seller": {
+        "id": "gid://shopify/Shop/84450672914",
+        "name": "The Latest Drop",
+        "url": "https://thelatestdrop.com",
+        "domain": "974da4.myshopify.com"
+       },
+       "checkout_url": "https://thelatestdrop.com/cart/52013213843730:1?_gsid=vq3NCQBmhtLE&utm_source=shopify&utm_medium=catalog",
+       "condition": [
+        "new"
+       ],
+       "eligible": {
+        "native_checkout": false
+       },
+       "source": "shopify"
+      }
+     ],
+     "price_range": {
+      "min": {
+       "amount": 4945,
+       "currency": "USD"
+      },
+      "max": {
+       "amount": 4945,
+       "currency": "USD"
+      }
+     }
+    }
+   ],
+   "messages": [
+    {
+     "type": "info",
+     "code": "price_filter_applied",
+     "path": "$.filters.price",
+     "content": "Price filtering was applied on a USD basis; returned prices are contextualized to the buyer's market and may differ.",
+     "data": {
+      "request_currency": "USD",
+      "applied_usd": {
+       "max": 150.0
+      },
+      "conversion": {
+       "max": "native_usd"
+      }
+     }
+    }
+   ],
+   "pagination": {
+    "has_next_page": true,
+    "total_count": 403,
+    "cursor": "eyJvZmZzZXQiOjYsInRvdGFsX2NvdW50Ijo0MDMsInJldHVybmVkIjo2fQ"
+   }
+  }
+ }
+}

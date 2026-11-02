@@ -101,6 +101,21 @@ says to ask the user what to change); nothing else is searched — no web search
 public MCP server itself (`omuse_apps::kiwi`, `https://mcp.kiwi.com/`, one JSON-RPC request per search — its server is stateless, so no `initialize` — no key, no connector
 registration) and compacts the itineraries — airlines, flight numbers, local times, stops, price, baggage.
 
+**Every flight of the day, the model's pick (2026-11-02).** "Find me the last flight that lands before midnight" got
+the cheapest and other suggestions: Kiwi.com answers only 12–15 itineraries per request (the cheapest), Google's list
+was cut at 12, and the booking machine sorted by price. Now the model turns the request's time words into the search's
+JSON window (`depart_after` / `depart_before` / `arrive_after` / `arrive_before`, HH:MM local: "lands before midnight" →
+`arrive_before` 23:59, and for "the last flight" it may narrow to `arrive_after` 18:00), and code passes it to each
+source's own time filter in the ONE search — Google Flights' `outbound_times` (departure / arrival hour ranges), Kiwi's
+`dtime_from` / `dtime_to` / `atime_from` / `atime_to` (hours; an end rounded up, an end after 23:00 no end: checked on
+mcp.kiwi.com 2026-11-02, `dtime_to` h = up to h:00). No time words: one normal search. Google Flights also asks
+`deep_search` and nothing is cut; no price sort is asked. `travel_search` / `travel_book` without a pick
+return them all as JSON (`status: pick_needed`: offer_id, departure and arrival with airport and local time from the
+APIs' own fields, `arrives_days_later`, stops, price). The model answers with `travel_pick {offer_ids}` (offered only on
+that reply turn; ids checked against the search); code shows exactly those flights — one flight: no choice card, its
+times and booking link in the appended block; several: one card with them in the model's order. No "cheapest" label,
+no other airline's fare added. Hotels and restaurants keep their pick by rule.
+
 Every flight and hotel result carries a `booking_url`, at no extra cost: a Kiwi.com offer its Kiwi booking page
 (`kiwi.com/u/…`, kept only for `kiwi.com` hosts; `book_at` is the airline's own site), a Google Flights offer Google
 Flights' own page for that itinerary (`serpapi::itinerary_url`: the search's `google_flights_url` with the itinerary's

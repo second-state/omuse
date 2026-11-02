@@ -747,6 +747,37 @@ async fn a_form_skill_gets_a_form_sized_step_budget() {
     assert_eq!(rt.inner.lock().skill_steps.get(&get_str(&t2, "id")), None);
 }
 
+/// A machine's offer on a choice card keeps its structured price, currency and id (shopping_real 2026-11-02: the
+/// Shopping bot's card reached the chat without them).
+#[tokio::test]
+async fn a_choice_cards_offers_keep_their_price_and_id() {
+    let (rt, _d) = rt();
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    let t = json!({"id": "t1", "conv_id": conv, "goal": "x"});
+    let opts = json!([
+        {"label": "Men's Clifton 10", "details": ["SGD 144.09"], "price": 144.09, "currency": "SGD", "offer_id": "shp_1"},
+        {"label": "Novablast 5", "details": ["SGD 114.36"], "price": 114.36, "currency": "SGD", "offer_id": "shp_2"}
+    ]);
+    let r = rt
+        .local(
+            &t,
+            "present_choices",
+            &json!({"question": "running shoes", "kind": "clarify", "options": opts}),
+        )
+        .await
+        .unwrap();
+    assert!(!r.starts_with("ERROR"), "{r}");
+    let msgs = rt.store.msgs(&conv, 20).unwrap();
+    let card: Value = msgs
+        .iter()
+        .find_map(|m| serde_json::from_str(&get_str(m, "content")).ok())
+        .expect("the card");
+    let o = &card["options"];
+    assert_eq!(o[0]["price"].as_f64(), Some(144.09));
+    assert_eq!(o[0]["currency"], "SGD");
+    assert_eq!(o[1]["offer_id"], "shp_2");
+}
+
 #[tokio::test]
 async fn present_choices_clarify_and_files_roundtrip() {
     let (rt, _d) = rt();
@@ -3465,6 +3496,152 @@ async fn a_workflow_call_runs_its_machine_then_the_model_words_the_result_and_co
     );
 }
 
+/// A day of Hong Kong → Singapore flights as Google Flights gives them (offer id, flight, depart, arrive, HKD).
+const HKG_SIN_DAY: &[(&str, &str, &str, &str, f64)] = &[
+    (
+        "fl_tr983",
+        "TR 983",
+        "2030-11-03 22:00",
+        "2030-11-04 02:15",
+        1016.0,
+    ),
+    (
+        "fl_cx691",
+        "CX 691",
+        "2030-11-03 07:50",
+        "2030-11-03 11:50",
+        2694.0,
+    ),
+    (
+        "fl_sq895",
+        "SQ 895",
+        "2030-11-03 18:50",
+        "2030-11-03 22:50",
+        5915.0,
+    ),
+    (
+        "fl_cx715",
+        "CX 715",
+        "2030-11-03 20:15",
+        "2030-11-04 00:20",
+        5284.0,
+    ),
+    (
+        "fl_sq893",
+        "SQ 893",
+        "2030-11-03 15:45",
+        "2030-11-03 19:50",
+        5915.0,
+    ),
+];
+
+#[tokio::test]
+async fn a_flight_search_gives_every_flight_to_the_model_whose_json_pick_is_shown_exactly() {
+    // the user, 2026-11-02: "Find me the last flight that lands before midnight" got the cheapest and other
+    // suggestions. Now: the result lists every flight as JSON, the model answers with travel_pick {offer_ids}, code
+    // shows exactly that flight
+    let (rt, _d, seen) = scripted_rt(
+        |body| {
+            let sys = system_of(body);
+            if sys.starts_with("You check an assistant") {
+                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let tools = tool_msgs(body);
+            let Some(last) = tools.last() else {
+                return call_msg(
+                    "c1",
+                    "travel_search",
+                    r#"{"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2030-11-03"}"#,
+                );
+            };
+            let res: Value = serde_json::from_str(&get_str(last, "content")).unwrap_or(Value::Null);
+            match get_str(&res, "status").as_str() {
+                // the model reads the flights (JSON) and answers with the ids (JSON): the last one landing that day
+                "pick_needed" => {
+                    let id = res["flights"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|f| f["arrives_days_later"] == 0)
+                        .max_by_key(|f| get_str(&f["departure"], "time"))
+                        .map(|f| get_str(f, "offer_id"))
+                        .unwrap();
+                    call_msg("c2", "travel_pick", &json!({"offer_ids": [id]}).to_string())
+                }
+                "shown" => json!({"role": "assistant", "content": "The last flight that lands before midnight is SQ 895."}),
+                s => panic!("unexpected result {s}: {res}"),
+            }
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    rt.set_sentinel_hook(Some(Arc::new(|_, path, payload| {
+        let p = payload.unwrap_or(Value::Null);
+        let r = match (path.as_str(), get_str(&p, "tool").as_str()) {
+            ("/internal/catalog", _) => {
+                json!({"tools": tools(&["flights_search", "flight_offer"]), "connections": {}})
+            }
+            ("/internal/act", "flights_search") => {
+                let offers: Vec<Value> = HKG_SIN_DAY
+                    .iter()
+                    .map(|(id, no, dep, arr, price)| {
+                        json!({"offer_id": id, "airlines": "Air", "stops": 0, "price": price, "currency": "HKD",
+                               "legs": [{"airline": "Air", "flight_number": no, "from": "HKG", "depart": dep, "to": "SIN", "arrive": arr}],
+                               "booking_url": format!("https://www.google.com/travel/flights/booking?tfs={id}")})
+                    })
+                    .collect();
+                json!({"status": "ok", "result": {"currency": "HKD", "data": "Google Flights", "offers": offers}})
+            }
+            ("/internal/act", "flight_offer") => json!({"status": "ok", "result": {"options": []}}),
+            _ => json!({}),
+        };
+        Box::pin(async move { Ok(r) })
+    })));
+    let (t, evs) = run_in_bot(
+        &rt,
+        "travel",
+        "I need to go from HK to singapore tomorrow. Find me the last flight that lands before midnight",
+    )
+    .await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    let res: Vec<Value> = events_of(&evs, "workflow_result")
+        .into_iter()
+        .map(|e| e["result"].clone())
+        .collect();
+    assert_eq!(res[0]["status"], "pick_needed", "{res:?}");
+    assert_eq!(res[0]["count"], HKG_SIN_DAY.len());
+    // the pick's turn offers travel_pick; the search tools are not offered again on it
+    let ex = executor_calls(&seen);
+    let pick_turn = ex
+        .iter()
+        .find(|b| offered(b).iter().any(|n| n == "travel_pick"))
+        .expect("travel_pick offered on the reply to the every-flight result");
+    assert!(!offered(pick_turn).iter().any(|n| n == "travel_search"));
+    assert!(!offered(&ex[0]).iter().any(|n| n == "travel_pick"));
+    // exactly the flight the model named, nothing added
+    assert_eq!(res[1]["status"], "shown");
+    let labels: Vec<String> = res[1]["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| get_str(o, "label"))
+        .collect();
+    assert_eq!(labels, ["Air SQ 895"]);
+    let answer = get_str(&t, "result");
+    let (_, block) = answer.rsplit_once("\n---\n").expect("the appended block");
+    assert!(
+        block.contains("- Flight: Air SQ 895 — HKD 5,915")
+            && block.contains("HKG 2030-11-03 18:50 → SIN 2030-11-03 22:50"),
+        "{answer}"
+    );
+    for other in ["TR 983", "CX 715", "SQ 893", "cheapest"] {
+        assert!(!block.contains(other), "{other} in {answer}");
+    }
+}
+
 #[tokio::test]
 async fn bad_workflow_json_is_regenerated_by_the_planner_then_invalid_then_asked() {
     let (rt, _d, _seen) = scripted_rt(
@@ -3782,7 +3959,26 @@ fn facts_the_card_catalogs_date_rows_fees_and_missing_cards() {
         "{:?}",
         unverified_cards_fact(&t, false)
     );
-    assert_eq!(unverified_cards_fact(&t[1..], false), None);
+    // cards_markets_real 2026-11-01: the user named the cards in the chat and the model never added them to the Vault
+    // during the run (the Vault got them when the request ended): no card of the user's is known as a catalog row, so
+    // the seed rows of the Singapore table the run read are said to be unverified — still a structured fact, still
+    // appended by code
+    assert_eq!(
+        unverified_cards_fact(&t[1..], false).as_deref(),
+        Some("The catalog's Singapore rows are unverified seeds; check them on the issuer's page.")
+    );
+    // a verified market's table alone (HK, US): nothing to say
+    let hk_table = crate::skills::BUILTIN
+        .get_file("credit-card-picker/cards/hk.md")
+        .and_then(|f| f.contents_utf8())
+        .unwrap();
+    assert_eq!(unverified_cards_fact(&[tool(hk_table)], false), None);
+    // a known card of the user's that is verified: the per-card rule decides, no market line
+    let verified = [
+        tool("- id=vlt_1 · Hang Seng Travel+ Visa Signature · issued in Hong Kong · card · card_id=hk-hang-seng-travel-visa-signature-card · UNKNOWN"),
+        tool(sg),
+    ];
+    assert_eq!(unverified_cards_fact(&verified, false), None);
 }
 
 #[test]
@@ -4519,4 +4715,198 @@ async fn stop_drops_a_tool_call_that_is_still_waiting() {
         .iter()
         .any(|m| get_str(m, "tool_call_id") == "c1"
             && get_str(m, "content").contains("task stopped")));
+}
+
+// ---------------------------------------------------------------- the compulsory workflow call (agent/required.rs)
+
+/// The script of a run in the Travel bot that loads the entry-requirements skill and answers without its workflow call;
+/// `obey`: whether the model makes the call when the request forces it (`tool_choice`).
+fn entry_script(obey: bool, arrive: String) -> impl Fn(&Value) -> Value + Send + Sync + 'static {
+    move |body: &Value| {
+        let sys = system_of(body);
+        if sys.starts_with("You check an assistant") {
+            return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
+        }
+        if let Some(r) = helper_reply(body) {
+            return r;
+        }
+        if forced_choice(body) {
+            // the forced request offers the required tool alone, by name
+            assert_eq!(offered(body), ["entry_requirements"], "{body}");
+            assert_eq!(
+                body["tool_choice"],
+                json!({"type": "function", "function": {"name": "entry_requirements"}})
+            );
+            if !obey {
+                return json!({"role": "assistant", "content": "You need a TDAC for Thailand."});
+            }
+            return call_msg(
+                "c2",
+                "entry_requirements",
+                &json!({"destinations": [{"place": "Bangkok", "arrive": arrive}]}).to_string(),
+            );
+        }
+        match tool_msgs(body).last() {
+            None => call_msg(
+                "c1",
+                "load_skill",
+                &json!({"name": "entry-requirements"}).to_string(),
+            ),
+            Some(m) if get_str(m, "tool_call_id").starts_with("res_") => {
+                json!({"role": "assistant", "content": "Here is what Thailand asks of you."})
+            }
+            // the answer without the workflow call
+            Some(_) => json!({"role": "assistant", "content": "You need a TDAC for Thailand."}),
+        }
+    }
+}
+
+/// Whether a request forces the tool choice.
+fn forced_choice(body: &Value) -> bool {
+    body.get("tool_choice")
+        .is_some_and(|c| c != "auto" && !c.is_null())
+}
+
+fn next_week() -> String {
+    (chrono::Local::now().date_naive() + chrono::Duration::days(7))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_skills_answer_without_its_workflow_call_is_not_taken_the_call_is_forced() {
+    // travel_info_real 2026-11-02: the entry skill was loaded and the model answered without looking the visa days up;
+    // code does not take that answer: the same request again with tool_choice forced to the skill's tool, the call
+    // runs its machine, and the reply's block carries the table's days and the card's official site
+    let (rt, _d, seen) =
+        scripted_rt(entry_script(true, next_week()), json!({"language": "en"})).await;
+    rt.store
+        .set_profile("nationality", "Australia", "user")
+        .unwrap();
+    let (t, evs) = run_in_bot(&rt, "travel", "What do I need to enter Thailand next week?").await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    let req = events_of(&evs, "workflow_required");
+    assert_eq!(req.len(), 1, "{evs:?}");
+    assert_eq!(req[0]["tools"], json!(["entry_requirements"]));
+    assert!(events_of(&evs, "workflow_required_unmet").is_empty());
+    assert_eq!(seen.lock().iter().filter(|b| forced_choice(b)).count(), 1);
+    let answer = get_str(&t, "result");
+    let (prose, block) = answer.rsplit_once("\n---\n").expect("the appended block");
+    // the answer without the call was dropped; the reply is the one written from the result
+    assert_eq!(prose.trim(), "Here is what Thailand asks of you.");
+    assert!(
+        block.contains("- Visa-free stay in Thailand (Australia passport): up to 30 days")
+            && block.contains("](https://tdac.immigration.go.th/)")
+            && block.contains("- Thailand Digital Arrival Card (TDAC): file from "),
+        "{answer}"
+    );
+    assert!(!block.contains("Not checked"), "{answer}");
+    // the dropped answer's text does not ride on the forced call
+    let tr = t["transcript"].as_array().unwrap();
+    assert!(tr.iter().any(|m| crate::agent::util::tool_calls(m)
+        .iter()
+        .any(|tc| get_str(tc, "id") == "c2")
+        && get_str(m, "content").is_empty()));
+}
+
+#[tokio::test]
+async fn a_forced_call_the_model_does_not_make_ends_with_the_fixed_not_checked_line() {
+    // the provider gives no call even when forced: the answer is kept and code appends the fixed line saying the
+    // check could not be done (never a claim that it was)
+    let (rt, _d, seen) =
+        scripted_rt(entry_script(false, next_week()), json!({"language": "en"})).await;
+    let (t, evs) = run_in_bot(&rt, "travel", "What do I need to enter Thailand next week?").await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    assert_eq!(events_of(&evs, "workflow_required").len(), 1);
+    assert_eq!(
+        events_of(&evs, "workflow_required_unmet")[0]["reason"],
+        "no_call"
+    );
+    assert_eq!(
+        seen.lock().iter().filter(|b| forced_choice(b)).count(),
+        1,
+        "one forced try when the model makes no call"
+    );
+    let answer = get_str(&t, "result");
+    let (prose, block) = answer.rsplit_once("\n---\n").expect("the appended block");
+    assert_eq!(prose.trim(), "You need a TDAC for Thailand.");
+    assert!(
+        block.contains("- Not checked: OMuse could not look up the entry requirements"),
+        "{answer}"
+    );
+}
+
+#[tokio::test]
+async fn a_forced_call_with_bad_json_goes_through_the_json_layer_to_needs_input() {
+    // the forced call's JSON is checked like any workflow call: an unreadable date → the planner's regeneration (no
+    // JSON here) → invalid → the model answers again without a valid call → forced once more → the second invalid is
+    // needs_input and the model asks the user — no fixed line, since the tool asked
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            let sys = system_of(body);
+            if sys.starts_with("You check an assistant") {
+                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
+            }
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            let tools = tool_msgs(body);
+            if forced_choice(body) {
+                return call_msg(
+                    &format!("f{}", tools.len()),
+                    "entry_requirements",
+                    &json!({"destinations": [{"place": "Bangkok", "arrive": "2020-01-01"}]})
+                        .to_string(),
+                );
+            }
+            match tools.last() {
+                None => call_msg(
+                    "c1",
+                    "load_skill",
+                    &json!({"name": "entry-requirements"}).to_string(),
+                ),
+                Some(m) if get_str(m, "content").contains("needs_input") => {
+                    json!({"role": "assistant", "content": "When do you arrive in Bangkok?"})
+                }
+                Some(_) => json!({"role": "assistant", "content": "You need a TDAC."}),
+            }
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let (t, evs) = run_in_bot(&rt, "travel", "What do I need for Bangkok?").await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    assert_eq!(events_of(&evs, "workflow_required").len(), 2, "{evs:?}");
+    let calls = events_of(&evs, "workflow_call");
+    assert_eq!(calls[0]["result"]["status"], "invalid", "{calls:?}");
+    assert_eq!(calls[1]["result"]["status"], "needs_input", "{calls:?}");
+    assert!(!events_of(&evs, "json_regenerated").is_empty());
+    let answer = get_str(&t, "result");
+    assert!(
+        answer.starts_with("When do you arrive in Bangkok?"),
+        "{answer}"
+    );
+    assert!(!answer.contains("Not checked"), "{answer}");
+}
+
+#[tokio::test]
+async fn a_skill_without_a_workflow_tool_forces_nothing() {
+    let (rt, _d, _seen) = scripted_rt(
+        |body| {
+            if let Some(r) = helper_reply(body) {
+                return r;
+            }
+            assert!(!forced_choice(body), "{body}");
+            match tool_msgs(body).last() {
+                None => call_msg("c1", "load_skill", &json!({"name": "tokyo"}).to_string()),
+                Some(_) => json!({"role": "assistant", "content": "Tokyo tips."}),
+            }
+        },
+        json!({"language": "en"}),
+    )
+    .await;
+    let (t, evs) = run_in_bot(&rt, "travel", "Tips for Tokyo?").await;
+    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
+    assert!(events_of(&evs, "workflow_required").is_empty());
+    assert_eq!(get_str(&t, "result"), "Tokyo tips.");
 }

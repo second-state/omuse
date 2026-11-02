@@ -257,6 +257,7 @@ window.OMUSE_EN = {
 "删除对话": "Delete chat",
 "删除对话 Delete": "Delete chat",
 "删除对话「{0}」？任务记录仍保留在「任务」和「审计」里。": "Delete chat \"{0}\"? Its tasks stay in Tasks and Audit.",
+"删除定时任务「{0}」？它将停止运行，并从「任务」中移除。": "Delete the scheduled task \"{0}\"? It stops running and leaves Tasks.",
 "删除当前对话": "Delete this chat",
 "删除目标「{0}」？": "Delete goal \"{0}\"?",
 "到期 Expires": "Expires",

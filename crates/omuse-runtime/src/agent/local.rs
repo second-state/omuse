@@ -531,6 +531,8 @@ NOT in the PDF: {}.",
             "caption_image" => Ok(self.caption_image(t, a).await),
             "upscale_image" => Ok(self.upscale_image(t, a).await),
             "market_data" => self.market_data(&tid, a).await,
+            // code's own call (the news machine's prices): the market data as JSON
+            "market_quotes" => Ok(self.market_quotes(&tid, a).await.to_string()),
             "stock_fundamentals" => self.stock_fundamentals(&tid, a).await,
             "data_query" => {
                 let me = self.arc();
@@ -1210,11 +1212,25 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                 if opts_.is_empty() {
                     return Ok("ERROR: options is empty.".into());
                 }
-                let mut clean: Vec<Value> = opts_.iter().map(|o| json!({
-                    "label": truncate(&sget(o, "label"), 160),
-                    "details": arr(o, "details").iter().map(|d| truncate(&py_str(d), 200)).take(6).collect::<Vec<_>>(),
-                    "source_url": truncate(&sget(o, "source_url"), 500),
-                    "note": truncate(&sget(o, "note"), 400)})).collect();
+                let mut clean: Vec<Value> = opts_.iter().map(|o| {
+                    let mut c = json!({
+                        "label": truncate(&sget(o, "label"), 160),
+                        "details": arr(o, "details").iter().map(|d| truncate(&py_str(d), 200)).take(6).collect::<Vec<_>>(),
+                        "source_url": truncate(&sget(o, "source_url"), 500),
+                        "note": truncate(&sget(o, "note"), 400)});
+                    // a machine's offer keeps its structured price and id (the Shopping bot's card, 2026-11-02:
+                    // shopping_real found the card's offers without their prices)
+                    if let Some(p) = o.get("price").and_then(Value::as_f64) {
+                        c["price"] = json!(p);
+                    }
+                    for k in ["currency", "offer_id"] {
+                        let v = sget(o, k);
+                        if !v.is_empty() {
+                            c[k] = json!(truncate(&v, 64));
+                        }
+                    }
+                    c
+                }).collect();
                 // listings on a results page are ranked in code from the criteria the model read off the user's words
                 let ranking = a
                     .get("ranking")
@@ -2509,6 +2525,31 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
             None => json!({"status": "no_rate", "from": from, "to": to,
                            "detail": "the market data had no rate for this pair now"}),
         }
+    }
+
+    /// `market_quotes{symbols, range}` (the news machine's own call, never the model's): Sentinel's structured market
+    /// data compacted to JSON — each symbol's `symbol`, `name`, `currency`, `last`, `last_time`, `day_change_pct` — and
+    /// the symbols it had no data for (`errors`).
+    async fn market_quotes(&self, task_id: &str, a: &Value) -> Value {
+        let syms = symbols_arg(a);
+        let range = a
+            .get("range")
+            .filter(|v| truthy(v))
+            .cloned()
+            .unwrap_or(json!("5d"));
+        let r = match self
+            .sentinel(
+                "POST",
+                "/internal/market_data",
+                Some(json!({"task_id": task_id, "symbols": syms, "range": range})),
+                90.0,
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return json!({"quotes": [], "errors": [e.to_string()]}),
+        };
+        super::news::quotes_of(&r)
     }
 
     async fn market_data(&self, task_id: &str, a: &Value) -> R {

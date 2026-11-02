@@ -31,8 +31,11 @@ and ETIAS; any other site that charges is a scam.**
 ## How to run it
 1. List the trip's entries in order (country, arrival date, port, flight). No mail connected or no booking found:
    check the calendar and memory (memory_search "trip"), then ask once for the destinations, dates and flights (or an
-   uploaded itinerary, read with file_look) — the per-country skills ask for the hotel themselves. Each entry (including a return to the
-   home country, e.g. Singapore) gets its row: needed? window opens on <date>, closes at arrival.
+   uploaded itinerary, read with file_look) — the per-country skills ask for the hotel themselves. Then ONE
+   `entry_requirements` call with those entries (`place`, `arrive`): code gives each one's card, official site and the
+   day its window opens (and the visa-free days), and appends them to the answer; a final answer without that call is
+   not taken. Each entry (including a return to the home country, e.g. Singapore) gets its row: needed? window opens on
+   <date>, closes at arrival.
 2. Too early for everything → set one reminder per card (schedule_create on the day the window opens, goal "fill <card>
    for <flight> with the <skill> skill") and say so. Inside a window and the user asks for it to be filled in → load that country's skill and fill it with ONE
    `arrival_card_fill` call (its JSON result says what was filed or what is left).

@@ -405,7 +405,7 @@ impl SearchConfig {
 
 /// `[shopping]` — the server's default Shopify credentials (an app in Shopify's Dev Dashboard): product search uses
 /// Shopify's Global Catalog with a token the client id and secret are exchanged for (`[endpoints] shopify_auth`,
-/// `shopify_catalog`); the credentials a user enters in Settings → Connections win.
+/// `shopify_catalog`).
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct ShoppingConfig {
@@ -465,6 +465,9 @@ pub struct EndpointsConfig {
     pub shopify_auth: String,
     /// Shopify's Global Catalog base (`/api/ucp/mcp`: `search_catalog` across merchants).
     pub shopify_catalog: String,
+    /// The UCP agent profile every Shopify UCP request names (`meta.ucp-agent.profile`); Shopify's published example
+    /// profile until OMuse hosts its own.
+    pub shopify_agent_profile: String,
 }
 
 impl Default for EndpointsConfig {
@@ -488,6 +491,8 @@ impl Default for EndpointsConfig {
             outlook_smtp: String::new(),
             shopify_auth: "https://api.shopify.com".into(),
             shopify_catalog: "https://catalog.shopify.com".into(),
+            shopify_agent_profile:
+                "https://shopify.dev/ucp/agent-profiles/examples/2026-08-25/valid-with-capabilities.json".into(),
         }
     }
 }

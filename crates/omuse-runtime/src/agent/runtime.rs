@@ -328,6 +328,7 @@ impl Runtime {
             .chain(super::apdt::tool_schemas())
             .chain(super::trains::tool_schemas())
             .chain(super::flightstatus::tool_schemas())
+            .chain(super::entry::tool_schemas())
             .find(|s| tool_name(s) == tool)
             .map(|s| s["function"]["parameters"].clone())
             .unwrap_or_else(|| json!({}));
@@ -340,6 +341,7 @@ impl Runtime {
             profile: &profile,
             today,
             user_texts: &user_texts,
+            transcript,
         };
         let check = |a: &Value| -> (Checked, Vec<String>, Vec<String>) {
             if let Some(raw) = a.get(super::json_in::UNPARSED_KEY) {
@@ -384,6 +386,8 @@ impl Runtime {
                 super::trains::check(tool, &a, today)
             } else if super::flightstatus::TOOLS.contains(&tool) {
                 super::flightstatus::check(tool, &a)
+            } else if super::entry::TOOLS.contains(&tool) {
+                super::entry::check(tool, &a, &profile, today)
             } else {
                 super::booking::check(tool, &a, &cx)
             };
@@ -588,6 +592,16 @@ impl Runtime {
                 super::flightstatus::next(tool, args, &t[from..], &m)
             }
             Machine::Workflow { tool, args, from }
+                if super::entry::TOOLS.contains(&tool.as_str()) =>
+            {
+                let from = (*from).min(t.len());
+                let m = super::entry::Machine {
+                    zh: lg != "en",
+                    today,
+                };
+                super::entry::next(tool, args, &t[from..], &m)
+            }
+            Machine::Workflow { tool, args, from }
                 if super::claims::TOOLS.contains(&tool.as_str()) =>
             {
                 let m = super::claims::Machine {
@@ -608,6 +622,7 @@ impl Runtime {
                     mail_ready,
                     available: &available,
                     first,
+                    before: &t[..from],
                 };
                 super::booking::next(tool, args, &t[from..], &m)
             }
@@ -2198,6 +2213,8 @@ message to use as written) stays in that language. Output only the rewritten rep
                     && n != "browser_fill_form"
                     // read by the code machines with their fixed selectors (a known page's elements)
                     && n != "browser_read_elements"
+                    // the store providers by API: the shop_order machine's own call
+                    && n != "shop_search"
                     && allow.is_none_or(|a| a.contains(&n))
             })
             .collect();
@@ -2549,6 +2566,9 @@ yourself; ask_bot is not available for it."
         let mut auto_handed = false;
         let mut answer_reviewed = false;
         let mut handback_snapped = false;
+        // the compulsory workflow call (agent/required.rs): forced tries so far, and what is still owed at the end
+        let mut forced_tries = 0;
+        let mut unmet: Option<super::required::Need> = None;
         let mut ctx_retries = 0;
         loop {
             if self.cancel_flags.lock().contains(task_id) {
@@ -2623,19 +2643,26 @@ yourself; ask_bot is not available for it."
                     .into_iter()
                     .filter(|x| !(workflow_bot && super::guards::machine_only(tool_name(x))))
                     .collect();
-                // the reply to a machine's result: the workflow tools are not offered on that turn
+                // the reply to a machine's result: the workflow tools are not offered on that turn — except
+                // shop_order right after its review result (the model chooses the offers from it)
                 let reply_turn = super::workflow::reply_turn(&transcript);
+                let review = reply_turn && super::booking::shopping::review_open(&transcript);
                 let tl: Vec<Value> = tl
                     .into_iter()
                     .filter(|x| {
                         !(reply_turn
-                            && (super::booking::TOOLS.contains(&tool_name(x))
+                            && !(review && tool_name(x) == super::booking::SHOP_ORDER)
+                            && ((super::booking::TOOLS.contains(&tool_name(x))
+                                && tool_name(x) != super::booking::TRAVEL_PICK)
                                 || super::claims::TOOLS.contains(&tool_name(x))
                                 || super::driver::TOOLS.contains(&tool_name(x))
                                 || super::apdt::TOOLS.contains(&tool_name(x))
                                 || super::trains::TOOLS.contains(&tool_name(x))
-                                || super::flightstatus::TOOLS.contains(&tool_name(x))))
+                                || super::flightstatus::TOOLS.contains(&tool_name(x))
+                                || super::entry::TOOLS.contains(&tool_name(x))))
                             && super::news::offered(&transcript, tool_name(x))
+                            // travel_pick only on the reply to a flight search's every-flight result
+                            && super::booking::offered(&transcript, tool_name(x))
                     })
                     .collect();
                 // ask_bot is the main bot's; a tool a bot file claims (the travel searches) only its bots'
@@ -2681,6 +2708,7 @@ yourself; ask_bot is not available for it."
                 .or_else(|| super::workflow::active(&transcript, &super::apdt::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::trains::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::flightstatus::TOOLS))
+                .or_else(|| super::workflow::active(&transcript, &super::entry::TOOLS))
                 .map(|(from, tool, args)| Machine::Workflow { tool, args, from });
             let driven = match &machine {
                 Some(_) if self.is_cancelled(task_id) => {
@@ -2802,20 +2830,96 @@ yourself; ask_bot is not available for it."
                 )
                 .await;
             }
-            let calls: Vec<ToolCall> = if force_final {
+            let mut calls: Vec<ToolCall> = if force_final {
                 vec![]
             } else {
                 resp.tool_calls.clone()
             };
+            let mut turn_text = resp.content.clone();
+            // the compulsory workflow call (agent/required.rs): a loaded skill that asks through a workflow tool gets
+            // that call before a final answer — the answer without it is not taken; the model is asked once more with
+            // the provider's forced tool choice, and its call goes through the JSON layer like any workflow call
+            if calls.is_empty() && !force_final && unmet.is_none() {
+                if let Some(need) = super::required::pending(&transcript) {
+                    let offered: Vec<Value> = tools
+                        .as_deref()
+                        .unwrap_or(&[])
+                        .iter()
+                        .filter(|x| need.tools.contains(&tool_name(x)))
+                        .cloned()
+                        .collect();
+                    let names: Vec<&str> = offered.iter().map(tool_name).collect();
+                    if offered.is_empty() || forced_tries >= super::required::MAX_FORCED {
+                        self.event(
+                            task_id,
+                            "workflow_required_unmet",
+                            json!({"skills": need.skills, "tools": need.tools,
+                                   "reason": if offered.is_empty() { "not_offered" } else { "tries" }}),
+                        )
+                        .await;
+                        unmet = Some(need);
+                    } else {
+                        forced_tries += 1;
+                        let choice = super::required::tool_choice(&names);
+                        self.event(
+                            task_id,
+                            "workflow_required",
+                            json!({"skills": need.skills, "tools": names, "tool_choice": choice,
+                                   "try": forced_tries}),
+                        )
+                        .await;
+                        let o = ChatOpts {
+                            tool_choice: Some(choice),
+                            ..opts("executor", task_id)
+                        };
+                        let forced = self
+                            .chat_or_cancel(task_id, &msgs, Some(&offered), &o)
+                            .await;
+                        if self.is_cancelled(task_id) {
+                            return self.stopped(task_id, &transcript);
+                        }
+                        let got: Vec<ToolCall> = match forced {
+                            None => return Ok(()),
+                            Some(Ok(r)) => r
+                                .tool_calls
+                                .into_iter()
+                                .filter(|c| need.tools.contains(&c.name.as_str()))
+                                .collect(),
+                            Some(Err(e)) => {
+                                self.event(
+                                    task_id,
+                                    "workflow_required_error",
+                                    json!({"message": truncate(&e.to_string(), 300)}),
+                                )
+                                .await;
+                                Vec::new()
+                            }
+                        };
+                        if got.is_empty() {
+                            self.event(
+                                task_id,
+                                "workflow_required_unmet",
+                                json!({"skills": need.skills, "tools": need.tools, "reason": "no_call"}),
+                            )
+                            .await;
+                            unmet = Some(need);
+                        } else {
+                            // the answer without the call is dropped: the forced call is this turn
+                            calls = got;
+                            turn_text = String::new();
+                        }
+                    }
+                }
+            }
             let mut asked: Option<String> = None;
             if !calls.is_empty() {
                 let base_len = transcript.len();
-                transcript.push(assistant_with_calls(&resp.content, &calls));
-                if !resp.content.is_empty() {
+                transcript.push(assistant_with_calls(&turn_text, &calls));
+                if !turn_text.is_empty() {
                     self.event(
                         task_id,
                         "message",
-                        json!({"text": truncate(&resp.content, 2000)}),
+                        json!({"text": truncate(&turn_text, 2000)}),
                     )
                     .await;
                 }
@@ -3105,6 +3209,7 @@ yourself; ask_bot is not available for it."
                 || super::workflow::active(&transcript, &super::claims::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::trains::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::flightstatus::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::entry::TOOLS).is_some()
                 || workflow_reply.is_some();
             // the confirmation after a hand-back is read by code: a snapshot the model skipped is taken here, once,
             // before the answer (the model reads it and passes the reference as JSON, `confirm_reference`)
@@ -3266,6 +3371,14 @@ yourself; ask_bot is not available for it."
                         workflow: workflow_reply.is_some(),
                     },
                 );
+                // a required workflow call that was never made (agent/required.rs): a fixed line says the check
+                // could not be done
+                let mut items = items;
+                if unmet.is_some() || force_final {
+                    if let Some(need) = super::required::pending(&transcript) {
+                        items.push(super::required::unmet_item(&need, lg != "en"));
+                    }
+                }
                 if !items.is_empty() {
                     self.event(task_id, "answer_show", json!({"items": items.len()}))
                         .await;
@@ -3967,6 +4080,7 @@ pub fn compress_with(
                 || id.starts_with(super::trains::PREFIX)
                 || super::flightstatus::TOOLS.contains(&name.as_str())
                 || id.starts_with(super::flightstatus::PREFIX)
+                || super::entry::TOOLS.contains(&name.as_str())
                 || super::apdt::TOOLS.contains(&name.as_str())
                 || (id.starts_with(super::apdt::PREFIX)
                     && matches!(name.as_str(), "gmail_get_message" | "files_read"))
@@ -3974,6 +4088,8 @@ pub fn compress_with(
                 // a known page's elements read by a machine's fixed selectors (code-only): code reads them again at
                 // every step (shopping_real 2026-11-01: the results' cards cut short read as "0 listings")
                 || name == "browser_read_elements"
+                // the shopping machine's API answers are its state (the offers)
+                || name == "shop_search"
         })
         .map(|tc| get_str(tc, "id"))
         .collect();
