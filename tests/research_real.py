@@ -1,5 +1,5 @@
 """Web research with a real model, from the user's point of view (tests/user_common.py). In Main's chat the user asks
-for the pros and cons of heat pumps versus gas boilers for a small UK house, with links to the sources. A real-data suite
+whether to rent or buy a flat in Singapore right now, with the pros and cons and links to the sources. A real-data suite
 (run_in_docker.sh REAL_DATA_SUITES): the web search and the pages are the real ones. What the user sees: an answer that cites its sources as links that open — none of them is a dead link (a 404 or a site that does not exist), which
 would mean a source the agent never opened. One TIMING line.
 
@@ -31,16 +31,16 @@ def dead(url: str) -> str:
 async def main():
     async with U.User() as u:
         # (one literal: this request is also Main's example in the UI — bots/main.md, checked by bots.rs tests)
-        a = await u.ask("Research the pros and cons of heat pumps versus gas boilers for heating a small house in the UK. Search the web and give me a short summary with links to your sources.",
-                        label="heatpump")
+        a = await u.ask("Rent or buy a flat in Singapore right now? Pros and cons, with sources.",
+                        label="flat")
         cited = sorted({x.rstrip(".;:") for x in a.links + URL.findall(a.text) if "127.0.0.1:8080" not in x})
         print(f"INFO cited {cited}")
-        check("heatpump: the answer cites its sources as links", bool(cited), a.text[-600:])
+        check("flat: the answer cites its sources as links", bool(cited), a.text[-600:])
         status = {x: dead(x) for x in cited}
         for x, why in status.items():
             ok, title = U.opens(x)
             print(f"INFO source {x}: {'dead ' + why if why else 'there'}; opens for a browser: {ok} ({title})")
-        check("heatpump: no cited source is a dead link (404 or no such site)", not [x for x, w in status.items() if w],
+        check("flat: no cited source is a dead link (404 or no such site)", not [x for x, w in status.items() if w],
               {x: w for x, w in status.items() if w})
         # (no check that third-party sources open: news and research sites block automated requests with 403 / Cloudflare,
         # which is not our code)
