@@ -1518,6 +1518,22 @@ these are listings from a results page, and a comparison of them takes `ranking`
             }
             "schedule_delete" => {
                 let id = req_str(a, "id")?;
+                // a schedule made in this same task, for the request being answered, is kept: the model deleted the
+                // weekly news report and the bag check it had just set up (news_report_real, claims_real 2026-11-02);
+                // the user deletes it on the Tasks page or asks in a later message
+                let made_here = self
+                    .store
+                    .events(&tid, 0)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|e| {
+                        get_str(e, "type") == "tool_result"
+                            && get_str(&e["data"], "name") == "schedule_create"
+                            && get_str(&e["data"], "preview").contains(&format!("id={id}"))
+                    });
+                if made_here {
+                    return Ok(format!("ERROR: [schedule_kept] 这个定时任务是本次为用户的请求刚建立的，保留不删 (the schedule {id} was set up in this task for the user's request: it is kept — the user can delete it on the Tasks page)."));
+                }
                 self.store
                     .db
                     .execute("DELETE FROM schedules WHERE id=?", params![id.as_str()])

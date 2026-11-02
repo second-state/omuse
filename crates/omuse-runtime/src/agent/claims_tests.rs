@@ -868,6 +868,24 @@ fn the_purchase_quotes_picks_by_rule_and_hands_the_declaration_over() {
         &[],
     );
     assert_eq!(args["destination"], "Japan");
+    // the destination's country from a code, a country's name or a city of the table; anything else is sent back
+    // (insurance_real 2026-11-02: "Tokyo, Japan" left FWD's region blank)
+    for d in ["JP", "jp", "Japan", "Tokyo"] {
+        let mut x = json!({"market": "sg", "action": "compare", "depart": "2026-11-25", "return": "2026-12-02",
+                           "travellers": 1});
+        x["destination"] = json!(d);
+        assert_eq!(
+            valid(INSURANCE_BUY, x, false, &[])["destination"],
+            "Japan",
+            "{d}"
+        );
+    }
+    let bad = json!({"market": "sg", "action": "compare", "destination": "Tokyo, Japan", "depart": "2026-11-25",
+                     "return": "2026-12-02", "travellers": 1});
+    match check(INSURANCE_BUY, &bad, &cx(&json!({}), false, &[])) {
+        Checked::Invalid(p) => assert!(p.iter().any(|x| x.starts_with("destination")), "{p:?}"),
+        other => panic!("{other:?}"),
+    }
     let (mut t, from) = started(
         Vec::new(),
         "Get me the cheapest FWD plan with at least SGD 10,000 trip cancellation.",
