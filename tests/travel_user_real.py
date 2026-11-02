@@ -41,7 +41,7 @@ async def last_flight(u: U.User, a: U.Answer) -> None:
     """The answer to "the last flight that lands before midnight" tomorrow, as the user reads it: the block code appends
     names ONE flight with its times, it lands tomorrow before midnight, and it is the last such flight of every flight
     the search found for the day (the search's own structured times, from the run's record) — no other flight is
-    suggested beside it, no card of alternatives. Google Flights has Singapore Airlines' evening flight that lands
+    suggested in its place (runner-ups only on the card, after it). Google Flights has Singapore Airlines' evening flight that lands
     before midnight (SQ 895, 18:50 → 22:50; Kiwi.com does not sell it): the user gets that one."""
     tomorrow = (TODAY + dt.timedelta(days=1)).isoformat()
     shown = TIMES.findall(a.block)
@@ -71,10 +71,17 @@ async def last_flight(u: U.User, a: U.Answer) -> None:
     last_dep = max(f["departure"]["time"] for f in same_day)
     check(f"flight: it is the last flight landing before midnight (leaves {last_dep[11:]})",
           f"{dep_d} {dep_t}" == last_dep, (shown[0], last_dep))
-    cards = U.conv_choices(await u.conv_id())
-    check("flight: no choice card of alternatives for the one flight asked for",
-          not any(len(c.get("options") or []) > 1 and "Flights" in str(c.get("question") or "") for c in cards),
-          [c.get("question") for c in cards])
+    # the runner-ups come after the reply (a second model call run while it streamed): a comparison card with the best
+    # match first, when the model chose any — waited for a little after the answer
+    cards = []
+    for _ in range(10):
+        cards = [c for c in U.conv_choices(await u.conv_id()) if c.get("kind") == "comparison"]
+        if cards:
+            break
+        await u.page.wait_for_timeout(2000)
+    first = ((cards[-1].get("options") or [{}])[0].get("label") or "") if cards else ""
+    print(f"INFO flight: card {[o.get('label') for o in (cards[-1].get('options') or [])] if cards else None}")
+    check("flight: a card, when shown, has the best match first", not cards or first in a.block, (first, a.block[:300]))
 
 
 async def main():

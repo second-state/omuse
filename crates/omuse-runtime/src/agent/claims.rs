@@ -2442,7 +2442,10 @@ fn next_bag(args: &Value, run: &[Value], ids: &Ids) -> Step {
         return ids.one("browser_read_elements", bagtrace::read_args());
     };
     let trace = bagtrace::trace_of(read, &file_ref);
-    if watch && results_of(run, "schedule_create").is_empty() {
+    // a check twice a day only on a file WorldTracer has (claims_real 2026-11-02: a check was made on a file it did not
+    // find, the model deleted it, and the block still said there was one)
+    let found = trace.as_ref().is_some_and(|t| t.found);
+    if watch && found && results_of(run, "schedule_create").is_empty() {
         return ids.one(
             "schedule_create",
             json!({"name": format!("Bag {file_ref} check"),
@@ -2471,11 +2474,17 @@ fn next_bag(args: &Value, run: &[Value], ids: &Ids) -> Step {
             &page,
         ),
     ];
-    if watch {
+    if watch && t.found {
         show.push(S::fact(
             "Bag check",
             "行李查询",
             "twice a day; you are told when its status changes",
+        ));
+    } else if watch {
+        show.push(S::fact(
+            "Bag check",
+            "行李查询",
+            "not set up — WorldTracer has no file with that reference and family name",
         ));
     }
     done(if t.found { "traced" } else { "no_file" }, show, &page)
