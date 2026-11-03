@@ -4,6 +4,30 @@
 
 **Skills are code first.** A skill uses code tools for every step that can be computed; a decision the model must make is a JSON multiple choice; the model's prose is only the reply to the user. The full rule is in `CLAUDE.md` ("Skills: code decides").
 
+## How every task works: converse → one JSON → one code tool → the user's link
+
+The user's rule (2026-11-03), for EVERY task — a purchase, a claim, a refund, an application, a booking:
+
+1. **Converse.** The model collects what the task needs: from the user's words, their email, their profile and the
+   files of the chat. It asks once, in one message, for everything still missing — required inputs (a policy number,
+   the documents the site itself requires) and optional ones (documents the user may skip and add later). Every
+   decision the conversation settles (the entry mode, the plan, the claim type) becomes a JSON field.
+2. **One JSON, one code tool.** The model calls ONE code tool with all of it as structured JSON. After the one
+   question, the tool is always called with whatever the user gave — a reply to the tool's question owes the call.
+3. **The code tool does the whole process.** It calls the site's API or walks its pages with form functions mapped
+   from the real site (walk first, then code), in the user's place, to the end: it uploads the documents, presses the
+   site's own buttons and submits where the submission is what creates the reference — no takeover of the server's
+   browser. Where the user must approve what is sent (a payment, an insurance claim), the app asks once
+   (`purchase_confirm` / `submit_confirm`), then code submits.
+4. **JSON back.** The tool returns structured JSON: the status, the reference number, the link that opens the
+   session on any device (a saved quote, a saved application, the claim), and what is still missing for the user to
+   add there.
+5. **The model answers.** It words the reply from that JSON; code appends the facts (`show`): the link, the reference,
+   what is still the user's.
+
+Tests on real sites with clearly fake data stop before a submission that would reach a real business (an insurer,
+an airline): the product submits; the test declines the approval or stops at the last step.
+
 ## Releasing (tag `omuse-vX.Y.Z`)
 
 The version shown in the app comes from the release tag: the release workflow
@@ -199,7 +223,9 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
     `travel_receipts_real`.
   - `REAL_SITES` — bookings and orders on the real booking sites and shops, run one at a time:
     `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh realsites` (forces `-j 1`; not in
-    `real`). Code searches the real data, picks by rule, opens the REAL booking page (the offer's booking link, the
+    `real`). Per-machine inputs a suite cannot ship (the user's own documents) live in the git-ignored `e2e-local/`:
+    `apdt_real` uses `e2e-local/apdt/` (passport.jpg, boarding_pass.jpg, ticket_with_tax.pdf, doc_no.txt) when it is
+    there and skips that scenario elsewhere. Code searches the real data, picks by rule, opens the REAL booking page (the offer's booking link, the
     hotel seller's page, the shop's product page) and hands it to browser-use, which fills it with the profile's clearly
     fake data (`tests/handover_common.py` `FAKE`) and hands over at the first step that is the user's (sign-in, CAPTCHA,
     Pay / Place order); the suite hands back without pressing anything. No card in the Vault (`U.setup(vault=False)`):

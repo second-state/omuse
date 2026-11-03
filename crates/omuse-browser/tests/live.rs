@@ -100,3 +100,55 @@ async fn an_empty_secret_box_reads_empty_and_a_filled_one_hidden() {
     b.stop().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A masked input sets its template and moves the caret on its own timer after the focus (FWD Hong Kong's HKID
+/// "A______(_)" and mobile, insurance_hk_real 2026-11-03: the HKID came out empty and the mobile "1234 5679"): `keys`
+/// waits for it and starts at its first slot. Skipped without Chromium or network.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn keys_fill_a_masked_input_from_its_first_slot() {
+    let dir = std::env::temp_dir().join(format!("omuse-browser-mask-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("workspace")).unwrap();
+    let cfg = config(&dir);
+    if launch::find_executable(&cfg).is_none()
+        || reqwest::get("https://example.com/").await.is_err()
+    {
+        eprintln!("no chromium or no network: skipping");
+        return;
+    }
+    let b = Broker::new(cfg);
+    act(
+        &b,
+        "navigate",
+        json!({"task_id": "m1", "url": "example.com"}),
+    )
+    .await;
+    let page = b.page("m1").await.unwrap();
+    // the mask: on focus, 100 ms later, the template and the caret at its end; each digit fills the next slot
+    page.eval(
+        None,
+        "() => { document.body.innerHTML = '<input id=\"m\">'; const el = document.getElementById('m');
+           el.addEventListener('focus', () => setTimeout(() => { if (!el.value) el.value = '________';
+             el.setSelectionRange(el.value.length, el.value.length); }, 100));
+           el.addEventListener('keydown', (e) => { if (!/^[0-9]$/.test(e.key)) return; e.preventDefault();
+             const i = el.value.indexOf('_', el.selectionStart); if (i < 0) return;
+             el.value = el.value.slice(0, i) + e.key + el.value.slice(i + 1); el.setSelectionRange(i + 1, i + 1); });
+           return 1; }",
+        vec![],
+    )
+    .await
+    .unwrap();
+    let r = act(
+        &b,
+        "fill_form",
+        json!({"task_id": "m1", "fills": [{"op": "keys", "sel": "#m", "value": "91234567", "field": "mobile"}]}),
+    )
+    .await;
+    let v = page
+        .eval(None, "() => document.getElementById('m').value", vec![])
+        .await
+        .unwrap();
+    assert_eq!(v, "91234567", "{r}");
+    b.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

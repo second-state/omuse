@@ -342,7 +342,7 @@ pub fn vault(
 
 #[path = "forms_claims.rs"]
 mod claims_pages;
-pub use claims_pages::fwd_region;
+pub use claims_pages::{fwd_hk_region, fwd_region};
 
 /// A named script a form function runs in the page (`op: js`): a function `async (sel, nth, args) => {ok, value?,
 /// why?}` that works a framework's control directly — open an Angular Material select and click its option, then
@@ -580,6 +580,7 @@ const FORMS: &[(&str, &str, &str, FormFn)] = &[
     ("csr-trip-claim", "cardclaimcenter.com", "/internal/log-in", claims_pages::cardclaim_login),
     ("fwd-sg-claim", "www.fwd.com.sg", "/claim-online/travel", claims_pages::fwd_sg_claim),
     ("fwd-sg-quote", "www.fwd.com.sg", "/travel-insurance/online-quote", claims_pages::fwd_sg_quote),
+    ("fwd-hk-mytravel", "www.fwd.com.hk", "/online-insurance/mytravel-insurance", claims_pages::fwd_hk_mytravel),
     ("worldtracer-manage", "mybag.aero", "/baggage/", claims_pages::mybag_manage),
     ("hk-apdt-start", "app.apdtrefund.hk", "/hktaxmobile/", claims_pages::apdt_start),
 ];

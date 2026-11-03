@@ -171,6 +171,10 @@ class User:
             await self.new_chat()
         a = Answer()
         before = await pg.locator(".msg.assistant:not(.live):has(.bubble:not(.filecard):not(.choices))").count()
+        # the last answer on the page before sending: the new answer is another one (bots_real 2026-11-03: a re-render
+        # while the follow-up was sent counted one more bubble, and the previous answer was read as the new one)
+        prev_last = pg.locator(".msg.assistant:not(.live) .bubble:not(.filecard):not(.choices)")
+        prev_text = (await prev_last.last.inner_text()) if await prev_last.count() else ""
         handled_takeovers = await pg.locator(".sys-card.takeover").count()
         await pg.fill("#chatInput", text)
         t0 = time.monotonic()
@@ -228,7 +232,10 @@ class User:
                 await pg.wait_for_selector("#chatInput")
                 continue
             done = await pg.evaluate(
-                f"() => document.querySelectorAll('.msg.assistant:not(.live):has(.bubble:not(.filecard):not(.choices))').length > {before} && !document.querySelector('.msg.assistant.live')")
+                "([before, prev]) => { const b = [...document.querySelectorAll('.msg.assistant:not(.live) .bubble:not(.filecard):not(.choices)')];"
+                " return document.querySelectorAll('.msg.assistant:not(.live):has(.bubble:not(.filecard):not(.choices))').length > before"
+                " && !document.querySelector('.msg.assistant.live') && (!prev || (b.length && b[b.length - 1].innerText !== prev)); }",
+                [before, prev_text])
             if done:
                 # a message can come a moment before the takeover card it goes with: that is not the answer yet while
                 # the task is waiting for the user in the browser — wait for the card (up to 30 s), then carry on as
@@ -288,7 +295,10 @@ class User:
             if live and (not samples or samples[-1][1] != live):
                 samples.append((time.monotonic() - t0, live))
             done = await pg.evaluate(
-                f"() => document.querySelectorAll('.msg.assistant:not(.live):has(.bubble:not(.filecard):not(.choices))').length > {before} && !document.querySelector('.msg.assistant.live')")
+                "([before, prev]) => { const b = [...document.querySelectorAll('.msg.assistant:not(.live) .bubble:not(.filecard):not(.choices)')];"
+                " return document.querySelectorAll('.msg.assistant:not(.live):has(.bubble:not(.filecard):not(.choices))').length > before"
+                " && !document.querySelector('.msg.assistant.live') && (!prev || (b.length && b[b.length - 1].innerText !== prev)); }",
+                [before, prev_text])
             if done:
                 break
             await pg.wait_for_timeout(int(every * 1000))
@@ -370,7 +380,8 @@ class User:
         await pg.wait_for_timeout(800)
         out["bot"] = (await pg.locator("#viewTitle").inner_text()).strip()
         out["questions"] = [" ".join(t.split()) for t in await pg.locator(".msg.user .bubble").all_inner_texts()]
-        out["answers"] = await pg.locator(".msg.assistant:not(.live) .bubble").all_inner_texts()
+        # the answers only: a choice card (`.choices`, e.g. a flight's runner-ups after the answer) or a file card is no answer
+        out["answers"] = await pg.locator(".msg.assistant:not(.live) .bubble:not(.choices):not(.filecard)").all_inner_texts()
         out["from_main"] = await pg.locator(".from-main").count() > 0
         print(f"INFO bot conversation ({out['bot']}): questions {[q[:80] for q in out['questions']]}, {len(out['answers'])} answers")
         if back:

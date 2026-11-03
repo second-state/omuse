@@ -1208,6 +1208,21 @@ impl Store {
         self.task(&tid)?.ok_or_else(|| anyhow!("task vanished"))
     }
 
+    /// The latest task of conversation `cid` other than `exclude` (any parent: a bot's task too), with its transcript.
+    pub fn prev_task(&self, cid: &str, exclude: &str) -> Result<Option<Value>> {
+        let id = self
+            .db
+            .one(
+                "SELECT id FROM tasks WHERE conv_id=? AND id<>? ORDER BY created_at DESC LIMIT 1",
+                params![cid, exclude],
+            )?
+            .map(|r| get_str(&r, "id"));
+        match id {
+            Some(id) => self.task(&id),
+            None => Ok(None),
+        }
+    }
+
     /// A task with `plan`, `transcript`, `pending`, `waiting`, `attachments`, `outcome` parsed.
     pub fn task(&self, tid: &str) -> Result<Option<Value>> {
         let Some(mut r) = self
@@ -2372,6 +2387,34 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let st = Store::new(d.path(), cfg("")).unwrap();
         (d, st)
+    }
+
+    #[test]
+    fn the_previous_task_of_a_conversation_comes_with_its_transcript_a_bots_child_task_too() {
+        let (_d, st) = store();
+        let c = st.create_conv("travel", "chat", None).unwrap();
+        let first = st
+            .create_task("apply", &c, "chat", "", "task_main", None)
+            .unwrap();
+        let fid = get_str(&first, "id");
+        st.update_task(
+            &fid,
+            &json!({"transcript": [{"role": "user", "content": "apply"}]}),
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = st
+            .create_task("go ahead", &c, "chat", "", "", None)
+            .unwrap();
+        let sid = get_str(&second, "id");
+        let prev = st.prev_task(&c, &sid).unwrap().unwrap();
+        assert_eq!(get_str(&prev, "id"), fid);
+        assert_eq!(prev["transcript"][0]["content"], "apply");
+        assert!(st
+            .prev_task(&c, &fid)
+            .unwrap()
+            .is_some_and(|t| get_str(&t, "id") == sid));
+        assert!(st.prev_task("conv_none", &sid).unwrap().is_none());
     }
 
     #[test]

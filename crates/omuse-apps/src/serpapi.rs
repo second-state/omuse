@@ -74,37 +74,6 @@ pub fn price_cap(a: &Value, key: &str) -> Option<i64> {
         .map(|m| m.floor() as i64)
 }
 
-/// The request's local time window, in minutes after midnight (local at each airport): the model's JSON fields
-/// `depart_after` / `depart_before` and `arrive_after` / `arrive_before` (HH:MM). A side the request does not limit
-/// (no field, a value that is no HH:MM, or the whole day) is `None`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TimeWindow {
-    pub depart: Option<(u32, u32)>,
-    pub arrive: Option<(u32, u32)>,
-}
-
-fn hhmm(a: &Value, k: &str) -> Option<u32> {
-    let s = get_str(a, k);
-    let (h, m) = s.trim().split_once(':')?;
-    let (h, m): (u32, u32) = (h.trim().parse().ok()?, m.trim().parse().ok()?);
-    (h < 24 && m < 60).then_some(h * 60 + m)
-}
-
-pub fn time_window(a: &Value) -> TimeWindow {
-    let side = |after: &str, before: &str| {
-        let (from, to) = (hhmm(a, after), hhmm(a, before));
-        if from.is_none() && to.is_none() {
-            return None;
-        }
-        let (from, to) = (from.unwrap_or(0), to.unwrap_or(23 * 60 + 59));
-        (from <= to && (from, to) != (0, 23 * 60 + 59)).then_some((from, to))
-    };
-    TimeWindow {
-        depart: side("depart_after", "depart_before"),
-        arrive: side("arrive_after", "arrive_before"),
-    }
-}
-
 /// A SerpApi request checked against the engine's documented parameters before it is sent (a refused request still
 /// uses a search credit): the engine, the ids and dates each needs, their formats and ranges, and how they fit
 /// together. `earliest` is the first allowed date (the day before today in UTC: the user's day may be behind).
@@ -197,19 +166,11 @@ pub fn valid_request(params: &[(&str, String)], earliest: chrono::NaiveDate) -> 
             int_in("stops", 0, 3)?;
             int_in("max_price", 1, 1_000_000)?;
             flag("deep_search")?;
-            if let Some(t) = get("outbound_times") {
-                let h: Vec<Option<u32>> = t
-                    .split(',')
-                    .map(|x| x.parse::<u32>().ok().filter(|n| *n <= 23))
-                    .collect();
-                let pairs_ok = h.iter().all(Option::is_some)
-                    && (h.len() == 2 || h.len() == 4)
-                    && h.chunks(2).all(|p| p[0] <= p[1]);
-                if !pairs_ok {
-                    return Err(format!(
-                        "outbound_times {t:?} is not 2 or 4 hours 0–23, each pair from ≤ to"
-                    ));
-                }
+            // a flight search lists the whole day (the user, 2026-11-02): Google's hour filter is never sent
+            if get("outbound_times").is_some() {
+                return Err(
+                    "outbound_times is not sent: a flight search lists the whole day".into(),
+                );
             }
             if let Some(al) = get("include_airlines") {
                 let ok = |x: &str| {
@@ -279,35 +240,6 @@ pub fn valid_request(params: &[(&str, String)], earliest: chrono::NaiveDate) -> 
     }
 }
 
-/// SerpApi's deep search for a flight search (every flight Google Flights' own page lists; slower): unless the
-/// model's `comprehensive` is false — an ordinary search gets the faster, shorter list.
-pub fn deep_search(a: &Value) -> bool {
-    a.get("comprehensive").and_then(Value::as_bool) != Some(false)
-}
-
-/// The window as Google Flights' `outbound_times` (SerpApi: two or four comma-separated hours, each the beginning of an
-/// hour — `4,18` = departing 4:00 AM–7:00 PM, `4,18,3,19` adds arriving 3:00 AM–8:00 PM): the start's hour, and the
-/// hour the end falls in (an end on the hour, the hour before). `None` without a window.
-pub fn outbound_times(a: &Value) -> Option<String> {
-    let w = time_window(a);
-    let hours = |(from, to): (u32, u32)| {
-        let end = if to % 60 == 0 && to > 0 {
-            to / 60 - 1
-        } else {
-            to / 60
-        };
-        (from / 60, end.max(from / 60))
-    };
-    match (w.depart.map(hours), w.arrive.map(hours)) {
-        (None, None) => None,
-        (Some((d1, d2)), None) => Some(format!("{d1},{d2}")),
-        (d, Some((a1, a2))) => {
-            let (d1, d2) = d.unwrap_or((0, 23));
-            Some(format!("{d1},{d2},{a1},{a2}"))
-        }
-    }
-}
-
 /// What was searched, in the words the answer should use — appended to every flights result so the cabin, the
 /// stop limit and the date the user asked for are never mixed up with another search.
 pub fn searched(a: &Value, from: &str, to: &str) -> Value {
@@ -324,18 +256,7 @@ pub fn searched(a: &Value, from: &str, to: &str) -> Value {
         None => "any number of stops",
     };
     let ret = get_str(a, "return_date");
-    let mut times = Map::new();
-    for k in [
-        "depart_after",
-        "depart_before",
-        "arrive_after",
-        "arrive_before",
-    ] {
-        if hhmm(a, k).is_some() {
-            times.insert(k.into(), json!(get_str(a, k).trim()));
-        }
-    }
-    let mut out = json!({
+    json!({
         "origin": from, "destination": to, "date": get_str(a, "date"),
         "trip": if ret.is_empty() { "one way".to_string() } else { format!("round trip, return {ret}") },
         "adults": people(a, "adults", 1, 9),
@@ -344,12 +265,7 @@ pub fn searched(a: &Value, from: &str, to: &str) -> Value {
         "rule": format!("every offer below is a {cabin} fare with {stops}; answer in these terms — name the cabin ({cabin}) and the stop limit in the answer — and if the user asked for a different cabin, date or stop limit, search again instead of presenting these{}{}",
             if cabin == "economy" { String::new() } else { format!("; an itinerary whose main legs are in this cabin but with a lower-cabin leg (a short economy connection, `cabin_mix`) counts as a {cabin} itinerary — keep it, and say which legs are in which cabin") },
             if pref_list(a, "airlines").is_empty() { "" } else { "; this search used the user's preferred airlines (offers marked preferred are on them) and is the only one — do not search again without them; when no preferred offer is good (preferred_found 0, or none fits the request), answer with what was found and ask whether to search all airlines" }),
-    });
-    // the local time window the search was limited to (the source's own filter, by the hour)
-    if !times.is_empty() {
-        out["times"] = Value::Object(times);
-    }
-    out
+    })
 }
 
 fn join_ids(ids: &[u64]) -> String {
@@ -658,6 +574,25 @@ fn fnv(s: &str) -> u64 {
     h
 }
 
+/// Each offer's token kept with the route and dates of its search, which SerpApi wants repeated: a booking token
+/// (`flight_offer`'s booking options) or a round trip outbound's departure token (`flights_search` `return_of`).
+fn keep_tokens(out: &Value, route: &Value) {
+    for o in out["offers"].as_array().into_iter().flatten() {
+        let id = get_str(o, "offer_id");
+        if let Some(tok) = token_of(&id) {
+            if !tok.trim_start().starts_with('{') {
+                let key = if o["return_search"].as_bool() == Some(true) {
+                    "departure_token"
+                } else {
+                    "token"
+                };
+                let mut t = TOKENS.lock().unwrap_or_else(|e| e.into_inner());
+                t.insert(id, json!({key: tok, "route": route}).to_string());
+            }
+        }
+    }
+}
+
 /// A short, stable id for a long token; the token can be looked up again with [`token_of`].
 pub fn short_id(prefix: &str, token: &str) -> String {
     let id = format!("{}_{:010x}", prefix, fnv(token) & 0xff_ffff_ffff);
@@ -869,7 +804,9 @@ fn itinerary_url(search_url: &str, legs: &[Value]) -> Option<String> {
                 let len = usize::try_from(varint(&msg, &mut i)?).ok()?;
                 let body = msg.get(i..i.checked_add(len)?)?;
                 i += len;
-                if key >> 3 == 3 && !done {
+                // the first slice of the trip with no flight chosen yet: the outbound of a search, the return of a
+                // search for one outbound's returns (its `tfs` has the outbound chosen)
+                if key >> 3 == 3 && !done && !has_field(body, 4) {
                     let mut slice = body.to_vec();
                     slice.extend_from_slice(&chosen);
                     put_bytes(&mut out, 3, &slice);
@@ -896,10 +833,45 @@ fn itinerary_url(search_url: &str, legs: &[Value]) -> Option<String> {
         })
         .collect();
     url.query_pairs_mut().clear().extend_pairs(pairs);
-    if one_way {
+    // every slice chosen (a one-way trip, or a round trip's return picked): Google's booking options for the trip
+    if one_way || all_slices_chosen(&out) {
         url.set_path("/travel/flights/booking");
     }
     Some(url.into())
+}
+
+/// Whether a protobuf message has a length-delimited field `field` at its top level.
+fn has_field(msg: &[u8], field: u64) -> bool {
+    fields(msg).is_some_and(|f| f.iter().any(|(k, _)| *k == field))
+}
+
+/// A protobuf message's top-level length-delimited fields (number, body); `None` when it does not parse.
+fn fields(msg: &[u8]) -> Option<Vec<(u64, &[u8])>> {
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < msg.len() {
+        let key = varint(msg, &mut i)?;
+        match key & 7 {
+            0 => {
+                varint(msg, &mut i)?;
+            }
+            2 => {
+                let len = usize::try_from(varint(msg, &mut i)?).ok()?;
+                let body = msg.get(i..i.checked_add(len)?)?;
+                i += len;
+                out.push((key >> 3, body));
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Whether every slice of a trip's `tfs` message has a chosen flight.
+fn all_slices_chosen(msg: &[u8]) -> bool {
+    fields(msg).is_some_and(|f| {
+        let slices: Vec<&[u8]> = f.iter().filter(|(k, _)| *k == 3).map(|(_, b)| *b).collect();
+        !slices.is_empty() && slices.iter().all(|b| has_field(b, 4))
+    })
 }
 
 /// One Google Flights itinerary, compact: airlines, the legs, local times, duration, stops, price, an offer id, and
@@ -945,9 +917,15 @@ fn compact_itinerary(it: &Value, currency: &str, search_url: Option<&str>) -> Va
         })
         .collect();
     let token = get_str(it, "booking_token");
+    let departure = get_str(it, "departure_token");
     let mut out = Map::new();
     if !token.is_empty() {
         out.insert("offer_id".into(), json!(short_id("fl", &token)));
+    } else if !departure.is_empty() {
+        // a round trip's outbound: Google prices the trip, and lists its returns on a second search with this token
+        // (flights_search with `return_of` = this offer id)
+        out.insert("offer_id".into(), json!(short_id("fl", &departure)));
+        out.insert("return_search".into(), json!(true));
     }
     out.insert("airlines".into(), json!(airlines.join(" + ")));
     out.insert(
@@ -982,14 +960,14 @@ fn compact_itinerary(it: &Value, currency: &str, search_url: Option<&str>) -> Va
         }),
     );
     if let Some(u) = search_url.and_then(|u| itinerary_url(u, &legs)) {
-        let round = get_str(it, "type").eq_ignore_ascii_case("round trip");
+        let round = get_str(it, "type").eq_ignore_ascii_case("round trip") && !departure.is_empty();
         out.insert("booking_url".into(), json!(u));
         out.insert(
             "book".into(),
             json!(if round {
-                "booking_url is this outbound on Google Flights: pick the return flight there, then book with the seller it lists (the airline's own site first)"
+                "booking_url is this outbound on Google Flights; its return flights come from flights_search with return_of = this offer_id"
             } else {
-                "booking_url is this itinerary on Google Flights: book with the seller it lists (the airline's own site first)"
+                "booking_url is this itinerary on Google Flights (a round trip: both flights): book with the seller it lists (the airline's own site first)"
             }),
         );
     }
@@ -1488,6 +1466,10 @@ impl SerpApi {
     /// `flights_search`: ONE Google Flights search, for a route and one departure date (a return date makes it a
     /// round trip). A range of dates is Kiwi.com's (one query there; here it would take one search per day).
     pub async fn flights(&self, a: &Value) -> Result<Value, SerpError> {
+        let ret_of = get_str(a, "return_of");
+        if !ret_of.is_empty() {
+            return self.return_flights(a, &ret_of).await;
+        }
         let to = get_str(a, "date_to");
         if !to.trim().is_empty() && to.trim() != get_str(a, "date").trim() {
             return Err(SerpError(
@@ -1547,17 +1529,11 @@ impl SerpApi {
             ("hl", "en".to_string()),
             ("sort_by", sort.to_string()),
         ];
-        // every flight Google Flights' own page lists for the day (SerpApi's deep search, slower) when the request
-        // depends on all of them — the model's `comprehensive` (absent: complete); else the faster, shorter list
-        if deep_search(a) {
-            params.push(("deep_search", "true".to_string()));
-        }
+        // every flight Google Flights' own page lists for the day (SerpApi's deep search), always: the whole day is
+        // searched whatever the request says, and the pick over it is the model's (the user, 2026-11-02)
+        params.push(("deep_search", "true".to_string()));
         if let Some(st) = stops_param(a) {
             params.push(("stops", st.to_string()));
-        }
-        // the user's time window (the model's JSON) as Google Flights' own departure / arrival hour filter
-        if let Some(t) = outbound_times(a) {
-            params.push(("outbound_times", t));
         }
         if let Some(m) = price_cap(a, "max_price") {
             params.push(("max_price", m.to_string()));
@@ -1599,16 +1575,66 @@ impl SerpApi {
         }
         // a booking-options request must repeat the route and dates: keep them with each offer's token
         let route = json!({"departure_id": params[1].1, "arrival_id": params[2].1, "outbound_date": params[3].1,
-                           "type": params[4].1, "return_date": params[5].1});
-        for o in out["offers"].as_array().into_iter().flatten() {
-            let id = get_str(o, "offer_id");
-            if let Some(tok) = token_of(&id) {
-                if !tok.trim_start().starts_with('{') {
-                    let mut t = TOKENS.lock().unwrap_or_else(|e| e.into_inner());
-                    t.insert(id, json!({"token": tok, "route": route}).to_string());
-                }
+                           "type": params[4].1, "return_date": params[5].1, "adults": params[6].1,
+                           "travel_class": params[7].1});
+        keep_tokens(&out, &route);
+        Ok(out)
+    }
+
+    /// The return flights of a round trip's outbound (`return_of`: its offer id from a `flights_search` with a
+    /// return date): Google's second search, with the outbound's `departure_token` and the first search's route and
+    /// dates. Each return comes priced for the whole trip, with its own offer id (the booking options) and Google
+    /// Flights' page for the trip with both flights chosen.
+    async fn return_flights(&self, a: &Value, ret_of: &str) -> Result<Value, SerpError> {
+        let stored = token_of(ret_of)
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .filter(|v| !get_str(v, "departure_token").is_empty())
+            .ok_or_else(|| {
+                SerpError(format!(
+                    "return_of: {ret_of} is no outbound of a round-trip search (search again with flights_search and a return_date)"
+                ))
+            })?;
+        let route = stored["route"].clone();
+        let currency = {
+            let c = get_str(a, "currency").to_uppercase();
+            if c.is_empty() {
+                "USD".to_string()
+            } else {
+                c
+            }
+        };
+        let mut params = vec![
+            ("engine", "google_flights".to_string()),
+            ("departure_token", get_str(&stored, "departure_token")),
+            ("currency", currency.clone()),
+            ("hl", "en".to_string()),
+        ];
+        for k in [
+            "departure_id",
+            "arrival_id",
+            "outbound_date",
+            "type",
+            "return_date",
+            "adults",
+            "travel_class",
+        ] {
+            let v = match &route[k] {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => n.to_string(),
+                _ => String::new(),
+            };
+            if !v.is_empty() {
+                params.push((k, v));
             }
         }
+        let data = self.get("search.json", &params).await?;
+        let mut out = compact_flights(&data, &currency);
+        tag_cabins(&mut out["offers"], a);
+        out["leg"] = json!("return");
+        out["return_of"] = json!(ret_of);
+        out["searched"] = json!({"origin": route["arrival_id"], "destination": route["departure_id"],
+                                 "date": route["return_date"], "return_of": ret_of});
+        keep_tokens(&out, &route);
         Ok(out)
     }
 
@@ -2166,7 +2192,6 @@ mod tests {
             ("hl", "en"),
             ("sort_by", "1"),
             ("deep_search", "true"),
-            ("outbound_times", "0,23,18,23"),
             ("include_airlines", "STAR_ALLIANCE,SQ"),
         ];
         assert_eq!(valid_request(&p(&flight), day), Ok(()));
@@ -2185,8 +2210,7 @@ mod tests {
             ("type", "3"),
             ("adults", "0"),
             ("travel_class", "5"),
-            ("outbound_times", "18,6"),
-            ("outbound_times", "0,24"),
+            ("outbound_times", "18,23"),
             ("currency", "usd"),
             ("include_airlines", "Star Alliance"),
             ("deep_search", "yes"),
@@ -2233,41 +2257,14 @@ mod tests {
     }
 
     #[test]
-    fn deep_search_follows_the_models_comprehensive_flag() {
-        assert!(deep_search(&json!({"comprehensive": true})));
-        assert!(!deep_search(&json!({"comprehensive": false})));
-        // without the flag: complete, as before
-        assert!(deep_search(&json!({})));
-    }
-
-    #[test]
-    fn the_users_time_window_becomes_google_flights_outbound_times() {
-        // "lands before midnight", narrowed by the model to arrivals from 18:00: arrival hours 18–23, any departure
-        let a = json!({"arrive_after": "18:00", "arrive_before": "23:59"});
-        assert_eq!(outbound_times(&a).as_deref(), Some("0,23,18,23"));
-        // departures only: two numbers; an end on the hour takes the hour before
-        let a = json!({"depart_after": "06:30", "depart_before": "12:00"});
-        assert_eq!(outbound_times(&a).as_deref(), Some("6,11"));
-        // both sides
-        let a = json!({"depart_after": "17:00", "arrive_before": "22:30"});
-        assert_eq!(outbound_times(&a).as_deref(), Some("17,23,0,22"));
-        // no time words, the whole day, a value that is no time: no filter
-        for a in [
-            json!({}),
-            json!({"depart_after": "00:00", "depart_before": "23:59"}),
-            json!({"arrive_before": "midnight"}),
-            json!({"depart_after": "20:00", "depart_before": "08:00"}),
-        ] {
-            assert_eq!(outbound_times(&a), None, "{a}");
-        }
-        // the window is echoed in what was searched
+    fn what_was_searched_names_no_time_window() {
+        // the search lists the whole day: a window in the arguments is not echoed as searched
         let s = searched(
             &json!({"date": "2026-11-03", "arrive_before": "23:59"}),
             "HKG",
             "SIN",
         );
-        assert_eq!(s["times"], json!({"arrive_before": "23:59"}));
-        assert!(searched(&json!({}), "HKG", "SIN").get("times").is_none());
+        assert!(s.get("times").is_none(), "{s}");
     }
 
     #[test]
@@ -2539,5 +2536,67 @@ mod tests {
             .decode(ts)
             .is_ok());
         assert!(hotel_page_url("tok", "2026-12-12", "2026-12-10", "USD").is_none());
+    }
+
+    #[test]
+    fn a_round_trip_outbound_gets_an_id_for_its_returns_and_a_return_its_trip_link() {
+        // SerpApi, HKG ⇄ DPS on 2026-11-03: the round trip's outbounds carry a departure_token and no booking_token;
+        // the second search (departure_token) answers with Google's link that has the outbound chosen in slice 1
+        let out = json!({"type": "Round trip", "price": 4838, "departure_token": "WyJDalJJ…outbound",
+            "flights": [{"airline": "Cathay Pacific", "flight_number": "CX 785",
+                "departure_airport": {"id": "HKG", "time": "2026-11-06 10:15"},
+                "arrival_airport": {"id": "DPS", "time": "2026-11-06 15:20"}}]});
+        let first = "https://www.google.com/travel/flights?hl=en&gl=us&curr=HKD&tfs=CBwQAhoeEgoyMDI2LTExLTA2agcIARIDSEtHcgcIARIDRFBTGh4SCjIwMjYtMTEtMDhqBwgBEgNEUFNyBwgBEgNIS0dAAUgBcAGYAQE&tfu=EgIIAQ";
+        let o = compact_itinerary(&out, "HKD", Some(first));
+        let id = get_str(&o, "offer_id");
+        assert!(
+            id.starts_with("fl_") && o["return_search"] == json!(true),
+            "{o}"
+        );
+        assert_eq!(token_of(&id).as_deref(), Some("WyJDalJJ…outbound"));
+        // its own link: the outbound chosen, still the search page (the return is not chosen yet)
+        assert!(
+            get_str(&o, "booking_url").starts_with("https://www.google.com/travel/flights?"),
+            "{o}"
+        );
+        let second = "https://www.google.com/travel/flights?hl=en&gl=us&curr=HKD&tfs=CBwQAho_EgoyMDI2LTExLTA2Ih8KA0hLRxIKMjAyNi0xMS0wNhoDRFBTKgJDWDIDNzg1agcIARIDSEtHcgcIARIDRFBTGh4SCjIwMjYtMTEtMDhqBwgBEgNEUFNyBwgBEgNIS0dAAUgBcAGYAQE&tfu=EgIIAQ";
+        let ret = json!({"type": "Round trip", "price": 4838, "booking_token": "WyJDalJJ…return",
+            "flights": [{"airline": "Cathay Pacific", "flight_number": "CX 782",
+                "departure_airport": {"id": "DPS", "time": "2026-11-08 18:50"},
+                "arrival_airport": {"id": "HKG", "time": "2026-11-08 23:55"}}]});
+        let r = compact_itinerary(&ret, "HKD", Some(second));
+        assert!(r.get("return_search").is_none());
+        let url = get_str(&r, "booking_url");
+        // both flights chosen: Google's booking options for the trip
+        assert!(
+            url.starts_with("https://www.google.com/travel/flights/booking?"),
+            "{url}"
+        );
+        use base64::Engine as _;
+        let tfs = url::Url::parse(&url)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "tfs")
+            .unwrap()
+            .1
+            .into_owned();
+        let msg = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(tfs)
+            .unwrap();
+        let slices: Vec<&[u8]> = fields(&msg)
+            .unwrap()
+            .into_iter()
+            .filter(|(k, _)| *k == 3)
+            .map(|(_, b)| b)
+            .collect();
+        assert_eq!(slices.len(), 2);
+        // the outbound stays in slice 1, the return goes into slice 2
+        let flight = |b: &[u8]| String::from_utf8_lossy(b).to_string();
+        assert!(flight(slices[0]).contains("CX") && flight(slices[0]).contains("785"));
+        assert!(
+            flight(slices[1]).contains("CX")
+                && flight(slices[1]).contains("782")
+                && !flight(slices[1]).contains("785")
+        );
     }
 }

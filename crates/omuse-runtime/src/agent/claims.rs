@@ -228,6 +228,52 @@ pub fn tool_schemas() -> Vec<Value> {
     let s = json!({"type": "string"});
     let date = |what: &str| json!({"type": "string", "description": format!("YYYY-MM-DD: {what}")});
     let money = |what: &str| json!({"type": "number", "description": what});
+    let mut claim_props = json!({
+        "insurer": {"type": "string", "enum": ["chase_sapphire", "fwd"]},
+        "benefit": {"type": "string", "enum": ["trip_cancellation", "trip_interruption", "flight_delay", "other"],
+                    "description": "Chase: trip_cancellation when the trip had not started, trip_interruption when it had started and was cut short; FWD: flight_delay (other FWD claims: other)"},
+        "market": {"type": "string", "enum": ["sg", "hk"], "description": "FWD: the policy's market (the policy email's sender fwd.com.sg / fwd.com.hk / bolttech, or the user's words)"},
+        "incident_date": date("the day the trip was cancelled or cut short (Chase), or the delayed flight's date (FWD)"),
+        "reason": {"type": "string", "enum": ["sickness", "injury", "death", "severe_weather", "quarantine", "other"], "description": "Chase: the covered reason in general terms (never the diagnosis)"},
+        "who": {"type": "string", "enum": ["cardholder", "family_member", "travelling_companion"], "description": "Chase: whose sickness or injury"},
+        "travellers": {"type": "integer", "description": "the travellers on the claim"},
+        "paid": money("Chase: what was paid for the prepaid bookings (USD), from the booking and charge emails"),
+        "refunded": money("Chase: what the airline / hotel refunded or credited (USD)"),
+        "non_refundable": money("Chase: what the suppliers' letters state as not refunded (USD)"),
+        "change_fee": money("Chase: a change fee or fare difference paid to fly home early (USD)"),
+        "bookings": {"type": "array", "description": "Chase: the suppliers and their booking references",
+                     "items": {"type": "object", "properties": {"supplier": s.clone(), "reference": s.clone()}}},
+        "trip": {"type": "array", "items": s.clone(), "description": "Chase: the flights and stays (\"UA 837 SFO–NRT\", \"Park Hyatt Tokyo\")"},
+        "card_product": {"type": "string", "enum": ["Chase Sapphire Reserve", "Chase Sapphire Preferred"]},
+        "card_last4": {"type": "string", "description": "Chase: the card's last 4 digits from the charge email (never a full number)"},
+        "doctor_letter": {"type": "boolean", "description": "the user has a doctor's letter"},
+        "supplier_letter": {"type": "boolean", "description": "a supplier's written refund / non-refundable statement is in the mail"},
+        "policy_no": {"type": "string", "description": "FWD: the policy number from the policy email"},
+        "plan": {"type": "string", "description": "FWD: the plan name from the policy email"},
+        "flight_no": {"type": "string", "description": "the delayed flight (\"SQ 636\")"},
+        "from": {"type": "string", "description": "FWD: the delayed flight's departure city"},
+        "to": {"type": "string", "description": "FWD: its arrival city"},
+        "airline": {"type": "string", "description": "FWD: the airline that wrote the delay letter"},
+        "airline_ref": {"type": "string", "description": "FWD: the airline letter's reference"},
+        "scheduled_departure": {"type": "string", "description": "FWD: HH:MM, the scheduled departure from the airline's delay letter"},
+        "actual_departure": {"type": "string", "description": "FWD: HH:MM, the actual departure"},
+        "delay_reason": {"type": "string", "description": "FWD: the cause the airline gives"},
+        "benefit_per_block": money("FWD: the policy's delay benefit per block of hours (\"SGD 100 for every 6 hours\" → 100)"),
+        "block_hours": {"type": "integer", "description": "FWD: the hours per block (6)"},
+        "benefit_cap": money("FWD: the delay benefit's cap (\"up to SGD 1,500\" → 1500)"),
+        "claim_within_days": {"type": "integer", "description": "FWD: the policy's time limit for a claim in days, when the policy email states one"},
+        "emergency_phone": {"type": "string", "description": "FWD: the 24-hour emergency line from the policy email"},
+        "certificate_message_id": {"type": "string", "description": "FWD: the message_id of the airline's delay email (its PDF is attached to the claim)"}
+    });
+    // FWD Singapore's online claim (outside the literal above: json!'s recursion limit)
+    claim_props["leave_sg"] = date("FWD Singapore: the day the trip left Singapore");
+    claim_props["return_sg"] = date("FWD Singapore: the day the trip was to return to Singapore");
+    claim_props["destination"] =
+        json!({"type": "string", "description": "FWD Singapore: the country travelled to"});
+    claim_props["itinerary_file"] = json!({"type": "string", "description": "FWD Singapore: the itinerary or e-ticket, its path in this chat (uploads/… or attachments/…)"});
+    claim_props["boarding_pass_file"] = json!({"type": "string", "description": "FWD Singapore: the (re-scheduled) boarding pass, its path in this chat"});
+    claim_props["airline_letter_file"] = json!({"type": "string", "description": "FWD Singapore: the airline's letter stating the hours of delay and the reason, its path in this chat"});
+    claim_props["other_file"] = json!({"type": "string", "description": "FWD Singapore: another supporting document, its path in this chat"});
     let claim = fn_(
         CLAIM_FILE,
         "File an insurance claim: the Chase Sapphire Reserve / Preferred trip cancellation or interruption claim \
@@ -235,53 +281,20 @@ pub fn tool_schemas() -> Vec<Value> {
 form and an email draft). Pass the facts you read in the user's words and in their emails (the booking, the charge, the \
 refund letters, the policy, the airline's delay letter). Code reads the mail with fixed searches when facts are missing \
 (status mail_read: the emails are above — call claim_file again with every fact from them), computes the amount and the \
-deadlines, fills the form from the profile and the Vault and hands the final Submit to the user. status needs_input: ask \
-the user for the missing facts, then call again with every field; invalid: fix the arguments and call again. Write the \
+deadlines and fills the form from the profile and the Vault. FWD Singapore: code fills every step of FWD's online claim \
+(the documents of this chat, PayNow by the Vault's NRIC/FIN) and submits it once the user approves it in the app — pass \
+the policy number (from the policy email, else ask), the trip's dates and country and the documents' paths; the result \
+has FWD's claim page and says FWD emails the claim link. status needs_input: ask the user for the missing facts, then call \
+again with every field; invalid: fix the arguments and call again. Write the \
 reply from the JSON result, using its hints (code appends the facts in show to the reply).",
-        json!({
-            "insurer": {"type": "string", "enum": ["chase_sapphire", "fwd"]},
-            "benefit": {"type": "string", "enum": ["trip_cancellation", "trip_interruption", "flight_delay", "other"],
-                        "description": "Chase: trip_cancellation when the trip had not started, trip_interruption when it had started and was cut short; FWD: flight_delay (other FWD claims: other)"},
-            "market": {"type": "string", "enum": ["sg", "hk"], "description": "FWD: the policy's market (the policy email's sender fwd.com.sg / fwd.com.hk / bolttech, or the user's words)"},
-            "incident_date": date("the day the trip was cancelled or cut short (Chase), or the delayed flight's date (FWD)"),
-            "reason": {"type": "string", "enum": ["sickness", "injury", "death", "severe_weather", "quarantine", "other"], "description": "Chase: the covered reason in general terms (never the diagnosis)"},
-            "who": {"type": "string", "enum": ["cardholder", "family_member", "travelling_companion"], "description": "Chase: whose sickness or injury"},
-            "travellers": {"type": "integer", "description": "the travellers on the claim"},
-            "paid": money("Chase: what was paid for the prepaid bookings (USD), from the booking and charge emails"),
-            "refunded": money("Chase: what the airline / hotel refunded or credited (USD)"),
-            "non_refundable": money("Chase: what the suppliers' letters state as not refunded (USD)"),
-            "change_fee": money("Chase: a change fee or fare difference paid to fly home early (USD)"),
-            "bookings": {"type": "array", "description": "Chase: the suppliers and their booking references",
-                         "items": {"type": "object", "properties": {"supplier": s.clone(), "reference": s.clone()}}},
-            "trip": {"type": "array", "items": s.clone(), "description": "Chase: the flights and stays (\"UA 837 SFO–NRT\", \"Park Hyatt Tokyo\")"},
-            "card_product": {"type": "string", "enum": ["Chase Sapphire Reserve", "Chase Sapphire Preferred"]},
-            "card_last4": {"type": "string", "description": "Chase: the card's last 4 digits from the charge email (never a full number)"},
-            "doctor_letter": {"type": "boolean", "description": "the user has a doctor's letter"},
-            "supplier_letter": {"type": "boolean", "description": "a supplier's written refund / non-refundable statement is in the mail"},
-            "policy_no": {"type": "string", "description": "FWD: the policy number from the policy email"},
-            "plan": {"type": "string", "description": "FWD: the plan name from the policy email"},
-            "flight_no": {"type": "string", "description": "the delayed flight (\"SQ 636\")"},
-            "from": {"type": "string", "description": "FWD: the delayed flight's departure city"},
-            "to": {"type": "string", "description": "FWD: its arrival city"},
-            "airline": {"type": "string", "description": "FWD: the airline that wrote the delay letter"},
-            "airline_ref": {"type": "string", "description": "FWD: the airline letter's reference"},
-            "scheduled_departure": {"type": "string", "description": "FWD: HH:MM, the scheduled departure from the airline's delay letter"},
-            "actual_departure": {"type": "string", "description": "FWD: HH:MM, the actual departure"},
-            "delay_reason": {"type": "string", "description": "FWD: the cause the airline gives"},
-            "benefit_per_block": money("FWD: the policy's delay benefit per block of hours (\"SGD 100 for every 6 hours\" → 100)"),
-            "block_hours": {"type": "integer", "description": "FWD: the hours per block (6)"},
-            "benefit_cap": money("FWD: the delay benefit's cap (\"up to SGD 1,500\" → 1500)"),
-            "claim_within_days": {"type": "integer", "description": "FWD: the policy's time limit for a claim in days, when the policy email states one"},
-            "emergency_phone": {"type": "string", "description": "FWD: the 24-hour emergency line from the policy email"},
-            "certificate_message_id": {"type": "string", "description": "FWD: the message_id of the airline's delay email (its PDF is attached to the claim)"}
-        }),
+        claim_props,
         &["insurer"],
     );
     let buy = fn_(
         INSURANCE_BUY,
         "Quote and buy FWD travel insurance (Singapore: code fills FWD's quote, reads the plans, picks one by the \
-user's rule, shows them as choice cards and, for buy, fills the application from the profile and the Vault — Pay now is \
-the user's; Hong Kong: the plan page goes to the browser-use skill). Pass the trip from the user's words and their \
+user's rule, shows them as choice cards and, for buy, saves the quote with FWD and gives FWD's own link to it, which \
+the user opens on any device — the eligibility statements, the details and Pay are the user's; Hong Kong: the plan page goes to the browser-use skill). Pass the trip from the user's words and their \
 booking emails; code reads the booking mail when the trip is missing (status mail_read: call insurance_buy again with \
 the trip from those emails). needs_input: ask the user, then call again with every field. Write the reply from the \
 JSON result, using its hints (code appends the facts in show to the reply).",
@@ -295,7 +308,11 @@ JSON result, using its hints (code appends the facts in show to the reply).",
             "cover": {"type": "string", "enum": ["medical", "cancellation", "baggage", "delay"], "description": "the cover the user wants at least an amount of"},
             "cover_at_least": money("that cover's minimum (\"at least SGD 10,000 trip cancellation\" → 10000)"),
             "plan": {"type": "string", "description": "the plan the user chose: its name exactly as the plans card listed it"},
-            "card": {"type": "string", "description": "the Vault card the user named to pay with: its id from vault_list (id=…), its card_id, or its label exactly as listed"}
+            "card": {"type": "string", "description": "the Vault card the user named to pay with: its id from vault_list (id=…), its card_id, or its label exactly as listed"},
+            "title": {"type": "string", "enum": ["Mr.", "Miss", "Mrs."], "description": "Hong Kong: the insured's title, from the profile or the conversation"},
+            "hkid_issue_date": {"type": "string", "description": "Hong Kong: YYYY-MM-DD, the date of issue on the insured's new Smart HKID card (asked)"},
+            "family_name": {"type": "string", "description": "Hong Kong: the insured's family name as on the HKID (\"CHAN\" of \"CHAN TAI MAN\")"},
+            "given_names": {"type": "string", "description": "Hong Kong: the insured's given names as on the HKID (\"TAI MAN\")"}
         }),
         &[],
     );
@@ -715,8 +732,88 @@ fn check_claim(a: &Value, cx: &Ctx) -> Checks {
             }
         }
     }
-    if s_arg(&Value::Object(out.clone()), "policy_no").is_empty() {
-        missing.push("policy_no (the FWD policy number)".into());
+    // FWD Singapore's online claim (walked 2026-11-03, docs/sites/fwd-claim.md): the policy number in FWD's own
+    // format, the trip's dates and country, and the documents of this chat — all into code's form
+    if market == "sg" {
+        let p = s_arg(a, "policy_no").to_uppercase().replace(' ', "");
+        if !p.is_empty() {
+            match sg_policy_no(&p) {
+                Some(n) => {
+                    out.insert("policy_no".into(), json!(n));
+                }
+                None => {
+                    out.remove("policy_no");
+                    problems.push(format!(
+                        "policy_no: \"{p}\" — FWD Singapore's travel policy numbers read PNTR20NN-NNNNNNNN (the policy email's \"Policy Number\")"
+                    ));
+                }
+            }
+        }
+        let leave = date_arg(a, "leave_sg", cx.today, Some(true), &mut out, &mut problems);
+        let back = date_arg(a, "return_sg", cx.today, None, &mut out, &mut problems);
+        if let (Some(l), Some(b)) = (leave, back) {
+            if b < l {
+                problems.push(format!(
+                    "return_sg: {} is before leave_sg {}",
+                    iso(b),
+                    iso(l)
+                ));
+            }
+        }
+        if leave.is_none() && !problems.iter().any(|p| p.starts_with("leave_sg")) {
+            missing.push("leave_sg (the day the trip left Singapore)".into());
+        }
+        if back.is_none() && !problems.iter().any(|p| p.starts_with("return_sg")) {
+            missing.push("return_sg (the day the trip was to return to Singapore)".into());
+        }
+        let dest = s_arg(a, "destination");
+        if dest.is_empty() {
+            missing.push("destination (the country travelled to)".into());
+        } else {
+            let iso2 = crate::places::country(&dest)
+                .map(|c| c.iso)
+                .or_else(|| Some(crate::places::iso_of(&dest)).filter(|c| !c.is_empty()))
+                .or_else(|| crate::places::city_named(&dest).map(|c| c.country));
+            match iso2.and_then(crate::places::country) {
+                Some(c) => {
+                    out.insert("destination".into(), json!(c.name));
+                }
+                None => problems.push(format!(
+                    "destination: \"{dest}\" — give the country travelled to (its 2-letter code: JP for Tokyo)"
+                )),
+            }
+        }
+        // FWD's documents step requires the itinerary and the re-scheduled boarding pass ("… is required"; walked
+        // 2026-11-03 — without them "next" stays put): asked like the policy number; the airline's letter and
+        // other documents are optional
+        for (k, what) in [
+            ("itinerary_file", "itinerary_file (the itinerary or e-ticket — FWD requires it)"),
+            ("boarding_pass_file", "boarding_pass_file (the boarding pass of the delayed or re-scheduled flight — FWD requires it)"),
+        ] {
+            if s_arg(a, k).is_empty() {
+                missing.push(what.into());
+            }
+        }
+        for k in CLAIM_FILES {
+            let f = s_arg(a, k);
+            if f.is_empty() {
+                continue;
+            }
+            if f.starts_with("uploads/") || f.starts_with("attachments/") {
+                out.insert(k.into(), json!(f));
+            } else {
+                problems.push(format!(
+                    "{k}: \"{f}\" — a file of this chat (uploads/… or attachments/…)"
+                ));
+            }
+        }
+    }
+    if s_arg(&Value::Object(out.clone()), "policy_no").is_empty()
+        && !problems.iter().any(|p| p.starts_with("policy_no"))
+    {
+        missing.push(
+            "policy_no (the FWD policy number — from the policy email, else ask the user)".into(),
+        );
     }
     if incident.is_none() && !problems.iter().any(|p| p.starts_with("incident_date")) {
         missing.push("incident_date (the delayed flight's date)".into());
@@ -731,6 +828,23 @@ fn check_claim(a: &Value, cx: &Ctx) -> Checks {
         );
     }
     (out, problems, missing)
+}
+
+/// The documents an FWD Singapore delay claim uploads, as the call names them.
+const CLAIM_FILES: [&str; 4] = [
+    "itinerary_file",
+    "boarding_pass_file",
+    "airline_letter_file",
+    "other_file",
+];
+
+/// An FWD Singapore travel policy number in FWD's format (its claim form checks the part after the fixed `PNTR20`:
+/// `NN-NNNNNNNN`, or `NN-NNNNNNNN-NN`): the whole number, `PNTR20` first; `None` for anything else. A structured
+/// value checked, not a pattern over words.
+pub fn sg_policy_no(p: &str) -> Option<String> {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^(?:PNTR20)?(\d{2}-\d{8}(?:-\d{2})?)$").unwrap());
+    RE.captures(p).map(|c| format!("PNTR20{}", &c[1]))
 }
 
 fn check_buy(a: &Value, cx: &Ctx) -> Checks {
@@ -750,9 +864,6 @@ fn check_buy(a: &Value, cx: &Ctx) -> Checks {
             "buy"
         }),
     );
-    if market == "hk" {
-        return (out, problems, missing);
-    }
     // the destination's country, from the structured value: an ISO code, a country's name or a city of the table,
     // each compared whole; anything else goes back to the model (FWD's region is picked by the country — "Tokyo,
     // Japan" left it blank and the quote never opened, insurance_real 2026-11-02)
@@ -806,6 +917,61 @@ fn check_buy(a: &Value, cx: &Ctx) -> Checks {
     }
     text_arg(a, "plan", &mut out);
     text_arg(a, "card", &mut out);
+    // FWD Hong Kong's application (walked 2026-11-03): one traveller on the quote, the insured's title, and the date of
+    // issue of their new Smart HKID (the Vault keeps the number, not the date) — asked for a purchase
+    if market == "hk" {
+        if travellers > 1 {
+            problems.push("travellers: FWD Hong Kong's quote is filled for one traveller here — 1, and the user adds the others on FWD's page".into());
+        }
+        let title = s_arg(a, "title");
+        match title.trim_end_matches('.').to_lowercase().as_str() {
+            "" => {}
+            "mr" => {
+                out.insert("title".into(), json!("Mr."));
+            }
+            "miss" | "ms" => {
+                out.insert("title".into(), json!("Miss"));
+            }
+            "mrs" => {
+                out.insert("title".into(), json!("Mrs."));
+            }
+            other => problems.push(format!(
+                "title: \"{other}\" — Mr., Miss or Mrs. (FWD's list)"
+            )),
+        }
+        let issued = date_arg(
+            a,
+            "hkid_issue_date",
+            cx.today,
+            Some(true),
+            &mut out,
+            &mut problems,
+        );
+        // the name's parts are the model's reading of it (Hong Kong names come family name first)
+        for k in ["family_name", "given_names"] {
+            let v = s_arg(a, k).to_uppercase();
+            if !v.is_empty() {
+                out.insert(k.into(), json!(v));
+            }
+        }
+        if s_arg(&Value::Object(out.clone()), "action") == "buy"
+            && !(out.contains_key("family_name") && out.contains_key("given_names"))
+        {
+            missing.push(
+                "family_name and given_names (the insured's name as on the HKID, split)".into(),
+            );
+        }
+        if s_arg(&Value::Object(out.clone()), "action") == "buy" {
+            if !out.contains_key("title") && !problems.iter().any(|p| p.starts_with("title")) {
+                missing.push("title (Mr., Miss or Mrs. — FWD's application asks it)".into());
+            }
+            if issued.is_none() && !problems.iter().any(|p| p.starts_with("hkid_issue_date")) {
+                missing.push(
+                    "hkid_issue_date (the date of issue on the user's new Smart HKID card)".into(),
+                );
+            }
+        }
+    }
     (out, problems, missing)
 }
 
@@ -1382,6 +1548,39 @@ fn plans_read_args() -> Value {
     ]})
 }
 
+/// FWD's link to a saved travel quote: its route `emailRedirect.html` with the quote's `HashKey` (mapped 2026-11-02:
+/// it opens FWD's own resume page, which asks for the mobile number the quote was saved with).
+const FWD_SAVED_QUOTE: &str = "https://www.fwd.com.sg/travel-insurance/emailRedirect.html?hash=";
+
+/// What is read after FWD's save: the quote's keys in the site's own storage (`HashKey`, `quotationNo`) and whether the
+/// save dialog is still open (a field FWD refused).
+fn saved_read_args() -> Value {
+    json!({"read": [
+        {"name": "hash", "storage": "local", "key": "HashKey"},
+        {"name": "quotation", "storage": "local", "key": "quotationNo"},
+        {"name": "open", "sel": ".fwd-save-dialog input[name=nric]"}
+    ]})
+}
+
+/// The saved quote's link and quotation number from [`saved_read_args`]' result; `None` when the dialog is still open
+/// or no quote key was kept. The key is checked as FWD writes it (letters and digits only) before it goes in a link.
+fn saved_quote(read: &Value) -> Option<(String, String)> {
+    use super::confirm::element_values;
+    if !element_values(read, "open").is_empty() {
+        return None;
+    }
+    let hash = element_values(read, "hash").into_iter().next()?;
+    if hash.len() < 20 || !hash.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let quotation = element_values(read, "quotation")
+        .into_iter()
+        .next()
+        .filter(|q| q.len() <= 30 && q.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or_default();
+    Some((format!("{FWD_SAVED_QUOTE}{hash}"), quotation))
+}
+
 /// The plans on FWD's quote summary (a known page), from its elements: each plan button's id gives the plan's name
 /// ("Business"), the price above it the premium, and the benefit lines its covers ([`PLAN_COVERS`]; a value's amount
 /// is the last money value in it).
@@ -1632,32 +1831,9 @@ fn review_gate(run: &[Value], ids: &Ids, after: usize, reason: String) -> Result
     }
 }
 
-/// The last snapshot after position `after`: its text, or the step that takes one.
-/// The confirmation's reference after the hand-back at `after`: the spec's fixed element read on the page
-/// (`browser_read_elements`), its value in the spec's format; `None` when the page has no such element (not confirmed).
-fn reference_after(
-    run: &[Value],
-    ids: &Ids,
-    after: usize,
-    s: &ClaimSpec,
-) -> Result<Option<String>, Step> {
-    if s.ref_sel.is_empty() {
-        return Ok(None);
-    }
-    let (_, m) = results_of(run, "browser_read_elements")
-        .into_iter()
-        .rev()
-        .find(|(_, m)| pos(run, m) > after)
-        .ok_or_else(|| {
-            ids.one(
-                "browser_read_elements",
-                super::confirm::read_args(s.ref_sel),
-            )
-        })?;
-    Ok(crate::outcome::reference_in(
-        &super::confirm::element_values(m, super::confirm::REFERENCE),
-        s.ref_re,
-    ))
+/// A reminder's cron at 08:00 on day `d`.
+fn cron_at(d: NaiveDate) -> String {
+    format!("0 8 {} {} *", d.day(), d.month())
 }
 
 fn opened(run: &[Value], host: &str, path: &str) -> bool {
@@ -1665,10 +1841,6 @@ fn opened(run: &[Value], host: &str, path: &str) -> bool {
         let u = sget(a, "url");
         u.contains(host) && u.contains(path)
     })
-}
-
-fn cron_at(d: NaiveDate) -> String {
-    format!("0 8 {} {} *", d.day(), d.month())
 }
 
 fn step_count(transcript: &[Value]) -> usize {
@@ -1708,10 +1880,7 @@ pub fn next(tool: &str, args: &Value, transcript: &[Value], from: usize, m: &Mac
         BAG_TRACE if read => read_mail(tool, spec(Flow::BagTrace), args, run, &ids),
         BAG_TRACE => next_bag(args, run, &ids),
         INSURANCE_BUY if read => read_mail(tool, spec(Flow::FwdSgBuy), args, run, &ids),
-        INSURANCE_BUY if s_arg(args, "market") == "hk" => Step::Done(
-            json!({"status": "browser_use", "url": HK_QUOTE_URL, "insurer": "FWD Hong Kong (underwritten by bolttech)",
-                "hints": ["FWD Hong Kong's travel plans are underwritten by bolttech; the quote is on FWD Hong Kong's plan page"]}),
-        ),
+        INSURANCE_BUY if s_arg(args, "market") == "hk" => next_buy_hk(args, run, &ids),
         INSURANCE_BUY => next_buy(args, run, &ids, m),
         _ => {
             let s = if s_arg(args, "insurer") == "chase_sapphire" {
@@ -1983,9 +2152,41 @@ fn next_sg_claim(
     if d.minutes > 0 && d.amount == 0.0 {
         return no_benefit(s, &d);
     }
+    // FWD's online claim takes a trip that has ended: its return date's calendar has no day after today (walked
+    // 2026-11-03 — a future return left the calendar open and the form stuck). Before the return: the facts, the
+    // deadline and a reminder for the day after the return; nothing is filled.
+    if let Some(back) = parse_iso(&s_arg(args, "return_sg")).filter(|b| *b > m.today) {
+        if results_of(run, "schedule_create").is_empty() {
+            return ids.one(
+                "schedule_create",
+                json!({"name": format!("FWD claim {} after return", d.flight_no),
+                       "goal": format!("Remind me to file my FWD travel delay claim for {} on {} (policy {}) now that I am back; FWD's online claim takes the trip once it has ended.", d.flight_no, d.incident_date, d.policy_no),
+                       "kind": "cron", "spec": cron_at(back + Duration::days(1))}),
+            );
+        }
+        let show = vec![
+            S::fact(
+                "Not filed yet",
+                "尚未提交",
+                &format!(
+                    "FWD's online claim takes a trip once it has ended: file it after you are back on {} — a reminder is set for {}",
+                    long(back),
+                    long(back + Duration::days(1))
+                ),
+            ),
+            S::link("FWD's online claim", "FWD 网上理赔", "FWD", s.start_url),
+        ];
+        return Step::Done(delay_result(
+            s,
+            &d,
+            "after_return",
+            json!({"return": iso(back), "portal": s.start_url, "show": show,
+                   "hints": ["nothing was filled or submitted: FWD's online claim opens once the trip has ended"]}),
+        ));
+    }
     let att = attachment(transcript, &d.certificate);
     let base = delay_result(s, &d, "", json!({}));
-    // the certificate, saved for the upload
+    // the airline's delay letter from the mail, saved for the upload
     if let Some((id, name)) = &att {
         if results_of(run, "gmail_save_attachment").is_empty() {
             return ids.one(
@@ -1997,84 +2198,194 @@ fn next_sg_claim(
     if !opened(run, s.host, "/claim-online/") {
         return ids.one("browser_navigate", json!({"url": s.start_url}));
     }
-    let fill_pos = match fill_gate(run, ids, "claim", d.form_args(s.currency), s.name) {
-        Ok(p) => p,
-        Err(st) => return finish(st, &base),
+    // 1. every step of FWD's online claim, up to its declaration (the form function, docs/sites/fwd-claim.md): no
+    //    hand-over — the user approves the submission in the app (the user, 2026-11-03)
+    let mut form = d.form_args(s.currency);
+    for k in ["leave_sg", "return_sg", "destination"] {
+        form[k] = json!(s_arg(args, k));
+    }
+    for k in CLAIM_FILES {
+        let f = s_arg(args, k);
+        if !f.is_empty() {
+            form[k] = json!(f);
+        }
+    }
+    let letter = saved_path(run);
+    if s_arg(args, "airline_letter_file").is_empty() {
+        if let Some(p) = &letter {
+            form["airline_letter_file"] = json!(p);
+        }
+    }
+    let stage = |name: &str| {
+        results_of(run, "form_fill")
+            .into_iter()
+            .find(|(a, _)| sget(a, "stage") == name)
+            .map(|(_, msg)| msg)
     };
-    // step 1 is filled; "next" checks the policy on FWD's server and opens the steps that are the user's (the bank
-    // account, the incident page with the delay certificate, Submit) — not mapped, handed over with the facts
-    let saved = saved_path(run);
-    let reason = format!(
-        "FWD's claim form, step 1, is filled in from your profile and the Vault (claimant, NRIC/FIN, mobile, email, policy {}). The claim: {} on {} delayed {} ({} × {} h → {} {}){}. Now {} yourself; hand the browser back when done (or without submitting).",
-        d.policy_no, d.flight_no, d.incident_date, hours_text(d.minutes), d.blocks(), d.block_hours, s.currency, money(d.amount),
-        match &saved { Some(p) => format!("; the airline's delay certificate is saved at {p}"), None => String::new() },
-        s.user_steps
-    );
-    let back = match review_gate(run, ids, fill_pos, reason) {
-        Ok(p) => p,
-        Err(st) => return finish(st, &base),
+    let Some(filled) = stage("claim") else {
+        let mut a = form.clone();
+        a["stage"] = json!("claim");
+        return ids.one("form_fill", a);
     };
-    let reference = match reference_after(run, ids, back, s) {
-        Ok(r) => r,
-        Err(st) => return st,
+    if let Some(why) = stopped(filled) {
+        return finish(Step::Done(sg_claim_stopped(s, &why)), &base);
+    }
+    let uploaded: Vec<&str> = [
+        ("itinerary_file", "the itinerary"),
+        ("boarding_pass_file", "the boarding pass"),
+        ("airline_letter_file", "the airline's delay letter"),
+        ("other_file", "a supporting document"),
+    ]
+    .into_iter()
+    .filter(|(k, _)| !sget(&form, k).is_empty())
+    .map(|(_, what)| what)
+    .collect();
+    // 2. the user's approval of exactly what is submitted, and of the declaration that goes with it
+    let Some((_, approval)) = results_of(run, "submit_confirm").into_iter().next() else {
+        let mut summary = vec![
+            format!("Policy {}", d.policy_no),
+            format!(
+                "{} on {}: scheduled {}, departed {} — delayed {}",
+                d.flight_no,
+                d.incident_date,
+                d.scheduled,
+                d.actual,
+                hours_text(d.minutes)
+            ),
+            format!(
+                "Claim: {} {} ({})",
+                s.currency,
+                money(d.amount),
+                d.rule(s.currency)
+            ),
+            format!(
+                "Trip: left Singapore {}, back {}, {}",
+                s_arg(args, "leave_sg"),
+                s_arg(args, "return_sg"),
+                s_arg(args, "destination")
+            ),
+            "Payment: PayNow to your NRIC/FIN".to_string(),
+        ];
+        summary.push(if uploaded.is_empty() {
+            "Documents: none attached (FWD may ask for them)".to_string()
+        } else {
+            format!("Documents: {}", uploaded.join(", "))
+        });
+        return ids.one(
+            "submit_confirm",
+            json!({"site": s.host, "form": "FWD Singapore travel delay claim", "summary": summary,
+                   "declaration": SG_CLAIM_DECLARATION}),
+        );
     };
-    let deadline_reminder = match (&reference, d.deadline()) {
-        (None, Some(due)) if m.today <= due - Duration::days(5) => Some(due),
-        _ => None,
+    if declined(approval) {
+        if stage("cancel").is_none() {
+            return ids.one("form_fill", json!({"stage": "cancel"}));
+        }
+        let mut show = vec![S::fact(
+            "Not submitted",
+            "未提交",
+            "you declined the submission: FWD's claim form was filled in and left unsubmitted — nothing was sent to FWD",
+        )];
+        show.push(S::link(
+            "FWD's online claim",
+            "FWD 网上理赔",
+            "FWD",
+            s.start_url,
+        ));
+        return Step::Done(delay_result(
+            s,
+            &d,
+            "not_submitted",
+            json!({"portal": s.start_url, "show": show, "hints": ["nothing was submitted: the user declined"]}),
+        ));
+    }
+    // 3. submitted, then the page FWD lands on: its address (FWD's claim pages carry `?hash=<claim>`) and heading
+    let Some(sent) = stage("submit") else {
+        return ids.one("form_fill", json!({"stage": "submit"}));
     };
+    let sent_pos = pos(run, sent);
+    let Some((_, landed)) = results_of(run, "browser_read_elements")
+        .into_iter()
+        .find(|(_, x)| pos(run, x) > sent_pos)
+    else {
+        return ids.one(
+            "browser_read_elements",
+            json!({"read": [{"name": "heading", "sel": "h1, h2, h3, h4", "max": 4}]}),
+        );
+    };
+    let page = get_str(&json_of(landed), "url");
+    let claim_link = page.contains("hash=").then(|| page.clone());
+    let headings = super::confirm::element_values(landed, "heading");
+    let email = get_str(m.profile, "email_personal");
+    let email = if email.is_empty() {
+        get_str(m.profile, "email")
+    } else {
+        email
+    };
+    let mut show: Vec<Value> = vec![S::fact(
+        "Submitted",
+        "已提交",
+        &format!(
+            "FWD's online claim was submitted after your approval{}",
+            headings
+                .first()
+                .map(|h| format!(" — FWD's page says \"{h}\""))
+                .unwrap_or_default()
+        ),
+    )];
+    match &claim_link {
+        Some(link) => show.push(S::link("Your claim on FWD", "你的 FWD 理赔", "FWD", link)),
+        None => show.push(S::fact(
+            "Claim link",
+            "理赔链接",
+            &format!(
+                "FWD emails it to {} — open it with your mobile number to follow the claim and add documents",
+                if email.is_empty() { "your email" } else { &email }
+            ),
+        )),
+    }
+    // a weekly look in the mail for FWD's answer
     if results_of(run, "schedule_create").is_empty() {
-        let mut calls = vec![ids.call(
-            0,
+        return ids.one(
             "schedule_create",
             json!({"name": format!("FWD claim check {}", d.policy_no),
-                   "goal": format!("Search my mail (gmail_search) for any email from FWD about my travel delay claim{} on policy {} and notify me of news; stop when the claim is paid or closed.", reference.as_ref().map(|r| format!(" {r}")).unwrap_or_default(), d.policy_no),
+                   "goal": format!("Search my mail (gmail_search) for any email from FWD about my travel delay claim on policy {} and notify me of news; stop when the claim is paid or closed.", d.policy_no),
                    "kind": "interval", "spec": "10080"}),
-        )];
-        if let Some(due) = deadline_reminder {
-            calls.push(ids.call(
-                1,
-                "schedule_create",
-                json!({"name": format!("FWD claim due {}", iso(due)),
-                       "goal": format!("Remind me that my FWD travel delay claim for {} on {} (policy {}) must be submitted by {} if it has not been submitted yet.", d.flight_no, d.incident_date, d.policy_no, long(due)),
-                       "kind": "cron", "spec": cron_at(due - Duration::days(5))}),
-            ));
-        }
-        return Step::Calls(calls);
-    }
-    let mut must: Vec<String> = Vec::new();
-    let mut show: Vec<Value> = Vec::new();
-    match &reference {
-        Some(r) => {
-            show.push(S::reference("Claim reference", "理赔编号", r));
-            must.push("you pressed Submit yourself on FWD's claim form (the assistant did not submit it)".into());
-        }
-        None => show.push(S::fact("Status", "状态", "step 1 of FWD's online claim is filled in (claimant, NRIC/FIN from the Vault, mobile, email, policy number); next, the bank account, the incident with the delay certificate and Submit are yours — nothing has been submitted for you")),
+        );
     }
     show.push(S::fact(
-        "Reminders set",
+        "Reminder set",
         "已设提醒",
-        &match deadline_reminder {
-            Some(due) => format!(
-                "a weekly mail check for FWD's reply, and one on {} if the claim is not submitted by then",
-                long(due - Duration::days(5))
-            ),
-            None => "a weekly mail check for FWD's reply".into(),
-        },
+        "a weekly mail check for FWD's answer",
     ));
-    let status = if reference.is_some() {
-        "submitted"
-    } else {
-        "handed_over"
-    };
     Step::Done(delay_result(
         s,
         &d,
-        status,
-        json!({"reference": reference, "portal": s.start_url, "certificate_saved": saved.is_some(),
-               "documents": [if att.is_some() { "the airline's delay certificate (have, from the airline's email)" } else { "the airline's delay certificate (ask the airline for it)" },
-                             "the boarding pass or e-ticket if asked"],
-               "show": show, "hints": must}),
+        "submitted",
+        json!({"portal": s.start_url, "claim_link": claim_link, "landed": page, "documents": uploaded,
+               "show": show, "hints": ["submitted by code after the user's approval in the app"]}),
     ))
+}
+
+/// What the user declares by submitting FWD's claim (FWD's own words, shortened), shown in the approval.
+const SG_CLAIM_DECLARATION: &str = "By submitting you confirm the information is true, complete and accurate; that anyone \
+claimed for agreed to share their information; that you will produce the original bills on request; that you have not \
+claimed from any other insurer; you agree to FWD's Privacy Policy and to indemnify FWD for any untrue, incomplete or \
+inaccurate information.";
+
+/// The approval was declined (the user's "no", or Sentinel's refusal).
+fn declined(m: &Value) -> bool {
+    let c = content_of(m);
+    c.starts_with("DENIED") || c.starts_with("ERROR") || get_str(&json_of(m), "status") == "denied"
+}
+
+/// FWD's claim form stopped before its declaration (a step that did not open): the facts and the claim page, nothing
+/// submitted.
+fn sg_claim_stopped(s: &ClaimSpec, why: &str) -> Value {
+    json!({"status": "stopped", "why": why, "portal": s.start_url,
+           "show": [S::fact("Stopped", "已停止", &format!("{why} — nothing was submitted")),
+                    S::link("FWD's online claim", "FWD 网上理赔", "FWD", s.start_url)],
+           "hints": ["nothing was submitted"]})
 }
 
 fn next_hk_claim(
@@ -2246,6 +2557,197 @@ fn next_hk_claim(
 
 // ---------------------------------------------------------------- the FWD Singapore purchase
 
+/// FWD Hong Kong's MyTravel (bolttech underwrites; walked 2026-11-03): the quote, the plans read from their cards, the
+/// pick by the user's rule, the comparison card; for a purchase the plan's card (FWD creates the application) and the
+/// insured's details saved with Next — the application's link, which opens prefilled on any device, is the result.
+fn next_buy_hk(args: &Value, run: &[Value], ids: &Ids) -> Step {
+    let dest = s_arg(args, "destination");
+    let (dep, ret) = (s_arg(args, "depart"), s_arg(args, "return"));
+    let trip = format!("{dest}, {dep} to {ret}, 1 traveller");
+    let insurer = "FWD Hong Kong (MyTravel, underwritten by bolttech Insurance (Hong Kong))";
+    if !opened(
+        run,
+        "www.fwd.com.hk",
+        "/online-insurance/mytravel-insurance",
+    ) {
+        return ids.one("browser_navigate", json!({"url": HK_QUOTE_URL}));
+    }
+    let stage = |name: &str| {
+        results_of(run, "form_fill")
+            .into_iter()
+            .find(|(a, _)| sget(a, "stage") == name)
+            .map(|(_, msg)| msg)
+    };
+    let stopped_at = |why: &str| {
+        Step::Done(
+            json!({"status": "stopped", "why": why, "insurer": insurer, "trip": trip, "quote_page": HK_QUOTE_URL,
+            "show": [S::fact("Stopped", "已停止", &format!("{why} — nothing was bought")),
+                     S::link("FWD's MyTravel page", "FWD MyTravel 页面", "FWD Hong Kong", HK_QUOTE_URL)],
+            "hints": []}),
+        )
+    };
+    let Some(quoted) = stage("quote") else {
+        return ids.one(
+            "form_fill",
+            json!({"stage": "quote", "destination": dest, "depart": dep, "return": ret}),
+        );
+    };
+    if let Some(why) = stopped(quoted) {
+        return stopped_at(&why);
+    }
+    let quote_pos = pos(run, quoted);
+    let Some((_, read)) = results_of(run, "browser_read_elements")
+        .into_iter()
+        .find(|(_, x)| pos(run, x) > quote_pos)
+    else {
+        return ids.one(
+            "browser_read_elements",
+            json!({"read": [{"name": "plans", "sel": "[data-testid=PlanOption]", "max": 6,
+                             "fields": {"name": "[data-part=name]", "premium": {"sel": "[data-part=premium]", "attr": "data-value"},
+                                        "medical": {"sel": "[data-part=currency]", "attr": "data-value"}}}]}),
+        );
+    };
+    let plans = hk_plans_of(read);
+    let minimum = match (s_arg(args, "cover"), n_arg(args, "cover_at_least")) {
+        (c, Some(x)) if !c.is_empty() => Some((c, x)),
+        _ => None,
+    };
+    let Some((picked, rule)) = pick_plan(&plans, &minimum, &s_arg(args, "plan")) else {
+        return stopped_at("FWD's MyTravel page did not price its plans for these dates");
+    };
+    let listed: Vec<String> = plans.iter().map(|p| p.summary("HKD")).collect();
+    let mut show = vec![
+        S::fact("Plans quoted", "报价方案", &listed.join("; ")),
+        S::amount(
+            &format!("Chosen: {}", picked.name),
+            &format!("已选：{}", picked.name),
+            picked.premium,
+            "HKD",
+        ),
+        S::fact("Why", "选择理由", &rule),
+    ];
+    let mut result = json!({"insurer": insurer, "trip": trip, "plans": listed, "picked": picked.name,
+        "premium": format!("HKD {}", money(picked.premium)), "rule": rule, "quote_page": HK_QUOTE_URL});
+    if results_of(run, "present_choices").is_empty() {
+        let options: Vec<Value> = plans
+            .iter()
+            .map(|p| json!({"label": p.name, "source_url": HK_QUOTE_URL,
+                            "details": p.cover.iter().map(|(c, v)| format!("{c} HKD {}", whole(*v))).collect::<Vec<_>>(),
+                            "note": if p.name == picked.name { format!("picked: {rule}") } else { String::new() }}))
+            .collect();
+        return ids.one(
+            "present_choices",
+            json!({"question": format!("FWD Hong Kong MyTravel plans for {trip}: the premium and the covers"),
+                   "kind": "comparison", "options": options, "picked": picked.name, "_code": true}),
+        );
+    }
+    if s_arg(args, "action") == "compare" {
+        result["status"] = json!("shown");
+        result["show"] = json!(show);
+        return Step::Done(result);
+    }
+    // the plan's card: FWD creates the application; then the insured's details, kept by FWD after Next
+    let Some(pick) = stage("pick") else {
+        return ids.one("form_fill", json!({"stage": "pick", "plan": picked.name}));
+    };
+    if let Some(why) = stopped(pick) {
+        return stopped_at(&why);
+    }
+    let Some(details) = stage("details") else {
+        return ids.one(
+            "form_fill",
+            json!({"stage": "details", "title": s_arg(args, "title"), "hkid_issue_date": s_arg(args, "hkid_issue_date"),
+                   "family_name": s_arg(args, "family_name"), "given_names": s_arg(args, "given_names")}),
+        );
+    };
+    let landed = get_str(&json_of(details), "url");
+    let link = hk_application_link(&landed);
+    match (stopped(details), link) {
+        (None, Some(link)) => {
+            show.push(S::link(
+                "Your FWD application",
+                "你的 FWD 投保申请",
+                "Continue on FWD",
+                &link,
+            ));
+            show.push(S::fact(
+                "Next steps (yours)",
+                "下一步（你的）",
+                &format!("open the link on any device: your details are saved in FWD's application for the {} plan (HKD {}); choose any add-on, confirm FWD's declarations and pay there — nothing has been paid", picked.name, money(picked.premium)),
+            ));
+            result["status"] = json!("saved");
+            result["quote_link"] = json!(link);
+            result["show"] = json!(show);
+            Step::Done(result)
+        }
+        (why, link) => {
+            // the details not saved (a field FWD refused): the application still opens at its first step
+            let why = why.unwrap_or_else(|| "FWD did not open its next step".into());
+            let mut show = show;
+            if let Some(link) = &link {
+                show.push(S::link(
+                    "Your FWD application",
+                    "你的 FWD 投保申请",
+                    "Continue on FWD",
+                    link,
+                ));
+            }
+            show.push(S::fact(
+                "Details not saved",
+                "资料未保存",
+                &format!("{why} — fill them in on FWD's page; nothing has been paid"),
+            ));
+            result["status"] = json!("details_needed");
+            result["quote_link"] = json!(link);
+            result["show"] = json!(show);
+            Step::Done(result)
+        }
+    }
+}
+
+/// The plans on FWD Hong Kong's MyTravel cards: the name, the premium FWD charges (`data-value`, after its offer) and
+/// the medical cover (the card's first amount), all from fixed elements.
+fn hk_plans_of(read: &Value) -> Vec<Plan> {
+    super::confirm::element_fields(read, "plans")
+        .into_iter()
+        .filter_map(|f| {
+            let name = f.get("name")?.trim().to_string();
+            let premium = f.get("premium")?.trim().parse::<f64>().ok()?;
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphabetic()) || premium <= 0.0 {
+                return None;
+            }
+            let cover = f
+                .get("medical")
+                .and_then(|m| m.trim().parse::<f64>().ok())
+                .map(|m| vec![("medical".to_string(), m)])
+                .unwrap_or_default();
+            Some(Plan {
+                name,
+                link: String::new(),
+                premium,
+                cover,
+            })
+        })
+        .collect()
+}
+
+/// The application's own link from the page FWD Hong Kong landed on (`…/<step>/?leadId=<id>`): its first step,
+/// `…/application/?leadId=<id>`, which opens the saved application on any device. `None` without a lead id.
+fn hk_application_link(landed: &str) -> Option<String> {
+    let u = url::Url::parse(landed).ok()?;
+    if u.host_str()? != "www.fwd.com.hk" {
+        return None;
+    }
+    let lead = u
+        .query_pairs()
+        .find(|(k, _)| k == "leadId")
+        .map(|(_, v)| v.to_string())
+        .filter(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric()))?;
+    Some(format!(
+        "https://www.fwd.com.hk/online-insurance/mytravel-insurance/en/application/?leadId={lead}"
+    ))
+}
+
 fn next_buy(args: &Value, run: &[Value], ids: &Ids, m: &Machine) -> Step {
     let s = spec(Flow::FwdSgBuy);
     let dest = s_arg(args, "destination");
@@ -2326,8 +2828,55 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids, m: &Machine) -> Step {
         result["hints"] = json!(must);
         return Step::Done(result);
     }
-    // the plan's button on the summary; FWD then asks its eligibility statements — the user's own answers
     let shown_pos = pos(run, shown).max(plan_pos);
+    // the quote saved under the user's details, and FWD's own link to it: the user carries on in their own browser on
+    // any device, no takeover of ours (the user, 2026-11-02). Only with a Singapore mobile (FWD's save needs one, and
+    // its link asks for it); else the hand-over below.
+    let (code, number) = crate::forms::phone_parts(&get_str(m.profile, "phone"));
+    if code == "65" && number.len() == 8 {
+        let save_pos = match fill_gate(run, ids, "save", json!({}), s.name) {
+            Ok(p) => p.max(shown_pos),
+            Err(st) => return finish(st, &base),
+        };
+        let Some((_, saved)) = results_of(run, "browser_read_elements")
+            .into_iter()
+            .find(|(_, x)| pos(run, x) > save_pos)
+        else {
+            return ids.one("browser_read_elements", saved_read_args());
+        };
+        if let Some(link) = saved_quote(saved) {
+            let (url, quotation) = link;
+            let status_line = format!(
+                "the quote is saved with FWD under your name, email and mobile; nothing has been paid. Open the link on any device and enter your mobile number (ending {}): FWD's application starts with its eligibility statements (yours to confirm), then the plan — choose {} ({} {}; the saved quote opens on FWD's first plan) — your details and Pay",
+                &number[4..],
+                picked.name,
+                s.currency,
+                money(picked.premium)
+            );
+            show.push(S::link(
+                "Your saved FWD quote",
+                "你保存的 FWD 报价",
+                "Continue on FWD",
+                &url,
+            ));
+            if !quotation.is_empty() {
+                show.push(S::reference("FWD quotation", "FWD 报价编号", &quotation));
+            }
+            show.push(S::fact(
+                "Next steps (yours)",
+                "下一步（你的）",
+                &status_line,
+            ));
+            result["status"] = json!("saved");
+            result["quote_link"] = json!(url);
+            result["quotation_no"] = json!(quotation);
+            result["show"] = json!(show);
+            result["hints"] = json!(must);
+            return Step::Done(result);
+        }
+        // the save did not go through (its dialog still open, or no quote kept): the hand-over below
+    }
+    // the plan's button on the summary; FWD then asks its eligibility statements — the user's own answers
     let pick_pos = match fill_gate(run, ids, "pick", json!({"plan": picked.name}), s.name) {
         Ok(p) => p.max(shown_pos),
         Err(st) => return finish(st, &base),

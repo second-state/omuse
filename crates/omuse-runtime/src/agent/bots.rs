@@ -312,7 +312,13 @@ impl Runtime {
                 .set_conv_bot(&cid, &bot.id, &parent_conv)
                 .map_err(|e| format!("ERROR: {e}"))?;
         }
-        let meta = json!({"from": {"conv_id": parent_conv, "task_id": parent_tid}});
+        let mut meta = json!({"from": {"conv_id": parent_conv, "task_id": parent_tid}});
+        // the user's attachments stay with the bot's copy of the message: a later message in the bot's chat lists them
+        // in its history (apdt_real 2026-11-03: the follow-up's tool call named the documents and was refused —
+        // "not a file of this chat")
+        if let Some(a) = t.get("attachments").filter(|a| truthy(a)) {
+            meta["attachments"] = a.clone();
+        }
         let child = (|| -> anyhow::Result<Value> {
             let mid = self
                 .store

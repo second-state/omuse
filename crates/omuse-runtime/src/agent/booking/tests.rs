@@ -1795,6 +1795,35 @@ fn a_shopping_pick_to_buy_links_the_stores_checkout() {
 }
 
 #[test]
+fn a_shopping_pick_matches_its_offer_whatever_the_punctuation() {
+    // shopping_real 2026-11-03: the model picked "Nike Vomero Plus Mens Road Running Shoes" for "… Men's …"; the exact
+    // match failed, the buy searched again limited to the store and found nothing
+    let p = sg_profile();
+    let args = json!({"query": "running shoes", "action": "compare", "max_price": 150});
+    let (review, mut t, _) = search_then_choose(args.clone(), json!([]));
+    let o = &review["offers"][0];
+    let title = get_str(o, "title");
+    let mut buy = args;
+    buy["pick"] = json!(format!(
+        "  {} ",
+        title.replace('\'', "").replace('-', " ").to_uppercase()
+    ));
+    let b = valid(SHOP_ORDER, buy, "x", &p);
+    t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_b", "type": "function",
+                  "function": {"name": SHOP_ORDER, "arguments": b.to_string()}}]}));
+    t.push(json!({"role": "tool", "tool_call_id": "call_b", "content": json!({"status": "running", "args": b}).to_string()}));
+    let (t2, res) = run_call("call_b", SHOP_ORDER, &b, t, &Env::of(&p), |_, _, _| {
+        "{}".into()
+    });
+    assert_eq!(res["status"], "link", "{res}");
+    assert_eq!(res["offer"]["title"], json!(title));
+    // no search after the buy's call: the card's offer is used as it is
+    let n = names(&t2);
+    let buy_at = n.iter().rposition(|x| x == SHOP_ORDER).unwrap();
+    assert!(!n[buy_at..].iter().any(|x| x == "shop_search"), "{n:?}");
+}
+
+#[test]
 fn a_shopping_search_goes_to_the_providers_for_the_users_location() {
     let p = sg_profile();
     let a = valid(
@@ -2536,23 +2565,18 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
     // midnight" → OMuse showed the cheapest and other suggestions, none of them the last flight
     let p = json!({"home_city": "HKG", "home_country": "HK"});
     let ask = "I need to go from HK to singapore tomorrow. Find me the last flight that lands before midnight";
-    // the model copies "lands before midnight" (arrive_before 23:59) and narrows "the last" to the evening
+    // the time words are no arguments: the search lists the whole day and the model's pick applies them
     let a = valid(
         TRAVEL_SEARCH,
-        json!({"kind": "flight", "origin": "HKG", "destination": "Singapore", "date": "2026-11-03",
-               "arrive_after": "18:00", "arrive_before": "23:59"}),
+        json!({"kind": "flight", "origin": "HKG", "destination": "Singapore", "date": "2026-11-03"}),
         ask,
         &p,
     );
     let mut env = Env::of(&p);
     env.available = vec!["flights_search".into(), "flight_offer".into()];
-    // the source answers by its own time filter (the window in the search's arguments)
-    let answer = |name: &str, args: &Value, _: &[Value]| -> String {
+    let answer = |name: &str, _: &Value, _: &[Value]| -> String {
         match name {
-            "flights_search" => match sget(args, "arrive_after").as_str() {
-                "18:00" => hkg_sin_google_arriving_from(18),
-                _ => hkg_sin_google(),
-            },
+            "flights_search" => hkg_sin_google(),
             "flight_offer" => json!({"options": [{"book_with": "Singapore Airlines", "price": 5915, "currency": "HKD"}]}).to_string(),
             _ => "{}".into(),
         }
@@ -2565,22 +2589,21 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
         answer,
         last_landing_before_midnight,
     );
-    // ONE search, the window in its arguments (the source's own time filter); no sort asked of the API
+    // ONE search of the whole day: no time window, no sort asked of the API
     let searches = args_of(&t, "flights_search");
     assert_eq!(searches.len(), 1);
     let search = &searches[0];
     assert!(search.get("sort").is_none(), "{search}");
-    assert_eq!(
-        (
-            search["arrive_after"].as_str(),
-            search["arrive_before"].as_str()
-        ),
-        (Some("18:00"), Some("23:59"))
-    );
-    assert!(search.get("depart_after").is_none());
-    assert_eq!(listed["searched"]["arrive_before"], "23:59");
-    // every flight of the windowed result goes to the model (the evening's arrivals): no cut
-    assert_eq!(listed["count"], 5, "{listed}");
+    for k in [
+        "depart_after",
+        "depart_before",
+        "arrive_after",
+        "arrive_before",
+    ] {
+        assert!(search.get(k).is_none(), "{k} in {search}");
+    }
+    // every flight of the day goes to the model: no cut
+    assert_eq!(listed["count"], HKG_SIN.len(), "{listed}");
     let f = |id: &str| {
         listed["flights"]
             .as_array()
@@ -2630,83 +2653,9 @@ fn the_last_flight_that_lands_before_midnight_is_the_one_shown_not_the_cheapest(
     }
     // a search: no second request for the pick's sellers
     assert!(args_of(&t, "flight_offer").is_empty());
-    // the block names what was searched, the window included
+    // the block names what was searched: the whole day, no window
     assert!(
-        m.contains("- Searched: HKG to SIN on 2026-11-03, economy, 1 adult, arriving 18:00–23:59"),
-        "{m}"
-    );
-
-    // the model copies only "lands before midnight": one normal search of the whole day; code drops the next-day
-    // arrivals (past arrive_before) before the model reads the list, and the pick is the same
-    let a = valid(
-        TRAVEL_SEARCH,
-        json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03", "arrive_before": "23:59"}),
-        ask,
-        &p,
-    );
-    let (t, listed, res) = search_then_pick(
-        TRAVEL_SEARCH,
-        &a,
-        ask,
-        &env,
-        answer,
-        last_landing_before_midnight,
-    );
-    assert_eq!(args_of(&t, "flights_search").len(), 1);
-    let next_day = HKG_SIN.iter().filter(|f| f.3[..10] != f.2[..10]).count();
-    assert_eq!(listed["count"], HKG_SIN.len() - next_day);
-    let listed_ids: Vec<String> = listed["flights"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|f| get_str(f, "offer_id"))
-        .collect();
-    // 00:20 and 00:30 the next day do not land before midnight: not listed
-    assert!(
-        !listed_ids
-            .iter()
-            .any(|id| id == "fl_cx715" || id == "fl_uo777"),
-        "{listed_ids:?}"
-    );
-    assert!(listed["flights"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|f| f["arrives_days_later"] == 0));
-    assert_eq!(res["pick"]["offer_id"], "fl_sq895");
-
-    // only next-day arrivals in the window (travel_ask_real 2026-11-02, Kiwi.com's evening): nothing for the model to
-    // pick — code says none meets the window and links Kayak to compare
-    let late = |name: &str, _: &Value, _: &[Value]| -> String {
-        match name {
-            "flights_search" => hkg_sin_google_arriving_from(0)
-                .replace("2026-11-03 22:50", "2026-11-04 00:50")
-                .replace("2026-11-03 19:50", "2026-11-04 01:50"),
-            _ => "{}".into(),
-        }
-    };
-    let a = valid(
-        TRAVEL_SEARCH,
-        json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03",
-               "depart_after": "18:00", "arrive_before": "23:59"}),
-        ask,
-        &p,
-    );
-    let (_, res) = run(
-        TRAVEL_SEARCH,
-        &a,
-        started(TRAVEL_SEARCH, &a, ask),
-        &env,
-        late,
-    );
-    assert_eq!(res["status"], "nothing_found", "{res}");
-    let m = must(&res);
-    assert!(
-        m.contains("leaving after 18:00, arriving before 23:59"),
-        "{m}"
-    );
-    assert!(
-        m.contains("https://www.kayak.com/flights/HKG-SIN/2026-11-03"),
+        m.contains("- Searched: HKG to SIN on 2026-11-03, economy, 1 adult\n"),
         "{m}"
     );
 }
@@ -2725,24 +2674,6 @@ fn a_range_ending_on_the_day_itself_is_that_day_not_a_second_call() {
     );
     assert!(a.get("date_to").is_none(), "{a}");
     assert_eq!(a["date"], "2026-11-03");
-}
-
-#[test]
-fn how_complete_a_flight_search_is_is_the_models_flag() {
-    // the user, 2026-11-02: the model decides from the request whether the search must list every flight (SerpApi's
-    // deep search); Kiwi.com ignores it
-    let p = profile();
-    for (given, want) in [(Some(true), true), (Some(false), false), (None, true)] {
-        let mut args =
-            json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03"});
-        if let Some(g) = given {
-            args["comprehensive"] = json!(g);
-        }
-        let a = valid(TRAVEL_SEARCH, args, "flights to Singapore tomorrow", &p);
-        assert_eq!(a["comprehensive"], want, "{a}");
-        let req = Req::from_args(&a);
-        assert_eq!(req.search_args(Kind::Flight)["comprehensive"], want);
-    }
 }
 
 #[test]
@@ -2772,15 +2703,11 @@ fn one_flight_shown_gets_runner_ups_from_the_same_search_on_a_card_after_the_rep
         last_landing_before_midnight,
     );
     let ru = runner_ups(&t, &res, ask).expect("runner-ups for one flight shown");
-    // the choices are the search's other flights (same day, window kept), never the best match
+    // the choices are the search's other flights of the day (the model judges which fit), never the best match
     assert!(
         !ru.choices.is_empty() && !ru.choices.iter().any(|c| c == "fl_sq895"),
         "{:?}",
         ru.choices
-    );
-    assert!(
-        !ru.choices.iter().any(|c| c == "fl_cx715"),
-        "a next-day arrival is no runner-up"
     );
     let ctx: Value = serde_json::from_str(&ru.context).unwrap();
     assert_eq!(ctx["best_match"]["offer_id"], "fl_sq895");
@@ -2800,59 +2727,15 @@ fn one_flight_shown_gets_runner_ups_from_the_same_search_on_a_card_after_the_rep
     assert_eq!(card["_code"], true);
     // none chosen: no card
     assert!(ru.card(&[]).is_none());
+    // "none" (the decision's listed choice for no runner-up) is no flight: no card
+    assert!(ru.card(&[NO_RUNNER_UP.into()]).is_none());
+    assert!(!ru.choices.iter().any(|c| c == NO_RUNNER_UP));
+    assert!(ru.question.contains("\"none\""), "{}", ru.question);
     // several flights picked (the user asked for options): they are the card already, no runner-ups
     let (t2, _, res2) = search_then_pick(TRAVEL_SEARCH, &a, ask, &env, answer, |_| {
         vec!["fl_sq895".into(), "fl_sq893".into()]
     });
     assert!(runner_ups(&t2, &res2, ask).is_none());
-}
-
-#[test]
-fn a_time_window_must_be_hh_mm_and_belongs_to_flights_only() {
-    let p = profile();
-    let texts: Vec<String> = Vec::new();
-    let cx = Ctx {
-        profile: &p,
-        today: today(),
-        user_texts: &texts,
-        transcript: &[],
-    };
-    match check(
-        TRAVEL_SEARCH,
-        &json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03", "depart_after": "7:05", "arrive_before": "midnight"}),
-        &cx,
-    ) {
-        Checked::Invalid(p) => assert!(p.iter().any(|x| x.starts_with("arrive_before")), "{p:?}"),
-        other => panic!("{other:?}"),
-    }
-    let a = valid(
-        TRAVEL_SEARCH,
-        json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03", "depart_after": "7:05"}),
-        "x",
-        &p,
-    );
-    assert_eq!(a["depart_after"], "07:05");
-    assert_eq!(
-        Req::from_args(&a).search_args(Kind::Flight)["depart_after"],
-        "07:05"
-    );
-    // no time words: nothing in the search
-    let a = valid(
-        TRAVEL_SEARCH,
-        json!({"kind": "flight", "destination": "TYO", "date": "2026-12-03"}),
-        "x",
-        &p,
-    );
-    let s = Req::from_args(&a).search_args(Kind::Flight);
-    assert!(TIME_KEYS.iter().all(|k| s.get(*k).is_none()), "{s}");
-    // a hotel never takes it
-    let a = valid(
-        TRAVEL_SEARCH,
-        json!({"kind": "hotel", "city": "Tokyo", "date": "2026-12-03", "check_out": "2026-12-05", "arrive_after": "18:00"}),
-        "x",
-        &p,
-    );
-    assert!(a.get("arrive_after").is_none());
 }
 
 #[test]
@@ -3017,4 +2900,256 @@ fn a_flights_times_come_from_the_apis_fields_never_from_prose() {
     );
     assert!(o.depart.is_empty() && o.arrive.is_empty() && days_later(&o).is_none());
     assert!(flight_json(&o).get("arrival").is_none());
+}
+
+#[test]
+fn one_flight_on_several_days_reads_apart_on_the_card_and_books_the_day_chosen() {
+    // travel_user_real 2026-11-02: a date-range search's card showed "Scoot TR804" four times (the same flight on four
+    // days); the user's "I choose: …" would have booked the first
+    let tr = |id: &str, day: &str| Offer {
+        label: "Scoot TR804".into(),
+        id: id.into(),
+        depart: format!("2026-12-{day} 17:35:00"),
+        ..Default::default()
+    };
+    let ru = RunnerUps {
+        question: String::new(),
+        context: String::new(),
+        choices: vec!["kw_3".into(), "kw_5".into()],
+        best: tr("kw_7", "07"),
+        others: vec![tr("kw_3", "03"), tr("kw_5", "05")],
+        title: "Flights".into(),
+    };
+    let card = ru.card(&["kw_5".into(), "kw_3".into()]).unwrap();
+    let labels: Vec<String> = card["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| get_str(o, "label"))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "Scoot TR804 · 2026-12-07 17:35",
+            "Scoot TR804 · 2026-12-03 17:35",
+            "Scoot TR804 · 2026-12-05 17:35"
+        ]
+    );
+    assert_eq!(card["picked"], "Scoot TR804 · 2026-12-07 17:35");
+    assert_eq!(card["options"][1]["offer_id"], "kw_3");
+    // the label the user chose books that day's flight
+    let offers = [tr("kw_3", "03"), tr("kw_5", "05"), tr("kw_7", "07")];
+    assert_eq!(
+        by_label(&offers, "Scoot TR804 · 2026-12-05 17:35").map(|o| o.id.as_str()),
+        Some("kw_5")
+    );
+    // different flights keep their own labels
+    let mut other = tr("kw_9", "03");
+    other.label = "Singapore Airlines SQ 638".into();
+    let ru2 = RunnerUps {
+        others: vec![other],
+        choices: vec!["kw_9".into()],
+        ..ru
+    };
+    let card2 = ru2.card(&["kw_9".into()]).unwrap();
+    assert_eq!(card2["options"][1]["label"], "Singapore Airlines SQ 638");
+}
+
+#[test]
+fn a_flight_search_has_no_time_window_and_lists_the_whole_day() {
+    // the user, 2026-11-02: "the search MUST be all day, like a hotel or car search" — Google's own hour filter left
+    // SQ 895 out of "the last flight that lands before midnight"; the times are no arguments at all, the pick from the
+    // whole day's flights (their times, arrives_days_later) is the model's
+    let p = profile();
+    let keys = [
+        "depart_after",
+        "depart_before",
+        "arrive_after",
+        "arrive_before",
+        "comprehensive",
+    ];
+    let schema = json!(tool_schemas()).to_string();
+    for k in keys {
+        assert!(!schema.contains(&format!("\"{k}\"")), "{k} in the schema");
+    }
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "origin": "HKG", "destination": "SIN", "date": "2026-11-03",
+               "depart_after": "18:00", "arrive_before": "midnight", "comprehensive": false}),
+        "the last flight from HK to Singapore tomorrow that lands before midnight",
+        &p,
+    );
+    let s = Req::from_args(&a).search_args(Kind::Flight);
+    for k in keys {
+        assert!(a.get(k).is_none(), "{k} in {a}");
+        assert!(s.get(k).is_none(), "{k} in {s}");
+    }
+}
+
+/// Google Flights' round trip, as SerpApi answers it (checked live 2026-11-03, HKG ⇄ DPS): the first search lists the
+/// outbounds only, each priced for the trip with a departure token (`return_search`); the returns of one outbound come
+/// from a second search with that token (`return_of`), each with its own booking id and the trip's price.
+fn round_trip_answer(name: &str, a: &Value, _: &[Value]) -> String {
+    let leg = |no: &str, from: &str, dep: &str, to: &str, arr: &str| json!({"airline": "Cathay Pacific", "flight_number": no, "from": from, "depart": dep, "to": to, "arrive": arr});
+    if name != "flights_search" {
+        return "{}".into();
+    }
+    if sget(a, "return_of").is_empty() {
+        json!({"count": 2, "currency": "HKD", "offers": [
+            {"offer_id": "fl_out0800", "return_search": true, "airlines": "Cathay Pacific", "price": 5100, "stops": 0,
+             "type": "Round trip", "booking_url": "https://www.google.com/travel/flights?tfs=out0800",
+             "legs": [leg("CX 783", "HKG", "2026-11-06 08:00", "DPS", "2026-11-06 13:05")]},
+            {"offer_id": "fl_out1015", "return_search": true, "airlines": "Cathay Pacific", "price": 4838, "stops": 0,
+             "type": "Round trip", "booking_url": "https://www.google.com/travel/flights?tfs=out1015",
+             "legs": [leg("CX 785", "HKG", "2026-11-06 10:15", "DPS", "2026-11-06 15:20")]}]})
+        .to_string()
+    } else {
+        assert_eq!(
+            sget(a, "return_of"),
+            "fl_out1015",
+            "the returns of the outbound picked"
+        );
+        json!({"count": 2, "currency": "HKD", "leg": "return", "offers": [
+            {"offer_id": "fl_ret1630", "airlines": "Cathay Pacific", "price": 4838, "stops": 0, "type": "Round trip",
+             "booking_url": "https://www.google.com/travel/flights/booking?tfs=both1630",
+             "legs": [leg("CX 784", "DPS", "2026-11-08 16:30", "HKG", "2026-11-08 21:35")]},
+            {"offer_id": "fl_ret1850", "airlines": "Cathay Pacific", "price": 4838, "stops": 0, "type": "Round trip",
+             "booking_url": "https://www.google.com/travel/flights/booking?tfs=both1850",
+             "legs": [leg("CX 782", "DPS", "2026-11-08 18:50", "HKG", "2026-11-08 23:55")]}]})
+        .to_string()
+    }
+}
+
+#[test]
+fn a_google_round_trip_searches_the_returns_of_the_outbound_picked_and_shows_both_flights() {
+    // the user's request of 2026-11-03: "the best flight from Hong Kong to Bali, leaving on Friday morning and back on
+    // Sunday evening" — the search was a round trip, but its returns were never searched: the answer named Friday's
+    // flight only and told the user to pick the return on Google Flights
+    let p = json!({"name_en": "Chan Tai Man", "home_city": "HKG", "home_country": "HK"});
+    let env = Env::of(&p);
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "origin": "Hong Kong", "destination": "Bali", "date": "2026-11-06",
+               "return_date": "2026-11-08"}),
+        "bali",
+        &p,
+    );
+    // the model picks the outbound ("Friday morning"); code then searches its returns
+    let (mut t, listed, res) =
+        search_then_pick(TRAVEL_SEARCH, &a, "bali", &env, round_trip_answer, |r| {
+            ids_where(r, |f| f["flight"] == "Cathay Pacific CX 785")
+        });
+    assert_eq!(listed["count"], 2);
+    let searches = args_of(&t, "flights_search");
+    assert_eq!(searches.len(), 2, "{searches:?}");
+    assert_eq!(searches[1]["return_of"], "fl_out1015");
+    assert_eq!(searches[1]["return_date"], "2026-11-08");
+    assert_eq!(res["status"], PICK_NEEDED, "{res}");
+    assert_eq!(res["leg"], "return");
+    assert_eq!(res["outbound"]["flight"], "Cathay Pacific CX 785");
+    assert_eq!(res["flights"][1]["departure"]["time"], "2026-11-08 18:50");
+    // nothing shown yet, and travel_pick is offered for the return
+    assert!(names(&t).iter().all(|n| n != "present_choices"));
+    t.extend(workflow::result_exchange(&t, TRAVEL_PICK, &res));
+    assert!(offered(&t, TRAVEL_PICK));
+    // the model picks the return ("Sunday evening")
+    let pa = pick_args(&t, json!({"offer_ids": ["fl_ret1850"]}), &p);
+    assert_eq!(pa["outbound"]["id"], "fl_out1015");
+    t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_p2", "type": "function",
+           "function": {"name": TRAVEL_PICK, "arguments": json!({"offer_ids": ["fl_ret1850"]}).to_string()}}]}));
+    t.push(json!({"role": "tool", "tool_call_id": "call_p2", "content": json!({"status": "running", "args": pa}).to_string()}));
+    let (t, shown) = run_call("call_p2", TRAVEL_PICK, &pa, t, &env, round_trip_answer);
+    assert_eq!(shown["status"], "shown", "{shown}");
+    // no third search: the return came from the second
+    assert_eq!(args_of(&t, "flights_search").len(), 2);
+    assert_eq!(shown["pick"]["offer_id"], "fl_ret1850");
+    assert_eq!(shown["pick"]["outbound_id"], "fl_out1015");
+    let m = must(&shown);
+    assert!(
+        m.contains("Cathay Pacific CX 785: HKG 2026-11-06 10:15 → DPS 2026-11-06 15:20")
+            && m.contains("Return CX 782: DPS 2026-11-08 18:50 → HKG 2026-11-08 23:55")
+            && m.contains("HKD 4,838")
+            && m.contains("https://www.google.com/travel/flights/booking?tfs=both1850"),
+        "{m}"
+    );
+    // the card offers the other outbound (choosing it searches its own returns)
+    let ru = runner_ups(&t, &shown, "bali").expect("runner-ups");
+    assert_eq!(ru.choices, vec!["fl_out0800".to_string()]);
+}
+
+#[test]
+fn a_kiwi_round_trip_shows_its_return_flight_from_the_one_search() {
+    let p = json!({"name_en": "Chan Tai Man", "home_city": "HKG", "home_country": "HK"});
+    let env = Env::of(&p);
+    let a = valid(
+        TRAVEL_SEARCH,
+        json!({"kind": "flight", "origin": "HKG", "destination": "DPS", "date": "2026-11-06",
+               "return_date": "2026-11-08"}),
+        "bali",
+        &p,
+    );
+    let kiwi = |name: &str, _: &Value, _: &[Value]| -> String {
+        if name != "flights_search" {
+            return "{}".into();
+        }
+        json!({"count": 1, "currency": "HKD", "data": "Kiwi.com", "offers": [
+            {"offer_id": "kw_1", "airlines": "Cathay Pacific", "price": 4900, "currency": "HKD", "stops": 0,
+             "trip": "Round trip", "booking_url": "https://www.kiwi.com/u/abc",
+             "departure": {"airport": "HKG", "time": "2026-11-06 10:15:00"},
+             "arrival": {"airport": "DPS", "time": "2026-11-06 15:20:00"},
+             "legs": [{"airline": "Cathay Pacific", "flight_number": "CX 785"}],
+             "inbound": {"departure": {"airport": "DPS", "time": "2026-11-08 18:50:00"},
+                         "arrival": {"airport": "HKG", "time": "2026-11-08 23:55:00"},
+                         "legs": [{"airline": "Cathay Pacific", "flight_number": "CX 782"}], "layovers": []}}]})
+        .to_string()
+    };
+    let (t, listed, shown) = search_then_pick(TRAVEL_SEARCH, &a, "bali", &env, kiwi, |r| {
+        ids_where(r, |_| true)
+    });
+    // the model sees the return to pick by ("back on Sunday evening")
+    assert_eq!(
+        listed["flights"][0]["return"]["departure"]["time"],
+        "2026-11-08 18:50"
+    );
+    assert_eq!(listed["flights"][0]["return"]["flight"], "CX 782");
+    // one search: Kiwi's itinerary is the whole trip
+    assert_eq!(args_of(&t, "flights_search").len(), 1);
+    assert_eq!(shown["status"], "shown");
+    assert!(
+        must(&shown).contains("Return CX 782: DPS 2026-11-08 18:50 → HKG 2026-11-08 23:55"),
+        "{}",
+        must(&shown)
+    );
+}
+
+#[test]
+fn a_party_of_zero_is_not_said_and_the_search_goes_on() {
+    // bots_real 2026-11-03: the model filled every field of a hotel search, "party": 0 among them (the user named no
+    // number of guests); the check called it invalid and the JSON written again lost the city
+    let p = profile();
+    let args = json!({"kind": "hotel", "origin": "", "destination": "", "city": "Tokyo", "area": "near Shinjuku Station",
+        "date": "2026-12-04", "date_to": "", "return_date": "", "check_out": "2026-12-06", "party": 0, "cabin": "economy",
+        "nonstop": false, "next": [], "card": "", "use_connector": false, "free_cancellation": false});
+    let a = valid(
+        TRAVEL_SEARCH,
+        args,
+        "Find me a quiet hotel near Shinjuku station for 2 nights from December 4, 2026.",
+        &p,
+    );
+    assert_eq!(a["city"], "Tokyo");
+    assert!(a.get("party").is_none(), "{a}");
+    assert_eq!(Req::from_args(&a).party_or(Kind::Hotel), 1);
+    // a real party out of range is still a problem
+    let texts = vec!["x".to_string()];
+    let bad = check(
+        TRAVEL_SEARCH,
+        &json!({"kind": "hotel", "city": "Tokyo", "date": "2026-12-04", "check_out": "2026-12-06", "party": 12}),
+        &Ctx {
+            profile: &p,
+            today: today(),
+            user_texts: &texts,
+            transcript: &[],
+        },
+    );
+    assert!(matches!(bad, Checked::Invalid(_)), "{bad:?}");
 }

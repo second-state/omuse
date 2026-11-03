@@ -23,6 +23,7 @@ REAL_SITES (one at a time).
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh apdt_real"""
 import datetime as dt
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -45,7 +46,7 @@ async def main():
                         "me, refunded to my credit card.", label="apdt", timeout=1500)
         answers = [a]
         if "Next steps (yours)" not in a.block and "Not eligible" not in a.block and not a.timed_out:
-            a = await u.ask("Yes, please go ahead with the application on the official site; refund it to my credit card.",
+            a = await u.ask("I don't have the documents at hand, I'll upload them later. Please go ahead on the official site; refund it to my credit card.",
                             label="apdt follow-up", new_chat=False, timeout=1500)
             answers.append(a)
         block = "\n".join(x.block for x in answers)
@@ -73,6 +74,94 @@ async def main():
               SITE in now and "/process/upload" in now, now)
 
 
+async def with_documents(u: U.User, docs: str, doc_no: str) -> None:
+    """The user's own documents (e2e-local/apdt/ on this machine, git-ignored: passport.jpg, boarding_pass.jpg,
+    ticket_with_tax.pdf and doc_no.txt; skipped where the folder is missing): they attach them and ask in a short request; code uploads them, the platform saves the application and
+    the block gives its reference number. On another device (a fresh browser) the platform's "View Application /
+    Continue Application" with the travel document number (doc_no.txt) and that number opens the application,
+    not submitted. The arrival into Hong Kong is not given: the block says to add it there."""
+    files = [os.path.join(docs, f) for f in ("passport.jpg", "boarding_pass.jpg", "ticket_with_tax.pdf")]
+    await u.new_chat()
+    chips = await u.attach(*files)
+    check("docs: the three documents are attached", len(chips) == 3 and not any(c["bad"] for c in chips), chips)
+    a = await u.ask("Please apply for my Hong Kong departure tax refund with these documents, refunded to my credit card.",
+                    label="docs", new_chat=False, timeout=1500)
+    answers = [a]
+    if "Application reference" not in a.block and not a.timed_out:
+        a = await u.ask("I came into Hong Kong by land from Shenzhen the day before I flew out. Please go ahead and upload the documents; refund to my credit card.",
+                        label="docs follow-up", new_chat=False, timeout=1500)
+        answers.append(a)
+    block = "\n".join(x.block for x in answers)
+    ref = re.search(r"Application reference: \**([A-Z0-9]{6})\**", block)
+    print(f"INFO docs: reference {ref.group(1) if ref else None}")
+    check("docs: no takeover and no approval dialog", not any(x.takeovers or x.approvals for x in answers),
+          [(x.takeovers, x.approvals) for x in answers])
+    check("docs: the block gives the application's reference number", bool(ref), block)
+    check("docs: the block says how to open it on any device, and the entry by land / sea from the conversation",
+          "View Application / Continue Application" in block and "Entered Hong Kong by: land / sea" in block, block)
+    check("docs: the block links the official platform", any(SITE in x for z in answers for x in z.block_links),
+          [x.block_links for x in answers])
+    if not ref:
+        return
+    # another device: the platform's own "find application" with the travel document number and the reference
+    other = await u._br.new_context(viewport={"width": 420, "height": 900}, is_mobile=True)
+    pg = await other.new_page()
+    await pg.goto("https://app.apdtrefund.hk/hkTaxMobile/?lang=en", wait_until="domcontentloaded")
+    await pg.wait_for_selector("span.check-img", timeout=60000)
+
+    async def close_notices():
+        for _ in range(4):
+            shown = await pg.evaluate("() => [...document.querySelectorAll('.mask')].filter(m => m.getClientRects().length).length")
+            if not shown:
+                return
+            await pg.locator(".mask div.button, .mask button").first.click()
+            await pg.wait_for_timeout(800)
+
+    for k in range(2):
+        await pg.wait_for_timeout(1200)
+        await close_notices()
+        await pg.locator("span.check-img").nth(k).click()
+    await pg.wait_for_timeout(1200)
+    await close_notices()
+    await pg.locator("div.button", has_text="Start").first.click()
+    await pg.wait_for_selector("div.btn:has-text('View Application')", timeout=20000)
+    await pg.wait_for_timeout(1500)
+    await close_notices()
+    await pg.locator("div.btn", has_text="View Application").first.click()
+    await pg.wait_for_selector("input.el-input__inner", timeout=20000)
+    await pg.locator("input.el-input__inner").first.fill(doc_no)
+    await pg.get_by_text("Use reference number (6 digits & letters)", exact=True).first.click()
+    await pg.wait_for_timeout(800)
+    await pg.locator("input.el-input__inner").nth(1).fill(ref.group(1))
+    await pg.get_by_text("Start Search", exact=True).first.click()
+    await pg.wait_for_timeout(8000)
+    text = await pg.locator("body").inner_text()
+    print(f"INFO docs: on another device {pg.url} {' '.join(text.split())[:400]}")
+    if OUT:
+        await pg.screenshot(path=os.path.join(OUT, "apdt_other_device.png"), full_page=True)
+    check("docs: on another device the reference number opens the application, in progress and not submitted",
+          "/refundProcess" in pg.url and "Application in progress" in text
+          and re.search(r"not (yet )?been submitted", text) is not None, (pg.url, text[:300]))
+    await other.close()
+
+
+async def all_suites():
+    await main()
+    # the user's own documents: per machine, never in git — e2e-local/apdt/ (passport.jpg, boarding_pass.jpg,
+    # ticket_with_tax.pdf, doc_no.txt with the travel document's number), or OMUSE_E2E_APDT_DOCS / OMUSE_E2E_APDT_DOC_NO
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    docs = os.environ.get("OMUSE_E2E_APDT_DOCS", "") or next(
+        (d for d in ("/repo/e2e-local/apdt", os.path.join(repo, "e2e-local", "apdt")) if os.path.isdir(d)), "")
+    doc_no = os.environ.get("OMUSE_E2E_APDT_DOC_NO", "")
+    if docs and not doc_no and os.path.isfile(os.path.join(docs, "doc_no.txt")):
+        doc_no = open(os.path.join(docs, "doc_no.txt")).read().strip()
+    if docs and doc_no:
+        async with U.User() as u:
+            await with_documents(u, docs, doc_no)
+    else:
+        print("INFO docs: skipped (no e2e-local/apdt/ on this machine: the user's own documents)")
+
+
 U.setup(vault=False, profile={"name_en": "LUCAS LU", "birthday": "1985-04-12", "nationality": "Australia",
                               "gender": "Male", "email_personal": "lucas@example.com", "phone": "+61 400 000 000"})
-U.run(main)
+U.run(all_suites)

@@ -360,7 +360,19 @@ impl Broker {
                     .cloned()
                     .unwrap_or_default();
                 let mut out = Vec::new();
+                // the fields whose op failed: an op `after` one of them is skipped (a document's recognition when its
+                // file never went in — apdt_real 2026-11-03 waited 20 s for one)
+                let mut failed: Vec<String> = Vec::new();
                 for f in fills.iter().take(200) {
+                    // each op's time in the result (`ms`): where a plan spends it
+                    let op_start = std::time::Instant::now();
+                    let after = get_str(f, "after");
+                    if !after.is_empty() && failed.contains(&after) {
+                        out.push(json!({"op": get_str(f, "op"), "field": get_str(f, "field"), "ok": false,
+                                        "why": format!("skipped: {after} did not work"), "ms": 0}));
+                        failed.push(get_str(f, "field"));
+                        continue;
+                    }
                     if get_truthy(f, "secret") {
                         let v = get_str(f, "value");
                         let mut st = self.st.lock();
@@ -375,8 +387,16 @@ impl Broker {
                     // code); the plan stops here and says why
                     // `await`: the same wait as `require`, but the plan goes on either way (a page that may be slow)
                     if op == "require" || op == "await" {
-                        let at =
-                            json!({"op": "exists", "sel": f.get("sel"), "text": f.get("text")});
+                        // `any`: several things that may show (`{sel, text, scope, scope_sel}` each) — the wait ends
+                        // at the first one (a document's slot: recognised, or a dialog about it)
+                        let conds: Vec<Value> = match f.get("any").and_then(Value::as_array) {
+                            Some(a) if !a.is_empty() => a
+                                .iter()
+                                .map(|c| json!({"op": "exists", "sel": c.get("sel"), "text": c.get("text"),
+                                                "scope": c.get("scope"), "scope_sel": c.get("scope_sel")}))
+                                .collect(),
+                            _ => vec![json!({"op": "exists", "sel": f.get("sel"), "text": f.get("text")})],
+                        };
                         // `wait_ms`: a page that renders late (a single-page app's route) is given that long
                         let patience = f
                             .get("wait_ms")
@@ -386,20 +406,40 @@ impl Broker {
                         let start = std::time::Instant::now();
                         let mut here;
                         loop {
-                            here = page
-                                .eval(None, FILL_ONE_JS, vec![at.clone()])
-                                .await
-                                .ok()
-                                .and_then(|v| v.get("ok").and_then(Value::as_bool))
-                                .unwrap_or(false);
-                            if here || start.elapsed().as_millis() as i64 >= patience {
+                            here = false;
+                            for at in &conds {
+                                if page
+                                    .eval(None, FILL_ONE_JS, vec![at.clone()])
+                                    .await
+                                    .ok()
+                                    .and_then(|v| v.get("ok").and_then(Value::as_bool))
+                                    .unwrap_or(false)
+                                {
+                                    here = true;
+                                    break;
+                                }
+                            }
+                            // `absent`: the wait is for the thing to go (an overlay still covering the page)
+                            let done = if f.get("absent").and_then(Value::as_bool) == Some(true) {
+                                !here
+                            } else {
+                                here
+                            };
+                            if done || start.elapsed().as_millis() as i64 >= patience {
+                                if f.get("absent").and_then(Value::as_bool) == Some(true) {
+                                    here = !here;
+                                }
                                 break;
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         }
                         if op == "await" {
+                            if !here {
+                                failed.push(get_str(f, "field"));
+                            }
                             out.push(
-                                json!({"op": "await", "field": get_str(f, "field"), "ok": here}),
+                                json!({"op": "await", "field": get_str(f, "field"), "ok": here,
+                                       "ms": op_start.elapsed().as_millis() as u64}),
                             );
                             continue;
                         }
@@ -419,21 +459,43 @@ impl Broker {
                         // real key presses into the field: components that listen to keys (split date boxes, masked
                         // inputs) and lookups that need the typed text before they offer options
                         "keys" | "pick" => {
-                            let at = json!({"op": "focus", "sel": f.get("sel"), "scope": f.get("scope"),
-                                            "scope_sel": f.get("scope_sel"), "nth": f.get("nth"), "clear": true});
-                            let focus = page
-                                .eval(None, FILL_ONE_JS, vec![at])
-                                .await
-                                .unwrap_or_else(|e| fail(crate::pages::err_text(&e)));
+                            // `no_focus`: the field was just focused by a real click (`tap`); a script's focus and
+                            // clear would reset an autocomplete that is opening (FWD's country list, 2026-11-03)
+                            let focus = if f.get("no_focus").and_then(Value::as_bool) == Some(true)
+                            {
+                                json!({"ok": true})
+                            } else {
+                                let at = json!({"op": "focus", "sel": f.get("sel"), "scope": f.get("scope"),
+                                                "scope_sel": f.get("scope_sel"), "nth": f.get("nth"), "clear": true});
+                                page.eval(None, FILL_ONE_JS, vec![at])
+                                    .await
+                                    .unwrap_or_else(|e| fail(crate::pages::err_text(&e)))
+                            };
                             if focus.get("ok").and_then(Value::as_bool) != Some(true) {
                                 focus
                             } else {
+                                if f.get("no_focus").and_then(Value::as_bool) != Some(true) {
+                                    // a masked input (FWD Hong Kong's HKID "A______(_)" and mobile, 2026-11-03)
+                                    // refills its template and moves the caret on its own timer after the focus: the
+                                    // keys start at its first slot once it has settled
+                                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                                    let at = json!({"op": "caret_start", "sel": f.get("sel"), "scope": f.get("scope"),
+                                                    "scope_sel": f.get("scope_sel"), "nth": f.get("nth")});
+                                    let _ = page.eval(None, FILL_ONE_JS, vec![at]).await;
+                                }
                                 let typed = if op == "pick" && f.get("type").is_some() {
                                     get_str(f, "type")
                                 } else {
                                     get_str(f, "value")
                                 };
-                                match keys::type_text(&page, &typed, 25).await {
+                                // `delay_ms`: a field that filters as it is typed may drop fast keys (FWD's
+                                // country list kept "na" of "Japan" at 25 ms, insurance_real 2026-11-03)
+                                let delay =
+                                    f.get("delay_ms")
+                                        .and_then(as_i64)
+                                        .unwrap_or(25)
+                                        .clamp(10, 300) as u64;
+                                match keys::type_text(&page, &typed, delay).await {
                                     Err(e) => fail(e.to_string()),
                                     Ok(()) if op == "keys" => json!({"ok": true}),
                                     Ok(()) => {
@@ -456,7 +518,13 @@ impl Broker {
                                                "text": f["until"].get("text")});
                             let max = f.get("max").and_then(as_i64).unwrap_or(24).clamp(0, 60);
                             let mut found = false;
-                            'dirs: for key in ["next", "prev"] {
+                            // `first: "prev"`: a date in the past is reached going back first (no wasted months)
+                            let order = if get_str(f, "first") == "prev" {
+                                ["prev", "next"]
+                            } else {
+                                ["next", "prev"]
+                            };
+                            'dirs: for key in order {
                                 for _ in 0..=max {
                                     let here = page
                                         .eval(None, FILL_ONE_JS, vec![until.clone()])
@@ -524,6 +592,41 @@ impl Broker {
                                 r
                             }
                         }
+                        "set_file" => {
+                            // a plain `<input type=file>` (FWD's claim documents, mapped 2026-11-03): its files set
+                            // straight from the workspace — no chooser, no click
+                            match self.workspace_file(&get_str(f, "path")) {
+                                Err(e) => fail(e),
+                                Ok(full) => match page.page.find_element(get_str(f, "sel")).await {
+                                    Err(_) => fail("not on the page".into()),
+                                    Ok(el) => {
+                                        let mut p = SetFileInputFilesParams::new(vec![full
+                                            .to_string_lossy()
+                                            .to_string()]);
+                                        p.backend_node_id = Some(el.backend_node_id);
+                                        match page.page.execute(p).await {
+                                            Ok(_) => {
+                                                tokio::time::sleep(
+                                                    std::time::Duration::from_millis(800),
+                                                )
+                                                .await;
+                                                json!({"ok": true})
+                                            }
+                                            Err(e) => fail(e.to_string()),
+                                        }
+                                    }
+                                },
+                            }
+                        }
+                        "file" => {
+                            // a site that takes a file only through the chooser its own button opens (the HK APDT
+                            // platform's "Upload", mapped 2026-11-02: setting the input's files does nothing): the
+                            // chooser is intercepted, the button gets a real click, the chooser's input gets the file
+                            match self.workspace_file(&get_str(f, "path")) {
+                                Err(e) => fail(e),
+                                Ok(full) => self.file_by_chooser(&page, f, &full).await,
+                            }
+                        }
                         "tap" => {
                             let mut at = f.clone();
                             at["op"] = json!("rect");
@@ -550,10 +653,17 @@ impl Broker {
                             .await
                             .unwrap_or_else(|e| fail(crate::pages::err_text(&e))),
                     };
-                    if matches!(op.as_str(), "click" | "button" | "tap") {
+                    let ok = r.get("ok").and_then(Value::as_bool) == Some(true);
+                    if !ok {
+                        failed.push(get_str(f, "field"));
+                    }
+                    // a click that happened gets the page's moment to react; a missed one (an optional popup's
+                    // button not there) costs nothing
+                    if ok && matches!(op.as_str(), "click" | "button" | "tap") {
                         tokio::time::sleep(std::time::Duration::from_millis(900)).await;
                     }
                     let mut done = json!({"op": get_str(f, "op"), "sel": get_str(f, "sel"), "field": get_str(f, "field"),
+                                    "ms": op_start.elapsed().as_millis() as u64,
                                     "ok": r.get("ok").cloned().unwrap_or(json!(false)),
                                     "why": r.get("why").cloned().unwrap_or(Value::Null)});
                     if op == "js" {
@@ -958,19 +1068,9 @@ impl Broker {
                     .await?;
             }
             "upload" => {
-                let rel = get_str(body, "path");
-                let full = self.workspace.join(rel.trim_start_matches('/'));
-                let full = std::fs::canonicalize(&full).unwrap_or(full);
-                let ws = format!("{}/", self.workspace.display());
-                if !full.to_string_lossy().starts_with(&ws) || !full.is_file() {
-                    return Err(ApiError::new(
-                        400,
-                        "文件必须位于工作区内 (file must exist inside the workspace)",
-                    ));
-                }
-                if full.to_string_lossy().contains("/.quarantine/") {
-                    return Err(ApiError::new(403, "隔离区文件不能上传 (quarantined file)"));
-                }
+                let full = self
+                    .workspace_file(&get_str(body, "path"))
+                    .map_err(|e| ApiError::new(400, e))?;
                 let r = get_str(body, "ref");
                 let el = match self.locate(&task_id, &r).await {
                     Ok(el) => el,
@@ -1034,6 +1134,104 @@ impl Broker {
             }
         }
         Ok(snap)
+    }
+
+    /// A file the browser may upload: inside the workspace, existing, not quarantined.
+    fn workspace_file(&self, rel: &str) -> Result<std::path::PathBuf, String> {
+        let full = self.workspace.join(rel.trim_start_matches('/'));
+        let full = std::fs::canonicalize(&full).unwrap_or(full);
+        let ws = format!("{}/", self.workspace.display());
+        if !full.to_string_lossy().starts_with(&ws) || !full.is_file() {
+            return Err("文件必须位于工作区内 (file must exist inside the workspace)".into());
+        }
+        if full.to_string_lossy().contains("/.quarantine/") {
+            return Err("隔离区文件不能上传 (quarantined file)".into());
+        }
+        Ok(full)
+    }
+
+    /// The form op `file`: the button `f` names (`sel`, `text`) gets a real click with the page's file chooser
+    /// intercepted, and the chooser's input gets `full`; `{ok, why}` like every op.
+    async fn file_by_chooser(&self, page: &TaskPage, f: &Value, full: &std::path::Path) -> Value {
+        use chromiumoxide::cdp::browser_protocol::emulation::{
+            ClearDeviceMetricsOverrideParams, SetDeviceMetricsOverrideParams,
+        };
+        use chromiumoxide::cdp::browser_protocol::page::{
+            EventFileChooserOpened, SetInterceptFileChooserDialogParams,
+        };
+        use futures::StreamExt;
+        let fail = |e: String| json!({"ok": false, "why": e});
+        if let Err(e) = page
+            .page
+            .execute(SetInterceptFileChooserDialogParams::new(true))
+            .await
+        {
+            return fail(e.to_string());
+        }
+        let mut opened = match page.page.event_listener::<EventFileChooserOpened>().await {
+            Ok(l) => l,
+            Err(e) => return fail(e.to_string()),
+        };
+        // a dialog taller than the window keeps its button below the edge, where no click lands (the APDT platform's
+        // boarding-pass sample, 2026-11-03): the page is made tall enough for the click, then given back its window
+        let width = page
+            .eval(None, "() => window.innerWidth", vec![])
+            .await
+            .ok()
+            .and_then(|v| v.as_i64())
+            .filter(|w| *w > 0)
+            .unwrap_or(1280);
+        let _ = page
+            .page
+            .execute(SetDeviceMetricsOverrideParams::new(width, 2400, 1.0, false))
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let mut at = f.clone();
+        at["op"] = json!("rect");
+        let r = page
+            .eval(None, FILL_ONE_JS, vec![at])
+            .await
+            .unwrap_or_else(|e| fail(crate::pages::err_text(&e)));
+        let out = match (r.get("x").and_then(as_f64), r.get("y").and_then(as_f64)) {
+            (Some(x), Some(y)) if r.get("ok").and_then(Value::as_bool) == Some(true) => {
+                match page.click_at(x, y, false).await {
+                    Err(e) => fail(e.to_string()),
+                    Ok(()) => {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            opened.next(),
+                        )
+                        .await
+                        {
+                            Ok(Some(ev)) => match ev.backend_node_id {
+                                Some(node) => {
+                                    let mut p = SetFileInputFilesParams::new(vec![full
+                                        .to_string_lossy()
+                                        .to_string()]);
+                                    p.backend_node_id = Some(node);
+                                    match page.page.execute(p).await {
+                                        Ok(_) => json!({"ok": true}),
+                                        Err(e) => fail(e.to_string()),
+                                    }
+                                }
+                                None => fail("the file chooser has no input".into()),
+                            },
+                            _ => fail("no file chooser opened".into()),
+                        }
+                    }
+                }
+            }
+            _ => r,
+        };
+        let _ = page
+            .page
+            .execute(SetInterceptFileChooserDialogParams::new(false))
+            .await;
+        let _ = page
+            .page
+            .execute(ClearDeviceMetricsOverrideParams::default())
+            .await;
+        out
     }
 
     /// `POST /user/input` body handler (`_user_input`).
@@ -1252,6 +1450,10 @@ const FILL_ONE_JS: &str = r#"(f) => {
     }
     return {ok: document.activeElement === el || el.contains(document.activeElement)};
   }
+  if (f.op === 'caret_start') {
+    try { el.setSelectionRange(0, 0); } catch (e) { /* a field without a caret (date, number) */ }
+    return {ok: true};
+  }
   if (f.op === 'date') {
     // a read-only box driven by a date picker (bootstrap-datepicker): its own setDate, else the value and a change
     const jq = window.jQuery;
@@ -1302,6 +1504,13 @@ const READ_ELEMENTS_JS: &str = r#"(items) => {
   const out = {};
   for (const it of (Array.isArray(items) ? items : []).slice(0, 20)) {
     const name = String(it && it.name || ''); if (!name) continue;
+    // a value the site keeps in its own storage under a fixed key (FWD's saved quote: `HashKey`), never a pattern
+    if (it.storage === 'local' || it.storage === 'session') {
+      let v = null;
+      try { v = (it.storage === 'local' ? localStorage : sessionStorage).getItem(String(it.key || '')); } catch (e) {}
+      out[name] = v == null ? [] : [clean(v)];
+      continue;
+    }
     const max = Math.min(Math.max(parseInt(it.max, 10) || 40, 1), 200);
     let els = [];
     try { els = Array.from(document.querySelectorAll(String(it.sel || ''))); } catch (e) {}

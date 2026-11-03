@@ -11,12 +11,14 @@
 //!
 //! Then every step is code ([`next`]): the eligibility rule (left Hong Kong the same or the next calendar day, within
 //! 28 days of the departure flight, after departing, the tax paid), then the real platform (a Vue app behind a Queue-it
-//! waiting room, mapped 2026-11-02) through its notes, "Start", "New Application" and the entry mode up to the travel
-//! document's upload, by its form function (`crate::forms`). The documents' photos, the refund method and the face
-//! recognition are the user's own steps, on their phone: never uploaded from a made-up file, never handed over
-//! (`guards::apdt_face_guard`). The machine ends with [`Step::Done`]: a JSON result (status, the rule's verdict, the
-//! amount, the deadline, the steps left and the link — as `show`, appended to the reply by code — and `hints`); the
-//! model writes the reply from it.
+//! waiting room, mapped 2026-11-02 with the user's own documents) through its notes, "Start", "New Application" and the
+//! entry mode, then uploads the documents of this chat into their slots, by its form function (`crate::forms`) — never a
+//! made-up file. The recognised travel document saves the application under a reference number, read from its fixed
+//! element, which opens the application on any device ("View Application / Continue Application"): no hand-over (the
+//! user, 2026-11-02). The refund method, the face recognition and Submit are the user's (`guards::apdt_face_guard`).
+//! The machine ends with [`Step::Done`]: a JSON result (status, the rule's verdict, the amount, the deadline, the
+//! reference number, the steps left and the link — as `show`, appended to the reply by code — and `hints`); the model
+//! writes the reply from it.
 
 use std::sync::LazyLock;
 
@@ -83,22 +85,29 @@ pub fn tool_schemas() -> Vec<Value> {
         APDT_REFUND,
         "Apply for the Hong Kong air passenger departure tax (APDT) refund on the Airport Authority's platform — only \
 when the user asks to apply. Call it with the flights the user gave (or the boarding passes and the receipt show) and the \
-refund method: no document is needed for the call — the user uploads the documents themselves, on their phone. When \
+refund method, and the documents of this chat (the passport's photo page, the boarding passes, the receipt): code \
+uploads them, which saves the application under a reference number that opens it on any device. When \
 the flights are not given and a mailbox is connected, code fetches the documents (status mail_read: read the boarding \
 passes and the receipt just read and call again with the flights). Code checks the rule (left Hong Kong the same or the next day, \
-within 28 days, the tax paid), opens the platform and goes through its notes and entry mode to the document upload, \
-and stops there: the documents' photos, the refund method and the face recognition are the user's, on their phone. \
-The JSON result has the rule's verdict, the deadline, the amount and the link (status ready) or says why not. status \
+within 28 days, the tax paid), opens the platform, goes through its notes and entry mode and uploads the documents; \
+the refund method, the face recognition and Submit are the user's. The JSON result has the rule's verdict, the \
+deadline, the amount, the link and the reference number (status saved; ready without a travel document) or says why \
+not. status \
 needs_input: ask the user for the missing fields, then call again with every field; invalid: fix the arguments and call \
 again. Write the reply from the result (code appends the facts in show to the reply).",
         json!({
-            "in_flight": {"type": "string", "description": "the flight INTO Hong Kong: airline code and number (\"SQ 890\")"},
+            "entry_mode": {"type": "string", "enum": ["air", "land_sea", "skypier"], "description": "how the user entered Hong Kong, from the conversation: air (a flight — then also in_flight, in_date and the arrival boarding pass), land_sea (a land or sea control point such as Shenzhen Bay), skypier (the SkyPier ferry / coach or Park & Fly)"},
+            "in_flight": {"type": "string", "description": "the flight INTO Hong Kong: airline code and number (\"SQ 890\"); leave it out when the user did not give it (they add it on the platform)"},
             "in_date": date("the day that flight arrived in Hong Kong"),
             "out_flight": {"type": "string", "description": "the flight OUT of Hong Kong (the departure the tax was paid on)"},
             "out_date": date("the day that flight left Hong Kong"),
             "tax_hkd": {"type": "integer", "description": "the Hong Kong Air Passenger Departure Tax the receipt shows (120 or 200); 0 when the receipt shows none"},
             "refund_method": {"type": "string", "enum": ["card", "cash", "alipay", "wechat", "alipayHK", "wechatHK"], "description": "how the user wants the refund"},
-            "wallet_account": {"type": "string", "description": "the e-wallet account the refund goes to (Alipay / WeChat Pay)"}
+            "wallet_account": {"type": "string", "description": "the e-wallet account the refund goes to (Alipay / WeChat Pay)"},
+            "passport_file": {"type": "string", "description": "the travel document's photo page: its path in this chat (uploads/… or attachments/…); it saves the application under a reference number"},
+            "out_pass_file": {"type": "string", "description": "the departure flight's boarding pass: its path in this chat"},
+            "in_pass_file": {"type": "string", "description": "the arrival flight's boarding pass: its path in this chat"},
+            "receipt_file": {"type": "string", "description": "the ticket or e-ticket receipt showing the departure tax: its path in this chat"}
         }),
         &[],
     )]
@@ -223,6 +232,7 @@ pub struct Ctx<'a> {
 }
 
 const KEYS: &[&str] = &[
+    "entry_mode",
     "in_flight",
     "in_date",
     "out_flight",
@@ -241,6 +251,8 @@ const FILES: &[&str] = &[
     "receipt_file",
     "passport_file",
 ];
+/// How the user entered Hong Kong, as the platform's three tiles (the model reads it from the conversation).
+const MODES: &[&str] = &["air", "land_sea", "skypier"];
 const METHODS: &[&str] = &["card", "cash", "alipay", "wechat", "alipayHK", "wechatHK"];
 
 fn s_arg(a: &Value, k: &str) -> String {
@@ -278,6 +290,66 @@ fn with_earlier(args: &Value, transcript: &[Value]) -> Value {
         }
     }
     Value::Object(merged)
+}
+
+/// The documents asked once in the conversation, all optional: what the user skips they upload later in the saved
+/// application (the user, 2026-11-02: "have a conversation with the user to collect as much as possible").
+const DOCS_ASK: &str = "the documents still missing, if the user has them (optional — anything skipped is uploaded later \
+in the saved application), attached in this chat:";
+
+/// The documents a call may give, as the user is asked for them.
+const DOC_NAMES: &[(&str, &str)] = &[
+    ("passport_file", "the passport's photo page (passport_file; it saves the application under a reference number)"),
+    ("out_pass_file", "the departure flight's boarding pass (out_pass_file)"),
+    ("in_pass_file", "the arrival flight's boarding pass (in_pass_file)"),
+    ("receipt_file", "the ticket receipt showing the departure tax (receipt_file)"),
+];
+
+/// The start of the one-time send-back when the user attached files and the call names none.
+const MAP_FILES: &str = "the user attached these files in this chat";
+
+/// Whether an earlier `apdt_refund` result in this chat holds a line starting with `start` (its `missing` or
+/// `problems`): what the tool already said once is not said again.
+fn said_before(transcript: &[Value], start: &str) -> bool {
+    transcript
+        .iter()
+        .flat_map(tool_calls)
+        .filter(|tc| stored_call(tc).0 == APDT_REFUND)
+        .filter_map(|tc| {
+            let id = get_str(tc, "id");
+            transcript
+                .iter()
+                .find(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == id)
+        })
+        .any(|m| {
+            let v = json_of(m);
+            ["missing", "problems"].iter().any(|k| {
+                v[*k].as_array().is_some_and(|a| {
+                    a.iter()
+                        .any(|x| x.as_str().is_some_and(|x| x.starts_with(start)))
+                })
+            })
+        })
+}
+
+/// Whether an earlier `apdt_refund` call in this chat already asked for the documents ([`DOCS_ASK`]).
+/// Whether an earlier `apdt_refund` call in this chat already asked the user (`needs_input`).
+fn asked_once(transcript: &[Value]) -> bool {
+    transcript
+        .iter()
+        .flat_map(tool_calls)
+        .filter(|tc| stored_call(tc).0 == APDT_REFUND)
+        .filter_map(|tc| {
+            let id = get_str(tc, "id");
+            transcript
+                .iter()
+                .find(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == id)
+        })
+        .any(|m| get_str(&json_of(m), "status") == "needs_input")
+}
+
+fn docs_asked(transcript: &[Value]) -> bool {
+    said_before(transcript, DOCS_ASK)
 }
 
 /// Whether this chat's documents were already fetched by the machine (a `mail_read` result).
@@ -379,11 +451,37 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
     if !wallet.is_empty() {
         out.insert("wallet_account".into(), json!(wallet));
     }
+    // "land / sea", "Land-Sea" → land_sea: separators folded, letters kept
+    let mode = s_arg(&a, "entry_mode")
+        .to_lowercase()
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    if !mode.is_empty() {
+        match MODES.iter().find(|m| **m == mode) {
+            Some(m) => {
+                out.insert("entry_mode".into(), json!(m));
+            }
+            None => problems.push(format!("entry_mode: one of {}", MODES.join(", "))),
+        }
+    }
+    // by air, the arrival is a flight (its boarding pass is the platform's second ticket); by land / sea or SkyPier
+    // there is no arrival flight
+    if matches!(
+        out.get("entry_mode").and_then(Value::as_str),
+        Some("land_sea" | "skypier")
+    ) {
+        for k in ["in_flight", "in_pass_file"] {
+            out.remove(k);
+        }
+    }
     if !problems.is_empty() {
         return Checked::Invalid(problems);
     }
-    // the trip decides the rule (the same or the next day, within 28 days): known before the platform opens
-    let trip_known = ["in_flight", "in_date", "out_flight", "out_date"]
+    // the trip decides the rule (within 28 days of the departure, the same or the next day): known before the platform opens
+    // the departure decides it (the arrival may be left for the platform: the user, 2026-11-02)
+    let trip_known = ["out_flight", "out_date"]
         .iter()
         .all(|k| out.contains_key(*k));
     // the trip not known yet: the documents are fetched and read first (the mail's, and the PDFs the user attached)
@@ -396,14 +494,35 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
         out.insert("user_pdfs".into(), json!(user_pdfs));
         return Checked::Valid(Value::Object(out));
     }
+    // the user attached files and the call names none of them: the model maps each to its field (apdt_real
+    // 2026-11-03: three documents attached, the tool called twice without them)
+    // once only: the tool always runs on what the user gave (the user, 2026-11-03) — a call that still names none goes
+    // on without them
+    let attached = user_files(cx.transcript);
+    if !attached.is_empty()
+        && !FILES.iter().any(|k| out.contains_key(*k))
+        && !said_before(cx.transcript, MAP_FILES)
+    {
+        return Checked::Invalid(vec![format!(
+            "{MAP_FILES} {}: pass each document by its path as passport_file, out_pass_file, in_pass_file or \
+             receipt_file (leave out only the documents the user did not give)",
+            attached.join(", ")
+        )]);
+    }
     if !out.contains_key("passport_file") {
-        if let Some(p) = passport_default(&user_files(cx.transcript)) {
+        if let Some(p) = passport_default(&attached) {
             out.insert("passport_file".into(), json!(p));
         }
     }
     let has = |k: &str| out.contains_key(k);
     let mut missing: Vec<String> = Vec::new();
-    if !(has("in_flight") && has("in_date")) {
+    // the arrival into Hong Kong may be left out: the user adds it on the platform (the user, 2026-11-02); given, it
+    // needs both its flight and its date
+    if !has("entry_mode") {
+        missing.push("entry_mode (how the user entered Hong Kong: air — a flight; land_sea — through a land or sea control point such as Shenzhen Bay; skypier — the SkyPier ferry / coach or Park & Fly)".into());
+    }
+    let by_air = out.get("entry_mode").and_then(Value::as_str) == Some("air");
+    if by_air && !(has("in_flight") && has("in_date")) {
         missing.push("the flight into Hong Kong and its date (in_flight, in_date)".into());
     }
     if !(has("out_flight") && has("out_date")) {
@@ -418,7 +537,23 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
         }
         Some(_) => {}
     }
-    if !missing.is_empty() {
+    // the documents neither the mail nor the chat gave: asked once, with the rest, before the platform opens — then the
+    // call goes on with whatever the user gave (the user, 2026-11-02)
+    // the arrival's boarding pass only by air; SkyPier's platform asks the face check first, so code uploads nothing
+    let mode_now = out.get("entry_mode").and_then(Value::as_str).unwrap_or("");
+    let docs: Vec<&str> = DOC_NAMES
+        .iter()
+        .filter(|(k, _)| !out.contains_key(*k))
+        .filter(|(k, _)| *k != "in_pass_file" || mode_now == "air")
+        .filter(|_| mode_now != "skypier")
+        .map(|(_, what)| *what)
+        .collect();
+    if !docs.is_empty() && !docs_asked(cx.transcript) {
+        missing.push(format!("{DOCS_ASK} {}", docs.join("; ")));
+    }
+    // asked once: the next call runs with whatever the user gave (the user, 2026-11-03: "the code tool is called
+    // regardless") — the platform asks for what is still missing, and the result says what was not given
+    if !missing.is_empty() && !asked_once(cx.transcript) {
         return Checked::NeedsInput(missing);
     }
     Checked::Valid(Value::Object(out))
@@ -449,6 +584,8 @@ impl Method {
 /// Everything the rule and the result need, from the validated arguments.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Facts {
+    /// how the user entered Hong Kong: air, land_sea or skypier ("" when not given)
+    pub entry_mode: String,
     pub in_flight: String,
     pub in_date: Option<NaiveDate>,
     pub out_flight: String,
@@ -468,6 +605,7 @@ impl Facts {
             w => Some(Method::Wallet(w.to_string(), g("wallet_account"))),
         };
         Facts {
+            entry_mode: g("entry_mode"),
             in_flight: g("in_flight"),
             in_date: date_of(&g("in_date")),
             out_flight: g("out_flight"),
@@ -480,11 +618,13 @@ impl Facts {
 
 /// Why the trip does not qualify (the rule), or `None` when it does.
 pub fn ineligible(f: &Facts, today: NaiveDate, window: i64) -> Option<(&'static str, String)> {
-    let (Some(a), Some(d)) = (f.in_date, f.out_date) else {
-        return None;
-    };
-    let gap = (d - a).num_days();
-    if !(0..=1).contains(&gap) {
+    let d = f.out_date?;
+    // the same or the next day after arriving: checked when the arrival is given (else the user adds it on the platform,
+    // which checks it)
+    if let Some(a) = f
+        .in_date
+        .filter(|a| !(0..=1).contains(&(d - *a).num_days()))
+    {
         return Some(("stayed_longer", format!(
             "arrived on {} ({}) and left on {} ({}): the refund is only for passengers who leave Hong Kong by air on the same or the next calendar day after arriving",
             long(a), f.in_flight, long(d), f.out_flight
@@ -629,6 +769,11 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
                 "hints": ["nothing was submitted"]}),
             );
         }
+        // SkyPier: the platform's face check comes right after the travel document and before any saved application
+        // (walked 2026-11-03), so there is no session for code to make: the facts, the link and the user's steps
+        if f.entry_mode == "skypier" {
+            return Step::Done(skypier_result(&f, m.today));
+        }
         return Step::Calls(vec![call(
             n,
             "browser_navigate",
@@ -637,11 +782,20 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     }
     // 3. the notes, "Start", "New Application" and the entry mode, up to the travel document's upload (its form
     //    function, `crate::forms`); the photos from there on are the user's
+    // the chat's documents go with it: the form function uploads each into its slot (the user, 2026-11-02: the
+    // recognised travel document creates the application, whose reference number opens it on any device)
+    let mut fill_args = json!({"stage": "start", "entry_mode": if f.entry_mode.is_empty() { "air" } else { f.entry_mode.as_str() }});
+    for k in FILES {
+        let v = s_arg(args, k);
+        if !v.is_empty() {
+            fill_args[*k] = json!(v);
+        }
+    }
     let Some((_, fill)) = results_of(t, "form_fill")
         .into_iter()
         .find(|(a, _)| sget(a, "stage") == "start")
     else {
-        return Step::Calls(vec![call(n, "form_fill", json!({"stage": "start"}))]);
+        return Step::Calls(vec![call(n, "form_fill", fill_args)]);
     };
     if failed(fill) {
         return Step::Done(stopped_result(
@@ -652,7 +806,122 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     if let Some(why) = stopped(fill) {
         return Step::Done(stopped_result(&f, &why));
     }
-    Step::Done(result(&f, m.today))
+    if s_arg(args, "passport_file").is_empty() {
+        return Step::Done(result(&f, m.today));
+    }
+    // the application's reference number, from its fixed element (one character per span)
+    let Some((_, read)) = results_of(t, "browser_read_elements").into_iter().next() else {
+        return Step::Calls(vec![call(
+            n,
+            "browser_read_elements",
+            json!({"read": [{"name": "reference", "sel": REFERENCE_SEL}]}),
+        )]);
+    };
+    match reference_of(read) {
+        Some(code) => Step::Done(saved_result(&f, &code, &not_given(args))),
+        None => Step::Done(stopped_result(
+            &f,
+            "the platform did not recognise the travel document's photo, so no application was saved",
+        )),
+    }
+}
+
+/// The application's reference number on the platform's pages (mapped 2026-11-02): one character per span.
+const REFERENCE_SEL: &str = ".bottom span.card-number.code";
+
+/// The reference number from [`REFERENCE_SEL`]'s values: six letters and digits, else `None`.
+fn reference_of(read: &Value) -> Option<String> {
+    let code: String = super::confirm::element_values(read, "reference")
+        .iter()
+        .map(|c| c.trim())
+        .collect();
+    (code.len() == 6 && code.chars().all(|c| c.is_ascii_alphanumeric())).then_some(code)
+}
+
+/// The application saved on the platform with the chat's documents: the reference number and how to open it on any
+/// device; the refund method, the face recognition and Submit are the user's.
+/// The documents the call did not give (the user skipped them): they upload them in the saved application.
+fn not_given(args: &Value) -> Vec<&'static str> {
+    [
+        ("out_pass_file", "the departure flight's boarding pass"),
+        ("in_pass_file", "the arrival flight's boarding pass"),
+        (
+            "receipt_file",
+            "the ticket or e-ticket receipt showing the departure tax",
+        ),
+    ]
+    .into_iter()
+    .filter(|(k, _)| s_arg(args, k).is_empty())
+    .map(|(_, what)| what)
+    .collect()
+}
+
+fn saved_result(f: &Facts, code: &str, missing: &[&str]) -> Value {
+    let mut v = result(f, NaiveDate::MIN);
+    v["status"] = json!("saved");
+    v["reference"] = json!(code);
+    v["to_upload"] = json!(missing);
+    if let Some(show) = v["show"].as_array_mut() {
+        show.retain(|x| get_str(x, "label") != "Next steps (yours)");
+        let at = show
+            .iter()
+            .position(|x| get_str(x, "label") == "Refund platform")
+            .unwrap_or(show.len());
+        show.insert(at, S::reference("Application reference", "申请编号", code));
+        // what the user skipped: theirs to upload in the saved application (the user, 2026-11-02)
+        if !missing.is_empty() {
+            show.insert(
+                at + 1,
+                S::fact(
+                    "Still to upload (yours)",
+                    "还需上传（你的）",
+                    &format!("{} — in the saved application", missing.join("; ")),
+                ),
+            );
+        }
+        show.push(S::fact(
+            "Next steps (yours)",
+            "下一步（你的）",
+            &format!(
+                "the documents are uploaded and the application is saved, not submitted. On any device open the platform, \
+                 choose \"View Application / Continue Application\", enter your travel document number and the reference \
+                 number {code}, then \"Continue Process\": {}upload the documents still missing, choose the refund {}, do the face \
+                 recognition and submit",
+                if f.in_flight.is_empty() {
+                    "add your arrival into Hong Kong (the arrival flight's boarding pass, or change the entry mode if you came by land or sea), "
+                } else {
+                    ""
+                },
+                f.method
+                    .as_ref()
+                    .map(Method::words)
+                    .unwrap_or_else(|| "method".into())
+            ),
+        ));
+    }
+    v["hints"] = json!([
+        "the application is saved with the user's documents, not submitted; the refund method, the face recognition and Submit are the user's, on any device with the reference number"
+    ]);
+    v
+}
+
+/// Entry by the SkyPier Terminal: the platform verifies the travel document with the face check before it saves an
+/// application, so the steps are the user's, on their phone, from the start.
+fn skypier_result(f: &Facts, today: NaiveDate) -> Value {
+    let mut v = result(f, today);
+    v["status"] = json!("skypier");
+    if let Some(show) = v["show"].as_array_mut() {
+        show.retain(|x| get_str(x, "label") != "Next steps (yours)");
+        show.push(S::fact(
+            "Next steps (yours)",
+            "下一步（你的）",
+            "on your phone, open the platform and choose \"SkyPier Terminal (Ferry/Coach/Park & Fly)\": it checks your travel document with a face check first (the platform saves the application only after it), then the departure boarding pass and the receipt with the tax, the refund method, and submit",
+        ));
+    }
+    v["hints"] = json!([
+        "SkyPier: the face check comes first on the platform, so nothing was uploaded for the user"
+    ]);
+    v
 }
 
 /// The run stopped before the document upload (the platform's waiting room, a page that changed): the facts, the
@@ -680,17 +949,46 @@ pub fn result(f: &Facts, _today: NaiveDate) -> Value {
     let deadline = f.out_date.map(|d| d + Duration::days(APDT.window_days));
     let day = |d: Option<NaiveDate>| d.map(long).unwrap_or_else(|| "?".into());
     // the facts the user must read: appended to the reply by code (agent/show.rs)
-    let mut show = vec![S::fact(
-        "Eligible",
-        "符合条件",
-        &format!(
-            "arrived on {} {}, left on {} {} — the same or the next calendar day",
-            f.in_flight,
-            day(f.in_date),
-            f.out_flight,
-            day(f.out_date)
-        ),
-    )];
+    let mut show = vec![if f.entry_mode == "land_sea" || f.entry_mode == "skypier" {
+        S::fact(
+            "Entered Hong Kong by",
+            "入境方式",
+            &format!(
+                "{}{} — the refund is for leaving by air ({} {}) on the same or the next calendar day",
+                if f.entry_mode == "land_sea" {
+                    "land / sea (a control point such as Shenzhen Bay)"
+                } else {
+                    "the SkyPier Terminal (ferry / coach, Park & Fly)"
+                },
+                f.in_date.map(|d| format!(" on {}", long(d))).unwrap_or_default(),
+                f.out_flight,
+                day(f.out_date)
+            ),
+        )
+    } else if f.in_flight.is_empty() {
+        // the arrival left for the user to add on the platform (the user, 2026-11-02)
+        S::fact(
+            "Arrival into Hong Kong",
+            "抵港航班",
+            &format!(
+                "not given — add it on the platform (the arrival flight's boarding pass, or the entry mode if you came by land or sea): the refund is only for leaving by air ({} {}) on the same or the next calendar day after arriving",
+                f.out_flight,
+                day(f.out_date)
+            ),
+        )
+    } else {
+        S::fact(
+            "Eligible",
+            "符合条件",
+            &format!(
+                "arrived on {} {}, left on {} {} — the same or the next calendar day",
+                f.in_flight,
+                day(f.in_date),
+                f.out_flight,
+                day(f.out_date)
+            ),
+        )
+    }];
     if let Some(tax) = f.tax {
         show.push(S::amount(
             "Departure tax to be refunded",
@@ -793,6 +1091,12 @@ card.";
             "files_read" => format!("<untrusted_content source=\"file {}\">\n--- page 1 ---\nBOARDING PASS\n</untrusted_content>", sget(args, "path")),
             "browser_navigate" => page(HOME, "  Notes for Application"),
             "form_fill" => fill.to_string(),
+            // the reference number's spans (none when the fill's plan says the passport was not recognised)
+            "browser_read_elements" => {
+                let chars: Vec<&str> = if fill.contains("unrecognised") { vec![] } else { vec!["F", "4", "F", "T", "2", "3"] };
+                format!("<untrusted_content source=\"web page {HOME}\">\n{}\n</untrusted_content>",
+                        json!({"trust": "untrusted", "url": HOME, "elements": {"reference": chars}}))
+            }
             _ => "ok".into(),
         }
     }
@@ -875,15 +1179,32 @@ card.";
 
     /// What the model reads in the boarding passes and the receipt the machine fetched.
     fn facts() -> Value {
-        json!({"in_flight": "SQ 890", "in_date": "2026-10-29", "out_flight": "CX 500", "out_date": "2026-10-30",
+        json!({"entry_mode": "air", "in_flight": "SQ 890", "in_date": "2026-10-29", "out_flight": "CX 500", "out_date": "2026-10-30",
                "in_pass_file": SQ_PASS, "out_pass_file": CX_PASS, "receipt_file": RECEIPT, "tax_hkd": 120,
                "refund_method": "card"})
+    }
+
+    /// A chat in which an earlier call already asked for the documents (the user skipped them).
+    fn docs_asked_chat(user: &str) -> Vec<Value> {
+        skipped(vec![json!({"role": "user", "content": user})])
+    }
+
+    /// `t` and then the documents asked once and skipped by the user.
+    fn skipped(mut t: Vec<Value>) -> Vec<Value> {
+        t.extend(step(
+            "call_a",
+            APDT_REFUND,
+            &json!({}),
+            &json!({"status": "needs_input", "missing": [format!("{DOCS_ASK} the passport's photo page")]}).to_string(),
+        ));
+        t.push(json!({"role": "user", "content": "I have no documents at hand."}));
+        t
     }
 
     const FILLED: &str = r#"{"url": "https://app.apdtrefund.hk/hkTaxMobile/process/upload", "filled": [{"op": "click", "field": "entry_air", "ok": true}]}"#;
 
     #[test]
-    fn the_trip_and_the_refund_method_are_asked_before_the_platform_the_documents_are_not() {
+    fn the_trip_the_refund_method_and_the_optional_documents_are_asked_once_before_the_platform() {
         let t = vec![json!({"role": "user", "content": REQUEST})];
         // a mailbox and the trip unknown: the documents are fetched first
         match checked(json!({}), &t, true) {
@@ -898,23 +1219,30 @@ card.";
         match checked(json!({}), &bare, false) {
             Checked::NeedsInput(m) => {
                 let m = m.join(" | ");
+                // the arrival may be left for the user to add on the platform (the user, 2026-11-02): not asked; the
+                // documents are asked with the rest, as optional (what is skipped is uploaded later in the session)
                 assert!(
-                    m.contains("into Hong Kong")
+                    !m.contains("into Hong Kong")
                         && m.contains("out of Hong Kong")
                         && m.contains("refund_method"),
                     "{m}"
                 );
-                assert!(
-                    !m.contains("passport_file") && !m.contains("receipt_file"),
-                    "{m}"
-                );
+                assert!(m.contains("passport_file") && m.contains("optional"), "{m}");
             }
             other => panic!("{other:?}"),
         }
-        // the trip given in words: valid with no files
+        // asked once already: the next call runs with whatever the user gave, even nothing (the user, 2026-11-03)
+        let (t0, args0) = started(
+            docs_asked_chat("Please apply for my Hong Kong departure tax refund."),
+            json!({}),
+            false,
+        );
+        let (_, res0) = run(t0, &args0, FILLED);
+        assert_eq!(res0["status"], "ready", "{res0}");
+        // the trip given in words, the documents asked once already and skipped: valid with no files
         match checked(
             json!({"in_flight": "sq890", "in_date": "2026-10-29", "out_flight": "CX 500", "out_date": "2026-10-30", "refund_method": "card"}),
-            &bare,
+            &docs_asked_chat("Please apply for my Hong Kong departure tax refund."),
             false,
         ) {
             Checked::Valid(v) => assert_eq!(v["in_flight"], "SQ 890"),
@@ -961,12 +1289,33 @@ card.";
         assert_eq!(calls_of(&t, "files_read").len(), 3);
         assert!(calls_of(&t, "browser_navigate").is_empty());
         t.extend(workflow::result_exchange(&t, APDT_REFUND, &res));
+        // the mail had the boarding passes and the receipt, not the passport: asked once (optional), the user skips it
+        match checked(facts(), &t, true) {
+            Checked::NeedsInput(m) => {
+                assert_eq!(m.len(), 1, "{m:?}");
+                assert!(
+                    m[0].starts_with(DOCS_ASK)
+                        && m[0].contains("passport_file")
+                        && !m[0].contains("receipt_file"),
+                    "{m:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let t = skipped(t);
         let (t, args) = started(t, facts(), true);
         let (t, res) = run(t, &args, FILLED);
         assert_eq!(res["status"], "ready");
         assert_eq!(calls_of(&t, "browser_navigate")[0]["url"], APDT.start_url);
-        assert_eq!(calls_of(&t, "form_fill"), [json!({"stage": "start"})]);
-        // no upload, no card, no hand-over: the documents and the face recognition are the user's, on their phone
+        // the documents of the chat go to the form function, which uploads them into their slots
+        assert_eq!(
+            calls_of(&t, "form_fill"),
+            [
+                json!({"stage": "start", "entry_mode": "air", "in_pass_file": SQ_PASS, "out_pass_file": CX_PASS, "receipt_file": RECEIPT})
+            ]
+        );
+        // no travel document in the chat: no application saved, nothing to read; no card, no hand-over
+        assert!(calls_of(&t, "browser_read_elements").is_empty());
         for never in [
             "browser_upload",
             "browser_fill_secret",
@@ -987,7 +1336,7 @@ card.";
 
     #[test]
     fn a_page_that_did_not_reach_the_upload_stops_with_the_facts() {
-        let bare = vec![json!({"role": "user", "content": "apply"})];
+        let bare = docs_asked_chat("apply");
         let mut a = facts();
         for k in ["in_pass_file", "out_pass_file", "receipt_file"] {
             a[k] = json!("");
@@ -1030,7 +1379,7 @@ card.";
         for k in ["in_pass_file", "out_pass_file", "receipt_file"] {
             a[k] = json!("");
         }
-        let (t, args) = started(vec![json!({"role": "user", "content": "apply"})], a, false);
+        let (t, args) = started(docs_asked_chat("apply"), a, false);
         let (t2, res) = run(t, &args, FILLED);
         assert_eq!(
             (res["status"].as_str(), res["reason"].as_str()),
@@ -1052,5 +1401,228 @@ card.";
         let mut called = loaded.clone();
         called.push(ev("workflow_call", json!({"tool": APDT_REFUND})));
         assert!(ask_before_tool(&called).is_none());
+    }
+
+    #[test]
+    fn the_documents_uploaded_save_the_application_and_its_reference_number_opens_it_anywhere() {
+        // the user, 2026-11-02: "give me a link with the reference code so that I can open my session" — the
+        // recognised passport saves the application (mapped with the user's own documents); its reference number,
+        // with the travel document number, opens it on any device
+        let user = vec![
+            json!({"role": "user", "content": "Please apply for my HK departure tax refund. [attached: uploads/passport.jpg, uploads/bp_in.jpg, uploads/bp_out.jpg, uploads/receipt.pdf]"}),
+        ];
+        let mut a = facts();
+        a["passport_file"] = json!("uploads/passport.jpg");
+        a["in_pass_file"] = json!("uploads/bp_in.jpg");
+        a["out_pass_file"] = json!("uploads/bp_out.jpg");
+        a["receipt_file"] = json!("uploads/receipt.pdf");
+        let (t, args) = started(user.clone(), a.clone(), false);
+        let (t, res) = run(t, &args, FILLED);
+        assert_eq!(
+            calls_of(&t, "form_fill")[0]["passport_file"],
+            "uploads/passport.jpg"
+        );
+        assert_eq!(
+            calls_of(&t, "browser_read_elements"),
+            [json!({"read": [{"name": "reference", "sel": ".bottom span.card-number.code"}]})]
+        );
+        assert_eq!(
+            (res["status"].as_str(), res["reference"].as_str()),
+            (Some("saved"), Some("F4FT23"))
+        );
+        let lines = super::super::show::lines(&res, false).join("\n");
+        assert!(
+            lines.contains("- Application reference: **F4FT23**")
+                && lines.contains("View Application / Continue Application")
+                && lines.contains("travel document number")
+                && lines.contains("not submitted")
+                && lines.contains(HOME),
+            "{lines}"
+        );
+        assert!(calls_of(&t, "browser_request_takeover").is_empty());
+        // the photo not recognised: no reference, the facts and the link, nothing submitted
+        let unrecognised = r#"{"url": "x", "filled": [{"op": "file", "field": "passport", "ok": true, "note": "unrecognised"}]}"#;
+        let (t, args) = started(user, a, false);
+        let (_, res) = run(t, &args, unrecognised);
+        assert_eq!(res["status"], "stopped");
+        assert!(super::super::show::lines(&res, false)
+            .join("\n")
+            .contains("did not recognise"));
+        // the arrival left out (the user adds it on the platform): the departure rule still holds, and the steps say
+        // to add the arrival
+        let mut b = facts();
+        for k in ["in_flight", "in_date", "in_pass_file"] {
+            b.as_object_mut().unwrap().remove(k);
+        }
+        b["passport_file"] = json!("uploads/passport.jpg");
+        b["out_pass_file"] = json!("uploads/bp_out.jpg");
+        b["receipt_file"] = json!("uploads/receipt.pdf");
+        let user2 = vec![
+            json!({"role": "user", "content": "Apply please. [attached: uploads/passport.jpg, uploads/bp_out.jpg, uploads/receipt.pdf]"}),
+        ];
+        let (t, args) = started(skipped(user2), b, false);
+        let (_, res) = run(t, &args, FILLED);
+        assert_eq!(res["status"], "saved");
+        let lines = super::super::show::lines(&res, false).join("\n");
+        assert!(
+            lines.contains("Arrival into Hong Kong: not given")
+                && lines.contains("add your arrival into Hong Kong"),
+            "{lines}"
+        );
+        // only the travel document given, the rest skipped: the session link, and the three documents still to upload
+        let mut c = facts();
+        for k in [
+            "in_flight",
+            "in_date",
+            "in_pass_file",
+            "out_pass_file",
+            "receipt_file",
+        ] {
+            c.as_object_mut().unwrap().remove(k);
+        }
+        c["passport_file"] = json!("uploads/passport.jpg");
+        let user3 = skipped(vec![
+            json!({"role": "user", "content": "Apply please. [attached: uploads/passport.jpg]"}),
+        ]);
+        let (t, args) = started(user3, c, false);
+        let (t, res) = run(t, &args, FILLED);
+        assert_eq!(res["status"], "saved");
+        assert_eq!(res["to_upload"].as_array().map(Vec::len), Some(3), "{res}");
+        let fill = &calls_of(&t, "form_fill")[0];
+        assert!(
+            fill.get("out_pass_file").is_none() && fill.get("receipt_file").is_none(),
+            "{fill}"
+        );
+        let lines = super::super::show::lines(&res, false).join("\n");
+        assert!(
+            lines.contains("Still to upload (yours): the departure flight's boarding pass;"),
+            "{lines}"
+        );
+        // the documents attached and the call names none: sent back to the model to map them (no question to the user)
+        let mut bare_call = facts();
+        for k in ["in_pass_file", "out_pass_file", "receipt_file"] {
+            bare_call.as_object_mut().unwrap().remove(k);
+        }
+        let attached = vec![
+            json!({"role": "user", "content": "Apply please. [attached: uploads/passport.jpg, uploads/bp_out.jpg]"}),
+        ];
+        match checked(bare_call, &attached, false) {
+            Checked::Invalid(p) => assert!(
+                p[0].contains("uploads/passport.jpg") && p[0].contains("passport_file"),
+                "{p:?}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        // said once: the next call goes on with what it names (the tool always runs on what the user gave)
+        let mut again = attached.clone();
+        again.extend(step(
+            "call_b",
+            APDT_REFUND,
+            &json!({}),
+            &json!({"status": "invalid", "problems": [format!("{MAP_FILES} uploads/passport.jpg: pass each document")]})
+                .to_string(),
+        ));
+        let mut bare_again = facts();
+        for k in ["in_pass_file", "out_pass_file", "receipt_file"] {
+            bare_again.as_object_mut().unwrap().remove(k);
+        }
+        assert!(matches!(
+            checked(bare_again, &skipped(again), false),
+            Checked::Valid(_)
+        ));
+        // a value that is no reference number is not one
+        let odd = json!({"role": "tool", "content": json!({"elements": {"reference": ["<", "b", ">"]}}).to_string()});
+        assert_eq!(reference_of(&odd), None);
+    }
+
+    #[test]
+    fn the_documents_are_fields_of_the_tool() {
+        // apdt_real 2026-11-03: the model said the tool had no fields for the files and could not pass them
+        let schema = json!(tool_schemas()).to_string();
+        for k in FILES {
+            assert!(schema.contains(&format!("\"{k}\"")), "{k}");
+        }
+    }
+
+    #[test]
+    fn the_entry_mode_from_the_conversation_decides_the_platforms_path() {
+        // the user, 2026-11-03: the entry mode is the model's JSON field from the conversation; by air it also asks the
+        // arrival flight and its boarding pass; code takes the mode's own path on the platform
+        let bare = vec![
+            json!({"role": "user", "content": "Please apply for my Hong Kong departure tax refund."}),
+        ];
+        match checked(
+            json!({"out_flight": "CX 500", "out_date": "2026-10-30", "refund_method": "card"}),
+            &bare,
+            false,
+        ) {
+            Checked::NeedsInput(m) => {
+                assert!(m.iter().any(|x| x.starts_with("entry_mode")), "{m:?}")
+            }
+            other => panic!("{other:?}"),
+        }
+        match checked(
+            json!({"entry_mode": "air", "out_flight": "CX 500", "out_date": "2026-10-30", "refund_method": "card"}),
+            &bare,
+            false,
+        ) {
+            Checked::NeedsInput(m) => {
+                let m = m.join(" | ");
+                assert!(
+                    m.contains("into Hong Kong") && m.contains("in_pass_file"),
+                    "{m}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // land / sea ("Land / Sea" as the model may write it): no arrival flight, no arrival boarding pass asked
+        match checked(
+            json!({"entry_mode": "Land / Sea", "out_flight": "CX 500", "out_date": "2026-10-30", "refund_method": "card"}),
+            &bare,
+            false,
+        ) {
+            Checked::NeedsInput(m) => {
+                let m = m.join(" | ");
+                assert!(
+                    !m.contains("into Hong Kong")
+                        && !m.contains("in_pass_file")
+                        && m.contains("passport_file"),
+                    "{m}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let no_files = || {
+            let mut a = facts();
+            for k in FILES {
+                a.as_object_mut().unwrap().remove(*k);
+            }
+            a
+        };
+        let mut a = no_files();
+        a["entry_mode"] = json!("land_sea");
+        let (t, args) = started(docs_asked_chat("apply"), a, false);
+        assert_eq!(args["entry_mode"], "land_sea");
+        assert!(args.get("in_flight").is_none() && args.get("in_pass_file").is_none());
+        let (t, res) = run(t, &args, FILLED);
+        assert_eq!(calls_of(&t, "form_fill")[0]["entry_mode"], "land_sea");
+        assert!(super::super::show::lines(&res, false)
+            .join("\n")
+            .contains("Entered Hong Kong by: land / sea"));
+        // SkyPier: the platform's face check comes first — nothing opened, the user's steps
+        let mut a = no_files();
+        a["entry_mode"] = json!("skypier");
+        let (t, args) = started(docs_asked_chat("apply"), a, false);
+        let (t, res) = run(t, &args, FILLED);
+        assert_eq!(res["status"], "skypier");
+        assert!(calls_of(&t, "browser_navigate").is_empty());
+        assert!(super::super::show::lines(&res, false)
+            .join("\n")
+            .contains("face check first"));
+        // an unknown mode goes back to the model
+        assert!(matches!(
+            checked(json!({"entry_mode": "boat"}), &bare, false),
+            Checked::Invalid(_)
+        ));
     }
 }

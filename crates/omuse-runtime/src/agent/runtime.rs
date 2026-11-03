@@ -1740,6 +1740,16 @@ message to use as written) stays in that language. Output only the rewritten rep
         parts.join("\n")
     }
 
+    /// The latest earlier task of this conversation's open question ([`super::required::open_question`]).
+    fn open_question(&self, conv_id: &str, exclude_task: &str) -> Vec<Value> {
+        self.store
+            .prev_task(conv_id, exclude_task)
+            .ok()
+            .flatten()
+            .map(|t| super::required::open_question(arr(&t, "transcript")))
+            .unwrap_or_default()
+    }
+
     pub(crate) fn history(&self, conv_id: &str, exclude_task: &str) -> (Vec<Value>, String) {
         let mut msgs: Vec<Value> = self
             .store
@@ -2460,6 +2470,9 @@ call notify_user only if something the user cares about happened.",
             }
             transcript = vec![json!({"role": "system", "content": ""})];
             transcript.extend(history);
+            // the previous task's open question (a workflow tool's needs_input), as its call and result: the reply owes
+            // that call, and the tool sees what it already asked (agent/required.rs)
+            transcript.extend(self.open_question(&conv_id, task_id));
             transcript.push(user_msg(first));
         }
 
@@ -3664,26 +3677,30 @@ yourself; ask_bot is not available for it."
             .map(|m| content_of(m).trim().to_string())
             .filter(|c| !c.is_empty())
             .collect();
-        let results: Vec<String> = transcript
-            .iter()
-            .filter(|m| get_str(m, "role") == "tool")
-            .map(|m| take_chars(&content_of(m), 500).to_string())
-            .collect();
-        let results = &results[results.len().saturating_sub(10)..];
+        let results = rescue_results(transcript);
+        let results = &results[..];
         if notes.is_empty() && results.is_empty() {
             return String::new();
         }
+        // the reply's language is code's (the user's language setting), never the model's guess: bilingual labels and a
+        // "the user's language" instruction gave an English user a Chinese answer (market_real 2026-11-03, after the
+        // executor's call failed)
+        let (task_l, notes_l, results_l) = if lg != "en" {
+            ("任务", "工作中记下的内容", "最近的工具结果")
+        } else {
+            ("Task", "Notes written while working", "Last tool results")
+        };
         let body = format!(
-            "Task / 任务:\n{}\n\nNotes written while working / 工作中记下的内容:\n{}\n\nLast tool results / 最近的工具结果:\n{}",
+            "{task_l}:\n{}\n\n{notes_l}:\n{}\n\n{results_l}:\n{}",
             goal,
-            notes[notes.len().saturating_sub(30)..].iter().map(|n| format!("- {}", take_chars(n, 600))).collect::<Vec<_>>().join("\n"),
+            notes[notes.len().saturating_sub(30)..]
+                .iter()
+                .map(|n| format!("- {}", take_chars(n, 600)))
+                .collect::<Vec<_>>()
+                .join("\n"),
             results.join("\n---\n")
         );
-        let sysmsg = prompts::l(lg,
-            "你根据一个任务的工作记录写最终回答。不能调用工具。只用记录里的事实和数字（原样照抄），说清楚找到了什么、哪些没核实以及原因、用户下一步可以怎么做。用用户的语言。",
-            "You write the final answer for a task from its working notes. No tools. Use only facts and numbers \
-from the notes (copied exactly); say what was found, what is unverified and why, and what the \
-user can do next. Answer in the user's language.");
+        let sysmsg = rescue_final_prompt(lg);
         match self
             .llm
             .chat(
@@ -4358,4 +4375,92 @@ enum Machine {
         args: Value,
         from: usize,
     },
+}
+
+/// The latest tool results the rescue answer is written from, newest last: each up to [`RESCUE_RESULT_CHARS`], at most
+/// [`RESCUE_RESULTS_CHARS`] in all (the newest kept first). 500 characters each cut a two-symbol `market_data` result
+/// after its first symbol, and the answer said the second had no data (market_real 2026-11-03).
+fn rescue_results(transcript: &[Value]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut total = 0;
+    for m in transcript
+        .iter()
+        .rev()
+        .filter(|m| get_str(m, "role") == "tool")
+        .take(10)
+    {
+        let r = take_chars(&content_of(m), RESCUE_RESULT_CHARS).to_string();
+        let n = r.chars().count();
+        if total + n > RESCUE_RESULTS_CHARS {
+            break;
+        }
+        total += n;
+        out.push(r);
+    }
+    out.reverse();
+    out
+}
+
+/// The most of one tool result the rescue answer reads.
+const RESCUE_RESULT_CHARS: usize = 3000;
+/// The most of all tool results the rescue answer reads.
+const RESCUE_RESULTS_CHARS: usize = 12_000;
+
+/// The rescue answer's instruction, with the reply's language named by code (the user's language setting).
+fn rescue_final_prompt(lg: &str) -> String {
+    let base = prompts::l(lg,
+        "你根据一个任务的工作记录写最终回答。不能调用工具。只用记录里的事实和数字（原样照抄），说清楚找到了什么、哪些没核实以及原因、用户下一步可以怎么做。",
+        "You write the final answer for a task from its working notes. No tools. Use only facts and numbers \
+from the notes (copied exactly); say what was found, what is unverified and why, and what the \
+user can do next.");
+    format!("{base} Write the answer in {}.", prompts::lang_name(lg))
+}
+
+#[cfg(test)]
+mod rescue_language_tests {
+    use super::{rescue_final_prompt, rescue_results};
+    use serde_json::json;
+
+    #[test]
+    fn the_rescue_answer_reads_every_symbol_of_a_market_result() {
+        // market_real 2026-11-03: the rescue read 500 characters of the market_data result — Tencent only, and the
+        // answer said HSBC had no data
+        let tencent = format!(
+            "0700.HK · Tencent Holdings Limited · HKSE · HKD\n{}",
+            "2025-11-03 634, ".repeat(70)
+        );
+        let hsbc = "0005.HK · HSBC Holdings plc · HKSE · HKD\n最新价 last 134.1 HKD";
+        let t = vec![
+            json!({"role": "user", "content": "Tencent and HSBC prices"}),
+            json!({"role": "tool", "tool_call_id": "c1", "content": format!("{tencent}\n\n{hsbc}")}),
+        ];
+        let r = rescue_results(&t);
+        assert_eq!(r.len(), 1);
+        assert!(
+            r[0].contains("0005.HK") && r[0].contains("134.1"),
+            "{}",
+            r[0].len()
+        );
+        // the budget keeps the newest results
+        let many: Vec<_> = (0..10)
+            .map(|i| json!({"role": "tool", "tool_call_id": format!("c{i}"), "content": format!("{i}{}", "x".repeat(2999))}))
+            .collect();
+        let r = rescue_results(&many);
+        assert_eq!(r.len(), 4);
+        assert!(r.last().unwrap().starts_with('9'));
+    }
+
+    #[test]
+    fn the_rescue_answer_is_written_in_the_users_language_named_by_code() {
+        // market_real 2026-11-03: an English user's rescue answer came back in Chinese ("the user's language" was the
+        // model's guess, from bilingual labels)
+        let en = rescue_final_prompt("en");
+        assert!(en.ends_with("Write the answer in English."), "{en}");
+        assert!(
+            !en.contains("user's language")
+                && !en.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "{en}"
+        );
+        assert!(rescue_final_prompt("zh").contains("Simplified Chinese"));
+    }
 }

@@ -770,6 +770,13 @@ pub async fn execute(
         store.update_task_ctx(task_id, Some(&data_class), None, None)?;
         return Ok(res);
     }
+    if tool == "submit_confirm" {
+        // approved by the user (the dialog showed the site, the form, its facts and the declaration): the machine
+        // submits that one form
+        return Ok(
+            json!({"status": "approved", "site": fstr(args, "site"), "form": fstr(args, "form")}),
+        );
+    }
     if tool == "purchase_confirm" {
         let raw_site = fstr(args, "site");
         let raw_site = raw_site.trim();
@@ -2390,7 +2397,12 @@ pub async fn travel_sync(st: &AppState, tool: &str, args: &Value, task_id: &str)
                 }
                 Ok::<Value, ExecError>(web)
             };
-            let (src, mut d) = if google_first {
+            // a round trip's returns for the outbound picked (`return_of`, a Google Flights offer id): Google's second
+            // search, nothing else answers it
+            let return_of = !fstr(args, "return_of").trim().is_empty();
+            let (src, mut d) = if return_of {
+                ("Google Flights (return flights)", travel_client(st)?.flights(args).await?)
+            } else if google_first {
                 match travel_client(st)?.flights(args).await {
                     Ok(g) => ("Google Flights", g),
                     Err(g) => match kiwi().await {

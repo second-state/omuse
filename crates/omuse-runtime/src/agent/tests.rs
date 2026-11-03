@@ -4983,3 +4983,46 @@ async fn a_skill_without_a_workflow_tool_forces_nothing() {
     assert!(events_of(&evs, "workflow_required").is_empty());
     assert_eq!(get_str(&t, "result"), "Tokyo tips.");
 }
+
+#[tokio::test]
+async fn a_bots_chat_keeps_the_users_attachments_for_its_later_messages() {
+    // apdt_real 2026-11-03: the documents attached in Main went to the Travel bot's first task, but its follow-up's
+    // history had no paths, so the tool refused them ("not a file of this chat")
+    let (rt, _d) = rt();
+    let main_cid = rt.store.create_conv("refund", "chat", None).unwrap();
+    let atts =
+        json!([{"path": "uploads/2026-11/passport.jpg", "kind": "image", "name": "passport.jpg"}]);
+    let parent = rt
+        .store
+        .create_task(
+            "apply for my HK tax refund",
+            &main_cid,
+            "chat",
+            "",
+            "",
+            Some(&atts),
+        )
+        .unwrap();
+    let c = call("a1", "ask_bot", json!({}));
+    let sp = rt
+        .ask_bot(
+            &parent,
+            &json!({"bot": "travel", "question": "Apply for my HK departure tax refund"}),
+            &c,
+            &[],
+        )
+        .await
+        .unwrap();
+    let bot_cid = sget(&sp.waiting, "conv_id");
+    // a later message in the bot's chat: its history lists the attachment's path
+    rt.store
+        .add_msg(&bot_cid, "user", "go ahead", "task_later", None)
+        .unwrap();
+    let (hist, _) = rt.history(&bot_cid, "task_later");
+    let text: String = hist
+        .iter()
+        .map(|m| get_str(m, "content"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("uploads/2026-11/passport.jpg"), "{text}");
+}

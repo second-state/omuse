@@ -7,3 +7,5 @@ __pycache__/
 /target
 /config.toml
 .claude/worktrees/
+# per-machine e2e inputs (the user's own documents for the real-site suites): never committed
+/e2e-local/

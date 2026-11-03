@@ -54,17 +54,46 @@ pub(super) fn cardclaim_login(i: &Inputs) -> Vec<Op> {
 
 // ---------------------------------------------------------------- FWD Singapore
 
-/// FWD Singapore's online travel claim (https://www.fwd.com.sg/claim-online/travel.html → `/claim-online/
-/// travel-insurance/quickQuestions`), step 1 of 3, "who is this claim for?": no sign-in; inputs by their fixed names —
-/// the claimant as on the NRIC (the profile's passport name), the NRIC / FIN from the Vault (never typed from chat), the
-/// Singapore mobile number (8 digits: a number of another country is left for the user), the email and the policy
-/// number. "next" checks the policy on FWD's server; steps 2 (payment: the user's bank account) and 3 (the incident,
-/// the documents, Submit) open only for a real policy and are not mapped: they are the user's, with the facts the
-/// machine computed in the hand-over.
+/// FWD Singapore's online travel claim (https://www.fwd.com.sg/claim-online/travel.html → `/claim-online/travel-insurance/…`),
+/// walked to its final button with fake data on 2026-11-03 (docs/sites/fwd-claim.md): no request reaches FWD before
+/// that button. Stage `claim` (the default) fills every step: the claimant (step 1; the policy box has a fixed
+/// `PNTR20` prefix, so only the rest is typed), the claim type (Travel Disruption → Flight Delay), the trip's dates and
+/// country, the delayed flight's date and number, the documents the chat has (plain file inputs), PayNow by the
+/// Vault's NRIC/FIN, and stops at the declaration dialog. Stage `submit` presses "agree and submit" (after the user
+/// approved it in the app: `submit_confirm`); stage `cancel` closes the dialog unsubmitted.
 pub(super) fn fwd_sg_claim(i: &Inputs) -> Vec<Op> {
+    match i.arg("stage").as_str() {
+        "submit" => {
+            return vec![
+                click_sel("agree_and_submit", "#TI_BuyEnhacements_Continue_Yes"),
+                wait(6000),
+            ]
+        }
+        "cancel" => {
+            return vec![
+                click_sel("cancel", "#TI_Optfordiscount_Discount_Skip"),
+                wait(800),
+            ]
+        }
+        _ => {}
+    }
     let (code, number) = phone_parts(&i.phone());
     let mobile = if code == "65" { number } else { String::new() };
-    vec![
+    let policy = i.arg("policy_no");
+    let policy_rest = policy
+        .strip_prefix("PNTR20")
+        .or_else(|| policy.strip_prefix("pntr20"))
+        .unwrap_or(&policy)
+        .to_string();
+    let date = |k: &str| NaiveDate::parse_from_str(&i.arg(k), "%Y-%m-%d").ok();
+    let tap_input = |field: &'static str, name: &str| {
+        Op::new(
+            field,
+            json!({"op": "tap", "sel": format!("input[name={name}]")}),
+            "x",
+        )
+    };
+    let mut ops = vec![
         wait(1500),
         text(
             "claimant_name",
@@ -74,12 +103,125 @@ pub(super) fn fwd_sg_claim(i: &Inputs) -> Vec<Op> {
         vault_as("nric_fin", "text", "input[name='NRIC/FIN']", "number", ""),
         text("mobile", "input[name='mobile']", &mobile),
         text("email", "input[name='email']", &i.email()),
-        text(
-            "policy_no",
-            "input[name='policy number']",
-            &i.arg("policy_no"),
+        text("policy_no", "input[name='policy number']", &policy_rest),
+        click_sel("details_next", "#TI_GetQuotepage_Next_1"),
+        Op::new(
+            "claim_type",
+            json!({"op": "require", "sel": "[role=radio]", "text": "Travel Disruption",
+                   "why": "FWD did not accept the claimant's details (the policy number's format: PNTR20NN-NNNNNNNN)", "wait_ms": 10_000}),
+            "x",
         ),
-    ]
+        // FWD's radio tiles answer a real mouse click only (insurance_real 2026-11-03: a script's click left the
+        // sub-types closed)
+        tap_text("travel_disruption", "[role=radio]", "Travel Disruption"),
+        wait(800),
+        tap_text("flight_delay", "[role=radio]", "Flight Delay"),
+        require_within(
+            "cover_dates",
+            "input[name=dateOfLeaveSG]",
+            "FWD's flight delay questions did not open",
+            10_000,
+        ),
+    ];
+    for (field, name, k) in [
+        ("left_singapore", "dateOfLeaveSG", "leave_sg"),
+        ("back_in_singapore", "dateOfBackSG", "return_sg"),
+    ] {
+        if let Some(d) = date(k) {
+            ops.push(tap_input(field, name));
+            ops.extend(picker_past(field, d));
+        }
+    }
+    let country = i.arg("destination");
+    ops.extend([
+        Op::new(
+            "country",
+            json!({"op": "tap", "sel": "input[data-vv-name=placeOfIncident]"}),
+            &country,
+        ),
+        // typed after the real click (no script focus: it reset FWD's autocomplete), slowly enough for its filter
+        // (25 ms kept "na" of "Japan"), then picked once the list has filtered (insurance_real 2026-11-03)
+        Op::new(
+            "country",
+            json!({"op": "pick", "sel": "input[data-vv-name=placeOfIncident]", "type": country,
+                   "value": country, "option_sel": FWD_OPTION, "delay_ms": 90, "no_focus": true}),
+            &country,
+        ),
+        click_text("cover_next", "button", "next"),
+        require_within(
+            "delayed_flight",
+            "input[name=dateOfOriginalFlight]",
+            "FWD did not take the trip's dates and country",
+            10_000,
+        ),
+    ]);
+    if let Some(d) = date("incident_date") {
+        ops.push(tap_input("flight_date", "dateOfOriginalFlight"));
+        ops.extend(picker_past("flight_date", d));
+    }
+    ops.extend([
+        text(
+            "flight_no",
+            "input[name=originalFlightNumber]",
+            &i.arg("flight_no").replace(' ', ""),
+        ),
+        click_sel("delay_next", "#TI_GetQuotepage_Next_1"),
+        require_within(
+            "documents",
+            "input#itinerary",
+            "FWD did not take the delayed flight's details",
+            10_000,
+        ),
+    ]);
+    for (field, sel, k) in [
+        ("itinerary", "input#itinerary", "itinerary_file"),
+        ("boarding_pass", "input#newItinerary", "boarding_pass_file"),
+        (
+            "airline_letter",
+            "input#operatorLetter",
+            "airline_letter_file",
+        ),
+        ("supporting", "input#supporting", "other_file"),
+    ] {
+        let path = i.arg(k);
+        ops.push(Op::new(
+            field,
+            json!({"op": "set_file", "sel": sel, "path": path}),
+            &path,
+        ));
+    }
+    ops.extend([
+        click_sel("documents_next", "#TI_Application_Next"),
+        Op::new(
+            "payment",
+            json!({"op": "require", "sel": "[role=radio]", "text": "Deposit via PayNow",
+                   "why": "FWD's payment step did not open", "wait_ms": 10_000}),
+            "x",
+        ),
+        tap_text("paynow", "[role=radio]", "Deposit via PayNow"),
+        wait(800),
+        vault_as("paynow_id", "text", "input[name=payNowId]", "number", ""),
+        vault_as(
+            "paynow_id_again",
+            "text",
+            "input[name=confirmPayNowId]",
+            "number",
+            "",
+        ),
+        Op::new(
+            "payment_confirmed",
+            json!({"op": "tap", "sel": "[role=checkbox]"}),
+            "x",
+        ),
+        click_sel("payment_next", "#TI_GetQuotepage_Next_1"),
+        require_within(
+            "declaration",
+            "#TI_BuyEnhacements_Continue_Yes",
+            "FWD's declaration (the submit step) did not open",
+            10_000,
+        ),
+    ]);
+    ops
 }
 
 /// The visible list of an open Vuetify (0.x) select on FWD's quote page.
@@ -110,6 +252,22 @@ const FWD_PICKER_MONTH: &str = ".picker--date__header-selector-date strong";
 /// A date picked on the open picker: its month reached by the arrows whatever month it opened on (`seek`: the quote
 /// page remembers an earlier quote's dates), then the day — real mouse clicks: the picker's menu closes on a script's
 /// click (mapped 2026-11-02).
+/// A past date on the open picker: the month reached going back first (`seek` with `first: prev`), then the day.
+fn picker_past(field: &'static str, day: NaiveDate) -> Vec<Op> {
+    // the open calendar's own arrows, heading and days: FWD's claim keeps each date's calendar in the page
+    let open = |sel: &str| format!(".menuable__content__active {sel}");
+    vec![
+        Op::new(
+            field,
+            json!({"op": "seek", "sel": open(FWD_PICKER_ARROWS), "next": 1, "prev": 0, "max": 24, "first": "prev",
+                   "until": {"sel": open(FWD_PICKER_MONTH), "text": day.format("%B %Y").to_string()}}),
+            "x",
+        ),
+        tap_text(field, &open(FWD_PICKER_DAYS), &day.day().to_string()),
+        wait(600),
+    ]
+}
+
 fn picker_day(field: &'static str, day: NaiveDate) -> Vec<Op> {
     vec![
         Op::new(
@@ -123,6 +281,175 @@ fn picker_day(field: &'static str, day: NaiveDate) -> Vec<Op> {
     ]
 }
 
+/// FWD Hong Kong's MyTravel (https://www.fwd.com.hk/online-insurance/mytravel-insurance/en/; underwritten by bolttech;
+/// walked 2026-11-03 with fake data). Stage `quote` (default): the region (Asia / Worldwide, from the destination:
+/// [`fwd_hk_region`]) and the trip's dates on the page's flatpickr calendars (each day by its `aria-label`, its month
+/// reached by the arrows), one traveller; the plan cards (`[data-testid=PlanOption]`) then show each premium. Stage
+/// `pick`: the chosen plan's card — FWD creates the application, `…/application/?leadId=<id>`, which opens on any
+/// device. Stage `details`: the insured's details (the name, title, date of birth, the HKID from the Vault and its date
+/// of issue — a new Smart HKID —, the mobile, the email) and Next: FWD keeps them in the application; the add-ons, the
+/// declarations and Pay are the user's.
+pub(super) fn fwd_hk_mytravel(i: &Inputs) -> Vec<Op> {
+    let day_label = |d: NaiveDate| d.format("%B %-d, %Y").to_string();
+    match i.arg("stage").as_str() {
+        "pick" => {
+            let plan = i.arg("plan");
+            if plan.is_empty() || !plan.chars().all(|c| c.is_ascii_alphabetic()) {
+                return Vec::new();
+            }
+            return vec![
+                tap_text("plan", "[data-testid=PlanOption] [data-part=name]", &plan),
+                require_within(
+                    "application",
+                    "#lastName",
+                    "FWD's application did not open",
+                    15_000,
+                ),
+            ];
+        }
+        "details" => {
+            let (code, number) = phone_parts(&i.phone());
+            let mobile = if code == "852" { number } else { String::new() };
+            // the name's parts from the call (the model split it: Hong Kong names come family name first)
+            let (given, family) = match (i.arg("given_names"), i.arg("family_name")) {
+                (g, f) if !g.is_empty() && !f.is_empty() => (g, f),
+                _ => i.name_parts(),
+            };
+            let dmy = |k: &str| {
+                NaiveDate::parse_from_str(&i.arg(k), "%Y-%m-%d")
+                    .map(|d| d.format("%d/%m/%Y").to_string())
+                    .unwrap_or_default()
+            };
+            let dob = i
+                .birthday()
+                .map(|d| d.format("%d/%m/%Y").to_string())
+                .unwrap_or_default();
+            let title = i.arg("title");
+            return vec![
+                super::keys("last_name", "", "#lastName", &family),
+                super::keys("given_name", "", "#givenName", &given),
+                Op::new("title", json!({"op": "tap", "sel": "#title"}), &title),
+                Op::new(
+                    "title",
+                    json!({"op": "click", "sel": "[role=option]", "text": title}),
+                    &title,
+                ),
+                super::keys("dob", "", "#dob", &dob),
+                super::vault("hkid", "", "#hkid", "number", ""),
+                super::keys("hkid_issued", "", "#idIssueDate", &dmy("hkid_issue_date")),
+                super::keys("mobile", "", "#mobile", &mobile),
+                super::keys("email", "", "#email", &i.email()),
+                click_text("details_next", "button", "Next"),
+                Op::new(
+                    "saved",
+                    json!({"op": "require", "sel": "button", "text": "Skip for now",
+                           "why": "FWD did not take the details (a new Smart HKID's date of issue, the mobile)", "wait_ms": 15_000}),
+                    "x",
+                ),
+            ];
+        }
+        _ => {}
+    }
+    let region = fwd_hk_region(&i.arg("destination"));
+    let date = |k: &str| NaiveDate::parse_from_str(&i.arg(k), "%Y-%m-%d").ok();
+    let mut ops = vec![
+        require_within(
+            "plans",
+            "[data-testid=PlanOption]",
+            "FWD's MyTravel page did not open",
+            20_000,
+        ),
+        // the first quote done before the dates change (its late answer would overwrite the dates' prices)
+        premiums_priced(),
+        click_text("region", "button", region),
+        wait(800),
+    ];
+    for (field, input, k) in [
+        ("depart", "#field-departureDate-input", "depart"),
+        ("return", "#field-returnDate-input", "return"),
+    ] {
+        let Some(d) = date(k) else { continue };
+        let day = format!(
+            "[role=dialog] .flatpickr-day[aria-label=\"{}\"]",
+            day_label(d)
+        );
+        ops.push(Op::new(field, json!({"op": "tap", "sel": input}), "x"));
+        ops.push(Op::new(
+            field,
+            json!({"op": "seek", "sel": "[role=dialog] .flatpickr-prev-month, [role=dialog] .flatpickr-next-month",
+                   "next": 1, "prev": 0, "max": 14, "until": {"sel": day}}),
+            "x",
+        ));
+        ops.push(Op::new(field, json!({"op": "tap", "sel": day}), "x"));
+        ops.push(wait(800));
+    }
+    // FWD prices the plans from its pricing API (ecapi.fwd.com.hk, about 12 s after the page opens, again after each
+    // date): each card shows a loader until its premium (`[data-part=premium]@data-value`) is in
+    ops.push(wait(1500));
+    ops.push(premiums_priced());
+    ops
+}
+
+/// The wait for FWD Hong Kong's premiums: every plan card's loader gone (at most 20 s).
+fn premiums_priced() -> Op {
+    Op::new(
+        "premiums",
+        json!({"op": "await", "sel": "[data-testid=PlanOption] .animation-bouncing-loader", "absent": true,
+               "wait_ms": 20_000}),
+        "x",
+    )
+}
+
+/// FWD Hong Kong's insured areas (the page's "Check the insured area", 2026-11-03): Asia is these countries and
+/// territories, everywhere else is Worldwide.
+pub fn fwd_hk_region(country: &str) -> &'static str {
+    match crate::places::iso_of(country) {
+        "CN" | "MO" | "TW" | "JP" | "KR" | "BN" | "KH" | "ID" | "LA" | "MY" | "MM" | "PH"
+        | "SG" | "TH" | "VN" => "Asia",
+        _ => "Worldwide",
+    }
+}
+
+/// The summary's "Save your application" (mapped 2026-11-02 on the live page with fake data): the header's
+/// `button.save-btn` opens `.fwd-save-dialog` — name, email, mobile (a Singapore number, 8 digits), NRIC/FIN (the
+/// Vault's ID number) — and its `button.primary` saves the quote (FWD's `updateQuote`; the user agreed to FWD
+/// contacting them, 2026-11-02). The saved quote then opens on any device from
+/// `https://www.fwd.com.sg/travel-insurance/emailRedirect.html?hash=<localStorage HashKey>` after the mobile number is
+/// typed, at FWD's application (declaration, details, Pay — the user's). Without a Singapore mobile nothing is saved.
+fn fwd_sg_save(i: &Inputs) -> Vec<Op> {
+    let (code, number) = phone_parts(&i.phone());
+    if code != "65" || number.len() != 8 {
+        return Vec::new();
+    }
+    let dialog = ".fwd-save-dialog";
+    vec![
+        click_sel("save", "button.save-btn"),
+        require_within(
+            "save_dialog",
+            &format!("{dialog} input[name=name]"),
+            "FWD's save dialog did not open",
+            10_000,
+        ),
+        text(
+            "name",
+            &format!("{dialog} input[name=name]"),
+            &i.full_name(),
+        ),
+        text("email", &format!("{dialog} input[name=email]"), &i.email()),
+        text("mobile", &format!("{dialog} input[name=mobile]"), &number),
+        vault_as(
+            "nric_fin",
+            "text",
+            &format!("{dialog} input[name=nric]"),
+            "number",
+            "",
+        ),
+        wait(800),
+        click_sel("save_quote", &format!("{dialog} button.primary")),
+        wait(5000),
+    ]
+}
+
 /// FWD Singapore's travel insurance quote (https://www.fwd.com.sg/travel-insurance/online-quote/ → `quickQuestions`,
 /// then `summary`), mapped from the live page on 2026-11-02: three Vuetify selects found by their labels ("plan type":
 /// Single; "who": just myself, or a group; "region": by the destination, [`fwd_region`]), the trip's dates on two
@@ -130,6 +457,9 @@ fn picker_day(field: &'static str, day: NaiveDate) -> Vec<Op> {
 /// (a quote changes nothing). The summary lists the plans (read by the machine). Stage `pick`: the chosen plan's
 /// button (`#TI_QuoteSummarypage_<Plan>_Buy`); FWD then asks the eligibility statements, which are the user's.
 pub(super) fn fwd_sg_quote(i: &Inputs) -> Vec<Op> {
+    if i.arg("stage") == "save" {
+        return fwd_sg_save(i);
+    }
     if i.arg("stage") == "pick" {
         let plan = i.arg("plan");
         if plan.is_empty() || !plan.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -231,11 +561,24 @@ pub(super) fn mybag_manage(i: &Inputs) -> Vec<Op> {
 // ---------------------------------------------------------------- the Hong Kong departure tax refund
 
 /// The Airport Authority's Refund Application Platform (https://app.apdtrefund.hk/hkTaxMobile/?lang=en; a Vue app,
-/// paths `/hkTaxMobile/home`, `/hkTaxMobile/process/upload`), mapped 2026-11-02, up to the first document: the
-/// anti-scam notice closed, both statement boxes (`span.check-img`, the user asked OMuse to apply for them), "Start",
-/// "New Application", the entry mode (Air: two one-way tickets) and its "Confirm" — the page then asks for the travel
-/// document's photo, which is the user's (never a made-up file); the machine stops there.
-pub(super) fn apdt_start(_: &Inputs) -> Vec<Op> {
+/// paths `/hkTaxMobile/home`, `/hkTaxMobile/process/upload`), mapped 2026-11-02 with the user's own documents (nothing
+/// submitted): the notes (a notice may cover them: closed), both statement boxes (`span.check-img`), "Start", the home
+/// page's notice ("Close"), "New Application", the entry mode (Air: two one-way tickets, and its "Confirm" on a
+/// desktop-sized window), then the documents the chat has, each in its own slot (`.card` titled by the platform): "Click here to
+/// upload" (`.text-blue2`) opens a Sample dialog whose "Upload" opens the file chooser (op `file`: setting the input
+/// does nothing). The recognised travel document creates the application and shows its reference number ("Your
+/// application has been saved automatically", "Continue"); a multi-page receipt asks to confirm the slot's documents
+/// for manual processing ("Submit" there confirms that slot, not the application). The refund method, the
+/// application's Submit and the face recognition are the user's: the machine stops after the uploads, and the
+/// reference number (`.bottom span.card-number.code`) opens the application on any device.
+pub(super) fn apdt_start(i: &Inputs) -> Vec<Op> {
+    // the entry mode the conversation settled (the call's JSON): the platform's tile for it (walked 2026-11-03: Land /
+    // Sea and Air each confirm in a dialog; Land / Sea has no arrival boarding pass slot)
+    let tile = match i.arg("entry_mode").as_str() {
+        "land_sea" => "Land / Sea",
+        "skypier" => "SkyPier Terminal",
+        _ => "Air",
+    };
     // each step waits for the next page's element (the app's routes draw late; a Queue-it waiting room may come first)
     let until = |field: &'static str, sel: &str, text: &str, why: &str, ms: u64| {
         Op::new(
@@ -244,7 +587,8 @@ pub(super) fn apdt_start(_: &Inputs) -> Vec<Op> {
             "x",
         )
     };
-    vec![
+    let close_notice = |field: &'static str| click_text(field, ".mask div.button", "Close");
+    let mut ops = vec![
         require_within(
             "notes",
             "span.check-img",
@@ -252,10 +596,12 @@ pub(super) fn apdt_start(_: &Inputs) -> Vec<Op> {
             20_000,
         ),
         wait(1500),
-        click_text("close_notice", "div.button, button", "Close"),
+        close_notice("close_notice"),
         wait(800),
         click_nth("pics_agree", "span.check-img", 0),
+        close_notice("close_notice_2"),
         click_nth("pics_declare", "span.check-img", 1),
+        close_notice("close_notice_3"),
         click_text("start", "div.button", "Start"),
         until(
             "home",
@@ -264,6 +610,8 @@ pub(super) fn apdt_start(_: &Inputs) -> Vec<Op> {
             "the platform's home did not open",
             15_000,
         ),
+        wait(1500),
+        close_notice("close_home_notice"),
         click_text("new_application", "div.btn", "New Application"),
         until(
             "entry_mode",
@@ -272,15 +620,144 @@ pub(super) fn apdt_start(_: &Inputs) -> Vec<Op> {
             "the application's entry mode did not open",
             15_000,
         ),
-        click_text("entry_air", "div.border", "Air"),
-        wait(1200),
-        click_text("confirm_entry", "div.button", "Confirm"),
+        click_text("entry_mode_tile", "div.border", tile),
+        // a desktop-sized window gets a Confirm for the entry mode (the server's browser, 2026-11-03); a phone's
+        // does not — a click that may find nothing
+        click_text("confirm_entry", ".mask div.button", "Confirm"),
         until(
             "travel_document",
             "",
             "Click here to upload",
             "the platform did not reach its document upload",
             15_000,
+        ),
+    ];
+    // the documents of this chat, slot by slot (a document the chat does not have is skipped)
+    let passport = i.arg("passport_file");
+    ops.extend(upload_slot(&PASSPORT_SLOT, &passport));
+    if !passport.is_empty() {
+        // the travel document recognised: the application is saved and its reference number shown
+        ops.push(Op::new(
+            "reference",
+            json!({"op": "await", "sel": ".mask", "text": "reference number", "wait_ms": 10_000}),
+            &passport,
+        ));
+        ops.push(Op::new(
+            "reference_seen",
+            json!({"op": "click", "sel": ".mask div.button", "text": "Continue"}),
+            &passport,
+        ));
+        ops.push(wait(800));
+    }
+    for (slot, file) in [
+        (&OUT_PASS_SLOT, i.arg("out_pass_file")),
+        (&IN_PASS_SLOT, i.arg("in_pass_file")),
+        (&RECEIPT_SLOT, i.arg("receipt_file")),
+    ] {
+        ops.extend(upload_slot(slot, &file));
+    }
+    ops
+}
+
+/// A document slot on the platform's upload page: the title the platform gives its `.card`, and the plan's field names
+/// for its steps (open, the file, the recognition, the confirmation of several pages, settle).
+struct Slot {
+    title: &'static str,
+    fields: [&'static str; 6],
+}
+
+const PASSPORT_SLOT: Slot = Slot {
+    title: "Travel document",
+    fields: [
+        "passport_open",
+        "passport_wait",
+        "passport",
+        "passport_recognised",
+        "passport_pages",
+        "passport_settle",
+    ],
+};
+const OUT_PASS_SLOT: Slot = Slot {
+    title: "Boarding pass of the departure flight",
+    fields: [
+        "out_pass_open",
+        "out_pass_wait",
+        "out_pass",
+        "out_pass_recognised",
+        "out_pass_pages",
+        "out_pass_settle",
+    ],
+};
+const IN_PASS_SLOT: Slot = Slot {
+    title: "Boarding pass of the relevant arrival flight",
+    fields: [
+        "in_pass_open",
+        "in_pass_wait",
+        "in_pass",
+        "in_pass_recognised",
+        "in_pass_pages",
+        "in_pass_settle",
+    ],
+};
+const RECEIPT_SLOT: Slot = Slot {
+    title: "Proof of tax payment",
+    fields: [
+        "receipt_open",
+        "receipt_wait",
+        "receipt",
+        "receipt_recognised",
+        "receipt_pages",
+        "receipt_settle",
+    ],
+};
+
+/// One document into `slot`: its "Click here to upload", the Sample dialog's "Upload" (the file chooser, given
+/// `file`), the recognition's time, and the slot's confirmation for a document of several pages ("Documents to be
+/// submitted": its "Submit" confirms the slot, not the application). Nothing when the chat has no such document.
+fn upload_slot(slot: &Slot, file: &str) -> Vec<Op> {
+    let [open, pause, upload, recognised, pages, settle] = slot.fields;
+    vec![
+        // the previous document's overlay gone first (apdt_real 2026-11-03: the receipt's tap landed on the boarding
+        // pass's "processing" overlay and its dialog never opened)
+        Op::new(
+            settle,
+            json!({"op": "await", "sel": ".mask", "absent": true, "wait_ms": 15_000}),
+            file,
+        ),
+        Op::new(
+            open,
+            // the link by its own text: the receipt's slot has a hint in the same style before it ("such as a ticket
+            // or e-ticket …"), which a bare `.text-blue2` tapped (apdt_real 2026-11-03)
+            json!({"op": "tap", "scope": slot.title, "scope_sel": ".card", "sel": ".text-blue2",
+                   "text": "Click here to upload"}),
+            file,
+        ),
+        // the Sample dialog's button, as soon as it shows
+        Op::new(
+            pause,
+            json!({"op": "await", "sel": ".mask div.button", "text": "Upload", "wait_ms": 5_000}),
+            file,
+        ),
+        Op::new(
+            upload,
+            json!({"op": "file", "sel": ".mask div.button", "text": "Upload", "path": file, "after": pause}),
+            file,
+        ),
+        // the platform's recognition (a few seconds): the slot shows the document ("View"), or a dialog about it — the
+        // pages to confirm, or the saved application's reference number; whichever comes first
+        Op::new(
+            recognised,
+            json!({"op": "await", "wait_ms": 20_000, "after": upload, "any": [
+                {"scope": slot.title, "scope_sel": ".card", "text": "View"},
+                {"sel": ".mask", "text": "Documents to be submitted"},
+                {"sel": ".mask", "text": "reference number"}
+            ]}),
+            file,
+        ),
+        Op::new(
+            pages,
+            json!({"op": "click", "sel": ".mask div.button", "text": "Submit", "after": recognised}),
+            file,
         ),
     ]
 }
@@ -342,6 +819,35 @@ mod tests {
     }
 
     #[test]
+    fn fwd_hong_kong_waits_for_its_premiums_before_and_after_the_dates() {
+        // the run of 2026-11-03 read the cards while they still showed the loader (no premium): FWD prices the plans
+        // about 12 s after the page opens and again after each date
+        let p = plan(
+            fwd_hk_mytravel,
+            json!({"destination": "Japan", "depart": "2026-12-03", "return": "2026-12-09"}),
+            json!({}),
+        );
+        let at = |f: &str| p.iter().position(|o| o["field"] == f).unwrap();
+        let waits: Vec<usize> = p
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| o["field"] == "premiums")
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(waits.len(), 2, "{p:?}");
+        assert!(waits[0] < at("region") && waits[1] == p.len() - 1, "{p:?}");
+        let w = &p[waits[1]];
+        assert_eq!(
+            (&w["op"], &w["absent"], &w["wait_ms"]),
+            (&json!("await"), &json!(true), &json!(20_000))
+        );
+        assert_eq!(
+            by(&p, "depart")[2]["sel"],
+            "[role=dialog] .flatpickr-day[aria-label=\"December 3, 2026\"]"
+        );
+    }
+
+    #[test]
     fn the_sign_in_gets_the_email_only() {
         let p = plan(cardclaim_login, json!({}), sg());
         let typed: Vec<&Value> = p.iter().filter(|o| o["op"] == "text").collect();
@@ -352,22 +858,68 @@ mod tests {
     }
 
     #[test]
-    fn fwds_claim_step_one_is_filled_by_its_input_names() {
-        let p = plan(fwd_sg_claim, json!({"policy_no": "PNTR20123456"}), sg());
+    fn fwds_claim_is_filled_step_by_step_up_to_its_declaration() {
+        // walked with fake data on 2026-11-03 (docs/sites/fwd-claim.md)
+        let args = json!({"policy_no": "PNTR2012-34567890", "leave_sg": "2026-10-20", "return_sg": "2026-10-25",
+                          "destination": "Japan", "incident_date": "2026-10-20", "flight_no": "SQ 636",
+                          "itinerary_file": "uploads/itinerary.pdf", "airline_letter_file": "attachments/delay.pdf"});
+        let p = plan(fwd_sg_claim, args, sg());
         let v = |f: &str| by(&p, f)[0].clone();
         assert_eq!(v("claimant_name")["sel"], "input[name='claimant name']");
         assert_eq!(v("claimant_name")["value"], "TAN WEI MING");
         assert_eq!(v("mobile")["value"], "91234567");
-        assert_eq!(v("email")["value"], "weiming@example.com");
-        assert_eq!(v("policy_no")["value"], "PNTR20123456");
-        // the NRIC / FIN from the Vault: never a value in the plan
-        assert_eq!(v("nric_fin")["vault"]["field"], "number");
-        assert!(v("nric_fin").get("value").is_none());
-        // no sign-in on the real page, and nothing pressed
+        // the policy box has a fixed PNTR20 prefix: only the rest is typed (the whole number failed FWD's check)
+        assert_eq!(v("policy_no")["value"], "12-34567890");
+        // the NRIC / FIN from the Vault: never a value in the plan (step 1 and PayNow)
+        for f in ["nric_fin", "paynow_id", "paynow_id_again"] {
+            assert_eq!(v(f)["vault"]["field"], "number", "{f}");
+            assert!(v(f).get("value").is_none(), "{f}");
+        }
+        assert_eq!(v("travel_disruption")["text"], "Travel Disruption");
+        // FWD's radio tiles and its confirm box take real mouse clicks (a script's click left the sub-types closed)
+        for f in [
+            "travel_disruption",
+            "flight_delay",
+            "paynow",
+            "payment_confirmed",
+        ] {
+            assert_eq!(v(f)["op"], "tap", "{f}");
+        }
+        assert_eq!(v("flight_delay")["text"], "Flight Delay");
+        // past dates on FWD's pickers, reached going back
+        let seeks: Vec<&Value> = p.iter().filter(|o| o["op"] == "seek").collect();
+        assert_eq!(seeks.len(), 3);
+        assert!(seeks
+            .iter()
+            .all(|o| o["first"] == "prev" && o["until"]["text"] == "October 2026"));
+        assert_eq!(v("flight_no")["value"], "SQ636");
+        // the country typed and picked once FWD's list filtered (one `pick`, not a pick right after typing)
+        let country = by(&p, "country");
+        assert_eq!(country.last().unwrap()["op"], "pick");
+        assert_eq!(country.last().unwrap()["value"], "Japan");
+        assert_eq!(country.last().unwrap()["no_focus"], true);
+        assert_eq!(country[0]["op"], "tap");
+        // the documents the chat has, into their inputs; the others are left out
+        assert_eq!(
+            (
+                v("itinerary")["op"].as_str(),
+                v("itinerary")["path"].as_str()
+            ),
+            (Some("set_file"), Some("uploads/itinerary.pdf"))
+        );
+        assert_eq!(v("airline_letter")["sel"], "input#operatorLetter");
+        assert!(by(&p, "boarding_pass").is_empty() && by(&p, "supporting").is_empty());
+        // the plan ends at the declaration: never presses "agree and submit" itself
+        assert_eq!(p.last().unwrap()["field"], "declaration");
         assert!(!p
             .iter()
-            .any(|o| o["op"] == "require" || o["op"] == "button"));
-        // a mobile number of another country is left for the user, never cut to fit
+            .any(|o| o["sel"] == "#TI_BuyEnhacements_Continue_Yes" && o["op"] == "click"));
+        // the submit and cancel stages are one click each
+        let sub = plan(fwd_sg_claim, json!({"stage": "submit"}), sg());
+        assert_eq!(sub[0]["sel"], "#TI_BuyEnhacements_Continue_Yes");
+        let cancel = plan(fwd_sg_claim, json!({"stage": "cancel"}), sg());
+        assert_eq!(cancel[0]["sel"], "#TI_Optfordiscount_Discount_Skip");
+        // a mobile number of another country is left out, never cut to fit
         let hk = plan(
             fwd_sg_claim,
             json!({}),
@@ -455,14 +1007,95 @@ mod tests {
             "pics_declare",
             "start",
             "new_application",
-            "entry_air",
+            "entry_mode_tile",
             "confirm_entry",
+            "close_home_notice",
         ] {
             assert!(steps.contains(&f), "{f}");
         }
+        // the tile follows the call's entry mode (Air when none is given)
+        assert_eq!(by(&p, "entry_mode_tile")[0]["text"], "Air");
+        let land = plan(apdt_start, json!({"entry_mode": "land_sea"}), sg());
+        assert_eq!(by(&land, "entry_mode_tile")[0]["text"], "Land / Sea");
+        // no documents in the chat: nothing uploaded, the plan ends at the upload page
         assert_eq!(p.last().unwrap()["op"], "require");
         assert!(!p
             .iter()
-            .any(|o| o["op"] == "text" || o.get("vault").is_some()));
+            .any(|o| o["op"] == "text" || o["op"] == "file" || o.get("vault").is_some()));
+        // the chat's documents, each into its own slot through the platform's file chooser (mapped 2026-11-02)
+        let p = plan(
+            apdt_start,
+            json!({"passport_file": "uploads/passport.jpg", "out_pass_file": "uploads/bp.jpg", "receipt_file": "uploads/r.pdf"}),
+            sg(),
+        );
+        assert_eq!(by(&p, "passport_open")[0]["scope"], "Travel document");
+        assert_eq!(by(&p, "passport_open")[0]["scope_sel"], ".card");
+        assert_eq!(by(&p, "passport")[0]["op"], "file");
+        assert_eq!(by(&p, "passport")[0]["path"], "uploads/passport.jpg");
+        assert_eq!(by(&p, "passport")[0]["text"], "Upload");
+        assert_eq!(by(&p, "reference")[0]["text"], "reference number");
+        assert_eq!(by(&p, "reference_seen")[0]["text"], "Continue");
+        assert_eq!(by(&p, "out_pass")[0]["path"], "uploads/bp.jpg");
+        assert_eq!(
+            by(&p, "out_pass_open")[0]["scope"],
+            "Boarding pass of the departure flight"
+        );
+        assert_eq!(by(&p, "receipt_open")[0]["scope"], "Proof of tax payment");
+        assert_eq!(by(&p, "receipt_pages")[0]["text"], "Submit");
+        // the recognition's wait ends at the first thing the page shows (no fixed pause): the slot's "View", or a
+        // dialog about the document
+        // each slot waits for the previous document's overlay to go, and a step after a failed one is skipped
+        let at = |f: &str| p.iter().position(|o| o["field"] == f).unwrap();
+        assert!(
+            by(&p, "receipt_settle")[0]["absent"] == true
+                && at("receipt_settle") < at("receipt_open")
+        );
+        assert_eq!(by(&p, "receipt")[0]["after"], "receipt_wait");
+        assert_eq!(by(&p, "receipt_recognised")[0]["after"], "receipt");
+        // the slot's link by its own text (the receipt's hint shares its style and came first)
+        assert_eq!(by(&p, "receipt_open")[0]["text"], "Click here to upload");
+        let any = by(&p, "out_pass_recognised")[0]["any"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(any[0]["scope"], "Boarding pass of the departure flight");
+        assert_eq!(any[0]["text"], "View");
+        assert!(any.iter().any(|c| c["text"] == "Documents to be submitted"));
+        // the arrival pass the chat does not have: its slot is left for the user
+        assert!(by(&p, "in_pass_open").is_empty() && by(&p, "in_pass").is_empty());
+        // the uploads come after the upload page is reached
+        let at = |f: &str| p.iter().position(|o| o["field"] == f).unwrap();
+        assert!(
+            at("travel_document") < at("passport_open")
+                && at("reference_seen") < at("out_pass_open")
+        );
+    }
+
+    #[test]
+    fn fwds_save_fills_its_dialog_by_input_names_and_needs_a_singapore_mobile() {
+        // mapped on the live summary 2026-11-02: the header's save button, the dialog's four inputs, its save button
+        let p = plan(fwd_sg_quote, json!({"stage": "save"}), sg());
+        assert_eq!(by(&p, "save")[0]["sel"], "button.save-btn");
+        assert_eq!(
+            by(&p, "name")[0]["sel"],
+            ".fwd-save-dialog input[name=name]"
+        );
+        assert_eq!(by(&p, "name")[0]["value"], "TAN WEI MING");
+        assert_eq!(by(&p, "email")[0]["value"], "weiming@example.com");
+        assert_eq!(by(&p, "mobile")[0]["value"], "91234567");
+        // the NRIC/FIN comes from the Vault: the plan never carries it
+        let nric = by(&p, "nric_fin")[0];
+        assert_eq!(nric["sel"], ".fwd-save-dialog input[name=nric]");
+        assert_eq!(nric["vault"]["field"], "number");
+        assert!(nric
+            .get("value")
+            .is_none_or(|v| v.as_str() == Some("x") || v.is_null()));
+        assert_eq!(
+            by(&p, "save_quote")[0]["sel"],
+            ".fwd-save-dialog button.primary"
+        );
+        // another country's number: FWD's save and its link need a Singapore mobile — nothing is filled
+        let hk = json!({"name_en": "Chan Tai Man", "email_personal": "tm@example.com", "phone": "+852 9123 4567"});
+        assert!(plan(fwd_sg_quote, json!({"stage": "save"}), hk).is_empty());
     }
 }

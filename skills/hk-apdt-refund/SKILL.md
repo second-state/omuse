@@ -1,15 +1,17 @@
 ---
 name: hk-apdt-refund
-description: 申请退还香港机场离境税（APDT）：核对资格和期限，在官方平台走到上传证件那一步，上传证件照片、选择退款方式和人脸识别由用户在自己手机上完成 Hong Kong air passenger departure tax (APDT) refund: the rule and the deadline checked, the official platform opened up to its document upload; the documents' photos, the refund method and the face recognition are the user's, on their own phone.
+description: 申请退还香港机场离境税（APDT）：核对资格和期限，在官方平台上传用户在对话中给的证件，申请随即保存并得到参考编号，用户在任何设备上用参考编号继续，选择退款方式、人脸识别和提交由用户完成 Hong Kong air passenger departure tax (APDT) refund: the rule and the deadline checked; code uploads the documents the user gave in the chat to the official platform, which saves the application under a reference number the user opens it with on any device; the refund method, the face recognition and Submit are the user's.
 form: on
 ---
 # Hong Kong departure tax refund (APDT) / 香港机场离境税退款
 
 Official site only: https://app.apdtrefund.hk/hkTaxMobile/?lang=en (the Airport Authority's Refund Application
-Platform; free — any other site, or one that charges, is a scam). Code checks the rule and goes through the platform's
-notes and entry mode to its document upload; the documents' photos (the travel document, the boarding passes, the
-receipt), the refund method and the **face-recognition step** are the user's, on their own phone — you never upload,
-never ask to take over and never click "Proceed with Facial Recognition".
+Platform; free — any other site, or one that charges, is a scam). Code checks the rule, goes through the platform's
+notes and entry mode and uploads the documents the user gave in the chat (the travel document's photo page, the
+boarding passes, the receipt); the recognised travel document saves the application under a **reference number**. The
+user opens it on any device with that number and their travel document number; the refund method, the
+**face-recognition step** and Submit are theirs — you never upload or click yourself, never ask to take over and never
+click "Proceed with Facial Recognition".
 
 ## 1. Who qualifies (code checks it on the tool's arguments; this is for questions)
 - Arrived in Hong Kong and **left by air from HKIA on the same or the next calendar day** (Hong Kong time), and the
@@ -27,29 +29,37 @@ Not eligible (stayed longer, more than 28 days ago, tax not on the receipt): the
 ## 2. How it runs (code)
 Applying is ONE `apdt_refund` call — only when the user asks to apply (a question about the refund is answered from
 this page, with no call). Arguments: what the user gave — `refund_method` (card, cash, alipay, wechat, alipayHK,
-wechatHK), `wallet_account` for an e-wallet — and the trip, from their words or the documents: `in_flight` / `in_date`
-(the flight into Hong Kong), `out_flight` / `out_date` (the flight out) and `tax_hkd` (the departure tax on the receipt:
-120 or 200, 0 when it shows none). Never ask for the documents before calling: no document is needed for the call — the
-user uploads them on the platform, on their phone.
+wechatHK), `wallet_account` for an e-wallet, `entry_mode` (how they entered Hong Kong: `air`, `land_sea` through a land
+or sea control point, `skypier` by the SkyPier ferry / coach or Park & Fly; by air also the arrival flight and its
+boarding pass) — and the trip, from their words or the documents: `out_flight` / `out_date`
+(the flight out), `in_flight` / `in_date` (the flight into Hong Kong — leave them out when the user did not give them:
+they add the arrival on the platform), `tax_hkd` (the departure tax on the receipt: 120 or 200, 0 when it shows none)
+and the documents of this chat (`passport_file`, `out_pass_file`, `in_pass_file`, `receipt_file`). Call with what you
+have; the result `needs_input` lists what is still missing, the documents among it as optional — ask once for all of
+it in one message, then call again with everything the user gave (what they skip, they upload later in the saved
+application, and the result says so).
 Code does everything else:
 - the documents: with a mailbox connected and the trip not given, code runs the fixed mail search, saves the
   boarding passes and the receipt (`attachments/…`) and reads them, with the PDFs the user attached. The result
   `mail_read` lists the files: read the flights, the dates and the tax in them and call `apdt_refund` again with every
   field;
 - the rule above (not eligible: the result says why, nothing is opened);
-- the platform (its form function): the anti-scam notice, the two statements, Start, New Application, entry by air and
-  Confirm — then it stops at the travel document's upload.
+- the platform (its form function): the notices, the two statements, Start, New Application, entry by air, then the
+  documents of this chat into their slots; the travel document recognised, the platform saves the application and
+  code reads its reference number (status `saved`). Without a travel document it stops at the upload (status `ready`).
 
-The result `needs_input` lists what only the user can give (the trip, the refund method): ask
-for exactly that, in one message, then call again with every field; `invalid`: fix the arguments and call again. Never
+The result `needs_input` lists what only the user can give (the departure, the refund method, the documents as
+optional): ask for exactly that, in one message, then call again with every field; `invalid`: fix the arguments and call again. Never
 fill, tick, upload or click on the platform yourself, never call purchase_confirm here, and never start the face
 recognition.
 
 ## 3. Answer
-Word the reply from the tool's JSON result: its status (ready, not_eligible, stopped); the facts in its `show` are
-appended by code — the rule's verdict, the tax to be refunded, the last day to apply, the steps left and the platform's
-link. The user opens the link on their phone, uploads the travel document, the boarding passes and the receipt, chooses
-the refund and does the face recognition; approval and the refund usually follow within about three weeks. Never the
+Word the reply from the tool's JSON result: its status (saved, ready, not_eligible, stopped); the facts in its `show` are
+appended by code — the rule's verdict, the tax to be refunded, the last day to apply, the reference number, the steps
+left and the platform's link. With `saved` the user opens the platform on any device, chooses "View Application /
+Continue Application" with their travel document number and the reference number, adds what is missing (the arrival,
+when it was not given), chooses the refund, does the face recognition and submits; approval and the refund usually
+follow within about three weeks. Never the
 passport or card number; never "I applied" or "I completed the face check". Offer a reminder (schedule_create) a few days before the
 deadline.
 

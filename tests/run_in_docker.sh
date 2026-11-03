@@ -88,7 +88,7 @@ if [ "${1:-}" != "--inside" ]; then
   # OMUSE_E2E_EXECUTOR / OMUSE_E2E_PLANNER set on the command line override that file's model names.
   # OMUSE_E2E_OUT: a writable host directory, mounted at /repo-out (suite logs, TIMING lines, screenshots_real.py pictures).
   EXTRA=()
-  [ -n "${OMUSE_E2E_ENV_FILE:-}" ] && EXTRA+=(--env-file "$OMUSE_E2E_ENV_FILE" -e OMUSE_E2E_REAL=1 -e OMUSE_E2E_MODELS ${OMUSE_E2E_EXECUTOR:+-e OMUSE_E2E_EXECUTOR} ${OMUSE_E2E_PLANNER:+-e OMUSE_E2E_PLANNER} ${OMUSE_E2E_SEARCH_ENGINES+-e OMUSE_E2E_SEARCH_ENGINES} ${OMUSE_E2E_KEEP:+-e OMUSE_E2E_KEEP} ${SEARCH_TIMING_BURST:+-e SEARCH_TIMING_BURST})
+  [ -n "${OMUSE_E2E_ENV_FILE:-}" ] && EXTRA+=(--env-file "$OMUSE_E2E_ENV_FILE" -e OMUSE_E2E_REAL=1 -e OMUSE_E2E_MODELS ${OMUSE_E2E_EXECUTOR:+-e OMUSE_E2E_EXECUTOR} ${OMUSE_E2E_PLANNER:+-e OMUSE_E2E_PLANNER} ${OMUSE_E2E_SEARCH_ENGINES+-e OMUSE_E2E_SEARCH_ENGINES} ${OMUSE_E2E_KEEP:+-e OMUSE_E2E_KEEP} ${OMUSE_E2E_APDT_DOCS:+-e OMUSE_E2E_APDT_DOCS} ${OMUSE_E2E_APDT_DOC_NO:+-e OMUSE_E2E_APDT_DOC_NO} ${SEARCH_TIMING_BURST:+-e SEARCH_TIMING_BURST})
   # OMUSE_E2E_SKILLS_DIR=1: the skills come from the working tree (mounted at /repo) instead of the binary, so a skill
   # edit is tested without rebuilding the image (bots stay compiled in)
   [ -n "${OMUSE_E2E_SKILLS_DIR:-}" ] && EXTRA+=(-e OMUSE_E2E_SKILLS_DIR=/repo/skills)

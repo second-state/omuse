@@ -357,6 +357,17 @@ pub(super) fn next(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Step {
     })
 }
 
+/// A product title as the pick is matched on: its letters and digits, lower case — the model's copy of a title may drop
+/// an apostrophe or change the spacing (shopping_real 2026-11-03: "Mens" for "Men's", and the buy searched again,
+/// limited to the store, and found nothing).
+fn title_key(title: &str) -> String {
+    title
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// The search, the review and the card; `None` for a shop's link (not searched: no page is opened).
 fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
     if !sr.url.is_empty() && sr.query.is_empty() && sr.choices.is_empty() && sr.pick.is_empty() {
@@ -368,11 +379,11 @@ fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
     if !sr.choices.is_empty() || !sr.pick.is_empty() {
         if let Some(review) = last_review(m.before) {
             if !sr.pick.is_empty() {
-                let want = sr.pick.trim().to_lowercase();
+                let want = title_key(&sr.pick);
                 let offers = review["offers"].as_array().cloned().unwrap_or_default();
                 if let Some(o) = offers
                     .iter()
-                    .find(|o| get_str(o, "title").to_lowercase() == want)
+                    .find(|o| !want.is_empty() && title_key(&get_str(o, "title")) == want)
                 {
                     // a Google Shopping offer: the stores selling it (one more SerpApi request, for the pick only)
                     if get_str(o, "provider") == "google" {
