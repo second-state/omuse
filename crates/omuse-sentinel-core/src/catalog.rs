@@ -202,8 +202,13 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
          parallel, the offers merged with their ids, each price also in the user's currency (price_local).",
         obj(json!({"query": {"type": S}, "country": {"type": S}, "currency": {"type": S},
                    "stores": {"type": "array", "items": {"type": S}},
+                   "brands": {"type": "array", "items": {"type": S}}, "location": {"type": S},
                    "min_price": {"type": "number"}, "max_price": {"type": "number"},
                    "limit": {"type": "integer"}}), &["query"])));
+    add("shop_stores", tool("shopping", "read", "search", "low", "PUBLIC",
+        "商品的销售商店（仅供代码机器调用）。The stores selling one Google Shopping product in the user's country (called by \
+         the shop_order machine only, never offered to the model): each store's own page, price, shipping and total.",
+        obj(json!({"product_ref": {"type": S}, "product_token": {"type": S}, "country": {"type": S}}), &[])));
     add("browser_fill_secret", tool("browser", "interact", "type", "high", "PUBLIC",
         "从保险箱填写证件号/会员号/信用卡（每次都要用户批准，你看不到实际内容）。Fill a value stored in the user's \
          vault (ID/passport number, membership number, credit card number/expiry/CVC, holder name) into an input \
@@ -717,7 +722,7 @@ mod tests {
     #[test]
     fn table_shape() {
         let t = builtin_tools();
-        assert_eq!(t.len(), 76); // 76 with shop_search, 75 with browser_read_elements; 55 before the eight Drive tools, 63 before the travel tools (now seven); browser_search became web_search; 70 with news_search, 71 with cars_search, 73 with form_fill and browser_fill_form, 74 with browser_news_search
+        assert_eq!(t.len(), 77); // 77 with shop_stores, 76 with shop_search, 75 with browser_read_elements; 55 before the eight Drive tools, 63 before the travel tools (now seven); browser_search became web_search; 70 with news_search, 71 with cars_search, 73 with form_fill and browser_fill_form, 74 with browser_news_search
         let keys: Vec<&String> = t.keys().collect();
         assert_eq!(keys[0], "gmail_search");
         assert_eq!(keys[keys.len() - 1], "phone_hangup");

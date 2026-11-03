@@ -18,6 +18,9 @@ from tests import user_common as U  # noqa: E402
 from tests.user_common import check  # noqa: E402
 
 REQUEST = "Find me running shoes under S$150."
+# a brand named: Google Shopping too (SerpApi, the Flights & hotels key) — also the Shopping bot's example in the UI
+BRAND_REQUEST = "Find me Nike running shoes under S$250."
+KEY = os.environ.get("OMUSE_E2E_SERPAPI_KEY", "")
 PROFILE = {"name_en": "OMUSE TESTER", "home_city": "SIN", "home_country": "SG",
            "email_personal": "omuse.e2e.tester@example.com"}
 
@@ -51,6 +54,35 @@ async def main():
         check("the offers' links open for the user (at least one: a shop may block automated requests)",
               any(ok for _, (ok, _) in opened), opened)
         check("no link leads nowhere", not a.broken_links(), a.broken_links())
+
+        # a brand named: Google Shopping (SerpApi) joins, from the user's city; a pick links the seller's own page
+        if KEY:
+            pg = u.page
+            await pg.goto(U.APP + "#connections")
+            card = pg.locator(".card", has_text="Flights & hotels").first
+            await card.wait_for(timeout=20000)
+            await card.locator("input[type=password]").fill(KEY)
+            await card.locator("button", has_text="Connect & test").click()
+            await pg.wait_for_function("() => [...document.querySelectorAll('.card')].some(c => c.textContent.includes('Flights & hotels') && /searches left/.test(c.textContent))",
+                                       timeout=60000)
+            await u.open_bot("Shopping")
+            c = await u.ask(BRAND_REQUEST, label="brand", new_chat=True)
+            cards = [x for x in await u.choices() if x.get("kind") == "comparison"]
+            copts = (cards[-1].get("options") if cards else None) or []
+            print(f"INFO brand card: {[(o.get('label'), o.get('price'), o.get('details')) for o in copts]}")
+            check("brand: the card shows Nike offers in SGD", bool(copts) and all(o.get("currency") == "SGD" for o in copts)
+                  and any("nike" in str(o.get("label")).lower() for o in copts), copts)
+            if copts:
+                pick = copts[0].get("label")
+                d = await u.ask(f"I'll take the {pick}.", label="pick", new_chat=False)
+                buy = [x for x in d.block_links if host(x) and not host(x).endswith("google.com")]
+                print(f"INFO pick block: {d.block!r} links {d.block_links}")
+                check("pick: the block links a store's own page for it (not Google's)", bool(buy), d.block_links)
+                check("pick: the block says where it is delivered and that the store's checkout confirms the address",
+                      d.shows("the store's checkout confirms your address") or d.shows("Buy it on the merchant's page"), d.block)
+                check("pick: nothing was bought or submitted", not d.approvals and not d.takeovers, (d.approvals, d.takeovers))
+        else:
+            print("SKIP the brand search: no OMUSE_E2E_SERPAPI_KEY")
 
         # the same request to Main goes to the Shopping bot
         await u.open_bot("Main")

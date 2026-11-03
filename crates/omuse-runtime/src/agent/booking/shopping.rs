@@ -27,6 +27,8 @@ use crate::listings::Listing;
 
 /// The machine's code call to the store providers.
 pub const SEARCH: &str = "shop_search";
+/// The machine's code call for the stores selling a Google Shopping product (a pick to buy).
+pub const STORES: &str = "shop_stores";
 /// The result status the model chooses from.
 pub const REVIEW: &str = "review";
 /// How many offers a review result carries.
@@ -237,6 +239,102 @@ fn offer_line(o: &Value) -> Value {
     S::link("Offer", "商品", &text, &get_str(o, "url"))
 }
 
+/// The user's city for a search from a place (Google Shopping's `location`): the table's name for the profile's home
+/// city, else the city as the user typed it; "" without one (the country is searched).
+fn home_city_name(profile: &Value) -> String {
+    match crate::places::home_city(profile) {
+        Some(c) => c.name.to_string(),
+        None => get_str(profile, "home_city").trim().to_string(),
+    }
+}
+
+/// A pick from Google Shopping: the stores selling it in the user's country (`shop_stores`), then the store that is
+/// the offer's seller (else the first) — its own page, the total with shipping and its delivery / returns notes as
+/// Google gives them. Nothing is bought: the user pays on the store's page.
+fn google_pick(o: &Value, t: &[Value], m: &Machine, ids: &Ids, country: &str) -> Step {
+    let token = calls_of(m.before, SEARCH)
+        .into_iter()
+        .chain(calls_of(t, SEARCH))
+        .flat_map(|(_, msg)| {
+            data_of(msg)["offers"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|x| get_str(x, "offer_id") == get_str(o, "offer_id"))
+        .map(|x| get_str(&x, "product_ref"))
+        .unwrap_or_default();
+    let product_page = || {
+        Step::Done(json!({"status": "link", "offer": o,
+            "show": [S::link("Product on Google Shopping", "Google 购物上的商品", &get_str(o, "title"), &get_str(o, "url")),
+                     S::amount("Price", "价格", o["price"].as_f64().unwrap_or(0.0), &get_str(o, "currency"))],
+            "hints": ["nothing has been bought: the user picks a store and pays on its page"]}))
+    };
+    if token.is_empty() {
+        return product_page();
+    }
+    let Some((_, msg)) = calls_of(t, STORES).into_iter().next() else {
+        return ids.calls(STORES, json!({"product_ref": token, "country": country}));
+    };
+    let stores = data_of(msg)["stores"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let seller = vec![get_str(o, "merchant")];
+    let Some(st) = stores
+        .iter()
+        .find(|x| omuse_apps::shops::seller_is(&get_str(x, "name"), &seller))
+        .or_else(|| stores.first())
+    else {
+        return product_page();
+    };
+    let cur = get_str(o, "currency");
+    let mut show = vec![S::link(
+        &format!("Buy at {}", get_str(st, "name")),
+        &format!("在 {} 购买", get_str(st, "name")),
+        &get_str(o, "title"),
+        &get_str(st, "url"),
+    )];
+    match (st["total"].as_f64(), st["price"].as_f64()) {
+        (Some(total), _) => show.push(S::amount("Total with shipping", "含运费总价", total, &cur)),
+        (None, Some(p)) => show.push(S::amount("Price", "价格", p, &cur)),
+        _ => {}
+    }
+    let notes: Vec<String> = st["notes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    if !notes.is_empty() {
+        show.push(S::fact(
+            "Delivery",
+            "配送",
+            &format!(
+                "{} (as Google lists it for {country}; the store's checkout confirms your address)",
+                notes.join("; ")
+            ),
+        ));
+    }
+    let others: Vec<String> = stores
+        .iter()
+        .filter(|x| get_str(x, "url") != get_str(st, "url"))
+        .take(3)
+        .map(|x| match x["total"].as_f64().or(x["price"].as_f64()) {
+            Some(p) => format!("{} ({cur} {p:.2})", get_str(x, "name")),
+            None => get_str(x, "name"),
+        })
+        .collect();
+    if !others.is_empty() {
+        show.push(S::fact("Also sold by", "其他商店", &others.join("; ")));
+    }
+    Step::Done(
+        json!({"status": "link", "offer": o, "store": st, "show": show,
+        "hints": ["nothing has been bought: the user pays on the store's page"]}),
+    )
+}
+
 /// Where it ships and the currency: the request's checked country (the one the user named, else the profile's home
 /// country) and that country's currency.
 fn location(sr: &ShopReq, profile: &Value) -> (String, String) {
@@ -276,6 +374,10 @@ fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
                     .iter()
                     .find(|o| get_str(o, "title").to_lowercase() == want)
                 {
+                    // a Google Shopping offer: the stores selling it (one more SerpApi request, for the pick only)
+                    if get_str(o, "provider") == "google" {
+                        return Some(google_pick(o, t, m, ids, &country));
+                    }
                     // the store's checkout for that variant, where the user pays in their own browser (no card is
                     // ever sent by API: docs/sites/shopify.md, "Trust tier"); else the product page
                     let checkout = get_str(o, "checkout_url");
@@ -342,6 +444,14 @@ fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
         if !sr.stores.is_empty() {
             a["stores"] = json!(sr.stores);
         }
+        // a brand named brings in Google Shopping (a SerpApi credit), searched from the user's city when known
+        if !sr.brands.is_empty() {
+            a["brands"] = json!(sr.brands);
+        }
+        let city = home_city_name(m.profile);
+        if !city.is_empty() {
+            a["location"] = json!(city);
+        }
         if let Some(x) = sr.ranking.max_price {
             a["max_price"] = json!(x);
         }
@@ -360,6 +470,10 @@ fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
                 "no_credentials" => {
                     format!("{}: not set up (no credentials)", get_str(p, "provider"))
                 }
+                "no_key" => format!(
+                    "{}: needs the SerpApi key (Connections → Flights & hotels)",
+                    get_str(p, "provider")
+                ),
                 e => format!("{}: {e}", get_str(p, "provider")),
             };
             json!({"provider": get_str(p, "provider"), "why": why})

@@ -1,0 +1,71 @@
+{
+ "product_results": {
+  "title": "Nike Vomero Plus Men's",
+  "brand": "Nike",
+  "rating": 4.7,
+  "reviews": 3104,
+  "stores": [
+   {
+    "name": "iRUN Singapore",
+    "title": "Nike Vomero Plus For Men Black | Bright Crimson / US 8",
+    "link": "https://irunsg.com/products/nike-vomero-plus-for-men?variant=49787063140594&country=SG&currency=SGD&utm_medium=product_sync&utm_source=google&utm_content=sag_organic&utm_campaign=sag_organic&srsltid=AYCX9vL51RRrYOpR49VdH2surAZebf6V5fb-PKuxMFTZDjdAhB1nmWSD5S0",
+    "price": "$179.00",
+    "extracted_price": 179.0,
+    "shipping": "+ $5.00",
+    "shipping_extracted": 5.0,
+    "total": "$184.00",
+    "extracted_total": 184.0,
+    "details_and_offers": [
+     "In stock online",
+     "Free delivery on orders of $80+",
+     "14-day returns"
+    ],
+    "tag": "Best price"
+   },
+   {
+    "name": "ZALORA Singapore",
+    "title": "Nike - Vomero Plus Men's Road Running Shoes - white - Men Shoes",
+    "link": "https://www.zalora.sg/p/nike-vomero-plus-men-s-road-running-shoes-white-4367192?productQuery=nike-vomero-plus-men-s-road-running-shoes-white-4367192&toApp=1",
+    "price": "$220.00",
+    "extracted_price": 220.0,
+    "shipping": "Free",
+    "total": "$220.00",
+    "extracted_total": 220.0,
+    "details_and_offers": [
+     "In stock online",
+     "Free delivery"
+    ]
+   },
+   {
+    "name": "Nike Official",
+    "title": "Nike Vomero Plus Men's Road Running Shoes Size 10.5 (White)",
+    "link": "https://www.nike.com/sg/t/vomero-plus-mens-road-running-shoes-vP73XdN3/IM8336-100?dplnk=member",
+    "price": "$249.00",
+    "extracted_price": 249.0,
+    "shipping": "Free",
+    "total": "$249.00",
+    "extracted_total": 249.0,
+    "details_and_offers": [
+     "In stock online",
+     "Free delivery",
+     "60-day returns"
+    ]
+   },
+   {
+    "name": "JD Sports Singapore",
+    "title": "Nike Vomero Plus - Grey - 9.5",
+    "link": "https://www.jdsports.com.sg/products/vomero-plus-120812569",
+    "price": "$249.00",
+    "extracted_price": 249.0,
+    "shipping": "Free",
+    "total": "$249.00",
+    "extracted_total": 249.0,
+    "details_and_offers": [
+     "In stock online",
+     "Free delivery",
+     "30-day returns"
+    ]
+   }
+  ]
+ }
+}
