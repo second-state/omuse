@@ -158,7 +158,7 @@ fn a_claims_facts_are_checked_and_normalised() {
     // the FWD delay: the flight number and the times normalised, the market from the profile
     let v = valid(
         CLAIM_FILE,
-        json!({"insurer": "fwd", "policy_no": "TI-SG-2026-55123", "incident_date": "2026-10-29", "flight_no": "sq636",
+        json!({"insurer": "fwd", "policy_no": "pntr20 12-34567890", "leave_sg": "2026-10-25", "return_sg": "2026-11-02", "destination": "Japan", "itinerary_file": "uploads/eticket.pdf", "boarding_pass_file": "uploads/boarding.jpg", "incident_date": "2026-10-29", "flight_no": "sq636",
                "scheduled_departure": "10:30", "actual_departure": "17.45"}),
         false,
         &t,
@@ -177,6 +177,40 @@ fn a_claims_facts_are_checked_and_normalised() {
             Some("flight_delay")
         )
     );
+    // FWD Singapore's policy number in FWD's own format (its claim form checks the part after the fixed PNTR20)
+    assert_eq!(v["policy_no"], "PNTR2012-34567890");
+    assert_eq!(v["destination"], "Japan");
+    for (given, want) in [
+        ("12-34567890", Some("PNTR2012-34567890")),
+        ("PNTR2012-34567890-01", Some("PNTR2012-34567890-01")),
+        ("PNTR20123456", None),
+        ("TI-SG-2026-55123", None),
+    ] {
+        assert_eq!(sg_policy_no(given).as_deref(), want, "{given}");
+    }
+    // the trip's dates and country are asked when missing; the policy number is required
+    match check(
+        CLAIM_FILE,
+        &json!({"insurer": "fwd", "market": "sg", "incident_date": "2026-10-29", "flight_no": "SQ 636",
+                "scheduled_departure": "10:30", "actual_departure": "17:45"}),
+        &cx(&json!({}), false, &t),
+    ) {
+        Checked::NeedsInput(m) => {
+            let m = m.join(" | ");
+            assert!(
+                m.contains("policy_no")
+                    && m.contains("leave_sg")
+                    && m.contains("return_sg")
+                    && m.contains("destination")
+                    // FWD requires the itinerary and the boarding pass; the airline's letter is optional
+                    && m.contains("itinerary_file")
+                    && m.contains("boarding_pass_file")
+                    && !m.contains("airline_letter_file"),
+                "{m}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
@@ -266,7 +300,7 @@ fn missing_facts_read_the_mail_once_then_ask_the_user() {
 
 #[test]
 fn the_fwd_market_comes_from_the_argument_the_policy_sender_or_the_profile() {
-    let fwd = json!({"insurer": "fwd", "policy_no": "P1", "incident_date": "2026-10-29", "flight_no": "CX 543",
+    let fwd = json!({"insurer": "fwd", "policy_no": "PNTR2012-34567890", "leave_sg": "2026-10-25", "return_sg": "2026-11-02", "destination": "Japan", "itinerary_file": "uploads/eticket.pdf", "boarding_pass_file": "uploads/boarding.jpg", "incident_date": "2026-10-29", "flight_no": "CX 543",
                      "scheduled_departure": "09:05", "actual_departure": "15:20"});
     let sg = json!({});
     let hk = json!({"address_home": "Flat 12B, 88 Robinson Road, Mid-Levels, Hong Kong", "home_country": "HK"});
@@ -524,79 +558,117 @@ fn mail_before(cert_from: &str, cert_id: &str, file: &str) -> Vec<Value> {
 }
 
 #[test]
-fn the_sg_delay_claim_counts_the_hours_fills_step_one_and_hands_the_rest_over() {
-    let profile = json!({"name_en": "TAN WEI MING"});
+fn the_sg_delay_claim_fills_every_step_and_submits_after_the_users_approval() {
+    // the user, 2026-11-03: code fills FWD's whole online claim and submits it once the user approves it in the app —
+    // no hand-over; the claim link comes back to the user
+    let profile = json!({"name_en": "TAN WEI MING", "email_personal": "weiming@example.com"});
     let args = valid(
         CLAIM_FILE,
-        json!({"insurer": "fwd", "market": "sg", "policy_no": "PNTR20123456", "plan": "Business",
+        json!({"insurer": "fwd", "market": "sg", "policy_no": "PNTR2012-34567890", "plan": "Business",
+               "leave_sg": "2026-10-25", "return_sg": "2026-10-30", "destination": "Tokyo",
                "incident_date": "2026-10-29", "flight_no": "SQ 636", "from": "Singapore", "to": "Tokyo Haneda",
                "airline": "Singapore Airlines", "scheduled_departure": "10:30", "actual_departure": "17:45",
                "delay_reason": "the late arrival of the inbound aircraft", "benefit_per_block": 100, "block_hours": 6,
                "benefit_cap": 1500, "claim_within_days": 30, "emergency_phone": "+65 6322 2072",
-               "certificate_message_id": "c1"}),
+               "certificate_message_id": "c1", "itinerary_file": "uploads/eticket.pdf", "boarding_pass_file": "uploads/boarding.jpg"}),
         false,
         &[],
     );
+    assert_eq!(args["destination"], "Japan");
     let before = mail_before(
         "Singapore Airlines <noreply@singaporeair.example>",
         "c1",
         "delay_certificate_SQ636.pdf",
     );
-    let (mut t, from) = started(before, "Please go ahead.", CLAIM_FILE, &args);
-    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, |name, _| {
-        match name {
-        "gmail_save_attachment" => "attachment saved: attachments/delay_certificate_SQ636.pdf (12 KB, application/pdf).".into(),
-        "browser_navigate" => page("https://www.fwd.com.sg/claim-online/travel-insurance/quickQuestions", "{}"),
-        "form_fill" => "{\"url\": \"https://www.fwd.com.sg/claim-online/travel-insurance/quickQuestions\", \"filled\": []}".into(),
-        "browser_request_takeover" => BACK.into(),
-        "schedule_create" => "created".into(),
-        other => panic!("{other}"),
-    }
-    });
-    // no upload (step 3 is not mapped) and no confirmation read (a real confirmation page is not known)
+    let answers = |approve: bool| {
+        move |name: &str, a: &Value| -> String {
+            match name {
+                "gmail_save_attachment" => "attachment saved: attachments/delay_certificate_SQ636.pdf (12 KB, application/pdf).".into(),
+                "browser_navigate" => page("https://www.fwd.com.sg/claim-online/travel-insurance/quickQuestions", "{}"),
+                "form_fill" => format!("{{\"url\": \"https://www.fwd.com.sg/claim-online/travel-insurance/{}\", \"filled\": []}}",
+                                       if sget(a, "stage") == "submit" { "thankYou" } else { "paymentMethod" }),
+                "submit_confirm" => if approve { "{\"status\": \"approved\"}".into() } else { "DENIED: the user declined".into() },
+                "browser_read_elements" => elements(
+                    "https://www.fwd.com.sg/claim-online/travel-insurance/thankYou?hash=CLM123",
+                    json!({"heading": ["thank you, your claim has been submitted"]}),
+                ),
+                "schedule_create" => "created".into(),
+                other => panic!("{other}"),
+            }
+        }
+    };
+    let (mut t, from) = started(before.clone(), "Please go ahead.", CLAIM_FILE, &args);
+    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, answers(true));
     assert_eq!(
         names(&calls),
         [
             "gmail_save_attachment",
             "browser_navigate",
             "form_fill",
-            "browser_request_takeover",
-            "schedule_create",
+            "submit_confirm",
+            "form_fill",
+            "browser_read_elements",
             "schedule_create"
         ]
     );
+    // the whole form in one plan: the trip, the delayed flight, the documents (the airline's letter from the mail)
     let fill = &calls[2].args;
-    assert_eq!(
+    for (k, want) in [
+        ("stage", "claim"),
+        ("policy_no", "PNTR2012-34567890"),
+        ("leave_sg", "2026-10-25"),
+        ("destination", "Japan"),
+        ("itinerary_file", "uploads/eticket.pdf"),
         (
-            sget(fill, "policy_no").as_str(),
-            sget(fill, "stage").as_str()
+            "airline_letter_file",
+            "attachments/delay_certificate_SQ636.pdf",
         ),
-        ("PNTR20123456", "claim")
-    );
-    let reason = sget(&calls[3].args, "reason");
+    ] {
+        assert_eq!(sget(fill, k), want, "{k}");
+    }
+    // the approval names the site, the facts and the declaration
+    let ok = &calls[3].args;
+    assert_eq!(sget(ok, "site"), "www.fwd.com.sg");
+    let summary = ok["summary"].to_string();
     assert!(
-        reason.contains("delayed 7 h 15 min")
-            && reason.contains("attachments/delay_certificate_SQ636.pdf")
-            && reason.contains("press next"),
-        "{reason}"
+        summary.contains("PNTR2012-34567890")
+            && summary.contains("delayed 7 h 15 min")
+            && summary.contains("SGD 100.00")
+            && summary.contains("PayNow"),
+        "{summary}"
     );
-    assert_eq!(res["status"], "handed_over");
+    assert!(sget(ok, "declaration").contains("true, complete and accurate"));
+    assert_eq!(sget(&calls[4].args, "stage"), "submit");
+    assert!(!names(&calls).contains(&"browser_request_takeover"));
+    assert_eq!(res["status"], "submitted");
     let m = must(&res);
     assert!(
         m.contains("delayed 7 h 15 min")
             && m.contains("- Claim amount: SGD 100.00")
-            && m.contains("- Rule: SGD 100 for every 6 hours of delay (1 × 6 h), up to SGD 1,500")
-            && m.contains(
-                "- Tell FWD by: 28 November 2026 (incident + 30 days, from your policy email)"
-            )
-            && m.contains("- 24-hour emergency assistance: +65 6322 2072")
-            && m.contains("step 1 of FWD's online claim is filled in"),
+            && m.contains("submitted after your approval")
+            && m.contains("thankYou?hash=CLM123"),
         "{m}"
     );
+    // declined: the form is closed unsubmitted, nothing sent
+    let (mut t, from) = started(before, "Please go ahead.", CLAIM_FILE, &args);
+    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, answers(false));
+    assert_eq!(
+        names(&calls),
+        [
+            "gmail_save_attachment",
+            "browser_navigate",
+            "form_fill",
+            "submit_confirm",
+            "form_fill"
+        ]
+    );
+    assert_eq!(sget(&calls[4].args, "stage"), "cancel");
+    assert_eq!(res["status"], "not_submitted");
+    assert!(must(&res).contains("nothing was sent to FWD"));
     // 5 hours: under the first block, nothing filed
     let short = valid(
         CLAIM_FILE,
-        json!({"insurer": "fwd", "market": "sg", "policy_no": "P1", "incident_date": "2026-10-29", "flight_no": "SQ 636",
+        json!({"insurer": "fwd", "market": "sg", "policy_no": "PNTR2012-34567890", "leave_sg": "2026-10-25", "return_sg": "2026-11-02", "destination": "Japan", "itinerary_file": "uploads/eticket.pdf", "boarding_pass_file": "uploads/boarding.jpg", "incident_date": "2026-10-29", "flight_no": "SQ 636",
                "scheduled_departure": "10:30", "actual_departure": "15:30"}),
         false,
         &[],
@@ -610,7 +682,7 @@ fn the_sg_delay_claim_counts_the_hours_fills_step_one_and_hands_the_rest_over() 
     assert!(must(&res).contains("delayed 5 h 00 min")); // a cap given as 0 (the user named none) is no cap: the market's rule stands, 7 h 15 min is one block
     let zero = valid(
         CLAIM_FILE,
-        json!({"insurer": "fwd", "market": "sg", "policy_no": "P1", "incident_date": "2026-10-29", "flight_no": "SQ 636",
+        json!({"insurer": "fwd", "market": "sg", "policy_no": "PNTR2012-34567890", "leave_sg": "2026-10-25", "return_sg": "2026-11-02", "destination": "Japan", "itinerary_file": "uploads/eticket.pdf", "boarding_pass_file": "uploads/boarding.jpg", "incident_date": "2026-10-29", "flight_no": "SQ 636",
                "scheduled_departure": "10:30", "actual_departure": "17:45", "benefit_per_block": 100, "block_hours": 6,
                "benefit_cap": 0}),
         false,
@@ -964,13 +1036,103 @@ fn the_purchase_quotes_picks_by_rule_and_hands_the_declaration_over() {
         ]
     );
     assert_eq!(res["status"], "shown");
-    // Hong Kong: no form function — the plan page goes to browser-use
-    let hk = valid(INSURANCE_BUY, json!({"market": "hk"}), false, &[]);
-    let (mut t, from) = started(Vec::new(), "buy FWD HK insurance", INSURANCE_BUY, &hk);
-    let (_, res) = run(INSURANCE_BUY, &hk, &mut t, from, &profile, |_, _| {
-        "ok".into()
-    });
-    assert_eq!(res["status"], "browser_use");
+}
+
+#[test]
+fn fwd_hong_kong_quotes_picks_and_saves_the_application_behind_its_own_link() {
+    // walked 2026-11-03: MyTravel's plan card creates the application (…/application/?leadId=…), and Next keeps the
+    // insured's details there — the link opens it prefilled on any device
+    let profile = json!({"name_en": "CHAN TAI MAN", "birthday": "1990-01-01", "phone": "+852 9123 4567",
+                         "email_personal": "tm@example.com"});
+    // a purchase asks the title and the new Smart HKID's date of issue
+    match check(
+        INSURANCE_BUY,
+        &json!({"market": "hk", "destination": "Tokyo", "depart": "2026-12-03", "return": "2026-12-09"}),
+        &cx(&profile, false, &[]),
+    ) {
+        Checked::NeedsInput(m) => {
+            let m = m.join(" | ");
+            assert!(
+                m.contains("title") && m.contains("hkid_issue_date") && m.contains("family_name"),
+                "{m}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let args = valid(
+        INSURANCE_BUY,
+        json!({"market": "hk", "destination": "Tokyo", "depart": "2026-12-03", "return": "2026-12-09",
+               "title": "mr", "hkid_issue_date": "2020-01-01", "cover": "medical", "cover_at_least": 800000,
+               "family_name": "Chan", "given_names": "Tai Man"}),
+        false,
+        &[],
+    );
+    assert_eq!(
+        (args["title"].as_str(), args["destination"].as_str()),
+        (Some("Mr."), Some("Japan"))
+    );
+    let lead = "https://www.fwd.com.hk/online-insurance/mytravel-insurance/en/additional-products/?leadId=6ae9a73d2ab9de001b77a33e";
+    let answers = move |name: &str, a: &Value| -> String {
+        match name {
+            "browser_navigate" => page(HK_QUOTE_URL, "{}"),
+            "form_fill" if sget(a, "stage") == "details" => {
+                json!({"url": lead, "filled": []}).to_string()
+            }
+            "form_fill" => json!({"url": HK_QUOTE_URL, "filled": []}).to_string(),
+            "browser_read_elements" => elements(
+                HK_QUOTE_URL,
+                json!({"plans": [
+                {"name": "Economy", "premium": "86.2", "medical": "500000"},
+                {"name": "Premium", "premium": "125.44", "medical": "1000000"},
+                {"name": "Superior", "premium": "181.49", "medical": "1500000"}]}),
+            ),
+            "present_choices" => "Shown to the user as 3 cards".into(),
+            other => panic!("{other}"),
+        }
+    };
+    let (mut t, from) = started(
+        Vec::new(),
+        "Buy me FWD travel insurance for Tokyo",
+        INSURANCE_BUY,
+        &args,
+    );
+    let (calls, res) = run(INSURANCE_BUY, &args, &mut t, from, &profile, answers);
+    assert_eq!(
+        names(&calls),
+        [
+            "browser_navigate",
+            "form_fill",
+            "browser_read_elements",
+            "present_choices",
+            "form_fill",
+            "form_fill"
+        ]
+    );
+    assert_eq!(sget(&calls[1].args, "destination"), "Japan");
+    // the cheapest plan with at least HKD 800,000 medical cover
+    assert_eq!(
+        (
+            sget(&calls[4].args, "stage").as_str(),
+            sget(&calls[4].args, "plan").as_str()
+        ),
+        ("pick", "Premium")
+    );
+    assert_eq!(sget(&calls[5].args, "hkid_issue_date"), "2020-01-01");
+    assert_eq!(sget(&calls[5].args, "family_name"), "CHAN");
+    assert_eq!(sget(&calls[5].args, "given_names"), "TAI MAN");
+    assert_eq!(res["status"], "saved");
+    assert_eq!(
+        res["quote_link"],
+        "https://www.fwd.com.hk/online-insurance/mytravel-insurance/en/application/?leadId=6ae9a73d2ab9de001b77a33e"
+    );
+    let m = must(&res);
+    assert!(
+        m.contains("Chosen: Premium: HKD 125.44") && m.contains("nothing has been paid"),
+        "{m}"
+    );
+    // the region by FWD Hong Kong's insured areas
+    assert_eq!(crate::forms::fwd_hk_region("Japan"), "Asia");
+    assert_eq!(crate::forms::fwd_hk_region("France"), "Worldwide");
 }
 
 // ---------------------------------------------------------------- the WorldTracer lookup
@@ -1108,4 +1270,128 @@ fn amounts_and_money() {
     assert_eq!(money(1_000_000.0), "1,000,000.00");
     assert!(amounts_in("Visa ending 4321 on 2026-09-21").is_empty());
     assert_eq!(hours_text(435), "7 h 15 min");
+}
+
+#[test]
+fn the_purchase_saves_the_quote_and_gives_fwds_own_link_instead_of_a_takeover() {
+    // the user, 2026-11-02: "I do not like to take over the server browser" — FWD's save (name, email, mobile,
+    // NRIC/FIN; the user agreed to FWD contacting them) keeps the quote, and FWD's link opens it on any device after
+    // the mobile number is typed
+    let profile = json!({"name_en": "TAN WEI MING", "phone": "+65 9123 4567", "email_personal": "weiming@example.com"});
+    let args = valid(
+        INSURANCE_BUY,
+        json!({"market": "sg", "action": "buy", "destination": "Japan", "depart": "2026-11-25", "return": "2026-12-02",
+               "travellers": 1, "cover": "cancellation", "cover_at_least": 10000}),
+        false,
+        &[],
+    );
+    let hash = "1k3h3rqfatm928qe44984j4d1o2e0uudue9pkaj40apmur0vfl6d";
+    let (mut t, from) = started(
+        Vec::new(),
+        "Buy me FWD cover for Japan",
+        INSURANCE_BUY,
+        &args,
+    );
+    let (calls, res) = run(
+        INSURANCE_BUY,
+        &args,
+        &mut t,
+        from,
+        &profile,
+        saved_answers(false, hash),
+    );
+    assert_eq!(
+        names(&calls),
+        [
+            "browser_navigate",
+            "form_fill",
+            "browser_read_elements",
+            "present_choices",
+            "form_fill",
+            "browser_read_elements"
+        ]
+    );
+    assert_eq!(sget(&calls[4].args, "stage"), "save");
+    assert_eq!(res["status"], "saved");
+    let m = must(&res);
+    assert!(
+        m.contains(&format!(
+            "https://www.fwd.com.sg/travel-insurance/emailRedirect.html?hash={hash}"
+        )) && m.contains("FWD quotation: **3U9198916384JD**")
+            && m.contains("ending 4567")
+            && m.contains("choose Business (SGD 66.08")
+            && m.contains("nothing has been paid"),
+        "{m}"
+    );
+    // FWD refused a field (its dialog still open), or no proper key: the hand-over as before
+    for (open, h) in [(true, hash), (false, "abc\"><script>")] {
+        let (mut t, from) = started(
+            Vec::new(),
+            "Buy me FWD cover for Japan",
+            INSURANCE_BUY,
+            &args,
+        );
+        let (calls, res) = run(
+            INSURANCE_BUY,
+            &args,
+            &mut t,
+            from,
+            &profile,
+            saved_answers(open, h),
+        );
+        assert_eq!(res["status"], "handed_over", "{open} {h}");
+        assert_eq!(
+            names(&calls).last().copied(),
+            Some("browser_request_takeover")
+        );
+    }
+}
+
+/// FWD's answers with the save's read: the quote keys, and whether the save dialog is still open.
+fn saved_answers(open: bool, hash: &str) -> impl Fn(&str, &Value) -> String {
+    let hash = hash.to_string();
+    move |name: &str, a: &Value| -> String {
+        match name {
+            "browser_read_elements" if a["read"][0]["name"] == "hash" => elements(
+                "https://www.fwd.com.sg/travel-insurance/online-quote/summary",
+                json!({"hash": [hash], "quotation": ["3U9198916384JD"], "open": if open { json!([""]) } else { json!([]) }}),
+            ),
+            _ => buy_answers(name, a),
+        }
+    }
+}
+
+#[test]
+fn an_fwd_claim_before_the_trip_has_ended_is_filed_after_the_return() {
+    // insurance_real 2026-11-03: a return date after today — FWD's calendar has no such day, the form stuck open
+    let profile = json!({"name_en": "TAN WEI MING"});
+    let args = valid(
+        CLAIM_FILE,
+        json!({"insurer": "fwd", "market": "sg", "policy_no": "PNTR2012-34567890", "leave_sg": "2026-10-29",
+               "return_sg": "2026-11-05", "destination": "Japan", "incident_date": "2026-10-29", "flight_no": "SQ 636", "itinerary_file": "uploads/eticket.pdf", "boarding_pass_file": "uploads/boarding.jpg",
+               "scheduled_departure": "10:30", "actual_departure": "17:45"}),
+        false,
+        &[],
+    );
+    let (mut t, from) = started(Vec::new(), "claim it", CLAIM_FILE, &args);
+    let (calls, res) = run(
+        CLAIM_FILE,
+        &args,
+        &mut t,
+        from,
+        &profile,
+        |name, _| match name {
+            "schedule_create" => "created".into(),
+            other => panic!("{other}: nothing is filled before the return"),
+        },
+    );
+    assert_eq!(names(&calls), ["schedule_create"]);
+    assert_eq!(sget(&calls[0].args, "spec"), "0 8 6 11 *");
+    assert_eq!(res["status"], "after_return");
+    let m = must(&res);
+    assert!(
+        m.contains("file it after you are back on 5 November 2026")
+            && m.contains("Claim amount: SGD 100.00"),
+        "{m}"
+    );
 }

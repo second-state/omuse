@@ -55,9 +55,13 @@ async def delay(u: U.User) -> None:
 
 
 async def baggage(u: U.User) -> None:
-    # the Insurance bot's example in the UI (bots/insurance.md), word for word
-    a = await u.ask("My checked bag didn't arrive on my ANA flight NH 802 to Tokyo yesterday. My Narita report is NRTNH12345. Where is my bag? Please keep an eye on it.",
+    # the Insurance bot's example in the UI (bots/insurance.md), word for word: a short request — the model asks for
+    # the flight and the report, and the user answers in the same chat
+    a = await u.ask("My checked bag didn't arrive. Where is it?",
                     label="baggage", approve=no_send, on_takeover=look, timeout=1200)
+    if not a.shows("NRTNH12345") and not a.timed_out:
+        a = await u.ask("It was my ANA flight NH 802 to Tokyo yesterday. My Narita report is NRTNH12345. Please keep an eye on it.",
+                        label="baggage follow-up", new_chat=False, approve=no_send, on_takeover=look, timeout=1200)
     check("baggage: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
     check("baggage: the Insurance & claims bot answered", "nsurance" in a.bot_link, a.bot_link)
     check("baggage: the block code appends after the answer has WorldTracer's answer for the file, with ANA's page on mybag.aero",

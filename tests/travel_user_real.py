@@ -42,7 +42,8 @@ async def last_flight(u: U.User, a: U.Answer) -> None:
     names ONE flight with its times, it lands tomorrow before midnight, and it is the last such flight of every flight
     the search found for the day (the search's own structured times, from the run's record) — no other flight is
     suggested in its place (runner-ups only on the card, after it). Google Flights has Singapore Airlines' evening flight that lands
-    before midnight (SQ 895, 18:50 → 22:50; Kiwi.com does not sell it): the user gets that one."""
+    before midnight (SQ 895, 18:50 → 22:50, on 2026-11-02; Kiwi.com does not sell it): the user gets the last one the
+    search found."""
     tomorrow = (TODAY + dt.timedelta(days=1)).isoformat()
     shown = TIMES.findall(a.block)
     print(f"INFO flight: the block's times {shown}")
@@ -52,8 +53,8 @@ async def last_flight(u: U.User, a: U.Answer) -> None:
         return
     dep_d, dep_t, arr_d, arr_t = shown[0]
     check(f"flight: it leaves tomorrow ({tomorrow})", dep_d == tomorrow, shown[0])
-    check("flight: it is Singapore Airlines' flight (SQ), which Google Flights lists landing before midnight",
-          re.search(r"(?m)^\W*Flight( \d+)?:.*(Singapore Airlines|\bSQ ?\d)", a.block) is not None, a.block[:400])
+    # which airline flies the last such flight changes with the day's schedule (SQ 895 on 2026-11-02, Cathay's CX 657
+    # on 2026-11-04): the check below compares the pick with every flight the search itself found
     check("flight: it lands before midnight on the day it leaves", arr_d == dep_d, shown[0])
     # every flight the search found (the run's record: the search's result as JSON, its times from the API's fields)
     listed = []
@@ -73,15 +74,22 @@ async def last_flight(u: U.User, a: U.Answer) -> None:
           f"{dep_d} {dep_t}" == last_dep, (shown[0], last_dep))
     # the runner-ups come after the reply (a second model call run while it streamed): a comparison card with the best
     # match first, when the model chose any — waited for a little after the answer
-    cards = []
-    for _ in range(10):
-        cards = [c for c in U.conv_choices(await u.conv_id()) if c.get("kind") == "comparison"]
-        if cards:
-            break
-        await u.page.wait_for_timeout(2000)
+    cards = await runner_up_cards(u, 0)
     first = ((cards[-1].get("options") or [{}])[0].get("label") or "") if cards else ""
     print(f"INFO flight: card {[o.get('label') for o in (cards[-1].get('options') or [])] if cards else None}")
     check("flight: a card, when shown, has the best match first", not cards or first in a.block, (first, a.block[:300]))
+
+
+async def runner_up_cards(u: U.User, before: int) -> list:
+    """The comparison cards in the chat after the first `before`: the runner-ups card comes after the streamed reply
+    (a second model call run while it streamed), so it is waited for a little."""
+    cards = []
+    for _ in range(15):
+        cards = [c for c in U.conv_choices(await u.conv_id()) if c.get("kind") == "comparison"][before:]
+        if cards:
+            break
+        await u.page.wait_for_timeout(2000)
+    return cards
 
 
 async def main():
@@ -105,14 +113,31 @@ async def main():
         check("last: the block code appends after the answer links a booking page and Kayak to compare",
               any("kayak" not in x for x in a.block_links) and bool(k), a.block_links)
         await last_flight(u, a)
+        # the runner-ups call answers (the user, 2026-11-02: no card ever showed — the model's hidden reasoning used up
+        # the decision's tokens, so it always fell back to none): the "last flight" search has other evening flights
+        dec = [e.get("data") or {} for t in await u.tasks() for e in t.get("events", [])
+               if e.get("type") == "decision" and "runner-ups" in ((e.get("data") or {}).get("question") or "")]
+        check("last: the runner-ups decision got an answer from the model (not the fallback)",
+              bool(dec) and not dec[-1].get("defaulted"), dec[-1:] if dec else None)
 
         # 2b. a flight on any day of a range (before the airline preference below, which the user's memory keeps)
+        seen = len([c for c in U.conv_choices(await u.conv_id()) if c.get("kind") == "comparison"])
         a = await u.ask(f"What's the cheapest flight from Singapore to Tokyo on any day between {day(D1)} and {day(D1 + dt.timedelta(days=4))}?", label="range")
         check("range: every link in the answer leads somewhere (no undecoded stand-in)", not a.broken_links(), a.broken_links())
         nothing = re.search(r"(no|couldn.t find|didn.t find)\b.*(flight|fare)", a.text, re.I) and re.search(r"all airlines|broader|other airlines|without", a.text, re.I)
         check("range: the answer names the cheapest day and its price — or says the search found nothing and offers a broader one",
               (a.has_prices() and any(mentions_day(a.text, D1 + dt.timedelta(days=i)) for i in range(5))) or bool(nothing), a.text[:400])
         if not nothing:
+            # one flight is the answer; other cheap days and flights follow on a card, best match first (the user,
+            # 2026-11-02: the runner-ups never showed — the decision's answer was cut off by the model's reasoning)
+            cards = await runner_up_cards(u, seen)
+            opts = (cards[-1].get("options") or []) if cards else []
+            print(f"INFO range: card {[o.get('label') for o in opts]}")
+            labels = [o.get("label") or "" for o in opts]
+            # which flights also fit "the cheapest" is the model's judgement (none is a fair answer); what code
+            # guarantees is that a card, when shown, leads with the answer's flight and its entries read apart
+            check("range: a card, when shown, has the best match first and no two entries alike",
+                  not opts or (labels[0].split(" · ")[0] in a.block and len(set(labels)) == len(labels)), (labels, a.block[:300]))
             bk = [x for x in a.block_links if "kiwi.com" in x or "google.com/travel" in x]
             check("range: the block code appends after the answer has a booking link, and it opens", bool(bk) and opens(bk[0])[0], a.block_links)
 
@@ -141,6 +166,39 @@ async def main():
         if k:
             ok, why = opens(k[0])
             check("flight: the Kayak link opens Kayak's page for the same search", ok and "SFO" in why.upper(), why)
+
+        # 3b. a round trip (the user's request of 2026-11-03, word for word): Google lists a round trip's returns only
+        # for an outbound picked — the answer named Friday's flight alone and left the return to the user. Now the
+        # block has the outbound on Friday morning and the return on Sunday, and the trip's link opens Google's
+        # booking options with both flights chosen.
+        fri = TODAY + dt.timedelta(days=(4 - TODAY.weekday()) % 7 or 7)
+        sun = fri + dt.timedelta(days=2)
+        a = await u.ask("Find me the best flight from Hong Kong to Bali. Leaving on Friday morning and back on Sunday evening.",
+                        label="round trip")
+        out = re.search(r"(?m)^[^\n:]*: HKG (\d{4}-\d\d-\d\d) (\d\d):\d\d → DPS", a.block)
+        ret = re.search(r"Return [^:\n]*: DPS (\d{4}-\d\d-\d\d) (\d\d):(\d\d) → HKG", a.block)
+        print(f"INFO round trip: block {a.block[:600]!r}")
+        dep = out.groups() if out else None
+        check(f"round trip: the block's outbound leaves Hong Kong on Friday {fri} in the morning",
+              dep is not None and dep[0] == fri.isoformat() and int(dep[1]) < 12, dep)
+        check(f"round trip: the block names the return flight, from Bali on Sunday {sun}",
+              ret is not None and ret.group(1) == sun.isoformat(), a.block[:600])
+        check("round trip: the return leaves in the afternoon or evening (the search lists the whole day)",
+              ret is not None and int(ret.group(2)) >= 15, ret.groups() if ret else None)
+        trip = [x for x in a.block_links if "google.com/travel/flights/booking" in x]
+        check("round trip: the block links the trip on Google Flights", bool(trip), a.block_links)
+        if trip:
+            page = await u.ctx.new_page()
+            await page.goto(trip[0], wait_until="domcontentloaded", timeout=60000)
+            try:
+                await page.wait_for_function("() => /Book with|Booking options/.test(document.body.innerText)", timeout=40000)
+            except Exception:   # noqa: BLE001 — the check below reports what the page showed
+                pass
+            body = " ".join((await page.inner_text("body")).split())
+            check("round trip: the link opens Google's booking options for the round trip, both flights chosen",
+                  "Round trip" in body and ("Book with" in body or "Booking options" in body) and "DPS–HKG" in body and "HKG–DPS" in body,
+                  body[:400])
+            await page.close()
 
         # 4. a hotel
         a = await u.ask(f"Find a 4-star hotel near Ginza, Tokyo from {day(D1)} to {day(D3)} for 2 people.", label="hotel")

@@ -287,20 +287,55 @@ impl Market {
     }
 
     /// GET from Yahoo's API, trying the next host when one is rate-limited or answers with a non-JSON page.
+    /// A connection that fails goes on to the next host too, and when every host failed the round is tried once more
+    /// after 2 s (market_real 2026-11-03: the second symbol of a request failed in a moment of lost connection, and the
+    /// answer had no price for it).
     async fn get_json(&self, path: &str, params: &[(&str, String)]) -> Result<Value, Fail> {
-        let mut last: Option<u16> = None;
+        let mut last: Option<String> = None;
+        for round in 0..2 {
+            if round > 0 {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            match self.get_json_once(path, params, &mut last).await {
+                Some(r) => return r,
+                None => continue,
+            }
+        }
+        let last = last.unwrap_or_else(|| "None".into());
+        Err(MarketError(format!("数据源暂时不可用 data source busy (HTTP {}) — try again shortly or use a finance website", last)).into())
+    }
+
+    /// One round over the hosts: `Some` with the answer (or a final error), `None` when every host failed (`last`: the
+    /// last status or connection error).
+    async fn get_json_once(
+        &self,
+        path: &str,
+        params: &[(&str, String)],
+        last: &mut Option<String>,
+    ) -> Option<Result<Value, Fail>> {
         for host in &self.hosts {
-            let r = self
+            let r = match self
                 .client
                 .get(format!("{}{}", host, path))
                 .query(params)
                 .header("User-Agent", UA)
                 .timeout(Duration::from_secs(20))
                 .send()
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    *last = Some(if e.is_timeout() {
+                        "timeout".into()
+                    } else {
+                        "connection".into()
+                    });
+                    continue;
+                }
+            };
             let status = r.status().as_u16();
             if status == 404 {
-                return Ok(json!({"_status": 404}));
+                return Some(Ok(json!({"_status": 404})));
             }
             let ct = r
                 .headers()
@@ -309,13 +344,20 @@ impl Market {
                 .unwrap_or("")
                 .to_string();
             if status == 200 && ct.contains("json") {
-                let bytes = r.bytes().await?;
-                return serde_json::from_slice(&bytes).map_err(|_| Fail::Other("JSONDecodeError"));
+                let bytes = match r.bytes().await {
+                    Ok(b) => b,
+                    Err(_) => {
+                        *last = Some("connection".into());
+                        continue;
+                    }
+                };
+                return Some(
+                    serde_json::from_slice(&bytes).map_err(|_| Fail::Other("JSONDecodeError")),
+                );
             }
-            last = Some(status);
+            *last = Some(status.to_string());
         }
-        let last = last.map(|s| s.to_string()).unwrap_or_else(|| "None".into());
-        Err(MarketError(format!("数据源暂时不可用 data source busy (HTTP {}) — try again shortly or use a finance website", last)).into())
+        None
     }
 
     async fn resolve_inner(&self, sym: &str) -> Result<String, Fail> {
@@ -1154,6 +1196,20 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         format!("http://{}", addr)
+    }
+
+    #[tokio::test]
+    async fn a_host_that_cannot_be_reached_falls_back_to_the_next() {
+        // market_real 2026-11-03: in a moment of lost connection the request's second symbol (HSBC) failed outright —
+        // a connection error returned before the other host was tried
+        let base = serve().await;
+        let m = Market::new(
+            reqwest::Client::new(),
+            vec!["http://127.0.0.1:9".to_string(), format!("{}/yahoo2", base)],
+        );
+        let r = m.fetch(&["HSBC Holdings".into()], "2y").await;
+        assert_eq!(r["results"].as_array().map(Vec::len), Some(1), "{r}");
+        assert_eq!(r["errors"], json!([]));
     }
 
     #[tokio::test]

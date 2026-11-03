@@ -24,7 +24,7 @@ pub const DENY: &str = "DENY";
 pub const ASK: &str = "ASK_USER";
 
 /// Tools that are approved one by one — never covered by a standing grant; approval scope forced to ONCE.
-pub const PER_USE_TOOLS: &[&str] = &["browser_fill_secret", "purchase_confirm"];
+pub const PER_USE_TOOLS: &[&str] = &["browser_fill_secret", "purchase_confirm", "submit_confirm"];
 /// Archiving / trashing more emails than this in one call needs approval.
 pub const BULK_MAIL: usize = 5;
 /// `app/sentinel/ical.py: READ_ONLY` — the refusal for write tools on an iCal (read-only) calendar connection.
@@ -153,9 +153,10 @@ impl Decision {
     /// automatically approve everything by default. Only ask the user to do the final submission or payment") — mail,
     /// calendar, Drive, phone calls, connectors too. Refusals (DENY: Vault secrets, blocked sites, the final submit /
     /// pay click that is handed over) are untouched.
+    /// The one exception: `submit_confirm`, a form code submits for the user (an insurance claim) — the user approves
+    /// what is sent themselves (user, 2026-11-03).
     pub fn browser_auto_ok(&self, tool: &str) -> bool {
-        let _ = tool;
-        self.decision == ASK
+        self.decision == ASK && tool != "submit_confirm"
     }
 
     /// `dataclasses.asdict(d)`.
@@ -1930,6 +1931,21 @@ mod tests {
             .decision,
             ASK
         );
+    }
+
+    #[test]
+    fn a_form_code_submits_is_approved_by_the_user_each_time_never_by_auto_approve() {
+        // the user, 2026-11-03: code submits the FWD claim after the user approves it in the app
+        let (_t, store) = store();
+        let args = json!({"site": "www.fwd.com.sg", "form": "FWD travel delay claim",
+                          "summary": ["policy PNTR2012-34567890", "SQ 636 delayed 7 h 15 min", "SGD 100"],
+                          "declaration": "the information is true and complete"});
+        let r = dec(&store, "submit_confirm", args, "tp", None, None);
+        assert_eq!(r.decision, ASK);
+        assert!(r.per_use);
+        assert!(!r.browser_auto_ok("submit_confirm"));
+        // every other approval stays covered by auto-approve
+        assert!(r.browser_auto_ok("purchase_confirm"));
     }
 
     #[test]

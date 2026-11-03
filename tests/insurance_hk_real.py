@@ -37,8 +37,48 @@ def no_send(dialog: str) -> bool:
     return yes
 
 
+HKID = "A1234563"   # the well-known dummy HKID A123456(3): a clearly fake test value
+
+
+async def buy(u: U.User) -> None:
+    """FWD Hong Kong's MyTravel (bolttech underwrites), on the real site: the user's short request, the model asks what
+    the purchase needs (the trip, the title, the new Smart HKID's date of issue); code fills the quote, reads the plans,
+    picks by the user's rule, opens the plan's application and saves the insured's details there. Checked from the
+    user's side: no takeover; the block lists the plans with their premiums and the one chosen; the block links FWD's
+    application, and on another device (a fresh browser) the link opens it prefilled with the user's details — nothing
+    is paid."""
+    a = await u.ask("Buy me FWD travel insurance for my Tokyo trip.", label="hk buy", timeout=1200)
+    answers = [a]
+    dep = dt.date.today() + dt.timedelta(days=30)
+    for reply in [f"Just me, Hong Kong to Tokyo from {dep} to {dep + dt.timedelta(days=6)}. The cheapest plan with at least "
+                  "HKD 800,000 medical cover. I'm Mr., and my HKID card was issued on 2020-01-01.",
+                  "Everything else is in my profile. Please go ahead."]:
+        if "Your FWD application" in a.block or a.timed_out:
+            break
+        a = await u.ask(reply, label="hk buy follow-up", new_chat=False, timeout=1200)
+        answers.append(a)
+    block = "\n".join(x.block for x in answers)
+    check("hk buy: no takeover", not any(x.takeovers for x in answers), [x.takeovers for x in answers])
+    check("hk buy: the block lists the plans FWD Hong Kong quoted and the one chosen", "Plans quoted:" in block
+          and re.search(r"Chosen: \w+: HKD [\d,]+\.\d\d", block) is not None, block)
+    links = [x for y in answers for x in y.block_links if "mytravel-insurance/en/application/?leadId=" in x]
+    check("hk buy: the block links FWD's application", bool(links), [y.block_links for y in answers])
+    if links:
+        other = await u._br.new_context(viewport={"width": 1280, "height": 1000})
+        pg = await other.new_page()
+        await pg.goto(links[0], wait_until="domcontentloaded")
+        await pg.wait_for_selector("#lastName", timeout=60000)
+        await pg.wait_for_timeout(4000)
+        vals = await pg.evaluate("() => ['lastName','givenName','hkid','email'].map(i => (document.getElementById(i) || {}).value || '')")
+        print(f"INFO hk buy: the application on another device {pg.url} {vals}")
+        check("hk buy: on another device the link opens FWD's application prefilled with the user's details",
+              vals[0] == "CHAN" and vals[3] == "taiman@example.com" and vals[2].startswith("A123456"), vals)
+        await other.close()
+
+
 async def main():
     async with U.User() as u:
+        await buy(u)
         a = await u.ask(f"My Cathay Pacific flight CX 543 to Tokyo on {INC} was scheduled at 09:05 and left at 15:20. Please prepare the delay "
                         f"claim on my FWD MyTravel policy {POLICY} (HKD 300 for every 6 full hours of delay): fill in the claim form. "
                         "Don't send anything — I'll sign the form and send it myself.", label="hk claim", approve=no_send, timeout=1200)
@@ -76,5 +116,7 @@ async def main():
 
 
 U.setup(vault=False, profile={"name_en": "CHAN TAI MAN", "email_personal": "taiman@example.com", "phone": "+852 9123 4567",
-                              "address_home": "Flat 12B, 88 Robinson Road, Mid-Levels, Hong Kong"})
+                              "address_home": "Flat 12B, 88 Robinson Road, Mid-Levels, Hong Kong", "birthday": "1990-01-01",
+                              "home_country": "HK"})
+U.vault_item("HKID Tai Man", "id_document", {"number": HKID, "name": "CHAN TAI MAN", "country": "HK"}, domains="fwd.com.hk")
 U.run(main)

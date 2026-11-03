@@ -236,6 +236,18 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
             "card_item_id": {"type": S, "description": "vault item id of the card to pay with (from vault_list); empty if the site already has the user's saved card"},
             "note": {"type": S, "description": "anything the user should know (seller, return policy, ETA)"}}),
             &["site", "items", "total", "currency", "delivery"])));
+    // a form a code machine submits for the user (the FWD claim, 2026-11-03): one approval of what is sent, never
+    // auto-approved (policy: `browser_auto_ok`)
+    add("submit_confirm", tool("browser", "interact", "submit", "high", "PUBLIC",
+        "提交前的确认：代码机器在用户批准后提交一份已填好的表单（如 FWD 理赔）。Ask the user to approve one form \
+         submission before code submits it: the site, what is submitted, the declaration the user makes by submitting it. \
+         Called only by a code machine; approved once, for that one submission.",
+        obj(json!({
+            "site": {"type": S, "description": "the site's domain, e.g. www.fwd.com.sg"},
+            "form": {"type": S, "description": "what is submitted, e.g. 'FWD travel delay claim'"},
+            "summary": {"type": "array", "items": {"type": S}, "description": "the facts submitted, one per line"},
+            "declaration": {"type": S, "description": "what the user declares by submitting (the site's own words, shortened)"}}),
+            &["site", "form", "summary"])));
     add("browser_save_media", tool("browser", "download", "download", "low", "PUBLIC",
         "把当前网页上的图片/视频/音频保存到工作区（media/ 文件夹），之后用 send_file 发给用户。给 ref（图片、视频元素或带背景图的元素）\
          或直接给媒体网址。Save an image / video / audio from the current page into the workspace (media/…) so you can \
@@ -545,7 +557,8 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
                    "airlines": {"type": "array", "items": {"type": S}, "description": "preferred airlines: names (Singapore Airlines), 2-letter codes (SQ) or an alliance; matches are flagged preferred (codes and alliances also narrow Google Flights to them); omit when the user asks for all airlines"},
                    "max_price": {"type": "number", "exclusiveMinimum": 0, "description": "per adult, in currency; omit for no cap"},
                    "sort": {"type": S, "enum": ["best", "price", "departure", "arrival", "duration"]},
-                   "currency": {"type": S, "description": "ISO code, default USD"}}),
+                   "currency": {"type": S, "description": "ISO code, default USD"},
+                   "return_of": {"type": S, "description": "a round trip's outbound offer_id (return_search: true): lists that outbound's return flights, each priced for the whole trip — the same route and dates"}}),
             &["origin", "destination", "date", "cabin", "stops", "self_transfer"])));
     add("flight_offer", tool("travel", "search", "read", "low", "PUBLIC",
         "一个航班行程的预订选项：由谁出售（航空公司或代理）、价格、链接、行李费 Booking options for one itinerary from flights_search (its \
@@ -722,7 +735,7 @@ mod tests {
     #[test]
     fn table_shape() {
         let t = builtin_tools();
-        assert_eq!(t.len(), 77); // 77 with shop_stores, 76 with shop_search, 75 with browser_read_elements; 55 before the eight Drive tools, 63 before the travel tools (now seven); browser_search became web_search; 70 with news_search, 71 with cars_search, 73 with form_fill and browser_fill_form, 74 with browser_news_search
+        assert_eq!(t.len(), 78); // 78 with submit_confirm, 77 with shop_stores, 76 with shop_search, 75 with browser_read_elements; 55 before the eight Drive tools, 63 before the travel tools (now seven); browser_search became web_search; 70 with news_search, 71 with cars_search, 73 with form_fill and browser_fill_form, 74 with browser_news_search
         let keys: Vec<&String> = t.keys().collect();
         assert_eq!(keys[0], "gmail_search");
         assert_eq!(keys[keys.len() - 1], "phone_hangup");

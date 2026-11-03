@@ -25,9 +25,17 @@ const WAIT: Duration = Duration::from_secs(45);
 pub fn start(rt: Arc<Runtime>, task_id: &str, ru: RunnerUps) {
     let tid = task_id.to_string();
     let h = tokio::spawn(async move {
-        let choices: Vec<&str> = ru.choices.iter().map(String::as_str).collect();
+        // "none" is a listed choice: a decision answers with at least one (an empty list is not an answer)
+        let mut choices: Vec<&str> = ru.choices.iter().map(String::as_str).collect();
+        choices.push(super::booking::NO_RUNNER_UP);
         let picked = rt
-            .decide_many(&tid, &ru.question, &ru.context, &choices, &[])
+            .decide_many(
+                &tid,
+                &ru.question,
+                &ru.context,
+                &choices,
+                &[super::booking::NO_RUNNER_UP],
+            )
             .await;
         ru.card(&picked)
     });

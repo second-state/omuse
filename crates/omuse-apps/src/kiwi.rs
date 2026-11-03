@@ -341,11 +341,6 @@ impl KiwiMcp {
                 args["select_airlines"] = json!(codes.join(","));
             }
         }
-        // the user's time window (the model's JSON: depart_after … arrive_before) as Kiwi's own hour filters, in the
-        // same ONE request
-        for (k, v) in kiwi_times(a) {
-            args[k] = json!(v);
-        }
         let data = self.call(&args).await?;
         let mut out = compact_flights(&data, self_transfer);
         let found = crate::serpapi::mark_preferred(
@@ -418,14 +413,9 @@ impl KiwiMcp {
     }
 }
 
-/// Kiwi's result order. Kiwi answers about 15 itineraries in that order: with a time window, departure order
-/// ("date"), so the window's own flights come back — in price order the cheap one-stop connections fill the list and
-/// push the direct flights out (mcp.kiwi.com 2026-11-02: HKG → SIN after 18:00 by price had no SQ 895, by date it
-/// does). Otherwise the sort asked for, else price.
+/// Kiwi's result order: the sort asked for, else price. The whole day is searched (no hour filter, the user,
+/// 2026-11-02); Kiwi answers about 15 itineraries in that order.
 pub fn kiwi_sort(a: &Value) -> &'static str {
-    if !kiwi_times(a).is_empty() {
-        return "date";
-    }
     match get_str(a, "sort").to_lowercase().as_str() {
         "duration" => "duration",
         "best" | "quality" => "quality",
@@ -433,68 +423,19 @@ pub fn kiwi_sort(a: &Value) -> &'static str {
     }
 }
 
-/// The request's local time window (`depart_after` / `depart_before` / `arrive_after` / `arrive_before`, HH:MM) as
-/// Kiwi's hour filters (`dtime_from` / `dtime_to`, `atime_from` / `atime_to`, 0–23, local at each airport). Checked on
-/// mcp.kiwi.com 2026-11-02: `dtime_to` h takes departures up to h:00 and 23 is its largest value — so an end is rounded
-/// up to the next hour (never cutting a flight inside the window) and an end after 23:00 is no end; a start is its
-/// hour (00 is no start). The window is a superset at most an hour wider: the pick over the result is the model's.
-pub fn kiwi_times(a: &Value) -> Vec<(&'static str, u32)> {
-    let w = crate::serpapi::time_window(a);
-    let mut out = Vec::new();
-    for (range, from_k, to_k) in [
-        (w.depart, "dtime_from", "dtime_to"),
-        (w.arrive, "atime_from", "atime_to"),
-    ] {
-        let Some((from, to)) = range else { continue };
-        if from / 60 > 0 {
-            out.push((from_k, from / 60));
-        }
-        let end = to.div_ceil(60);
-        if end <= 23 {
-            out.push((to_k, end));
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_time_window_is_searched_in_departure_order() {
-        // the cheapest first crowded out the evening's direct flights (Kiwi answers ~15 itineraries)
+    fn the_whole_day_is_searched_in_the_order_asked_for() {
+        // no hour filter and no window-driven order (the user, 2026-11-02: all day, like a hotel or car search)
         assert_eq!(
             kiwi_sort(&json!({"depart_after": "18:00", "arrive_before": "23:59"})),
-            "date"
+            "price"
         );
         assert_eq!(kiwi_sort(&json!({})), "price");
         assert_eq!(kiwi_sort(&json!({"sort": "duration"})), "duration");
-        // a window that sets no Kiwi filter (the whole day) keeps the order asked for
-        assert_eq!(kiwi_sort(&json!({"arrive_before": "23:59"})), "price");
-    }
-
-    #[test]
-    fn the_users_time_window_becomes_kiwis_hour_filters() {
-        // "the last flight that lands before midnight", narrowed by the model to arrivals from 18:00
-        let w = kiwi_times(&json!({"arrive_after": "18:00", "arrive_before": "23:59"}));
-        assert_eq!(
-            w,
-            [("atime_from", 18)],
-            "23:59 is no end (dtime_to 23 would cut 23:01–23:59)"
-        );
-        // an end is rounded up to the next hour; a start of 00:00 is no start
-        let w = kiwi_times(
-            &json!({"depart_after": "00:00", "depart_before": "09:30", "arrive_after": "06:15"}),
-        );
-        assert_eq!(w, [("dtime_to", 10), ("atime_from", 6)]);
-        assert_eq!(
-            kiwi_times(&json!({"depart_before": "18:00"})),
-            [("dtime_to", 18)]
-        );
-        // no time words: no filter (one normal search)
-        assert!(kiwi_times(&json!({"origin": "HKG"})).is_empty());
-        assert!(kiwi_times(&json!({"depart_after": "late"})).is_empty());
     }
 
     #[test]

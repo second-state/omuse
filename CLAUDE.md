@@ -2,6 +2,30 @@
 
 Read `AGENTS.md` first: it has the release steps, the test commands and the repository rules.
 
+## How every task works: converse → one JSON → one code tool → the user's link
+
+The user's rule (2026-11-03), for EVERY task — a purchase, a claim, a refund, an application, a booking:
+
+1. **Converse.** The model collects what the task needs: from the user's words, their email, their profile and the
+   files of the chat. It asks once, in one message, for everything still missing — required inputs (a policy number,
+   the documents the site itself requires) and optional ones (documents the user may skip and add later). Every
+   decision the conversation settles (the entry mode, the plan, the claim type) becomes a JSON field.
+2. **One JSON, one code tool.** The model calls ONE code tool with all of it as structured JSON. After the one
+   question, the tool is always called with whatever the user gave — a reply to the tool's question owes the call.
+3. **The code tool does the whole process.** It calls the site's API or walks its pages with form functions mapped
+   from the real site (walk first, then code), in the user's place, to the end: it uploads the documents, presses the
+   site's own buttons and submits where the submission is what creates the reference — no takeover of the server's
+   browser. Where the user must approve what is sent (a payment, an insurance claim), the app asks once
+   (`purchase_confirm` / `submit_confirm`), then code submits.
+4. **JSON back.** The tool returns structured JSON: the status, the reference number, the link that opens the
+   session on any device (a saved quote, a saved application, the claim), and what is still missing for the user to
+   add there.
+5. **The model answers.** It words the reply from that JSON; code appends the facts (`show`): the link, the reference,
+   what is still the user's.
+
+Tests on real sites with clearly fake data stop before a submission that would reach a real business (an insurer,
+an airline): the product submits; the test declines the approval or stops at the last step.
+
 ## Fix in code, not in instructions
 
 The workflow is as deterministic as possible. The model is used to understand what the user wants, NOT to decide what
@@ -18,7 +42,10 @@ to do. When you fix a problem, always prefer a fix in code over a change to a sk
 - One exception to the hand-over, decided by the user (2026-11-03): a purchase through Shopify's UCP checkout API may be
   completed by code when the user's card is in the Vault, the API accepts it in a supported way, and the user approved
   the purchase (item, store, total) in the app's purchase approval. Without a usable card the user gets the checkout's
-  continue_url to pay in their own browser. Every other Pay / Submit stays the user's click.
+  continue_url to pay in their own browser.
+- A second exception, decided by the user (2026-11-03): FWD Singapore's online travel claim is filled and submitted
+  by code once the user approved it in the app (`submit_confirm`: the facts sent and FWD's declaration; never
+  auto-approved). Every other Pay / Submit stays the user's click.
 - Change instruction text only for what genuinely needs judgement, and when you do, check that code does not already
   decide it differently (skills must not contradict code).
 - Every fix gets a unit test that reproduces the failure, and the real-model suite that found it is rerun.

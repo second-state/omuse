@@ -89,6 +89,9 @@ pub fn pending(transcript: &[Value]) -> Option<Need> {
         .rposition(|m| get_str(m, "role") == "user")
         .unwrap_or(0);
     let t = &transcript[last_user..];
+    if let Some(need) = asked_back(transcript, last_user) {
+        return Some(need);
+    }
     let mut need = Need {
         skills: Vec::new(),
         tools: Vec::new(),
@@ -127,6 +130,69 @@ pub fn pending(transcript: &[Value]) -> Option<Need> {
         })
     });
     (!called).then_some(need)
+}
+
+/// Every workflow tool a skill asks through.
+pub(crate) fn workflow_tool(name: &str) -> Option<&'static str> {
+    [&BOOKING[..], &SHOP, &CARD, &FWD, &BAG, &APDT, &NEWS, &ENTRY]
+        .into_iter()
+        .flatten()
+        .copied()
+        .find(|x| *x == name)
+}
+
+/// The reply to a workflow tool's question: the latest workflow call before the user's latest message answered
+/// `needs_input` (the tool asked the user), and no answered call of that tool since — the call is owed with what the
+/// user gave, whatever it is (the user, 2026-11-02: apdt_real's "I don't have the documents at hand, please go
+/// ahead" got prose saying the documents were required, and no call).
+fn asked_back(transcript: &[Value], last_user: usize) -> Option<Need> {
+    let before = &transcript[..last_user];
+    let (tool, id) = before.iter().rev().find_map(|m| {
+        tool_calls(m).iter().rev().find_map(|tc| {
+            let (name, _) = stored_call(tc);
+            workflow_tool(&name).map(|w| (w, get_str(tc, "id")))
+        })
+    })?;
+    let asked = result_of(before, &id)
+        .and_then(|c| serde_json::from_str::<Value>(c.trim()).ok())
+        .is_some_and(|v| get_str(&v, "status") == "needs_input");
+    let since = &transcript[last_user..];
+    let called = since.iter().enumerate().any(|(j, m)| {
+        tool_calls(m).iter().any(|tc| {
+            stored_call(tc).0 == tool
+                && result_of(&since[j..], &get_str(tc, "id")).is_some_and(|c| answered(&c))
+        })
+    });
+    (asked && !called).then(|| Need {
+        skills: Vec::new(),
+        tools: vec![tool],
+    })
+}
+
+/// The open question of a chat's previous task, to carry into the next task's transcript: its latest workflow call
+/// and that call's result, when the result is `needs_input` (the tool asked the user). The history between tasks is
+/// text only, so without this the reply to the tool's question could not owe its call, and the tool could not see
+/// what it already asked (apdt_real 2026-11-02).
+pub fn open_question(prev: &[Value]) -> Vec<Value> {
+    let Some((tc, id)) = prev.iter().rev().find_map(|m| {
+        tool_calls(m).iter().rev().find_map(|tc| {
+            workflow_tool(&stored_call(tc).0).map(|_| (tc.clone(), get_str(tc, "id")))
+        })
+    }) else {
+        return Vec::new();
+    };
+    let Some(result) = result_of(prev, &id) else {
+        return Vec::new();
+    };
+    let asked = serde_json::from_str::<Value>(result.trim())
+        .is_ok_and(|v| get_str(&v, "status") == "needs_input");
+    if !asked {
+        return Vec::new();
+    }
+    vec![
+        serde_json::json!({"role": "assistant", "content": "", "tool_calls": [tc]}),
+        serde_json::json!({"role": "tool", "tool_call_id": id, "content": result}),
+    ]
 }
 
 /// A turn that gives no workflow call: no call at all, or only questions to the user (`ask_user`). Either way a
@@ -302,5 +368,60 @@ mod tests {
             l.starts_with("- Not checked: OMuse could not look up the entry requirements"),
             "{l}"
         );
+    }
+
+    #[test]
+    fn the_reply_to_a_workflow_tools_question_owes_its_call() {
+        // apdt_real 2026-11-02: the tool asked for the documents (optional); the user skipped them and said go ahead;
+        // the model answered in prose — the call is owed with what the user gave
+        let asked = r#"{"status": "needs_input", "missing": ["the documents still missing, if the user has them"]}"#;
+        let mut t = vec![
+            json!({"role": "user", "content": "apply for my HK departure tax refund"}),
+            call("c1", "load_skill", json!({"name": "hk-apdt-refund"})),
+            tool("c1", "skill text"),
+            call("c2", "apdt_refund", json!({"out_flight": "CX 500"})),
+            tool("c2", asked),
+            json!({"role": "assistant", "content": "Please attach the documents."}),
+            json!({"role": "user", "content": "I don't have them at hand, please go ahead"}),
+        ];
+        assert_eq!(pending(&t).map(|n| n.tools), Some(vec!["apdt_refund"]));
+        // the call made and answered: nothing owed
+        t.push(call("c3", "apdt_refund", json!({"out_flight": "CX 500"})));
+        t.push(tool("c3", r#"{"status": "running", "args": {}}"#));
+        assert_eq!(pending(&t), None);
+        // a tool that answered (not a question): the next message owes nothing
+        let t2 = vec![
+            json!({"role": "user", "content": "x"}),
+            call("c2", "apdt_refund", json!({})),
+            tool("c2", r#"{"status": "running", "args": {}}"#),
+            json!({"role": "user", "content": "thanks"}),
+        ];
+        assert_eq!(pending(&t2), None);
+    }
+
+    #[test]
+    fn a_previous_tasks_open_question_is_carried_as_its_call_and_result() {
+        let asked = r#"{"status": "needs_input", "missing": ["refund_method"]}"#;
+        let prev = vec![
+            json!({"role": "user", "content": "apply"}),
+            call("c2", "apdt_refund", json!({"out_flight": "CX 500"})),
+            tool("c2", asked),
+            json!({"role": "assistant", "content": "How should the refund be paid?"}),
+        ];
+        let carried = open_question(&prev);
+        assert_eq!(carried.len(), 2);
+        assert_eq!(get_str(&carried[1], "content"), asked);
+        // in the new task: the reply owes the call
+        let mut t = vec![json!({"role": "system", "content": ""})];
+        t.extend(carried);
+        t.push(json!({"role": "user", "content": "to my card"}));
+        assert_eq!(pending(&t).map(|n| n.tools), Some(vec!["apdt_refund"]));
+        // a previous task whose tool answered: nothing carried
+        let done = vec![
+            call("c2", "apdt_refund", json!({})),
+            tool("c2", r#"{"status": "running"}"#),
+        ];
+        assert!(open_question(&done).is_empty());
+        assert!(open_question(&[]).is_empty());
     }
 }

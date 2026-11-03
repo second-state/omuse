@@ -31,9 +31,12 @@ Buy before departure; it never covers something that already happened.
   mail (result `mail_read`) — read those emails and call again with the trip. `needs_input`: ask once, then call again.
 - **Singapore** — code fills FWD's quote (the form function: single trip, who, the region from the destination, the
   dates), reads the plans from the summary, picks one by the rule (the plan the user chose, else the cheapest with the
-  cover asked for, else the cheapest), shows the comparison as cards, and for `buy` presses the plan's button and hands
-  the page over: FWD's eligibility statements (Singapore resident with an NRIC / FIN, never refused travel insurance,
-  nothing withheld), the add-ons, the details, the card and **Pay** are the user's — nothing is paid for them.
+  cover asked for, else the cheapest), shows the comparison as cards, and for `buy` saves the quote with FWD (name,
+  email, mobile from the profile, NRIC / FIN from the Vault) and gives FWD's own link to it (status `saved`): the user
+  opens it on any device, types their mobile number, and continues there — FWD's eligibility statements (Singapore
+  resident with an NRIC / FIN, never refused travel insurance, nothing withheld), the plan, the add-ons, the details
+  and **Pay** are the user's; nothing is paid for them. Without a Singapore mobile in the profile the page is handed
+  over instead (status `handed_over`).
 - **Hong Kong** — the plan pages (**MyTravel** `https://www.fwd.com.hk/online-insurance/mytravel-insurance/en/`,
   `…/travelcare-plus-insurance/en/`, `…/gba-easy-travel-insurance/en`) have no form function: the result is
   `browser_use` and the plan page goes to the browser-use skill. Eligibility: **HKID card holder, in Hong Kong when
@@ -48,15 +51,20 @@ Call **claim_file** with `insurer: "fwd"` and the facts from the user's words, t
 letter: `market`, `benefit: "flight_delay"`, `policy_no`, `plan`, `incident_date`, `flight_no`, `from`, `to`,
 `airline`, `airline_ref`, `scheduled_departure` and `actual_departure` (HH:MM, from the airline's letter), `delay_reason`,
 the policy's delay rule (`benefit_per_block`, `block_hours`, `benefit_cap`), `claim_within_days` when the policy states a
-time limit, `emergency_phone`, and `certificate_message_id` (the airline's email with the PDF). Facts missing and the
-mailbox connected: code reads the policy and delay emails (result `mail_read`) — read them and call again with every
-fact. `needs_input`: ask once, then call again.
+time limit, `emergency_phone`, and `certificate_message_id` (the airline's email with the PDF). Singapore also:
+`leave_sg` / `return_sg` (the trip's dates), `destination` (the country) and the documents of this chat by path —
+`itinerary_file`, `boarding_pass_file`, `airline_letter_file`, `other_file`. The **policy number is required**: from the
+policy email or the profile, else ask the user. FWD also **requires the itinerary and the boarding pass** (its form does
+not go on without them): from the mail or the chat, else ask; the airline's letter and other documents are optional. Facts missing and the mailbox connected: code reads the policy and
+delay emails (result `mail_read`) — read them and call again with every fact. `needs_input`: ask once, then call again.
 - Code counts the hours (actual − scheduled), the benefit by the policy's rule (per full block of hours, up to the
   cap) and the deadline, and:
-  - **Singapore**: saves the airline's certificate, fills step 1 of FWD's online claim (the form function: claimant,
-    the NRIC / FIN from the Vault, mobile, email, policy number; no sign-in) and hands the page over — **next** (FWD
-    checks the policy), the bank account, the incident with the certificate and **Submit** are the user's. Then a
-    weekly mail check and, before submission, a reminder 5 days before the 30-day date.
+  - **Singapore**: saves the airline's certificate and fills every step of FWD's online claim (the form function,
+    `docs/sites/fwd-claim.md`: the claimant with the NRIC / FIN from the Vault, Travel Disruption → Flight Delay, the
+    trip, the delayed flight, the documents, PayNow by the NRIC / FIN), then asks the user's approval in the app
+    (`submit_confirm`: the facts and FWD's declaration) and submits it — no hand-over (the user's decision,
+    2026-11-03). Declined: the form is closed unsubmitted (`not_submitted`). Submitted: the result has FWD's claim page
+    and says FWD emails the claim link; a weekly mail check follows.
   - **Hong Kong**: fills **bolttech's Travel Insurance Claim Form** (the fillable PDF; HKID, bank account, signature and
     date left for the user), sends it to the chat and puts an email draft to **claims.hk@bolttechinsurance.com** with
     the form and the airline's letter attached — not sent. bolttech claims enquiries: **+852 3123 3344**.

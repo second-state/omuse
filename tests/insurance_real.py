@@ -4,19 +4,21 @@ it: nothing is paid, declared or submitted. The profile has the user's name, bir
 NRIC (for fwd.com.sg; clearly fake test values: S1234567D is the well-known dummy NRIC). "Auto-approve browser actions"
 is on (a fresh install).
 
-1. buy — the user asks Main's chat for the cheapest FWD plan with at least SGD 10,000 trip cancellation for next month's
-   Tokyo trip (the flights in the request); Pay is theirs. On the real site code fills the quote (Vuetify selects by
-   label, the date pickers), reads the plans from the summary, picks one by the rule and presses its button; FWD then
-   asks its eligibility statements — the user's. Checked from the user's side: the Insurance & claims bot answers; the
-   user is asked to take over on FWD's quote page; the block code appends lists the plans FWD quoted (real prices) and the
-   chosen one is the cheapest of those with at least SGD 10,000 trip cancellation (checked against the same block's
-   figures, which are the live page's); the NRIC never shows in the chat; afterwards the browser view is still on FWD's
-   site (Pay never pressed).
-2. claim — the user gives the policy number (PNTR20…, FWD's format; fake) and the delay (SQ 636 two days ago, 10:30 →
-   17:45) and asks to claim it. On the real site code fills step 1 of FWD's online claim (no sign-in) and hands it over:
-   "next" checks the policy on FWD's server, so the rest is the user's. Checked: the takeover on FWD's claim page
-   (nothing submitted; no per-field value checks on the handed-over page); the block gives the delay (7 h 15 min), the amount (SGD 100) and FWD's 30-day deadline as
-   a date; the NRIC never shows in the chat.
+1. buy — the user asks the Insurance bot's short example ("Buy me FWD travel insurance for my Tokyo trip.") and answers
+   the model's question with the trip (SQ 636 in 3 weeks, back a week later) and the rule (the cheapest with at least
+   SGD 10,000 trip cancellation). On the real site code fills the quote, reads the plans, picks one by the rule and
+   saves the quote with FWD (name, email, mobile from the profile, the NRIC from the Vault). Checked from the user's
+   side: the Insurance & claims bot answers; no takeover; the block lists the plans FWD quoted (real prices) and the
+   chosen one is the cheapest of those with at least SGD 10,000 trip cancellation; the block links FWD's saved quote,
+   and on another device (a fresh browser) that link and the mobile number open FWD's application at its declaration
+   (nothing confirmed or paid); the NRIC never shows in the chat.
+2. claim — the user asks the short example ("My flight was delayed. Please claim it on my FWD travel insurance.") and
+   answers the model's question with the delay (SQ 636 two days ago, 10:30 → 17:45), the trip and the policy number
+   (PNTR2012-34567890, FWD's format; fake). Code fills every step of FWD's real online claim and asks the user's
+   approval to submit; the user DECLINES (a real insurer never gets a test claim), and the form is closed. Checked: no
+   takeover; the approval dialog names the policy, the delay, the amount and FWD's declaration; the block gives the
+   delay (7 h 15 min), the amount (SGD 100), FWD's 30-day deadline as a date and that nothing was sent; the browser view
+   the NRIC never shows in the chat.
 One TIMING line per request; the live pictures go to OMUSE_E2E_OUT when it is set. In run_in_docker.sh's REAL_SITES
 (one at a time).
 
@@ -63,22 +65,44 @@ async def buy(u: U.User) -> None:
         await u.view_picture(os.path.join(OUT, "insurance_quote.png") if OUT else None)
         print(f"INFO takeover: {request!r} url {seen['url']!r}")
 
-    # the Insurance bot's example in the UI (bots/insurance.md), word for word
-    a = await u.ask("I need FWD travel insurance for my trip to Tokyo, just me: SQ 636 to Tokyo Haneda in 3 weeks, back a week later. Find the cheapest plan with at least SGD 10,000 trip cancellation.",
+    # the Insurance bot's example in the UI (bots/insurance.md), word for word: a short request — the model asks for
+    # what the tool's JSON needs, and the user answers once, in the same chat
+    a = await u.ask("Buy me FWD travel insurance for my Tokyo trip.",
                     label="buy", on_takeover=look_then_hand_back, timeout=1200)
     answers = [a]
-    if not a.takeovers and not a.timed_out:
-        # the answer asked something before opening the quote page: the user answers once, in the same chat
-        a = await u.ask("Everything else is in my profile (name, birthday, contact). Only the flights are paid so far. Please go ahead.",
-                        label="buy follow-up", new_chat=False, on_takeover=look_then_hand_back, timeout=1200)
+    for reply in ["Just me: SQ 636 to Tokyo Haneda in 3 weeks, back a week later. Find the cheapest plan with at least SGD 10,000 trip cancellation.",
+                  "Everything else is in my profile (name, birthday, contact). Only the flights are paid so far. Please go ahead."]:
+        if "Plans quoted" in a.block or a.timed_out:
+            break
+        a = await u.ask(reply, label="buy follow-up", new_chat=False, on_takeover=look_then_hand_back, timeout=1200)
         answers.append(a)
     takeovers = [t for x in answers for t in x.takeovers]
     check("buy: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
     check("buy: the Insurance & claims bot did it (the link to continue in it)", any("nsurance" in x.bot_link for x in answers),
           [x.bot_link for x in answers])
-    check("buy: the user was asked to take over the browser on FWD's quote page (the statements and Pay are theirs)",
-          bool(takeovers) and f"{FWD}/travel-insurance/online-quote" in seen["url"], (takeovers, seen["url"]))
+    # no takeover (the user, 2026-11-02): the quote is saved with FWD and the block links FWD's own page for it
+    check("buy: the user was not asked to take over the server's browser", not takeovers, takeovers)
     block = "\n".join(x.block for x in answers)
+    links = [x for y in answers for x in y.block_links if "/travel-insurance/emailRedirect.html?hash=" in x]
+    check("buy: the block links the saved quote on FWD's site", bool(links), [y.block_links for y in answers])
+    if links:
+        # the user opens it on their own device (a browser that never saw the quote), types their mobile number and
+        # lands in FWD's application — its eligibility statements first; nothing is confirmed or paid here
+        other = await u._br.new_context(viewport={"width": 1280, "height": 900})
+        pg = await other.new_page()
+        await pg.goto(links[0], wait_until="domcontentloaded")
+        await pg.wait_for_selector("#mobile-input", timeout=60000)
+        await pg.fill("#mobile-input", "91234567")
+        await pg.click("#load-quote-page-button")
+        await pg.wait_for_timeout(12000)
+        text = await pg.locator("body").inner_text()
+        print(f"INFO buy: the saved quote on another device: {pg.url} {' '.join(text.split())[:300]}")
+        if OUT:
+            await pg.screenshot(path=os.path.join(OUT, "insurance_saved_quote.png"), full_page=True)
+        check("buy: on another device the link and the mobile number open FWD's application at its declaration",
+              "/travel-insurance/quote" in pg.url and "Declaration" in text and "Please confirm the following" in text,
+              (pg.url, text[:300]))
+        await other.close()
     plans = quoted_plans(block)
     chosen = re.search(r"Chosen: (\w+): SGD ([\d,]+\.\d\d)", block)
     print(f"INFO buy: plans {plans}; chosen {chosen.group(0) if chosen else None}")
@@ -100,31 +124,62 @@ async def buy(u: U.User) -> None:
 
 
 async def claim(u: U.User) -> None:
-    seen = {"url": ""}
+    # the user, 2026-11-03: code fills every step of FWD's online claim and submits it after the user's approval in the
+    # app. Here the user DECLINES: a real insurer is never sent a test claim; the form is closed unsubmitted.
+    seen: dict = {"dialogs": []}
 
-    async def look_then_hand_back(pg, request: str) -> None:
-        # the user reads the request and looks at the filled-in step 1; "next" and Submit are theirs, never pressed here
-        seen["url"] = await u.view_url()
-        await u.view_picture(os.path.join(OUT, "insurance_claim.png") if OUT else None)
-        print(f"INFO takeover: {request!r} url {seen['url']!r}")
+    def decline_submit(dialog: str) -> bool:
+        if U.tool_of(dialog) == "submit_confirm":
+            seen["dialogs"].append(dialog)
+            return False
+        return True
 
-    # the Insurance bot's example in the UI (bots/insurance.md), word for word ("two days ago" = INC)
-    a = await u.ask("My flight SQ 636 to Tokyo two days ago was scheduled at 10:30 and left at 17:45. Please claim the delay on my FWD travel insurance, policy PNTR20123456, and fill in the claim form for me.", label="claim", on_takeover=look_then_hand_back, timeout=1200)
+    # the Insurance bot's example in the UI (bots/insurance.md), word for word: a short request — the model asks for
+    # the flight, the times, the trip and the policy; the user answers in the same chat ("two days ago" = INC)
+    a = await u.ask("My flight was delayed. Please claim it on my FWD travel insurance.", label="claim",
+                    approve=decline_submit, timeout=1200)
     answers = [a]
-    if not a.takeovers and not a.timed_out:
-        a = await u.ask("All the other details are in my profile; nothing else to add. Please go ahead and fill in the claim form.",
-                        label="claim follow-up", new_chat=False, on_takeover=look_then_hand_back, timeout=1200)
+    # the documents FWD requires (the itinerary, the boarding pass) and the airline's letter: clearly fake specimens,
+    # printed by the test's own browser — they go into FWD's page only, never submitted
+    docs = []
+    for name, title in [("itinerary.pdf", "E-TICKET ITINERARY"), ("boarding_pass.pdf", "BOARDING PASS SQ 636"),
+                        ("delay_letter.pdf", "FLIGHT DELAY CERTIFICATE SQ 636")]:
+        pg = await u.ctx.new_page()
+        await pg.set_content(f"<h1>SPECIMEN — {title}</h1><p>TEST DOCUMENT, NOT A REAL CLAIM. TAN WEI MING.</p>")
+        path = os.path.join("/tmp", name)
+        await pg.pdf(path=path)
+        await pg.close()
+        docs.append(path)
+    # the trip has ended (FWD's online claim takes it only then: its return date's calendar has no future day)
+    for i, reply in enumerate([f"It was SQ 636 to Tokyo two days ago, scheduled at 10:30, and it left at 17:45. I left Singapore on "
+                  f"{INC} and came back yesterday, {TODAY - dt.timedelta(days=1)}; the trip was to Japan. My policy is "
+                  "PNTR2012-34567890. Attached are my itinerary, my boarding pass and the airline's delay letter. "
+                  "Please file the claim for me.",
+                  "All the other details are in my profile; nothing else to add. Please go ahead and file the claim."]):
+        if seen["dialogs"] or a.timed_out:
+            break
+        if i == 0:
+            chips = await u.attach(*docs)
+            check("claim: the documents are attached", len(chips) == 3 and not any(c["bad"] for c in chips), chips)
+        a = await u.ask(reply, label="claim follow-up", new_chat=False, approve=decline_submit, timeout=1200)
         answers.append(a)
     takeovers = [t for x in answers for t in x.takeovers]
     check("claim: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
     check("claim: the Insurance & claims bot did it", any("nsurance" in x.bot_link for x in answers), [x.bot_link for x in answers])
-    check("claim: the user was asked to take over the browser on FWD's claim page (next and Submit are theirs)",
-          bool(takeovers) and f"{FWD}/claim-online/" in seen["url"], (takeovers, seen["url"]))
+    check("claim: no takeover — code fills FWD's claim form itself", not takeovers, takeovers)
+    dialog = seen["dialogs"][0] if seen["dialogs"] else ""
+    print(f"INFO claim: approval dialog {' '.join(dialog.split())[:600]!r}")
+    check("claim: the user is asked to approve the submission, with the policy, the delay, the amount and FWD's declaration",
+          "PNTR2012-34567890" in dialog and "7 h 15 min" in dialog and "SGD 100.00" in dialog and "true, complete and accurate" in dialog,
+          dialog[:600])
     block = "\n".join(x.block for x in answers)
     check("claim: the block code appends after the answer gives the delay (7 h 15 min) and the amount (SGD 100)",
           "delayed 7 h 15 min" in block and "Claim amount: SGD 100.00" in block, (block, a.text[:300]))
     check("claim: the block code appends after the answer gives FWD's 30-day deadline as a date",
           C.date_in(block, D30), (D30, block))
+    check("claim: declined, so nothing was sent to FWD (the block says so)", "nothing was sent to FWD" in block, block)
+    # (no browser-view check: the view shows one tab of several — the purchase's — and the approval dialog above, with
+    # every fact of the filled form, already shows from the user's side that code reached FWD's declaration)
     everything = await u.thread_text()
     check("claim: the NRIC never appears in the chat", NRIC not in everything, "")
 

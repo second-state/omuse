@@ -392,6 +392,22 @@ pub type SettingsFn = Arc<dyn Fn() -> Value + Send + Sync>;
 pub type CancelFn = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// The error of a model call refused because its task was stopped (see [`Llm::cancelled`]).
+/// The room a reasoning model's hidden reasoning takes on top of a short answer's own limit.
+pub const REASONING_HEADROOM: i64 = 1024;
+
+/// The `max_tokens` sent for a call: a short answer asked without thinking (`no_think`: a decision, a title, a
+/// review) gets [`REASONING_HEADROOM`] on top of its own limit, because `enable_thinking: false` is a chat-template
+/// switch that hosted reasoning models ignore, and their hidden reasoning counts against `max_tokens` (2026-11-02:
+/// gpt-6-luna spent 52 of a decision's 60 tokens reasoning and the answer stopped at `{"choices":["` — every
+/// runner-ups card defaulted to none). `0` (no limit) stays `0`.
+pub fn answer_budget(max_tokens: i64, no_think: bool) -> i64 {
+    if no_think && max_tokens > 0 {
+        max_tokens + REASONING_HEADROOM
+    } else {
+        max_tokens
+    }
+}
+
 pub const CANCELLED_MSG: &str = "任务已停止 (task stopped)";
 
 /// Per-call options of [`Llm::chat`] (the Python keyword arguments).
@@ -988,11 +1004,13 @@ impl Llm {
             .temperature
             .or_else(|| omuse_common::util::as_f64(&s["temperature"]))
             .unwrap_or(0.0);
-        let max_tokens = o
-            .max_tokens
-            .filter(|m| *m != 0)
-            .or_else(|| omuse_common::util::as_i64(&s["max_tokens"]))
-            .unwrap_or(0);
+        let max_tokens = answer_budget(
+            o.max_tokens
+                .filter(|m| *m != 0)
+                .or_else(|| omuse_common::util::as_i64(&s["max_tokens"]))
+                .unwrap_or(0),
+            o.no_think,
+        );
         let mut body = Map::new();
         body.insert(
             "model".into(),
@@ -1568,6 +1586,29 @@ pub(crate) mod tests {
             json!({"model": "m", "messages": [{"role": "user", "content": "hi"}], "temperature": 0.0, "max_tokens": 10, "stream": false})
         );
         assert!(tr.requests.lock()[0].url.ends_with("/v1/chat/completions"));
+    }
+
+    #[test]
+    fn a_short_answer_without_thinking_gets_room_for_hidden_reasoning() {
+        assert_eq!(answer_budget(60, true), 60 + REASONING_HEADROOM);
+        assert_eq!(answer_budget(60, false), 60);
+        assert_eq!(answer_budget(0, true), 0);
+    }
+
+    #[tokio::test]
+    async fn a_no_think_call_sends_its_limit_plus_the_reasoning_headroom() {
+        // a decision (60 tokens, no thinking) to a reasoning model: the hidden reasoning must not cut the JSON off
+        let (llm, tr, _, _) = scripted_llm(vec![resp(200, ok_body(), None)]);
+        let opts = ChatOpts {
+            max_tokens: Some(60),
+            no_think: true,
+            ..Default::default()
+        };
+        llm.chat(&[json!({"role": "user", "content": "hi"})], None, &opts)
+            .await
+            .unwrap();
+        let body = tr.requests.lock()[0].json.clone().unwrap();
+        assert_eq!(body["max_tokens"], json!(60 + REASONING_HEADROOM));
     }
 
     #[tokio::test]
