@@ -7,6 +7,10 @@ plan: on
 ---
 # Drive clean-up / 清理 Google Drive
 
+**Drive access is `drive.file`** (0.6.7): OMuse sees only the files it made (exports, edits, story books) and the ones
+the user picked, so the clean-up covers those. Say so plainly, and for the rest of the Drive give Google's own storage
+manager, https://one.google.com/storage/management (large files and items to review, the user's own clicks).
+
 Use this for "my Drive is full", "find big files I don't need", "what's taking up space", "clean up old files",
 "free up 10 GB". Everything is done with the Drive tools; never open drive.google.com in the browser.
 

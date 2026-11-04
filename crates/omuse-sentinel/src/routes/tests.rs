@@ -421,6 +421,96 @@ async fn delete_credential_on_shadowed_route() {
 }
 
 #[tokio::test]
+async fn each_google_account_is_listed_made_default_and_disconnected_on_its_own() {
+    let (ctx, _d) = ctx_with("http://127.0.0.1:9", false);
+    for (email, tok) in [("me@example.com", "r1"), ("work@example.com", "r2")] {
+        omuse_apps::gaccounts::save_account(
+            &ctx.store,
+            "calendar",
+            email,
+            &json!({"refresh_token": tok}),
+            &json!({"mode": "google", "time_zone": "Asia/Singapore"}),
+        )
+        .unwrap();
+    }
+    let r = router(ctx.clone());
+    let ui = |m: &str, u: &str, body: Value| {
+        req(m, u)
+            .header("X-Persona-UI", "1")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let (s, v) = send(
+        &r,
+        ui(
+            "POST",
+            "/sentinel/api/connections/calendar/default",
+            json!({"account": "c2"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["default"], "c2");
+    let emails: Vec<&str> = v["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["email"].as_str())
+        .collect();
+    assert_eq!(emails, ["me@example.com", "work@example.com"]);
+    let (s, v) = send(
+        &r,
+        ui(
+            "DELETE",
+            "/sentinel/api/connections/calendar/accounts/c2",
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (
+            v["accounts"].as_array().unwrap().len(),
+            v["default"].clone()
+        ),
+        (1, json!("c1"))
+    );
+    assert!(ctx.store.get_secret("cred_calendar_2").unwrap().is_none());
+    // an unknown service or account is a 404, gmail keeps its own routes
+    let (s, _) = send(
+        &r,
+        ui(
+            "POST",
+            "/sentinel/api/connections/notion/default",
+            json!({"account": "c1"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = send(
+        &r,
+        ui(
+            "POST",
+            "/sentinel/api/connections/calendar/default",
+            json!({"account": "c9"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // the picker is not configured in this build and no drive is connected: said, not an error
+    let (s, v) = send(
+        &r,
+        req("GET", "/sentinel/api/connections/drive/picker")
+            .header("X-Persona-UI", "1")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((s, v["ok"].clone()), (StatusCode::OK, json!(false)), "{v}");
+}
+
+#[tokio::test]
 async fn login_gate_wraps_ui_but_not_health_or_internal() {
     let (ctx, _d) = ctx_with("http://127.0.0.1:9", true);
     let r = app(ctx).unwrap();

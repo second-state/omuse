@@ -6,10 +6,11 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
+use axum::http::{header, HeaderMap};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::Engine;
+use omuse_apps::gaccounts;
 use omuse_apps::gcal::{self, GCal};
 use omuse_apps::gdrive::GDrive;
 use omuse_apps::ical::{self, ICalFeed};
@@ -65,7 +66,11 @@ static ORIGIN_RE: LazyLock<Regex> = LazyLock::new(|| re(r"https?://[^/\s]+"));
 pub fn conn_view(ctx: &Ctx, name: &str) -> Result<Value, ApiError> {
     let store = &ctx.store;
     let mut c = store.connection(name).map_err(ierr)?;
-    let has = store.has_secret(&format!("cred_{name}_1")).map_err(ierr)?;
+    let has = if gaccounts::SERVICES.contains(&name) {
+        !gaccounts::ready(store, name).map_err(ierr)?.is_empty()
+    } else {
+        store.has_secret(&format!("cred_{name}_1")).map_err(ierr)?
+    };
     c["has_credential"] = json!(has);
     if name == "travel" {
         c["default_key"] = json!(!ctx.cfg.search.serpapi_key.trim().is_empty());
@@ -137,9 +142,25 @@ pub fn conn_view(ctx: &Ctx, name: &str) -> Result<Value, ApiError> {
         c["default"] = json!(mailboxes::default_id(store).map_err(ierr)?);
         c["has_credential"] = json!(ctx.gmail_ready());
     }
+    if gaccounts::SERVICES.contains(&name) {
+        let accs: Vec<Value> = gaccounts::accounts(store, name)
+            .map_err(ierr)?
+            .iter()
+            .map(|a| {
+                json!({"id": a["id"], "email": a["email"], "mode": a["mode"], "time_zone": a["time_zone"],
+                       "calendar_name": a["calendar_name"], "ready": a["ready"]})
+            })
+            .collect();
+        c["accounts"] = json!(accs);
+        c["default"] = json!(gaccounts::default_id(store, name).map_err(ierr)?);
+    }
     if name == "calendar" {
+        let first = gaccounts::default_id(store, "calendar").map_err(ierr)?;
         let sec = store
-            .get_secret("cred_calendar_1")
+            .get_secret(&gaccounts::handle(
+                "calendar",
+                if first.is_empty() { "c1" } else { &first },
+            ))
             .map_err(ierr)?
             .unwrap_or(json!({}));
         let mode = if truthy(&g(&sec, "ical_url")) {
@@ -161,8 +182,12 @@ pub fn conn_view(ctx: &Ctx, name: &str) -> Result<Value, ApiError> {
             .unwrap_or_else(|| ctx.google.relay_url.clone()));
     }
     if name == "drive" {
+        let first = gaccounts::default_id(store, "drive").map_err(ierr)?;
         let sec = store
-            .get_secret("cred_drive_1")
+            .get_secret(&gaccounts::handle(
+                "drive",
+                if first.is_empty() { "d1" } else { &first },
+            ))
             .map_err(ierr)?
             .unwrap_or(json!({}));
         let mode = if truthy(&g(&sec, "managed")) {
@@ -180,7 +205,9 @@ pub fn conn_view(ctx: &Ctx, name: &str) -> Result<Value, ApiError> {
             .map(|m| m.relay)
             .filter(|r| !r.is_empty())
             .unwrap_or_else(|| ctx.google.relay_url.clone()));
-        c["calendar_connected"] = json!(store.has_secret("cred_calendar_1").unwrap_or(false));
+        c["calendar_connected"] = json!(!gaccounts::ready(store, "calendar")
+            .map_err(ierr)?
+            .is_empty());
     }
     if name == "phone" {
         let d = &ctx.phone.dial;
@@ -289,6 +316,11 @@ pub async fn delete_cred_named(ctx: &App, name: &str) -> JsonResult {
     if name == "gmail" {
         for a in mailboxes::accounts(store).map_err(ierr)? {
             mailboxes::remove_account(store, &get_str(&a, "id")).map_err(ierr)?;
+        }
+    }
+    if gaccounts::SERVICES.contains(&name) {
+        for a in gaccounts::accounts(store, name).map_err(ierr)? {
+            gaccounts::remove_account(store, name, &get_str(&a, "id")).map_err(ierr)?;
         }
     }
     store
@@ -860,6 +892,136 @@ pub async fn gmail_default(State(ctx): State<App>, body: Bytes) -> JsonResult {
         ),
     );
     Ok(Json(conn_view(&ctx, "gmail")?))
+}
+
+/// `GET /sentinel/api/connections/drive/picker`: what the chat's "Google Drive" attach button needs to open Google's
+/// picker — the API key, the app id (project number) and, per connected drive, a short-lived access token. A Drive
+/// token carries only `drive.file` (Drive signs in on its own), and picking a file is what grants OMuse access to it.
+pub async fn drive_picker(State(ctx): State<App>) -> JsonResult {
+    let Some((api_key, app_id)) = gcal::picker(&ctx.google, Some(&ctx.store)) else {
+        return Ok(Json(
+            json!({"ok": false, "error": "Google Drive 选择器未配置：在「连接」页的 Google 客户端里填 Picker API key 和项目编号 (the Drive picker needs an API key and the project number on Connections)"}),
+        ));
+    };
+    let mut drives = Vec::new();
+    for a in gaccounts::ready(&ctx.store, "drive").map_err(ierr)? {
+        let aid = get_str(&a, "id");
+        let token = match crate::actions::drive_client_for(&ctx, Some(&aid)) {
+            Ok((d, _)) => d.access_token().await.map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        match token {
+            Ok(t) => drives.push(json!({"id": aid, "email": a["email"], "token": t})),
+            Err(e) => {
+                drives.push(json!({"id": aid, "email": a["email"], "error": take_chars(&e, 200)}))
+            }
+        }
+    }
+    if drives.is_empty() {
+        return Ok(Json(
+            json!({"ok": false, "error": "还没有连接 Google Drive：请先在「连接」页连接 (no Google Drive connected)"}),
+        ));
+    }
+    Ok(Json(
+        json!({"ok": true, "api_key": api_key, "app_id": app_id, "drives": drives}),
+    ))
+}
+
+/// `GET /sentinel/api/connections/drive/file?id=<d2:id>`: a file the user picked, its bytes (a Google Doc as PDF, a
+/// Sheet as xlsx …) with its name in `X-File-Name`, for the chat to upload as an attachment.
+pub async fn drive_file(
+    State(ctx): State<App>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    let id = q.get("id").cloned().unwrap_or_default();
+    let r = async {
+        let (aid, raw) = gaccounts::split_id("drive", &id);
+        let (d, _) =
+            crate::actions::drive_client_for(&ctx, Some(&aid)).map_err(|e| e.to_string())?;
+        d.download(&raw, CHAT_FILE_MAX).await.map_err(|e| e.0)
+    }
+    .await;
+    match r {
+        Ok((name, mime, data)) => {
+            ctx.audit(
+                "user",
+                "drive.pick",
+                audit_user(
+                    "drive",
+                    "success",
+                    Some(json!({"file": take_chars(&name, 120), "size": data.len()})),
+                ),
+            );
+            let fname: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
+            (
+                [
+                    (
+                        header::CONTENT_TYPE,
+                        if mime.is_empty() {
+                            "application/octet-stream".to_string()
+                        } else {
+                            mime
+                        },
+                    ),
+                    (header::HeaderName::from_static("x-file-name"), fname),
+                    (header::CACHE_CONTROL, "no-store".to_string()),
+                ],
+                data,
+            )
+                .into_response()
+        }
+        Err(e) => ApiError::new(400, take_chars(&e, 300).to_string()).into_response(),
+    }
+}
+
+/// The largest picked Drive file the chat takes (the chat's upload limit).
+const CHAT_FILE_MAX: usize = 50 * 1024 * 1024;
+
+/// `DELETE /sentinel/api/connections/{calendar|drive}/accounts/{aid}`: disconnect one calendar or drive.
+pub async fn google_account_remove(
+    State(ctx): State<App>,
+    Path((service, aid)): Path<(String, String)>,
+) -> JsonResult {
+    if !gaccounts::SERVICES.contains(&service.as_str()) {
+        return Err(ApiError::new(404, "no such service"));
+    }
+    let acc = gaccounts::find(&ctx.store, &service, Some(&aid)).map_err(ierr)?;
+    gaccounts::remove_account(&ctx.store, &service, &aid).map_err(ierr)?;
+    ctx.audit(
+        "user",
+        &format!("credential.{service}.delete"),
+        audit_user(
+            &service,
+            "success",
+            Some(json!({"account": aid, "email": acc.map(|a| a["email"].clone()).unwrap_or(json!(""))})),
+        ),
+    );
+    Ok(Json(conn_view(&ctx, &service)?))
+}
+
+/// `POST /sentinel/api/connections/{calendar|drive}/default` `{account}`: the calendar new events go to, or the drive
+/// uploads go to.
+pub async fn google_account_default(
+    State(ctx): State<App>,
+    Path(service): Path<String>,
+    body: Bytes,
+) -> JsonResult {
+    let b = body_obj(&body)?;
+    if !gaccounts::SERVICES.contains(&service.as_str())
+        || !gaccounts::set_default(&ctx.store, &service, &s_or(&b, "account", "")).map_err(ierr)?
+    {
+        return Err(ApiError::new(404, "account not found"));
+    }
+    ctx.audit(
+        "user",
+        &format!("connection.{service}.default"),
+        audit_user(
+            &service,
+            "success",
+            Some(json!({"account": g(&b, "account")})),
+        ),
+    );
+    Ok(Json(conn_view(&ctx, &service)?))
 }
 
 // ================================================================== Telegram
@@ -1476,11 +1638,11 @@ pub async fn calendar_start(State(ctx): State<App>, headers: HeaderMap, body: By
     google_own_start(&ctx, &headers, &b, &services).await
 }
 
-/// `POST /sentinel/api/connections/drive/start`: the same, for Drive — one sign-in covers Drive and the calendar
-/// unless `services` says otherwise.
+/// `POST /sentinel/api/connections/drive/start`: the same, for Drive (its own sign-in: a Drive token carries only
+/// `drive.file`, so it can be handed to the Drive picker in the browser).
 pub async fn drive_start(State(ctx): State<App>, headers: HeaderMap, body: Bytes) -> JsonResult {
     let b = body_obj(&body)?;
-    let services = services_of(&b, &["calendar", "drive"]);
+    let services = services_of(&b, &["drive"]);
     google_own_start(&ctx, &headers, &b, &services).await
 }
 
@@ -1558,14 +1720,14 @@ pub async fn calendar_google_start(
     google_managed_start(&ctx, &headers, &b, &services).await
 }
 
-/// `POST /sentinel/api/connections/drive/google/start`: one-click sign-in covering Drive and the calendar.
+/// `POST /sentinel/api/connections/drive/google/start`: one-click sign-in for another (or the first) drive.
 pub async fn drive_google_start(
     State(ctx): State<App>,
     headers: HeaderMap,
     body: Bytes,
 ) -> JsonResult {
     let b = body_obj(&body)?;
-    let services = services_of(&b, &["calendar", "drive"]);
+    let services = services_of(&b, &["drive"]);
     google_managed_start(&ctx, &headers, &b, &services).await
 }
 
@@ -1628,10 +1790,38 @@ pub async fn calendar_google_client(State(ctx): State<App>, body: Bytes) -> Json
     };
     let (cid, secret) = client_inputs(&b, &old)?;
     let relay = ctx.google.relay_url.clone();
+    // the Drive picker's API key and project number, kept with the client (blank keeps the saved ones)
+    let keep = |k: &str| -> Result<String, ApiError> {
+        let v = s_or(&b, k, "").trim().to_string();
+        let v = if v.is_empty() { get_str(&old, k) } else { v };
+        let ok = match k {
+            "project_number" => v.bytes().all(|c| c.is_ascii_digit()),
+            _ => v
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
+        };
+        if ok {
+            Ok(v)
+        } else {
+            Err(ApiError::new(
+                400,
+                format!(
+                    "{k}: not a Google {}",
+                    if k == "project_number" {
+                        "project number (digits)"
+                    } else {
+                        "API key"
+                    }
+                ),
+            ))
+        }
+    };
+    let (picker_key, project) = (keep("picker_api_key")?, keep("project_number")?);
     store
         .put_secret(
             "calendar",
-            &json!({"client_id": cid, "client_secret": secret, "relay": relay}),
+            &json!({"client_id": cid, "client_secret": secret, "relay": relay,
+                    "picker_api_key": picker_key, "project_number": project}),
             Some(gcal::BOX_CLIENT),
         )
         .map_err(ierr)?;
@@ -1684,19 +1874,15 @@ pub async fn calendar_ical(State(ctx): State<App>, body: Bytes) -> JsonResult {
         .find(|s| !s.is_empty())
         .unwrap_or_default();
     let store = &ctx.store;
-    store.delete_secret("cred_calendar_access").map_err(ierr)?;
-    store.delete_secret("cred_calendar_client").map_err(ierr)?;
-    store
-        .put_secret("calendar", &json!({"ical_url": url}), None)
-        .map_err(ierr)?;
-    store
-        .save_connection(
-            "calendar",
-            Some(&json!({"email": ical::label(&url), "time_zone": tz, "client_id": "", "mode": "ical", "calendar_name": info["name"]})),
-            None,
-            Some(true),
-        )
-        .map_err(ierr)?;
+    // an iCal address is one more calendar (the same address again updates it)
+    gaccounts::save_account(
+        store,
+        "calendar",
+        &ical::label(&url),
+        &json!({"ical_url": url}),
+        &json!({"mode": "ical", "time_zone": tz, "calendar_name": info["name"]}),
+    )
+    .map_err(ierr)?;
     let host = url.split('/').nth(2).unwrap_or("").to_string();
     ctx.audit(
         "user",
@@ -1893,39 +2079,30 @@ async fn calendar_callback_inner(
     } else {
         json!({"client_id": cid, "client_secret": csecret, "refresh_token": tok["refresh_token"]})
     };
+    // each sign-in adds an account (the same email again updates it): omuse_apps::gaccounts
     for svc in &services {
-        store.put_secret(svc, &record, None).map_err(ierr)?; // cred_<service>_1
-        store
-            .delete_secret(&format!("cred_{svc}_access"))
-            .map_err(ierr)?;
-        if svc == "calendar" {
-            store
-                .save_connection(
-                    "calendar",
-                    Some(&json!({"email": email, "time_zone": tz, "client_id": cid, "mode": mode, "calendar_name": ""})),
-                    None,
-                    Some(true),
-                )
-                .map_err(ierr)?;
+        let fields = if svc == "calendar" {
+            json!({"mode": mode, "time_zone": tz, "calendar_name": ""})
         } else {
+            json!({"mode": mode})
+        };
+        gaccounts::save_account(store, svc, &email, &record, &fields).map_err(ierr)?;
+        if svc == "drive" {
             // a connection row made before this version has no permissions yet: seed the defaults once
             let cur = store.connection("drive").map_err(ierr)?;
-            let perms = if cur["permissions"]
+            if !cur["permissions"]
                 .as_object()
                 .is_some_and(|m| !m.is_empty())
             {
-                None
-            } else {
-                Some(json!({"read": true, "upload": true, "write": true}))
-            };
-            store
-                .save_connection(
-                    "drive",
-                    Some(&json!({"email": email, "client_id": cid, "mode": mode, "quota": quota})),
-                    perms.as_ref(),
-                    Some(true),
-                )
-                .map_err(ierr)?;
+                store
+                    .save_connection(
+                        "drive",
+                        Some(&json!({"client_id": cid, "quota": quota})),
+                        Some(&json!({"read": true, "upload": true, "write": true})),
+                        Some(true),
+                    )
+                    .map_err(ierr)?;
+            }
         }
     }
     if managed {

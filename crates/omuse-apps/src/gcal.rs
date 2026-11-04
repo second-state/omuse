@@ -25,9 +25,9 @@ use crate::pydt::{py_max, py_min, PyDt, PyTz};
 /// OAuth scopes requested at consent for the calendar.
 pub const SCOPES: &str =
     "openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly";
-/// The Drive scope (full access: the agent lists, downloads, uploads and trashes the user's own files; `drive.file`
-/// would only see files the app created). Google classes it as restricted: fine for the user's own OAuth client.
-pub const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
+/// The Drive scope: `drive.file` — the files OMuse created and the ones the user picked in the Google Drive picker
+/// (the user's decision, 2026-11-04). Google classes it as non-sensitive: no restricted-scope review.
+pub const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 
 /// The scope string for one Google sign-in covering `services` (any of "calendar", "drive"; both when empty).
 pub fn scopes_for(services: &[String]) -> String {
@@ -60,7 +60,7 @@ pub fn granted_services(scope: &str) -> Vec<String> {
 /// HTTP timeout (seconds) of every Google call.
 pub const TIMEOUT: f64 = 30.0;
 /// The relay page Google redirects to when no other is configured.
-pub const DEFAULT_RELAY: &str = "https://drlucaslu.github.io/omuse-oauth/";
+pub const DEFAULT_RELAY: &str = "https://second-state.github.io/omuse-oauth/";
 /// Vault handle of a Google client the user pasted on this box (redirect URI = the relay).
 pub const BOX_CLIENT: &str = "cred_google_oauth_client";
 
@@ -107,6 +107,9 @@ pub struct GoogleSettings {
     pub managed_client_secret: String,
     /// `GOOGLE_BROKER_URL`.
     pub broker_url: String,
+    /// The Drive picker's API key and app id (the Cloud project number), "" when not configured.
+    pub picker_api_key: String,
+    pub project_number: String,
 }
 
 impl GoogleSettings {
@@ -130,6 +133,8 @@ impl GoogleSettings {
             managed_client_id: g.managed_client_id.clone(),
             managed_client_secret: g.managed_client_secret.clone(),
             broker_url: g.broker_url.clone(),
+            picker_api_key: g.picker_api_key.trim().to_string(),
+            project_number: g.project_number.trim().to_string(),
         }
     }
 }
@@ -339,6 +344,25 @@ pub fn managed(settings: &GoogleSettings, store: Option<&Store>) -> Option<Manag
         broker: String::new(),
         source: "box".into(),
     })
+}
+
+/// The Google Drive picker's `(api_key, app_id)`: the build's (`[google]`), else the ones pasted on the box with its
+/// own client; `None` while either is missing.
+pub fn picker(settings: &GoogleSettings, store: Option<&Store>) -> Option<(String, String)> {
+    let rec = store
+        .and_then(|s| s.get_secret(BOX_CLIENT).ok().flatten())
+        .unwrap_or(json!({}));
+    let pick = |built: &str, k: &str| -> String {
+        if built.is_empty() {
+            get_str(&rec, k).trim().to_string()
+        } else {
+            built.to_string()
+        }
+    };
+    let key = pick(&settings.picker_api_key, "picker_api_key");
+    let app = pick(&settings.project_number, "project_number");
+    (!key.is_empty() && !app.is_empty() && app.bytes().all(|b| b.is_ascii_digit()))
+        .then_some((key, app))
 }
 
 /// The token endpoint: the broker's `/token` for a managed client with a broker, else Google's.
@@ -596,6 +620,33 @@ pub(crate) fn range_label(start: &PyDt, end: &PyDt, z: PyTz) -> String {
         start.astimezone(z).strftime("%Y-%m-%d %H:%M"),
         end.astimezone(z).strftime("%Y-%m-%d %H:%M")
     )
+}
+
+/// The `free_slots` result for a range and the busy windows of one or several calendars (merged here), in the zone
+/// `tz` (the default calendar's; "" → UTC).
+pub fn free_slots_over(
+    tz: &str,
+    start: PyDt,
+    end: PyDt,
+    mut busy: Vec<(PyDt, PyDt)>,
+    duration_minutes: i64,
+    day_start: &str,
+    day_end: &str,
+) -> Result<Value, GCalError> {
+    let tz = if tz.is_empty() { "UTC" } else { tz };
+    let z = zone_of(tz);
+    busy.sort();
+    let dur = slot_duration(duration_minutes);
+    let slots = free_slot_pairs(start, end, &busy, dur, day_start, day_end, z)?;
+    Ok(free_slots_value(
+        tz,
+        dur,
+        day_start,
+        day_end,
+        busy.len(),
+        &slots,
+        z,
+    ))
 }
 
 /// Called with every refreshed access token: `(access_token, expires_at)`.
@@ -963,7 +1014,25 @@ impl GCal {
         day_end: &str,
         calendar_id: &str,
     ) -> Result<Value, GCalError> {
-        let z = self.zone(None);
+        let (start, end, busy) = self.busy(time_min, time_max, calendar_id).await?;
+        free_slots_over(
+            &self.tz,
+            start,
+            end,
+            busy,
+            duration_minutes,
+            day_start,
+            day_end,
+        )
+    }
+
+    /// The range asked for and the busy windows in it (Google's free/busy), sorted.
+    pub async fn busy(
+        &self,
+        time_min: &Value,
+        time_max: &Value,
+        calendar_id: &str,
+    ) -> Result<(PyDt, PyDt, Vec<(PyDt, PyDt)>), GCalError> {
         let (start, end) = (
             self.parse_time(time_min, None)?,
             self.parse_time(time_max, None)?,
@@ -1002,17 +1071,7 @@ impl GCal {
             busy.push((p("start")?, p("end")?));
         }
         busy.sort();
-        let dur = slot_duration(duration_minutes);
-        let slots = free_slot_pairs(start, end, &busy, dur, day_start, day_end, z)?;
-        Ok(free_slots_value(
-            &self.tz,
-            dur,
-            day_start,
-            day_end,
-            busy.len(),
-            &slots,
-            z,
-        ))
+        Ok((start, end, busy))
     }
 
     /// One event.
@@ -1318,7 +1377,40 @@ mod tests {
             managed_client_id: String::new(),
             managed_client_secret: String::new(),
             broker_url: String::new(),
+            picker_api_key: String::new(),
+            project_number: String::new(),
         }
+    }
+
+    #[test]
+    fn the_drive_picker_needs_a_key_and_a_project_number_from_the_build_or_the_box() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let mut s = settings("http://x");
+        assert_eq!(picker(&s, Some(&store)), None);
+        // pasted on the box with its own client
+        store
+            .put_secret(
+                "calendar",
+                &json!({"client_id": "c", "client_secret": "s", "picker_api_key": "AIzaKEY", "project_number": "123"}),
+                Some(BOX_CLIENT),
+            )
+            .unwrap();
+        assert_eq!(
+            picker(&s, Some(&store)),
+            Some(("AIzaKEY".into(), "123".into()))
+        );
+        // the build's win; a project number that is not digits is no app id
+        s.picker_api_key = "AIzaBUILD".into();
+        assert_eq!(
+            picker(&s, Some(&store)),
+            Some(("AIzaBUILD".into(), "123".into()))
+        );
+        s.project_number = "my-project".into();
+        assert_eq!(picker(&s, Some(&store)), None);
+        // drive.file only, never the full Drive scope
+        assert!(scopes_for(&["drive".into()]).ends_with("auth/drive.file"));
+        assert!(!scopes_for(&["drive".into()]).contains("calendar"));
     }
 
     #[test]

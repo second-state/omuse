@@ -4,6 +4,7 @@
 pub mod airports;
 pub mod billing;
 pub mod cars;
+pub use omuse_sentinel_core::gaccounts;
 pub mod gcal;
 pub mod gdrive;
 pub mod ical;

@@ -5,6 +5,11 @@ browser: off
 ---
 # Edit videos from Drive / 剪辑 Drive 里的视频
 
+**Drive access is `drive.file`** (0.6.7): OMuse sees only the files the user picked and the ones it made. Clips the
+user picked with the chat's ＋ → From Google Drive arrive as attachments (`uploads/…`): edit those directly. When the
+clips are not attached and `drive_search` does not find them, ask the user once to pick them with ＋ → From Google
+Drive — never ask for a folder link or a Drive-wide search.
+
 Use this for "combine the clips in my Trip folder", "cut the first 10 seconds off", "make a vertical version for
 Instagram", "put a title on it", "add this music", "join these two videos and upload the result". All editing is
 local with `edit_video` (ffmpeg); the files come from and go back to Drive with the Drive tools. Never open

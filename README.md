@@ -37,7 +37,9 @@ other knowledge files — is in [KNOWLEDGE.md](KNOWLEDGE.md). Repository rules, 
 - **Travel skills for Asia** – see [Travel use cases](#travel-use-cases) below. The arrival cards with a known form (Singapore, Malaysia, Thailand, Korea, Indonesia, Taiwan, China) are filled by code from your booking emails, profile and Vault — the model only understands the request; you review the filled form and press Submit yourself.
 - **Trip photos and videos** – the clips and photos of a trip in your Google Drive become a highlights video (join,
   cut, vertical for phones, title, music) or a photo story book PDF, edited on your own machine and put back in
-  Drive; Drive clean-up before the next trip. One Google sign-in connects Calendar and Drive.
+  Drive. Pick files from Google Drive with the chat's ＋ button (OMuse sees only the files you pick and the ones it
+  makes: Drive access `drive.file`). Connect as many calendars and drives as you like; free time is found across all
+  calendars.
 - **Memory, profile & skills** – the profile (name as in the passport, birthday, nationality, any number of addresses) can be filled from a photo of your ID; the number goes to the Vault, the photo is not kept. The Vault, beside the profile, also holds your credit cards: name a card ("Citi Prestige", optionally the country that issued it) in chat or on the Vault card and it is saved by name, its number, expiry and CVC UNKNOWN until you add them. **English and Chinese UI**.
 
 ## Safe by design
@@ -87,8 +89,8 @@ photo is read once and not kept).
 | **City guides** | "I'm moving to Shanghai for work — where do expats live and what does it cost?" | Briefings for Westerners on Beijing, Shanghai, Shenzhen, Guangzhou, Chengdu, Tokyo, Osaka, Seoul, Singapore, Hong Kong, Taipei, Bangkok, Kuala Lumpur, Ho Chi Minh City and Hanoi: entry and airports, money and apps, getting around, business customs, neighbourhoods and costs, health and schools, food, sights. Answers come from the guide's dated facts and data tools (exchange rates, the travel connector), never the browser. | `beijing`, `shanghai`, `shenzhen`, `guangzhou`, `chengdu`, `tokyo`, `osaka`, `seoul`, `singapore`, `hong-kong`, `taipei`, `bangkok`, `kuala-lumpur`, `ho-chi-minh-city`, `hanoi` |
 | **Plan and book** | "Flights to Tokyo next Friday, a hotel in Ginza, a 3-star dinner" | Flights, hotels, itineraries and restaurant bookings (existing skills). | `travel-planning`, `flight-booking`, `hotel-booking`, `restaurant-booking`, `michelin-dining` |
 
-Connect a mailbox, a calendar and Google Drive (Settings → Connections; one Google sign-in covers Calendar and
-Drive) and fill your profile (Memory → Profile: name as in the
+Connect a mailbox, your calendars and Google Drive (Settings → Connections; each Connect adds one more Google account)
+and fill your profile (Memory → Profile: name as in the
 passport, birthday, nationality; the passport number goes into the Vault) to get the most out of them.
 
 ## Build and run from source

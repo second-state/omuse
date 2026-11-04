@@ -328,18 +328,39 @@ e2e gateway streams its `openai-codex/…` and `xai/…` models chunk by chunk b
 piece at the end (checked with a raw request, compression off), which then shows as a single delta — correct, just
 not live. `tests/stream_e2e.py`, `tests/stream_real.py`.
 
-## Google Drive
+## Google Calendar and Drive accounts (0.6.7)
 
-One Google sign-in covers Calendar and Drive. The Drive card (Settings → Connections) starts the same OAuth flow as
-the calendar (`connections/drive/google/start` with the managed client and the relay page, or `connections/drive/start`
-with the user's own client and this box's callback) with `services: ["calendar", "drive"]`; `gcal::scopes_for` builds
-the consent's scope string and the pending flow (`calendar_oauth` kv) records the services. The shared callback
-(`/sentinel/api/connections/calendar/callback`, so no new redirect URI has to be registered) narrows the services to
-the scopes Google actually granted (`gcal::granted_services`; the user can untick one), verifies each (a calendar
-listing, a Drive `about`), stores the same refresh token as `cred_calendar_1` and/or `cred_drive_1`, and enables the
-connections (a Drive row made before this version gets `read` / `upload` / `write` seeded once). Disconnecting one
-leaves the other. The Drive scope (`auth/drive`) is restricted at Google: the user's own OAuth client in Testing
-status may use it; the managed client would need Google's verification first.
+Each "Connect" on the Calendar or the Drive card adds a Google account; signing in again with the same email updates
+it (`omuse_sentinel_core::gaccounts`, re-exported as `omuse_apps::gaccounts`, modelled on the mailboxes). The
+accounts live in the connection's config (`{"accounts": [{id, email, mode, time_zone, calendar_name}], "default"}`;
+ids `c<n>` / `d<n>`), each account's secret is `cred_<service>_<n>` and its cached access token `cred_<service>_access`
+(account 1) or `cred_<service>_access_<n>`. Account 1 keeps the pre-0.6.7 handles, so an older connection is account 1
+as it is. An iCal address is one more calendar (mode `ical`, read-only). Ids of the things of accounts 2+ carry the
+account (`c2:<event id>`, `d2:<file id>`); account 1's stay bare. The policy, the connections' readiness and the cards
+count any ready account; a calendar write is refused only when the calendar it targets (its event id's account, the
+`account` argument, else the default) is an iCal feed.
+
+Tools: `calendar_list_events` and `calendar_free_slots` without `account` read every calendar (events merged in time
+order with their `account`; free slots from the busy windows of all of them, `gcal::free_slots_over`, in the default
+calendar's zone); `calendar_create_event` goes to `account` or the default; update / delete find the calendar from
+the event id. `drive_search` without `account` searches every drive; the other Drive tools use the file id's drive,
+the folder id's drive, `account` or the default. Routes: `DELETE /sentinel/api/connections/{calendar|drive}/accounts/{id}`,
+`POST …/{calendar|drive}/default {account}`; `…/credential` DELETE removes them all.
+
+Calendar and Drive sign in separately (the start routes default to one service each), so a Drive token carries only
+`https://www.googleapis.com/auth/drive.file` (the user's decision, 2026-11-04: no full-Drive scope — no restricted
+scope review): OMuse sees the files it created and the ones the user picked. The chat's ＋ button offers "From Google
+Drive": `GET /sentinel/api/connections/drive/picker` gives Google's Picker its API key, its app id (the Cloud project
+number; picking grants the app `drive.file` access) and a fresh access token per drive; the UI loads
+`https://apis.google.com/js/api.js`, shows the picker, then fetches each picked file through
+`GET /sentinel/api/connections/drive/file?id=<d2:id>` (Docs / Sheets / Slides exported as PDF / XLSX / PDF, ≤ 50 MB)
+and uploads it to the chat like a local file. The picker's key and project number come from `[google]
+picker_api_key` / `project_number`, or are pasted on the box with its own Google client (Connections, kept in the
+`cred_google_oauth_client` record); `gcal::picker` returns `None` until both are there.
+
+The OAuth redirect is the relay page `deploy/oauth-relay/index.html`, published at
+`https://second-state.github.io/omuse-oauth/` (repository `second-state/omuse-oauth`; 0.6.7 moved it from upstream's
+page). The callback is `/sentinel/api/connections/calendar/callback` for both services.
 
 `omuse-apps/src/gdrive.rs` is the Drive v3 client (`about`, `list` with the Drive query language, `get`, `download`
 with Google Docs / Sheets / Slides exported as PDF / XLSX / PDF, multipart `upload`, `create_folder`, `update` =
@@ -363,8 +384,13 @@ batch, the 30-day note), `drive-video-edit` (search → download → `edit_video
 steps → upload back), `drive-photo-storybook` (photos → `file_look` → optional edits → text → one `make_pdf` with
 `![…](drive/…)` pages → upload). All three are `browser: off`.
 
-Tests: the Drive tools' unit tests; the fake Drive and its suites were removed with the fake services (2026-11-02) —
-no e2e suite has a real Google Drive account yet.
+Skills under `drive.file` (0.6.7): the video and story-book skills work on the files the user attached from Drive (or
+asks them once to pick them); `drive-cleanup` covers OMuse's own files and points to Google's storage manager for the
+rest.
+
+Tests: the Drive tools' unit tests, `gaccounts` and the account routes' tests; the fake Drive and its suites were
+removed with the fake services (2026-11-02) — no e2e suite has a real Google account yet (the user adds one to the
+e2e env file later).
 
 ## PDF page counts
 

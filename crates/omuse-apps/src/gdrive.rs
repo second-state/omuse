@@ -191,6 +191,11 @@ impl GDrive {
         }
     }
 
+    /// A fresh access token (`drive.file`) for the Drive picker in the user's browser.
+    pub async fn access_token(&self) -> Result<String, GDriveError> {
+        self.tok().await
+    }
+
     async fn tok(&self) -> Result<String, GDriveError> {
         self.g.access_token().await.map_err(|e| GDriveError(e.0))
     }
