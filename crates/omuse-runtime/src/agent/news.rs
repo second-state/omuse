@@ -158,7 +158,7 @@ pub fn ask_before_tool(events: &[Value]) -> Option<Value> {
 /// machine's result the news tools are withdrawn, except `news_publish` right after the articles were gathered.
 /// `market_quotes` is code's own call too.
 pub fn offered(transcript: &[Value], name: &str) -> bool {
-    if name == REPORT_TOOL || name == MARKET_TOOL {
+    if name == REPORT_TOOL || name == MARKET_TOOL || name == super::choose::TOOL {
         return false;
     }
     if !TOOLS.contains(&name) || !workflow::reply_turn(transcript) {

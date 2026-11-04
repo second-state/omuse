@@ -17,7 +17,7 @@ relocating from Europe, North America or Australia. Figures were checked in Octo
 - **No browser.** Answer from this sheet: it is the curated data, and each volatile fact carries the date it was checked. For live numbers use data tools, never the browser: exchange rates → market_data; flights, hotels and prices → the travel data connector (mcp_* tools) when it is connected; the user's own bookings → mail and calendar via `trip-today`. When a fact here may have changed since its date (visa rules, fares, opening hours, new lines), say the date and name the official source from the list at the end; for a rule that decides whether the user can travel or enter, hand off to `entry-requirements`. A number not on this sheet and not from a data tool is "not in my data", not a guess.
 - Compare to what the user knows: Singapore, London, Sydney. Say when something normal in the West is different here
   (religion and race in public life, drugs, alcohol prices, walking).
-- Hand off to the specialised skills when the question is about a task: arrival card → `my-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: arrival card → `my-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 
 ## Orientation
 - **Scale.** About 2 million in the Federal Territory (1.98 million at the 2020 census; the densest part of the
@@ -200,6 +200,19 @@ relocating from Europe, North America or Australia. Figures were checked in Octo
 | 2023 | MRT Putrajaya line opens; Merdeka 118 completed |
 | 2024 | MDAC mandatory; autogates open to 63 nationalities |
 | 2026 | Visit Malaysia Year; LRT3 Shah Alam line opens (June) |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: Tourism Malaysia's events https://www.malaysia.travel/events
+- Tickets: MyTicket Asia https://myticket.asia/ (English; Visa, Mastercard, Alipay, Apple Pay, Google Pay) and Ticket2u
+  https://www.ticket2u.com.my/ (concerts, festivals).
 
 ## Sources to verify against
 - Entry: Immigration Department imi.gov.my (MDAC imigresen-online.imi.gov.my); Ministry of Foreign Affairs kln.gov.my;

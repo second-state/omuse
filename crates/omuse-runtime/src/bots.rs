@@ -242,11 +242,10 @@ mod tests {
 
     #[test]
     fn travel_searches_are_the_travel_bots_only() {
-        let (main, travel, insurance, cards) = (
+        let (main, travel, money) = (
             get(MAIN).unwrap(),
             get("travel").unwrap(),
-            get("insurance").unwrap(),
-            get("cards").unwrap(),
+            get("money").unwrap(),
         );
         for t in [
             "flights_search",
@@ -260,8 +259,11 @@ mod tests {
             assert!(!has_tool(main, &format!("mcp_travel__{t}")), "{t}");
             assert!(has_tool(travel, &format!("mcp_travel__{t}")), "{t}");
         }
-        assert!(has_tool(insurance, "flights_search") && !has_tool(insurance, "hotels_search"));
-        assert!(!has_tool(cards, "flights_search"));
+        assert!(
+            !has_tool(money, "flights_search")
+                && has_tool(money, "claim_file")
+                && has_tool(money, "apdt_refund")
+        );
         for t in [
             "web_search",
             "places_search",
@@ -276,16 +278,13 @@ mod tests {
             .iter()
             .map(|b| b.id.as_str())
             .collect();
-        assert_eq!(owners, ["travel", "insurance"]);
+        assert_eq!(owners, ["travel"]);
     }
 
     #[test]
     fn built_in_bots_parse_with_main_first_and_known_skills() {
         let ids: Vec<&str> = all().iter().map(|b| b.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["main", "travel", "insurance", "cards", "photos", "shopping"]
-        );
+        assert_eq!(ids, ["main", "travel", "money", "photos", "shopping"]);
         for b in all() {
             assert!(
                 !b.name.is_empty()
@@ -336,7 +335,18 @@ mod tests {
         assert!(get("nope").is_none());
         let mut r: Vec<_> = renamed().collect();
         r.sort();
-        assert_eq!(r, [("arrival", "travel"), ("cities", "travel")]);
+        assert_eq!(
+            r,
+            [
+                ("arrival", "travel"),
+                ("cards", "money"),
+                ("cities", "travel"),
+                ("insurance", "money")
+            ]
+        );
+        // Credit cards and Insurance & claims were merged into Money (0.6.6): their chats move to it
+        assert_eq!(get("cards").unwrap().id, "money");
+        assert_eq!(get("insurance").unwrap().id, "money");
     }
 
     #[test]
@@ -351,11 +361,12 @@ mod tests {
         // shared: listed by a specialised bot and by main
         assert!(has_skill(main, "pdf-forms") && has_skill(travel, "pdf-forms"));
         assert!(has_skill(travel, "tokyo") && has_skill(travel, "sg-arrival-card"));
-        let cards = get("cards").unwrap();
-        assert!(has_skill(cards, "credit-card-picker") && !has_skill(main, "credit-card-picker"));
+        let money = get("money").unwrap();
+        assert!(has_skill(money, "credit-card-picker") && !has_skill(main, "credit-card-picker"));
+        assert!(has_skill(money, "csr-trip-claim") && has_skill(money, "tax-refund-shopping"));
+        assert!(has_skill(money, "hk-apdt-refund") && !has_skill(travel, "hk-apdt-refund"));
         assert!(
-            has_skill(cards, "csr-trip-claim")
-                && has_skill(get("insurance").unwrap(), "csr-trip-claim")
+            has_skill(travel, "baggage-delayed-lost") && !has_skill(money, "baggage-delayed-lost")
         );
         let photos = get("photos").unwrap();
         assert!(has_skill(photos, "drive-video-edit") && !has_skill(main, "drive-video-edit"));
@@ -438,7 +449,7 @@ mod tests {
     fn the_one_off_workflow_bots_load_no_memory() {
         let one_off =
             |id: &str| crate::agent::runtime::one_off(BOTS.iter().find(|b| b.id == id).unwrap());
-        assert!(one_off("travel") && one_off("shopping") && one_off("insurance"));
-        assert!(!one_off("main") && !one_off("cards") && !one_off("photos"));
+        assert!(one_off("travel") && one_off("shopping"));
+        assert!(!one_off("main") && !one_off("money") && !one_off("photos"));
     }
 }

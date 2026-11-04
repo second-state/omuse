@@ -19,7 +19,7 @@ Australia. Figures were checked in October 2026 and carry their date.
 - **No browser.** Answer from this sheet: it is the curated data, and each volatile fact carries the date it was checked. For live numbers use data tools, never the browser: exchange rates → market_data; flights, hotels and prices → the travel data connector (mcp_* tools) when it is connected; the user's own bookings → mail and calendar via `trip-today`. When a fact here may have changed since its date (visa rules, fares, opening hours, new lines), say the date and name the official source from the list at the end; for a rule that decides whether the user can travel or enter, hand off to `entry-requirements`. A number not on this sheet and not from a data tool is "not in my data", not a guess.
 - Compare to what the user knows: Bangkok, Singapore, London, New York. Say when something normal in the West is
   different here (crossing the street, cash, haggling, motorbike licences).
-- Hand off to the specialised skills when the question is about a task: entry and the e-visa → `entry-requirements` (Vietnam has no arrival card; overview `arrival-cards`), paying and SIMs → `payments-connectivity-asia`, transit tickets and trains → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: entry and the e-visa → `entry-requirements` (Vietnam has no arrival card; overview `arrival-cards`), paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and trains → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 
 ## Orientation
 - **Scale.** Before July 2025 the city had about 9.9 million residents on 2,100 km². On **1 July 2025** it absorbed
@@ -191,6 +191,20 @@ Australia. Figures were checked in October 2026 and carry their date.
 | 2024 | 22 December: Metro Line 1 opens |
 | 2025 | April: Tân Sơn Nhất T3 opens; 1 July: merger with Bình Dương and Bà Rịa–Vũng Tàu, districts abolished |
 | 2026 | Metro Line 2 construction starts (January); Long Thành airport targets 1 December |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: Visit HCMC's festivals and events https://visithcmc.vn/festivals-events/
+- Tickets: Ticketbox https://ticketbox.vn/ (English toggle; concerts, theatre, festivals) — whether foreign cards work
+  is not stated on the site.
+- Nationwide listings: Vietnam Tourism https://vietnam.travel/things-to-do/
 
 ## Sources to verify against
 - Visas and e-visa: Immigration Department (Cục Quản lý xuất nhập cảnh) evisa.gov.vn and xuatnhapcanh.gov.vn;

@@ -691,6 +691,7 @@ window.OMUSE_TW = {
 "✓ 已核对：名称和细节都摘自 Agent 读过的原网页": "✓ 已核對：名稱和細節都摘自 Agent 讀過的原網頁",
 "我选：{0}": "我選：{0}",
 "选这个 Choose": "選這個 Choose",
+"去预订 Book": "去預訂 Book",
 "要监控的网页": "要監控的網頁",
 "条件：change / text / price_below": "條件：change / text / price_below",
 "等待出现的文字（mode=text）": "等待出現的文字（mode=text）",

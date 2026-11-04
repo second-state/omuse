@@ -20,7 +20,7 @@ Figures were checked in October 2026 and carry their date.
   differently here (cash at night markets, scooters, typhoon days off, 110 V power).
 - Taipei is not mainland China: different currency (New Taiwan dollar, NT$), entry rules, no internet censorship,
   traditional characters and its own apps (LINE, not WeChat).
-- Hand off to the specialised skills when the question is about a task: arrival card → `tw-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: arrival card → `tw-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 
 ## Orientation
 - **Scale.** About 2.4–2.5 million registered residents in Taipei City (2025–26, slowly falling), 272 km², 12
@@ -192,6 +192,21 @@ Figures were checked in October 2026 and carry their date.
 | 2024 | Hualien earthquake (3 April) closes Taroko Gorge |
 | 2025 | Online arrival card TWAC replaces paper (1 October) |
 | 2026 | Sanying metro line opens in New Taipei (30 June) |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: Travel Taipei https://www.travel.taipei/en (events and festivals)
+- Tickets: tixcraft https://tixcraft.com/activity (English menu; concerts), KKTIX https://kktix.com/ (indie gigs,
+  talks, festivals) and ibon https://ticket.ibon.com.tw/ (Chinese; pay and collect at 7-Eleven). Whether foreign cards
+  work is not stated on all of them — say so.
+- Nationwide listings: Taiwan Tourism https://eng.taiwan.net.tw/
 
 ## Sources to verify against
 - Entry: Bureau of Consular Affairs boca.gov.tw (visa-exempt list); National Immigration Agency immigration.gov.tw

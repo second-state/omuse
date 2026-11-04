@@ -22,7 +22,7 @@ page is one read away.
   Express (in-town check-in), buses; Taipei — Taoyuan Airport MRT; Bangkok Suvarnabhumi — Airport Rail Link, Grab /
   metered taxi (insist on the meter, tollway extra); Shanghai Pudong — Maglev + metro, Didi; Bali — pre-booked car
   or Grab/Gojek from the designated pickup. Night arrivals: check the last train (many stop around midnight).
-- **IC cards and tickets**: see `payments-connectivity-asia` for which card where; metro day passes rarely beat the
+- **IC cards and tickets**: see the Money bot (`pay-in-asia`) for which card where; metro day passes rarely beat the
   IC card unless 4+ rides. Contactless bank cards: Singapore MRT, London-style tap works on parts of HK / Taipei /
   Japanese buses — verify per operator.
 - **High-speed rail**: Japan Shinkansen (SmartEX / JR West online, or station machines; reserved seats and the

@@ -581,6 +581,7 @@ const FORMS: &[(&str, &str, &str, FormFn)] = &[
     ("fwd-sg-claim", "www.fwd.com.sg", "/claim-online/travel", claims_pages::fwd_sg_claim),
     ("fwd-sg-quote", "www.fwd.com.sg", "/travel-insurance/online-quote", claims_pages::fwd_sg_quote),
     ("fwd-hk-mytravel", "www.fwd.com.hk", "/online-insurance/mytravel-insurance", claims_pages::fwd_hk_mytravel),
+    ("fwd-th-tip", "affinity.tipinsure.com", "/", claims_pages::fwd_th_tip),
     ("worldtracer-manage", "mybag.aero", "/baggage/", claims_pages::mybag_manage),
     ("hk-apdt-start", "app.apdtrefund.hk", "/hktaxmobile/", claims_pages::apdt_start),
 ];

@@ -5,6 +5,9 @@ form: on
 ---
 # Baggage delayed, lost or damaged / 行李延误与丢失
 
+> **Claims are the Money bot's.** Say what to do now, where and by when; an insurance or card claim that follows (a
+> delay, a cancellation, a lost bag) is filed by the Money bot — tell the user to continue there.
+
 **First turn, in parallel**: gmail_search the flight booking and the hotel (delivery address), and gmail_search
 `insurance (policy OR certificate OR travel)` — always, even when the user only asks about the airline: the answer says
 what the policy pays for a delayed or lost bag and what it needs (section 4), or that no policy was found.

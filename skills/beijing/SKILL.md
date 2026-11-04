@@ -17,7 +17,7 @@ relocating from Europe, North America or Australia. Figures were checked in Octo
 - **No browser.** Answer from this sheet: it is the curated data, and each volatile fact carries the date it was checked. For live numbers use data tools, never the browser: exchange rates → market_data; flights, hotels and prices → the travel data connector (mcp_* tools) when it is connected; the user's own bookings → mail and calendar via `trip-today`. When a fact here may have changed since its date (visa rules, fares, opening hours, new lines), say the date and name the official source from the list at the end; for a rule that decides whether the user can travel or enter, hand off to `entry-requirements`. A number not on this sheet and not from a data tool is "not in my data", not a guess.
 - Compare to what the user knows: Washington DC (a capital of ministries and lobbyists), London, Paris. Say when
   something that is normal in the West does not work here (Google, credit cards, English, walk-up museum tickets).
-- Hand off to the specialised skills when the question is about a task: arrival card → `cn-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: arrival card → `cn-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 
 ## Orientation
 - **Scale.** About 21.80 million permanent residents at end-2025 (official figures, spring 2026; slightly down as
@@ -203,6 +203,22 @@ relocating from Europe, North America or Australia. Figures were checked in Octo
 | 2022 | Winter Olympics |
 | 2024 | Central axis inscribed as UNESCO World Heritage |
 | 2025 | GDP passes ¥5 trillion; metro reaches 909 km (December) |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: Visit Beijing's events https://english.visitbeijing.com.cn/events and performances
+  https://english.visitbeijing.com.cn/events/performance
+- Tickets: Damai https://m.damai.cn/ (China's main ticket platform, Chinese; real-name tickets need the passport
+  number) and Maoyan's shows https://show.maoyan.com/ (Chinese). MAISEAT https://www.maiseat.com/ is Damai's
+  international site for visitors (language and payment not confirmed on the site). Big concerts are real-name: the
+  passport used to buy is checked at the gate.
 
 ## Sources to verify against
 - Visas, transit and arrival card: National Immigration Administration en.nia.gov.cn (s.nia.gov.cn for the card);

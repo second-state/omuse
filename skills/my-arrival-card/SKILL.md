@@ -8,6 +8,10 @@ profile: nationality
 ---
 # Malaysia Digital Arrival Card (MDAC) / 马来西亚电子入境卡
 
+> **Ask first, fill on request.** A question about this card (what to file, when, what it needs) gets the requirements
+> and the official link: call `arrival_card_fill` with `file: false` (the default) — code answers and opens nothing.
+> Set `file: true` only when the user explicitly asks you to fill it in or apply for them.
+
 The MDAC replaced Malaysia's paper arrival card. Foreign visitors file it, free, within the 3 days before arrival at https://imigresen-online.imi.gov.my/mdac/main — one submission per traveller (no group form). Exempt (check the current list): Singapore citizens, permanent residents and long-term pass holders of Malaysia, diplomatic passports, airside transit. After arrival the MDAC also enables autogate use for many nationalities.
 This is the traveller's own legal declaration: code fills it (a form function with fixed ids), the user reviews it and presses Submit.
 

@@ -175,10 +175,11 @@ fn user_msg(text: impl Into<String>) -> Value {
     json!({"role": "user", "content": text.into()})
 }
 
-/// The workflow tools whose bots' tasks are one-off requests: no memory selection for them (see `Runtime::run`).
-const ONE_OFF_TOOLS: [&str; 3] = ["travel_search", "shop_order", "insurance_buy"];
+/// The workflow tools whose bots' tasks are one-off requests: no memory selection for them (see `Runtime::run`). The
+/// Money bot (insurance among cards and refunds) keeps memory: the card picker reads the user's preferences.
+const ONE_OFF_TOOLS: [&str; 2] = ["travel_search", "shop_order"];
 
-/// A bot whose tasks are one-off workflow requests (Travel, Shopping, Insurance): its tasks select no memory.
+/// A bot whose tasks are one-off workflow requests (Travel, Shopping): its tasks select no memory.
 pub fn one_off(bot: &crate::bots::Bot) -> bool {
     ONE_OFF_TOOLS.iter().any(|w| crate::bots::has_tool(bot, w))
 }

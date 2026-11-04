@@ -55,8 +55,7 @@ pub struct TaskData {
 pub fn bot_topics(bot_id: &str) -> &'static [&'static str] {
     match bot_id {
         "travel" => &["travel"],
-        "insurance" => &["travel", "finance", "health"],
-        "cards" => &["finance"],
+        "money" => &["finance", "travel"],
         _ => &[],
     }
 }
@@ -91,6 +90,7 @@ pub fn skill_topics(name: &str) -> &'static [&'static str] {
         "pdf-forms" => &["forms"],
         "phone-call" => &["phone_calls"],
         "credit-card-picker" => &["finance"],
+        "pay-in-asia" => &["finance", "travel"],
         n if n.ends_with("-arrival-card") => &["travel", "forms"],
         _ => &[],
     }
@@ -100,8 +100,8 @@ pub fn skill_topics(name: &str) -> &'static [&'static str] {
 pub fn tool_topics(name: &str) -> &'static [&'static str] {
     match name {
         "travel_search" | "travel_book" | "travel_pick" | "flights_search" | "flight_offer"
-        | "hotels_search" | "hotel_rooms" | "cars_search" | "bag_trace" | "apdt_refund"
-        | "entry_requirements" => &["travel"],
+        | "hotels_search" | "hotel_rooms" | "cars_search" | "events_search" | "bag_trace"
+        | "apdt_refund" | "entry_requirements" => &["travel"],
         "arrival_card_fill" => &["travel", "forms"],
         "claim_file" | "insurance_buy" => &["travel", "finance"],
         "shop_order" | "orders_list" => &["shopping"],
@@ -934,10 +934,7 @@ mod tests {
             task_data("main", &transcript).topics,
             vec!["dining", "email", "travel", "forms"]
         );
-        assert_eq!(
-            task_data("insurance", &[]).topics,
-            vec!["travel", "finance", "health"]
-        );
+        assert_eq!(task_data("money", &[]).topics, vec!["finance", "travel"]);
         assert!(task_data("main", &[]).topics.is_empty());
     }
 

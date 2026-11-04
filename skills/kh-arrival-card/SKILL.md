@@ -8,6 +8,10 @@ profile: nationality
 ---
 # Cambodia e-Arrival Card / 柬埔寨电子入境卡
 
+> **Ask first, fill on request.** A question about this card (what to file, when, what it needs) gets the requirements
+> and the official link: call `arrival_card_fill` with `file: false` (the default) — code answers and opens nothing.
+> Set `file: true` only when the user explicitly asks you to fill it in or apply for them.
+
 Air arrivals file the Cambodia e-Arrival Card, free, within the 7 days before arrival at https://arrival.gov.kh (immigration, customs and health in one); land and river borders still use paper. Visas (e-visa or on arrival) are separate; the e-Arrival Card is needed even for visa-free entries.
 This is the traveller's own legal declaration: code fills it (a form function with fixed ids), the user reviews it and presses Submit.
 

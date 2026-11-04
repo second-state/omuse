@@ -366,6 +366,16 @@ impl Broker {
                 for f in fills.iter().take(200) {
                     // each op's time in the result (`ms`): where a plan spends it
                     let op_start = std::time::Instant::now();
+                    // `only_if_failed`: a second try, run only when that earlier op did not work (TIP Insure's Next
+                    // takes a second press right after its address lists, 2026-11-03); otherwise it is not needed
+                    let only_if = get_str(f, "only_if_failed");
+                    if !only_if.is_empty() && !failed.contains(&only_if) {
+                        out.push(
+                            json!({"op": get_str(f, "op"), "field": get_str(f, "field"), "ok": true,
+                                        "why": "not needed", "ms": 0}),
+                        );
+                        continue;
+                    }
                     let after = get_str(f, "after");
                     if !after.is_empty() && failed.contains(&after) {
                         out.push(json!({"op": get_str(f, "op"), "field": get_str(f, "field"), "ok": false,
@@ -395,14 +405,17 @@ impl Broker {
                                 .map(|c| json!({"op": "exists", "sel": c.get("sel"), "text": c.get("text"),
                                                 "scope": c.get("scope"), "scope_sel": c.get("scope_sel")}))
                                 .collect(),
-                            _ => vec![json!({"op": "exists", "sel": f.get("sel"), "text": f.get("text")})],
+                            // `attached`: present at all, seen or not (the options of a select a styled list hides)
+                            _ => vec![json!({"op": "exists", "sel": f.get("sel"), "text": f.get("text"),
+                                             "attached": f.get("attached")})],
                         };
-                        // `wait_ms`: a page that renders late (a single-page app's route) is given that long
+                        // `wait_ms`: a page that renders late (a single-page app's route, a slow insurer's next
+                        // step — TIP Insure took over 20 s, 2026-11-03) is given that long, at most a minute
                         let patience = f
                             .get("wait_ms")
                             .and_then(as_i64)
                             .unwrap_or(0)
-                            .clamp(0, 20_000);
+                            .clamp(0, 60_000);
                         let start = std::time::Instant::now();
                         let mut here;
                         loop {
@@ -1425,7 +1438,8 @@ const FILL_ONE_JS: &str = r#"(f) => {
     return {ok: true};
   }
   const el = find();
-  if (f.op === 'exists') return {ok: !!el && vis(el)};   // a required field counts only when the user can see it
+  // a required field counts only when the user can see it — or, `attached`, when it is there at all (an option)
+  if (f.op === 'exists') return {ok: !!el && (f.attached === true || vis(el))};
   if (!el) return {ok: false, why: 'not on the page'};
   el.scrollIntoView({block: 'center'});
   if (f.op === 'rect') {
@@ -1468,6 +1482,9 @@ const FILL_ONE_JS: &str = r#"(f) => {
       || (want && opts.find(x => norm(x.text).includes(want)));
     if (!o) return {ok: false, why: 'no such option'};
     el.value = o.value; fire(el, 'input', 'change');
+    // `jquery`: the page's own jQuery change too — lists that load the next one only from a jQuery handler (TIP
+    // Insure's province → district → sub-district, 2026-11-03); opt-in, so other pages see one change only
+    if (f.jquery && window.jQuery) { try { window.jQuery(el).trigger('change'); } catch (e) { /* no handler */ } }
     return {ok: true};
   }
   if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return {ok: false, why: 'not a text field'};

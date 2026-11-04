@@ -17,7 +17,7 @@ Australia. Figures were checked in October 2026 and carry their date.
 - **No browser.** Answer from this sheet: it is the curated data, and each volatile fact carries the date it was checked. For live numbers use data tools, never the browser: exchange rates → market_data; flights, hotels and prices → the travel data connector (mcp_* tools) when it is connected; the user's own bookings → mail and calendar via `trip-today`. When a fact here may have changed since its date (visa rules, fares, opening hours, new lines), say the date and name the official source from the list at the end; for a rule that decides whether the user can travel or enter, hand off to `entry-requirements`. A number not on this sheet and not from a data tool is "not in my data", not a guess.
 - Compare to what the user knows: Singapore, London, New York. Say when something normal in the West is different
   here (the monarchy, drugs and vapes, crossing the street, tipping).
-- Hand off to the specialised skills when the question is about a task: arrival card → `th-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: arrival card → `th-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 
 ## Orientation
 - **Scale.** 5.42 million registered residents at end-2025 (Central Registration Office, published March 2026, a
@@ -195,6 +195,20 @@ Australia. Figures were checked in October 2026 and carry their date.
 | 2024 | Pink Line opens; 60-day visa exemption (July) |
 | 2025 | TDAC mandatory (May); cannabis re-regulated (June) |
 | 2026 | 30-day visa exemption from 15 September; common ticket approved for 2027 |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- Tickets: Thai Ticket Major https://www.thaiticketmajor.com/ (the big concerts and shows), Ticketmelon
+  https://www.ticketmelon.com/ (festivals, gigs), AllTicket https://www.allticket.com/en and Eventpop
+  https://www.eventpop.me/. Foreign-card rules are not stated on all of them — say so.
+- Listings: Tourism Authority of Thailand https://www.tourismthailand.org/Events-and-Festivals
 
 ## Sources to verify against
 - Entry: Ministry of Foreign Affairs mfa.go.th and thaievisa.go.th; Immigration Bureau immigration.go.th; TDAC

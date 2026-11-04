@@ -8,6 +8,10 @@ profile: nationality
 ---
 # Indonesia — All Indonesia arrival card / 印尼电子入境卡
 
+> **Ask first, fill on request.** A question about this card (what to file, when, what it needs) gets the requirements
+> and the official link: call `arrival_card_fill` with `file: false` (the default) — code answers and opens nothing.
+> Set `file: true` only when the user explicitly asks you to fill it in or apply for them.
+
 Indonesia merged the customs declaration and the arrival card into the All Indonesia portal (https://allindonesia.imigrasi.go.id), filed free within the 3 days before arrival; it became mandatory at Jakarta (CGK), Bali (DPS), Surabaya (SUB) and Batam first and is extending to other ports — verify the current list; elsewhere the electronic customs declaration (e-CD) is still used. The e-VOA (visa on arrival, IDR 500,000 as of Oct 2026) and the Bali tourist levy (IDR 150,000) are separate, paid, on official .go.id sites — the user pays those (takeover at the payment step).
 This is the traveller's own legal declaration: code fills it (a form function with fixed ids), the user reviews it and presses Submit.
 

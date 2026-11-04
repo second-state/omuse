@@ -5,7 +5,7 @@ terms (TravelSure TI-2026-77: SGD 100 for every full 6 hours of delay with the a
 delay SGD 150 after 6 hours with the PIR and receipts) in the request. Nothing is submitted or sent.
 
 1. delay — the user's SQ 638 Singapore → Tokyo Narita today. The user asks whether it is delayed, the options, what
-   insurance and the airline give, and whether they can get their money back; drafts only. Checked: the Insurance &
+   insurance and the airline give, and whether they can get their money back; drafts only. Checked: the Travel or Money
    claims bot answers; the block code appends has the flight's line read from Singapore Airlines' status page (the live
    page decides what it says) and the link to that page; nothing submitted or sent.
 2. baggage — the bag did not arrive in Tokyo on yesterday's ANA NH 802 (ANA uses WorldTracer's passenger site); the PIR
@@ -46,7 +46,7 @@ async def delay(u: U.User) -> None:
                     f"claim from my travel insurance and the airline, and can I get my money back instead? {POLICY} Prepare any emails I "
                     "need as drafts — don't send anything.", label="delay", approve=no_send, on_takeover=look, timeout=1200)
     check("delay: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
-    check("delay: the Insurance & claims bot answered", "nsurance" in a.bot_link, a.bot_link)
+    check("delay: the Travel or Money bot answered", "Travel" in a.bot_link or "Money" in a.bot_link, a.bot_link)
     check("delay: the block code appends after the answer has the flight's line from Singapore Airlines' status page, and its link",
           a.shows("SQ 638 on") and any("singaporeair.com" in x for x in a.block_links), (a.block, a.block_links, a.text[:300]))
     said = C.SUBMITTED.search(a.text) or C.SENT.search(a.text)
@@ -55,7 +55,7 @@ async def delay(u: U.User) -> None:
 
 
 async def baggage(u: U.User) -> None:
-    # the Insurance bot's example in the UI (bots/insurance.md), word for word: a short request — the model asks for
+    # a short request, word for word: a short request — the model asks for
     # the flight and the report, and the user answers in the same chat
     a = await u.ask("My checked bag didn't arrive. Where is it?",
                     label="baggage", approve=no_send, on_takeover=look, timeout=1200)
@@ -63,7 +63,7 @@ async def baggage(u: U.User) -> None:
         a = await u.ask("It was my ANA flight NH 802 to Tokyo yesterday. My Narita report is NRTNH12345. Please keep an eye on it.",
                         label="baggage follow-up", new_chat=False, approve=no_send, on_takeover=look, timeout=1200)
     check("baggage: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
-    check("baggage: the Insurance & claims bot answered", "nsurance" in a.bot_link, a.bot_link)
+    check("baggage: the Travel bot answered (trouble on a trip)", "Travel" in a.bot_link, a.bot_link)
     check("baggage: the block code appends after the answer has WorldTracer's answer for the file, with ANA's page on mybag.aero",
           a.shows("NRTNH12345", "Bag status: WorldTracer") and any("mybag.aero" in x for x in a.block_links),
           (a.block, a.block_links, a.text[:300]))

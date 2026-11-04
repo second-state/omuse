@@ -1,7 +1,7 @@
 """Bots with a real model, from the user's point of view (OMUSE_E2E_REAL=1, see tests/user_common.py): which bot answers.
 The user asks Main's chat for a flight, a return flight as a follow-up, a hotel, a city tip, which card to pay with, and
 a sentence rewrite. A travel or card request is answered by the right bot — the answer shows "Continue in ✈️ Travel →"
-(or "💳 Credit cards"), and clicking it opens that bot's conversation with the user's question and the same answer,
+(or "💳 Money"), and clicking it opens that bot's conversation with the user's question and the same answer,
 marked as handed over from Main; the follow-up lands in the same Travel conversation (it now shows both questions). No
 request asks the user to approve anything or to take over a browser. The rewrite is answered by Main itself (no bot
 link). Then a chat the user starts in the Travel bot's own view (menu → Travel) is answered there by Travel itself — no
@@ -74,11 +74,11 @@ async def main():
         nothing_asked("city", a)
         await handed(u, "city", a, "Travel")
 
-        # 5. which card → Credit cards
+        # 5. which card → Money
         a = await u.ask("Which credit card should I use to pay for a S$300 dinner in Singapore? I have a DBS Altitude Visa and a Citi Rewards Mastercard.",
                         label="card")
         nothing_asked("card", a)
-        await handed(u, "card", a, "Credit cards")
+        await handed(u, "card", a, "Money")
 
         # 6. a general request stays in Main
         a = await u.ask("Rewrite this sentence to sound more polite: 'Send me the report now.'", label="general")

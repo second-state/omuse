@@ -1,6 +1,6 @@
 ---
 name: payments-connectivity-asia
-description: 在亚洲怎么付钱和上网：手机支付（中国支付宝/微信绑外卡、日本 PayPay、新马泰 GrabPay 等）、交通卡（Welcome Suica、八达通、T-money、EZ-Link）、现金与 ATM、汇率（fx_convert）、拒绝 DCC、eSIM 与漫游、银行出行报备 Paying and staying online in Asia — mobile wallets with foreign cards, transit cards, cash and ATMs, FX rates from market data (fx_convert), avoiding dynamic currency conversion, eSIMs and roaming, card travel notices.
+description: 在亚洲出行的现金与上网：现金与 ATM、汇率（fx_convert）、拒绝 DCC、eSIM 与漫游、银行出行报备（各国手机支付、交通卡与下载链接归钱包助手 pay-in-asia）Cash and staying online in Asia on a trip — cash and ATMs, FX rates from market data (fx_convert), avoiding dynamic currency conversion, eSIMs and roaming, card travel notices (mobile wallets, transit cards and their download links per country: the Money bot's pay-in-asia).
 ---
 # Payments & connectivity in Asia / 支付与上网
 
@@ -14,20 +14,9 @@ page when a rule or a fee must be current (say the date checked). No browsing fo
 - **Cash**: Japan, Vietnam, Indonesia, rural Thailand, small eateries and markets everywhere still take cash; airport
   ATMs beat airport exchange counters; in Japan 7-Eleven and Japan Post ATMs take foreign cards. Decline **dynamic
   currency conversion** (pay in the local currency, not the home currency) at terminals and ATMs.
-- **Mobile wallets by country** (verify the current rules on the official help pages):
-  - Mainland China: Alipay and WeChat Pay accept foreign Visa / Mastercard / Amex / JCB linked in the app ("Tour Pass"
-    style prepaid or direct card link); register at home before departure because the SMS code is the step that fails
-    most often; small payments carry no fee, larger ones a few percent; limits per transaction and per year apply.
-    Without them, taxis, metro QR gates, street food and many shops are hard. Didi for taxis, Amap / Baidu for maps.
-  - Japan: cards are accepted widely but failures happen at restaurants; PayPay needs a Japanese account for most
-    foreigners — rely on cards, Suica-type IC cards and cash. Transit IC: Welcome Suica (28-day tourist card, no
-    deposit, unused balance not refunded) or Mobile Suica / PASMO in Apple Wallet (foreign cards usually work) —
-    also pays at konbini and vending machines. Regular Suica / PASMO sales have been limited since 2023; check the JR
-    East page before relying on buying one.
-  - Hong Kong: Octopus (tourist version, or in Apple / Google Wallet) for transit and small shops. Singapore: contactless
-    bank cards tap straight through MRT / bus gates; EZ-Link optional. Korea: T-money (also WOWPASS for prepaid card +
-    T-money); Kakao T for taxis. Taiwan: EasyCard / iPASS. Thailand / Malaysia / Indonesia / Vietnam / Philippines:
-    Grab (ride, food, GrabPay), local QR (PromptPay, DuitNow, QRIS) often require a local bank — cards and cash.
+- **Mobile wallets, transit cards and apps by country** (Alipay / WeChat Pay with a foreign card, Welcome Suica,
+  Octopus, WOWPASS, the official download links): the Money bot's `pay-in-asia` skill (its checked table) — hand the
+  question to Money rather than answering from memory.
 - **Connectivity**: an eSIM bought before departure (data only, install at home, activate on landing) or a local SIM
   at the airport (passport needed); roaming packages from the home carrier as a fallback. Mainland China: many
   Western apps and sites are blocked on local networks; roaming eSIMs from abroad usually route around that — say it

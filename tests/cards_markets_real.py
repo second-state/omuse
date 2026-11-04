@@ -1,6 +1,6 @@
 """Which credit card to use, Singapore and Hong Kong cards, with a real model and from the user's point of view
 (tests/user_common.py). The user lives in Singapore and starts with no cards in the Vault. In Main's chat:
-  1. ask — which card for a S$180 dinner in Singapore: the Credit cards bot (its link) asks which cards the user holds
+  1. ask — which card for a S$180 dinner in Singapore: the Money bot (its link) asks which cards the user holds
      (one question, no pick yet, no card number asked for).
   2. cards — the user answers in the same chat (a DBS Altitude and a UOB One from Singapore, an HSBC Red from Hong
      Kong): the block code appends gives the catalog's date and the note that the Singapore rows are unverified; the
@@ -31,7 +31,7 @@ async def main():
     async with U.User() as u:
         # 1. no cards yet: the bot asks once
         a = await u.ask("Which of my credit cards should I use for a S$180 dinner at a restaurant in Singapore?", label="ask")
-        check("ask: answered by the Credit cards bot (its link in the answer)", "Credit cards" in a.bot_link, a.bot_link)
+        check("ask: answered by the Money bot (its link in the answer)", "Money" in a.bot_link, a.bot_link)
         # with no cards on file the bot asks (a choice card, or an answer that comes with no takeover, no approval and
         # no pick made from the Vault): state, never the words of the question
         asked0 = await u.choices()
@@ -42,7 +42,7 @@ async def main():
         # 2. the user answers in the same chat
         a = await u.ask("I have a DBS Altitude Visa Signature and a UOB One card, both issued in Singapore, and an HSBC Red Credit Card "
                         "from Hong Kong.", label="cards", new_chat=False)
-        check("cards: answered by the Credit cards bot", "Credit cards" in a.bot_link, a.bot_link)
+        check("cards: answered by the Money bot", "Money" in a.bot_link, a.bot_link)
         check("cards: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.seconds)
         check("cards: the block code appends after the answer gives the catalog's date (August 2026)",
               "Card terms from the catalog as of" in a.block and bool(C.CATALOG_DATE.search(a.block)), a.block)
@@ -69,7 +69,7 @@ async def main():
 
         # 4. a dinner in Hong Kong: Hong Kong's table for the Hong Kong cards
         a = await u.ask("I'm in Hong Kong next week: which of my cards should I use for a HK$1,500 dinner at a restaurant there?", label="hk")
-        check("hk: answered by the Credit cards bot", "Credit cards" in a.bot_link, a.bot_link)
+        check("hk: answered by the Money bot", "Money" in a.bot_link, a.bot_link)
         check("hk: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.seconds)
         check("hk: the block code appends after the answer gives the foreign transaction fee of the Singapore cards (catalog)",
               "foreign transaction fee" in a.block, a.block)
@@ -80,7 +80,7 @@ async def main():
         # 5. a card named in the chat (and one named again)
         a = await u.ask("I forgot: I also have a Citi PremierMiles card from Singapore, besides my UOB One. Which card is best for a "
                         "S$1,500 Singapore Airlines flight booked on singaporeair.com?", label="named")
-        check("named: answered by the Credit cards bot", "Credit cards" in a.bot_link, a.bot_link)
+        check("named: answered by the Money bot", "Money" in a.bot_link, a.bot_link)
         check("named: the block code appends after the answer gives the catalog's date (August 2026)",
               "Card terms from the catalog as of" in a.block and bool(C.CATALOG_DATE.search(a.block)), a.block)
         check("named: no card number in the answer", not C.CARD_NO.search(a.text), a.text[:300])

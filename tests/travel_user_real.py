@@ -37,6 +37,17 @@ def mentions_day(text: str, d: dt.date) -> bool:
 TIMES = re.compile(r"(\d{4}-\d\d-\d\d) (\d\d:\d\d) → \S+ (\d{4}-\d\d-\d\d) (\d\d:\d\d)")
 
 
+async def card_buttons_open(u: U.User, label: str, n: int) -> None:
+    """The card's buttons open each option's booking page in the user's own browser (a new tab) — never a "Choose"
+    message, a new search and the link in the agent's browser (the user, 2026-11-04)."""
+    card = u.page.locator(".bubble.choices").last
+    books = await card.locator("a.btn").evaluate_all("els => els.map(a => ({href: a.href, target: a.target, text: a.innerText.trim()}))")
+    print(f"INFO {label}: card buttons {books}")
+    check(f"{label}: each card option's button opens its booking page in a new tab (no Choose message)",
+          len(books) == n and all(b["href"].startswith("http") and b["target"] == "_blank" for b in books)
+          and await card.locator("button", has_text="Choose").count() == 0, books)
+
+
 async def last_flight(u: U.User, a: U.Answer) -> None:
     """The answer to "the last flight that lands before midnight" tomorrow, as the user reads it: the block code appends
     names ONE flight with its times, it lands tomorrow before midnight, and it is the last such flight of every flight
@@ -78,6 +89,8 @@ async def last_flight(u: U.User, a: U.Answer) -> None:
     first = ((cards[-1].get("options") or [{}])[0].get("label") or "") if cards else ""
     print(f"INFO flight: card {[o.get('label') for o in (cards[-1].get('options') or [])] if cards else None}")
     check("flight: a card, when shown, has the best match first", not cards or first in a.block, (first, a.block[:300]))
+    if cards:
+        await card_buttons_open(u, "flight", len(cards[-1].get("options") or []))
 
 
 async def runner_up_cards(u: U.User, before: int) -> list:
@@ -138,6 +151,8 @@ async def main():
             # guarantees is that a card, when shown, leads with the answer's flight and its entries read apart
             check("range: a card, when shown, has the best match first and no two entries alike",
                   not opts or (labels[0].split(" · ")[0] in a.block and len(set(labels)) == len(labels)), (labels, a.block[:300]))
+            if opts:
+                await card_buttons_open(u, "range", len(opts))
             bk = [x for x in a.block_links if "kiwi.com" in x or "google.com/travel" in x]
             check("range: the block code appends after the answer has a booking link, and it opens", bool(bk) and opens(bk[0])[0], a.block_links)
 

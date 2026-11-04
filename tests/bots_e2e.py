@@ -4,7 +4,7 @@ the question and the same answer, a follow-up landing in the same bot conversati
 chat started in a bot's own view answered there, an approval inside a bot shown in Main — are tested from the user's
 side by tests/bots_real.py (a takeover inside a bot shown in Main: tests/arrival_real.py). What stays here, and why it
 cannot be e2e:
-  * the six bots with their skills and names (the bot definitions, exact);
+  * the five bots with their skills and names (the bot definitions, exact);
   * the planner's routing decision and the hand-over coming from it, the fallbacks when routing fails or names a
     conversation that is not the bot's, Main refusing another bot's skill or tool (internal events and forced
     failures of the planner);
@@ -43,14 +43,14 @@ def conv(cid):
 # ---------------------------------------------------------------- the bots and their skills
 bots = c.get(B + "/api/bots", headers=H).json()["bots"]
 ids = [b["id"] for b in bots]
-K.check("six bots, Main first: main, travel, insurance, cards, photos, shopping", ids == ["main", "travel", "insurance", "cards", "photos", "shopping"], ids)
+K.check("five bots, Main first: main, travel, money, photos, shopping", ids == ["main", "travel", "money", "photos", "shopping"], ids)
 sk = {b["id"]: set(b["skills"]) for b in bots}
 K.check("each bot has its own skills; Main keeps the general ones and none of the travel ones",
         "flight-booking" in sk["travel"] and "flight-booking" not in sk["main"] and "news-search" in sk["main"] and "tokyo" in sk["travel"]
-        and "sg-arrival-card" in sk["travel"] and "fwd-travel-insurance" in sk["insurance"] and "drive-video-edit" in sk["photos"]
-        and "drive-video-edit" not in sk["main"] and "credit-card-picker" in sk["cards"] and "credit-card-picker" not in sk["main"],
+        and "sg-arrival-card" in sk["travel"] and "fwd-travel-insurance" in sk["money"] and "drive-video-edit" in sk["photos"]
+        and "drive-video-edit" not in sk["main"] and "credit-card-picker" in sk["money"] and "credit-card-picker" not in sk["main"],
         {k: sorted(v)[:4] for k, v in sk.items()})
-K.check("bots may share a skill (pdf-forms: Main, Travel, Insurance & claims)", all("pdf-forms" in sk[b] for b in ("main", "travel", "insurance")))
+K.check("bots may share a skill (pdf-forms: Main, Travel, Money)", all("pdf-forms" in sk[b] for b in ("main", "travel", "money")))
 K.check("every bot has a name in both languages, an icon and a description",
         all(b["name"] and b["name_zh"] and b["icon"] and b["description"] for b in bots), [(b["id"], b["name"], b["name_zh"]) for b in bots])
 

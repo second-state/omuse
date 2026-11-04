@@ -8,6 +8,10 @@ profile: nationality
 ---
 # Taiwan Arrival Card (TWAC) / 台湾线上入境登记
 
+> **Ask first, fill on request.** A question about this card (what to file, when, what it needs) gets the requirements
+> and the official link: call `arrival_card_fill` with `file: false` (the default) — code answers and opens nothing.
+> Set `file: true` only when the user explicitly asks you to fill it in or apply for them.
+
 Visa-exempt and visa visitors file the Taiwan Arrival Card online, free, within the 3 days before arrival at https://twac.immigration.gov.tw/ (paper cards ended on 1 October 2025); residents (ARC) and some permit holders are exempt. The English name field takes letters and spaces only; a confirmation email follows, and the QR / passport is shown at immigration. e-Gate enrolment is a separate counter on arrival.
 This is the traveller's own legal declaration: code fills it (a form function with fixed ids), the user reviews it and presses Submit.
 

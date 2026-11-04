@@ -35,6 +35,16 @@ fn elements(url: &str, read: Value) -> String {
     )
 }
 
+/// The check of a call that BUYS or FILES (`file: true` unless the test says otherwise: the user asked for it) —
+/// the information path has its own tests.
+fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
+    let mut a = args.clone();
+    if a.get("file").is_none() && (tool == INSURANCE_BUY || tool == CLAIM_FILE) {
+        a["file"] = json!(true);
+    }
+    super::check(tool, &a, cx)
+}
+
 fn cx<'a>(profile: &'a Value, mail: bool, t: &'a [Value]) -> Ctx<'a> {
     Ctx {
         profile,
@@ -405,73 +415,31 @@ fn csr_cancellation() -> Value {
 
 const CCC: &str = "https://cardclaimcenter.com/internal/log-in";
 
-/// Card Claim Center after the hand-back: the sign-in page (its password box) still there, or not.
-fn csr_answers(signed_in: bool) -> impl Fn(&str, &Value) -> String {
-    move |name, _| {
-        match name {
-        "browser_navigate" => page(CCC, "[e1] textbox \"Email Address\"\n[e2] textbox \"Password\""),
-        "form_fill" => format!("{{\"url\": \"{CCC}\", \"filled\": [{{\"op\": \"text\", \"field\": \"email\", \"ok\": true}}]}}"),
-        "browser_request_takeover" => BACK.into(),
-        "browser_read_elements" if signed_in => elements("https://cardclaimcenter.com/internal/claims/new", json!({"password": []})),
-        "browser_read_elements" => elements(CCC, json!({"password": ["password"]})),
-        other => panic!("{other}"),
-    }
-    }
-}
-
 #[test]
-fn the_csr_claim_reaches_the_sign_in_and_hands_it_over_with_the_facts() {
-    // www.eclaimsline.com redirects to Card Claim Center's sign-in (2026-11-02): the account is the user's
+fn the_csr_claim_is_prepared_with_card_claim_centers_link_and_opens_no_page() {
+    // the user, 2026-11-04: the claim is started — the benefit, the amount, the dates, the documents — and Card Claim
+    // Center's link handed over; the user signs in there, files and uploads (no takeover of the agent's browser)
     let profile = json!({"name_en": "LUCAS LU", "email_personal": "lucas@example.com"});
     let args = csr_cancellation();
-    let (mut t, from) = started(Vec::new(), "I couldn't take my United flight — claim the trip cancellation insurance on my Sapphire Reserve. I'll press Submit myself.", CLAIM_FILE, &args);
-    let (calls, res) = run(
-        CLAIM_FILE,
-        &args,
-        &mut t,
-        from,
-        &profile,
-        csr_answers(false),
-    );
-    assert_eq!(
-        names(&calls),
-        [
-            "browser_navigate",
-            "form_fill",
-            "browser_request_takeover",
-            "browser_read_elements"
-        ]
-    );
-    assert_eq!(sget(&calls[0].args, "url"), CCC);
-    let reason = sget(&calls[2].args, "reason");
-    assert!(
-        reason.starts_with(OWN_STEP)
-            && reason.contains("sign in to Card Claim Center")
-            && reason.contains("paid 1,840.00 − refunded 86.40"),
-        "{reason}"
-    );
-    assert_eq!(calls[3].args["read"][0]["sel"], CCC_PASSWORD);
-    assert_eq!(res["status"], "waiting_on_user");
+    let (mut t, from) = started(Vec::new(), "I couldn't take my United flight — claim the trip cancellation insurance on my Sapphire Reserve.", CLAIM_FILE, &args);
+    let (calls, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, |name, _| {
+        panic!("{name}")
+    });
+    assert!(calls.is_empty(), "{:?}", names(&calls));
+    assert_eq!(res["status"], "prepared");
+    assert_eq!(res["portal"], CCC);
     let m = must(&res);
     assert!(
         m.contains("- Trip Cancellation claim on the Chase Sapphire Reserve: USD 1,753.60\n- How it adds up: paid 1,840.00 − refunded 86.40")
             && m.contains("- Notify the administrator by: 17 November 2026 (loss date 28 October 2026 + 20 days)")
             && m.contains("- Documents by: 26 January 2027")
-            && m.contains("sign in or create your account")
-            && m.contains("nothing has been filed")
+            && m.contains(CCC)
+            && m.contains("Documents to upload")
+            && m.contains("nothing has been filed yet")
             && m.contains("- Decides the claim: Card Benefit Services (Chase's benefit administrator)"),
         "{m}"
     );
     assert!(!res.to_string().contains("4321"), "{res}");
-    // signed in: the claim pages have no form function — the browser-use skill fills them with the facts
-    let (mut t, from) = started(Vec::new(), "claim", CLAIM_FILE, &args);
-    let (_, res) = run(CLAIM_FILE, &args, &mut t, from, &profile, csr_answers(true));
-    assert_eq!(res["status"], "browser_use");
-    assert_eq!(
-        res["url"],
-        "https://cardclaimcenter.com/internal/claims/new"
-    );
-    assert!(must(&res).contains("USD 1,753.60"));
 }
 
 #[test]
@@ -515,34 +483,6 @@ fn the_interruption_claims_the_unrefunded_nights_and_the_change_fee() {
     let v = csr_result(spec(Flow::CsrTrip), &late, "waiting_on_user", today());
     assert!(must(&v).contains("that window has closed"), "{v}");
     assert_eq!(v["notice_window_closed"], true);
-}
-
-#[test]
-fn a_sign_in_the_user_did_not_hand_back_ends_with_the_facts_and_nothing_filed() {
-    let profile = json!({});
-    let args = csr_cancellation();
-    let (mut t, from) = started(Vec::new(), "claim", CLAIM_FILE, &args);
-    let (calls, res) = run(
-        CLAIM_FILE,
-        &args,
-        &mut t,
-        from,
-        &profile,
-        |name, _| match name {
-            "browser_request_takeover" => {
-                "\"Takeover ended without the hand-back (timed out).\"".into()
-            }
-            "form_fill" => "{\"url\": \"x\", \"filled\": []}".into(),
-            _ => "ok".into(),
-        },
-    );
-    assert_eq!(names(&calls).last(), Some(&"browser_request_takeover"));
-    assert_eq!(res["status"], "waiting_on_user");
-    let m = must(&res);
-    assert!(
-        m.contains("USD 1,753.60") && m.contains("nothing has been filed"),
-        "{m}"
-    );
 }
 
 // ---------------------------------------------------------------- the FWD delay claims
@@ -1393,5 +1333,399 @@ fn an_fwd_claim_before_the_trip_has_ended_is_filed_after_the_return() {
         m.contains("file it after you are back on 5 November 2026")
             && m.contains("Claim amount: SGD 100.00"),
         "{m}"
+    );
+}
+
+#[test]
+fn an_insurers_maintenance_page_is_said_and_never_called_no_plans() {
+    // insurance_real 2026-11-03: FWD Singapore's whole site redirected to /maintenance/index.html; the result said "no
+    // plans listed: open the browser tab" (no tab is handed over)
+    let profile = json!({"name_en": "TAN WEI MING"});
+    let args = valid(
+        INSURANCE_BUY,
+        json!({"market": "sg", "action": "compare", "destination": "Japan", "depart": "2026-11-25",
+               "return": "2026-12-02", "travellers": 1}),
+        false,
+        &[],
+    );
+    let down = "https://www.fwd.com.sg/maintenance/index.html";
+    let answers = move |name: &str, _: &Value| -> String {
+        match name {
+            "browser_navigate" => page(down, "Maintenance Page"),
+            "form_fill" => json!({"url": down, "filled": []}).to_string(),
+            "browser_read_elements" => elements(down, json!({})),
+            other => panic!("{other}"),
+        }
+    };
+    let (mut t, from) = started(
+        Vec::new(),
+        "Which FWD plan for Japan?",
+        INSURANCE_BUY,
+        &args,
+    );
+    let (_, res) = run(INSURANCE_BUY, &args, &mut t, from, &profile, answers);
+    assert_eq!(res["status"], "site_down", "{res}");
+    let m = must(&res);
+    assert!(
+        m.contains("maintenance page") && m.contains("nothing was quoted or bought"),
+        "{m}"
+    );
+    assert!(!m.contains("browser tab"), "{m}");
+    // a page that lists no plans (not in maintenance): its link, no browser tab
+    let empty = move |name: &str, _: &Value| -> String {
+        let u = "https://www.fwd.com.sg/travel-insurance/online-quote/summary";
+        match name {
+            "browser_navigate" => page(u, "{}"),
+            "form_fill" => json!({"url": u, "filled": []}).to_string(),
+            "browser_read_elements" => elements(u, json!({})),
+            other => panic!("{other}"),
+        }
+    };
+    let (mut t, from) = started(
+        Vec::new(),
+        "Which FWD plan for Japan?",
+        INSURANCE_BUY,
+        &args,
+    );
+    let (_, res) = run(INSURANCE_BUY, &args, &mut t, from, &profile, empty);
+    assert_eq!(res["status"], "nothing_found", "{res}");
+    let m = must(&res);
+    assert!(
+        !m.contains("browser tab") && m.contains("FWD's quote page"),
+        "{m}"
+    );
+}
+
+// ---------------------------------------------------------------- FWD Thailand (Dhipaya's TIP Insure)
+
+fn th_profile() -> Value {
+    json!({"name_en": "SOMCHAI JAIDEE", "birthday": "1990-01-01", "phone": "+66 81 234 5678",
+           "email_personal": "somchai@example.com", "home_country": "TH", "nationality": "Thailand",
+           "address_home": "12 Sukhumvit Road, Khlong Toei Nuea, Watthana, Bangkok 10110"})
+}
+
+#[test]
+fn fwd_thailand_asks_the_application_fields_and_keeps_to_thai_residents() {
+    let p = th_profile();
+    // a purchase asks the title, the name in parts and the Thai address in the site's parts
+    match check(
+        INSURANCE_BUY,
+        &json!({"market": "th", "destination": "Japan", "depart": "2026-12-03", "return": "2026-12-09"}),
+        &cx(&p, false, &[]),
+    ) {
+        Checked::NeedsInput(m) => {
+            let m = m.join(" | ");
+            assert!(
+                m.contains("title")
+                    && m.contains("family_name")
+                    && m.contains("address_province")
+                    && m.contains("address_postcode"),
+                "{m}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // the market from the profile's home country; a comparison needs no application fields
+    let a = valid(
+        INSURANCE_BUY,
+        json!({"action": "compare", "destination": "JP", "depart": "2026-12-03", "return": "2026-12-09"}),
+        false,
+        &[],
+    );
+    assert_eq!(a["market"], "sg", "the test's default profile is not Thai");
+    match check(
+        INSURANCE_BUY,
+        &json!({"action": "compare", "destination": "JP", "depart": "2026-12-03", "return": "2026-12-09"}),
+        &cx(&p, false, &[]),
+    ) {
+        Checked::Valid(v) => assert_eq!(v["market"], "th"),
+        other => panic!("{other:?}"),
+    }
+    // Dhipaya's conditions: residents of Thailand only; a postcode is 5 digits
+    let sg = json!({"home_country": "SG", "birthday": "1990-01-01"});
+    match check(
+        INSURANCE_BUY,
+        &json!({"market": "th", "action": "compare", "destination": "JP", "depart": "2026-12-03",
+                "return": "2026-12-09", "address_postcode": "1011"}),
+        &cx(&sg, false, &[]),
+    ) {
+        Checked::Invalid(p) => {
+            let p = p.join(" | ");
+            assert!(
+                p.contains("residents of Thailand") && p.contains("address_postcode"),
+                "{p}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+const TH_PAY: &str = "https://pgw-ui.2c2p.com/payment/4.3/#/token/kSAops9Zwhos8hSTSeLTUTPPSX";
+
+fn th_buy_answers(approve: bool) -> impl Fn(&str, &Value) -> String {
+    move |name: &str, a: &Value| -> String {
+        let step = |n: u8| format!("https://affinity.tipinsure.com/Tourist/ta_step_{n}/inter");
+        match name {
+            "browser_navigate" => page(&step(1), "{}"),
+            "form_fill" => match sget(a, "stage").as_str() {
+                "quote" => json!({"url": step(2), "filled": []}).to_string(),
+                "pick" => json!({"url": step(3), "filled": []}).to_string(),
+                "details" | "district" => json!({"url": step(3), "filled": []}).to_string(),
+                "address_rest" => json!({"url": step(4), "filled": []}).to_string(),
+                "pay" => json!({"url": TH_PAY, "filled": []}).to_string(),
+                other => panic!("{other}"),
+            },
+            "browser_read_elements" if sget(&a["read"][0], "name") == "districts" => elements(
+                &step(3),
+                json!({"districts": [{"text": "Bangbon, บางบอน", "value": "54"}, {"text": "Klongtoey, คลองเตย", "value": "25"},
+                                     {"text": "Vadhana, วัฒนา", "value": "51"}]}),
+            ),
+            "browser_read_elements" if sget(&a["read"][0], "name") == "subdistricts" => elements(
+                &step(3),
+                json!({"subdistricts": [{"text": "Khlongtoeinua, คลองเตยเหนือ", "value": "601"},
+                                        {"text": "Khlongtannua, คลองตันเหนือ", "value": "602"}]}),
+            ),
+            // the model's choice out of each list (by the user's address)
+            "choose_option" if sget(a, "for") == "districts" => {
+                json!({"choice": "Vadhana, วัฒนา"}).to_string()
+            }
+            "choose_option" => json!({"choice": "Khlongtoeinua, คลองเตยเหนือ"}).to_string(),
+            "browser_read_elements" => elements(
+                &step(2),
+                json!({"plans": [
+                    {"name": "Backpack 1", "premium": "235", "medical": "500,000", "baggage": "5,000", "delay": "-"},
+                    {"name": "Backpack Go 1", "premium": "322", "medical": "1,000,000", "baggage": "5,000", "delay": "-"},
+                    {"name": "Backpack 2", "premium": "362", "medical": "1,500,000", "baggage": "10,000", "delay": "20,000"},
+                    {"name": "Backpack Go 3", "premium": "1,069", "medical": "3,000,000", "baggage": "40,000", "delay": "30,000"}]}),
+            ),
+            "present_choices" => "Shown to the user as 4 cards".into(),
+            "submit_confirm" => {
+                if approve {
+                    "{\"status\": \"approved\"}".into()
+                } else {
+                    "DENIED: the user declined".into()
+                }
+            }
+            other => panic!("{other}"),
+        }
+    }
+}
+
+#[test]
+fn fwd_thailand_quotes_picks_and_after_the_approval_gives_the_payment_link() {
+    // walked 2026-11-03 with fake data to Dhipaya's 2C2P page: the session lives in cookies, the payment link opens
+    // on any device; the user approves the purchase and Dhipaya's conditions in the app first
+    let p = th_profile();
+    let args = match check(
+        INSURANCE_BUY,
+        &json!({"market": "th", "destination": "Japan", "depart": "2026-12-03", "return": "2026-12-09",
+                "cover": "delay", "cover_at_least": 15000, "title": "mr", "family_name": "Jaidee",
+                "given_names": "Somchai", "address_house_no": "12", "address_road": "Sukhumvit",
+                "address_subdistrict": "Khlong Toei Nuea", "address_district": "Watthana",
+                "address_province": "Bangkok", "address_postcode": "10110"}),
+        &cx(&p, false, &[]),
+    ) {
+        Checked::Valid(v) => v,
+        other => panic!("{other:?}"),
+    };
+    let (mut t, from) = started(
+        Vec::new(),
+        "Buy FWD travel insurance for Japan",
+        INSURANCE_BUY,
+        &args,
+    );
+    let (calls, res) = run(INSURANCE_BUY, &args, &mut t, from, &p, th_buy_answers(true));
+    assert_eq!(
+        names(&calls),
+        [
+            "browser_navigate",
+            "form_fill",
+            "browser_read_elements",
+            "present_choices",
+            "form_fill",
+            "form_fill",
+            "browser_read_elements",
+            "choose_option",
+            "form_fill",
+            "browser_read_elements",
+            "choose_option",
+            "form_fill",
+            "submit_confirm",
+            "form_fill"
+        ]
+    );
+    // the district and the sub-district by their values in Dhipaya's lists, as the model picked them
+    assert_eq!(
+        (
+            sget(&calls[8].args, "stage").as_str(),
+            sget(&calls[8].args, "value").as_str()
+        ),
+        ("district", "51")
+    );
+    assert_eq!(
+        (
+            sget(&calls[11].args, "stage").as_str(),
+            sget(&calls[11].args, "value").as_str()
+        ),
+        ("address_rest", "601")
+    );
+    assert!(calls[7].args["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|o| o == "Vadhana, วัฒนา"));
+    assert!(sget(&calls[7].args, "about").contains("Watthana"));
+    assert_eq!(sget(&calls[1].args, "destination"), "JAPAN");
+    // the cheapest package with at least THB 15,000 travel delay cover
+    assert_eq!(sget(&calls[4].args, "plan"), "Backpack 2");
+    assert_eq!(sget(&calls[5].args, "address_province"), "Bangkok");
+    assert_eq!(sget(&calls[5].args, "family_name"), "JAIDEE");
+    let approval = &calls[12].args;
+    assert!(sget(approval, "declaration").contains("lives in Thailand"));
+    assert!(approval["summary"][0]
+        .as_str()
+        .unwrap()
+        .contains("Backpack 2: THB 362"));
+    assert_eq!(sget(&calls[13].args, "stage"), "pay");
+    assert_eq!(res["status"], "payment_link");
+    assert_eq!(res["payment_link"], TH_PAY);
+    let m = must(&res);
+    assert!(
+        m.contains(TH_PAY)
+            && m.contains("nothing has been paid yet")
+            && m.contains("Chosen: Backpack 2: THB 362"),
+        "{m}"
+    );
+    // declined: no conditions accepted, no order
+    let (mut t, from) = started(
+        Vec::new(),
+        "Buy FWD travel insurance for Japan",
+        INSURANCE_BUY,
+        &args,
+    );
+    let (calls, res) = run(
+        INSURANCE_BUY,
+        &args,
+        &mut t,
+        from,
+        &p,
+        th_buy_answers(false),
+    );
+    assert_eq!(names(&calls).last().copied(), Some("submit_confirm"));
+    assert_eq!(res["status"], "not_submitted");
+    assert!(must(&res).contains("no order was made"));
+}
+
+#[test]
+fn the_reply_to_the_buys_question_stays_a_purchase() {
+    // insurance_real 2026-11-03: "Buy me FWD travel insurance for my Tokyo trip." → the tool asked the dates → the
+    // reply's call came as action "compare", and no quote was saved
+    let asked = vec![
+        json!({"role": "user", "content": "Buy me FWD travel insurance for my Tokyo trip."}),
+        json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {
+            "name": INSURANCE_BUY, "arguments": json!({"market": "sg", "action": "buy", "file": true, "destination": "JP"}).to_string()}}]}),
+        json!({"role": "tool", "tool_call_id": "c1", "content": json!({"status": "needs_input", "missing": ["depart and return"]}).to_string()}),
+        json!({"role": "user", "content": "In 3 weeks, back a week later. Find the cheapest plan with at least SGD 10,000 trip cancellation."}),
+    ];
+    let reply = json!({"market": "sg", "action": "compare", "destination": "JP", "depart": "2026-11-25",
+                       "return": "2026-12-02", "cover": "cancellation", "cover_at_least": 10000});
+    let p = json!({});
+    match check(INSURANCE_BUY, &reply, &cx(&p, false, &asked)) {
+        Checked::Valid(v) => assert_eq!(v["action"], "buy"),
+        other => panic!("{other:?}"),
+    }
+    // a compare asked as such stays one
+    let mut cmp = asked.clone();
+    cmp[1]["tool_calls"][0]["function"]["arguments"] =
+        json!(json!({"market": "sg", "action": "compare", "destination": "JP"}).to_string());
+    match check(INSURANCE_BUY, &reply, &cx(&p, false, &cmp)) {
+        Checked::Valid(v) => assert_eq!(v["action"], "compare"),
+        other => panic!("{other:?}"),
+    }
+    // no question asked before: the call's own action
+    match check(INSURANCE_BUY, &reply, &cx(&p, false, &[])) {
+        Checked::Valid(v) => assert_eq!(v["action"], "compare"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn questions_about_cover_or_a_claim_get_the_requirements_and_the_link_and_nothing_is_filed() {
+    // the user, 2026-11-04: eligibility and the official link; buying or filing only when the user asks for it
+    let p = json!({"home_country": "SG"});
+    let ask = |tool: &str, args: Value| match super::check(tool, &args, &cx(&p, false, &[])) {
+        Checked::Valid(v) => v,
+        other => panic!("{other:?}"),
+    };
+    let m = Machine {
+        profile: &p,
+        today: today(),
+    };
+    // "can I get FWD travel insurance for my Tokyo trip?" — no dates asked, nothing opened
+    let a = ask(INSURANCE_BUY, json!({"destination": "JP"}));
+    assert_eq!(
+        (a["action"].as_str(), a["market"].as_str()),
+        (Some("info"), Some("sg"))
+    );
+    let (t, from) = started(
+        Vec::new(),
+        "Can I get FWD travel insurance for Tokyo?",
+        INSURANCE_BUY,
+        &a,
+    );
+    let Step::Done(res) = next(INSURANCE_BUY, &a, &t, from, &m) else {
+        panic!("nothing is opened")
+    };
+    assert_eq!(res["status"], "info");
+    let lines = must(&res);
+    assert!(
+        lines.contains("Singapore residents") && lines.contains("https://www.fwd.com.sg/"),
+        "{lines}"
+    );
+    // Hong Kong and Thailand: their own rules and pages
+    for (market, words, page) in [
+        ("hk", "Hong Kong ID card holders", HK_QUOTE_URL),
+        ("th", "residents of Thailand", TH_QUOTE_URL),
+    ] {
+        let r = buy_info(market);
+        let l = must(&r);
+        assert!(l.contains(words) && l.contains(page), "{l}");
+    }
+    // asked to buy: the purchase runs (its own tests); a comparison quotes
+    assert_eq!(
+        ask(
+            INSURANCE_BUY,
+            json!({"destination": "JP", "depart": "2026-12-01", "return": "2026-12-05", "file": true, "action": "buy"})
+        )["action"],
+        "buy"
+    );
+    assert_eq!(
+        ask(
+            INSURANCE_BUY,
+            json!({"destination": "JP", "depart": "2026-12-01", "return": "2026-12-05", "action": "compare"})
+        )["action"],
+        "compare"
+    );
+    // "how do I claim my delayed flight on FWD?" — the claim's rules and link, nothing filled
+    let c = ask(
+        CLAIM_FILE,
+        json!({"insurer": "fwd", "incident_date": "2026-10-30"}),
+    );
+    assert_eq!(c["file"], false);
+    let (t, from) = started(
+        Vec::new(),
+        "How do I claim my delayed flight on FWD?",
+        CLAIM_FILE,
+        &c,
+    );
+    let Step::Done(res) = next(CLAIM_FILE, &c, &t, from, &m) else {
+        panic!("nothing is opened")
+    };
+    assert_eq!(res["status"], "info");
+    let lines = must(&res);
+    assert!(
+        lines.contains("Claim by: 29 November 2026")
+            && lines.contains(spec(Flow::FwdSgClaim).start_url),
+        "{lines}"
     );
 }

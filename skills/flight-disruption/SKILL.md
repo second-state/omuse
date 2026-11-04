@@ -5,6 +5,9 @@ description: 航班延误/取消/错过转机：查实时状态、改签和备�
 ---
 # Flight disruption / 航班延误与取消
 
+> **Claims are the Money bot's.** Say what to do now, where and by when; an insurance or card claim that follows (a
+> delay, a cancellation, a lost bag) is filed by the Money bot — tell the user to continue there.
+
 ## 1. Find the flight (mail first)
 gmail_search `(<flight no> OR <airline>) (e-ticket OR itinerary OR booking OR delayed OR cancelled OR schedule change)
 newer_than:60d` and calendar_list_events for the day: booking reference, passenger names, route, times, fare class,

@@ -37,7 +37,7 @@ bots = {b["id"]: set(b["skills"]) for b in c.get(B + "/api/bots", headers=H).jso
 check("together the bots have every enabled skill", set().union(*bots.values()) == set(names), sorted(set(names) - set().union(*bots.values())))
 byname = {k["name"]: k.get("bots") for k in sk["skills"]}
 check("each skill names the bots that may use it (the Skills page groups by them)", byname.get("tokyo") == ["travel"]
-      and byname.get("pdf-forms") == ["main", "travel", "insurance"] and byname.get("news-search") == ["main"]
+      and byname.get("pdf-forms") == ["main", "travel", "money"] and byname.get("news-search") == ["main"]
       and all(byname[n] for n in names), {n: byname.get(n) for n in ("tokyo", "pdf-forms", "news-search")})
 listed = run("SKILLCHECK")
 check("Main's instructions list Main's enabled skills", listed.startswith("SKILLS=") and set(listed[7:].split(",")) == bots["main"], (listed, sorted(bots["main"])))

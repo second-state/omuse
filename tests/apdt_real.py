@@ -11,13 +11,11 @@ user's, on their phone — the flow never hands the browser over. If the answer 
 once in the same chat.
 
 What the user sees and is checked:
-* the Travel bot did it (the answer's "Continue in ✈️ Travel" link); no takeover and no approval dialog;
+* the Money bot did it (the answer's "Continue in 💳 Money" link); no takeover and no approval dialog;
 * the block code appends: eligible (the two flights), the tax to be refunded (HKD 120.00), the last day to apply (the
   departure + 28 days, as a date), the steps left (the documents' upload and the face recognition, on the phone) and a
-  link to the official platform;
-* in the browser view, the platform's tab is at its document upload (`/hkTaxMobile/process/upload`): code reached it on
-  the real site, nothing uploaded or submitted.
-One TIMING line per request; the browser view's picture goes to OMUSE_E2E_OUT when it is set. In run_in_docker.sh's
+  link to the official platform (a smoke check: where code stopped on the platform is not checked).
+One TIMING line per request. In run_in_docker.sh's
 REAL_SITES (one at a time).
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh apdt_real"""
@@ -51,7 +49,7 @@ async def main():
             answers.append(a)
         block = "\n".join(x.block for x in answers)
         check("apdt: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
-        check("apdt: the Travel bot did it (the link to continue in Travel)", any("Travel" in x.bot_link for x in answers),
+        check("apdt: the Money bot did it (the link to continue in Money)", any("Money" in x.bot_link for x in answers),
               [x.bot_link for x in answers])
         check("apdt: no takeover and no approval dialog (the documents and the face check are the user's, on their phone)",
               not any(x.takeovers or x.approvals for x in answers), [(x.takeovers, x.approvals) for x in answers])
@@ -63,15 +61,6 @@ async def main():
               "document upload" in block and "face recognition" in block, block)
         check("apdt: the block links the official platform", any(SITE in x for x in a.block_links + [y for z in answers for y in z.block_links]),
               [x.block_links for x in answers])
-        # the user opens the browser view: the platform's tab, at its document upload (reached by code on the real site)
-        await u.page.goto(U.APP + "#browser")
-        await u.page.wait_for_selector(".bview", timeout=20000)
-        await u.page.wait_for_timeout(2500)
-        now = await u.view_url()
-        await u.view_picture(os.path.join(OUT, "apdt_upload.png") if OUT else None)
-        print(f"INFO browser view: url {now!r}")
-        check("apdt: the browser view shows the platform at its document upload (nothing uploaded or submitted)",
-              SITE in now and "/process/upload" in now, now)
 
 
 async def with_documents(u: U.User, docs: str, doc_no: str) -> None:

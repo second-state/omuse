@@ -212,7 +212,7 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
     hotel, car; prices and booking links that open), `travel_kiwi_real` (no key: Kiwi.com), `travel_brave_real` (a Brave
     key, no SerpApi), `travel_connect_real` (the Flights & hotels card with a real key), `web_search_real` (real Brave and
     Tavily keys; the browser's engines switched off for it), `travel_info_real` (official entry links, JR East fares,
-    reminders), `emergency_real`, `tax_refund_real`, `market_real`, `research_real`, `library_real` (about 22 min),
+    reminders), `emergency_real`, `money_real` (the Money bot's questions: tax refunds, the HK departure tax rule, paying in China), `market_real`, `research_real`, `library_real` (about 22 min),
     `cards_real`, `cards_markets_real` (issuers' sites), `news_report_real` (a real subject on the real web),
     `travel_ask_real`, `stream_real`, `bots_real` (routing), `shopping_real` (the Shopping bot on Shopify's real
     Global Catalog with `OMUSE_E2E_SHOPIFY_CLIENT_ID` / `_SECRET` from the env file — written into `[shopping]` by
@@ -220,7 +220,7 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
     priced in SGD; the map of the APIs is `docs/sites/shopify.md`).
   - `REAL_APP_SUITES` (the app with the real model and media provider, nothing outside faked): `assistant_real`,
     `automations_real`, `memory_real`, `chat_real`, `docs_real`, `chart_real`, `media_real`, `attach_media_real`,
-    `travel_receipts_real`.
+    `travel_receipts_real`, `cards_claim_real` (the Money bot prepares a Chase Sapphire trip cancellation claim and hands over Card Claim Center's link).
   - `REAL_SITES` — bookings and orders on the real booking sites and shops, run one at a time:
     `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh realsites` (forces `-j 1`; not in
     `real`). Per-machine inputs a suite cannot ship (the user's own documents) live in the git-ignored `e2e-local/`:
@@ -255,8 +255,7 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
     mapped 2026-11-02) and stopped at the first user step: `insurance_real` (FWD Singapore: the quote → the plan's
     button → handed over at FWD's eligibility statements; the claim's step 1 filled by input names → handed over (no per-field value checks), since
     "next" checks the policy on FWD's server), `insurance_hk_real` (bolttech's fillable PDF opened directly and filled),
-    `cards_claim_real` / `cards_interruption_real` (eClaimsLine redirects to Card Claim Center: the hand-over at the
-    sign-in is checked — the claim lies behind the account), `claims_real` (Singapore Airlines' status page;
+    `claims_real` (Singapore Airlines' status page;
     WorldTracer's mybag.aero for an airline on it, ANA: a fake reference gets WorldTracer's own "No record" answer) and
     `apdt_real` (the APDT platform up to its travel-document upload; never a made-up document, never handed over).
 - Market and README images (`deploy/market/assets`): `OMUSE_E2E_OUT=<dir> bash tests/run_in_docker.sh marketing_shots`

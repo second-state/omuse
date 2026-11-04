@@ -17,7 +17,7 @@ October 2026 and carry their date.
 - **No browser.** Answer from this sheet: it is the curated data, and each volatile fact carries the date it was checked. For live numbers use data tools, never the browser: exchange rates → market_data; flights, hotels and prices → the travel data connector (mcp_* tools) when it is connected; the user's own bookings → mail and calendar via `trip-today`. When a fact here may have changed since its date (visa rules, fares, opening hours, new lines), say the date and name the official source from the list at the end; for a rule that decides whether the user can travel or enter, hand off to `entry-requirements`. A number not on this sheet and not from a data tool is "not in my data", not a guess.
 - Compare to what the user knows: London, New York, Paris. Say when something normal in the West works differently
   here (cash, tipping, phone calls on trains, rubbish bins, eating while walking).
-- Hand off to the specialised skills when the question is about a task: arrival and customs → `jp-visit-japan-web` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: arrival and customs → `jp-visit-japan-web` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 
 ## Orientation
 - **Scale.** Tokyo Metropolis (東京都, Tōkyō-to) had an estimated **14.30 million** residents on 1 September 2026
@@ -200,6 +200,22 @@ October 2026 and carry their date.
 | 2023 | JR Pass price rise; Azabudai Hills opens |
 | 2024 | Tokyo Metro listed on the stock exchange |
 | 2026 | JR East fare rise (March); departure tax ¥3,000 (1 July); tax-free refund system (1 November) |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: GO TOKYO's event calendar https://www.gotokyo.org/en/calendar/
+- Tickets: Ticket Pia https://t.pia.jp/ (concerts, theatre, sport; Japanese), e+ https://eplus.jp/ (Japanese) and
+  Lawson Ticket https://l-tike.com/ (an English guide at https://l-tike.com/en/howto.html; overseas cards only for some
+  events). Many big shows sell by lottery weeks ahead and some need a Japanese phone number — say so, and give the
+  event's own page from events_search when it sells to visitors.
+- Nationwide listings: JNTO https://www.japan.travel/en/things-to-do/
 
 ## Sources to verify against
 - Entry: MOFA mofa.go.jp (visa exemptions), Immigration Services Agency moj.go.jp/isa, Visit Japan Web

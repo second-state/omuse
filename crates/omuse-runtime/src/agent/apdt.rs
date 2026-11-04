@@ -83,8 +83,9 @@ pub fn tool_schemas() -> Vec<Value> {
     let date = |what: &str| json!({"type": "string", "description": format!("YYYY-MM-DD: {what}")});
     vec![fn_(
         APDT_REFUND,
-        "Apply for the Hong Kong air passenger departure tax (APDT) refund on the Airport Authority's platform — only \
-when the user asks to apply. Call it with the flights the user gave (or the boarding passes and the receipt show) and the \
+        "The Hong Kong air passenger departure tax (APDT) refund on the Airport Authority's platform. By default (file \
+false) code answers who can claim, the deadline, the documents and the official link — nothing is opened. file true \
+ONLY when the user explicitly asks you to apply for them: then call it with the flights the user gave (or the boarding passes and the receipt show) and the \
 refund method, and the documents of this chat (the passport's photo page, the boarding passes, the receipt): code \
 uploads them, which saves the application under a reference number that opens it on any device. When \
 the flights are not given and a mailbox is connected, code fetches the documents (status mail_read: read the boarding \
@@ -96,6 +97,7 @@ not. status \
 needs_input: ask the user for the missing fields, then call again with every field; invalid: fix the arguments and call \
 again. Write the reply from the result (code appends the facts in show to the reply).",
         json!({
+            "file": {"type": "boolean", "description": "true when the user asks you to do it — apply, start or prepare the application for them (even when they will upload, check or submit something themselves); false for a question about the refund or how to get it"},
             "entry_mode": {"type": "string", "enum": ["air", "land_sea", "skypier"], "description": "how the user entered Hong Kong, from the conversation: air (a flight — then also in_flight, in_date and the arrival boarding pass), land_sea (a land or sea control point such as Shenzhen Bay), skypier (the SkyPier ferry / coach or Park & Fly)"},
             "in_flight": {"type": "string", "description": "the flight INTO Hong Kong: airline code and number (\"SQ 890\"); leave it out when the user did not give it (they add it on the platform)"},
             "in_date": date("the day that flight arrived in Hong Kong"),
@@ -479,6 +481,13 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
     if !problems.is_empty() {
         return Checked::Invalid(problems);
     }
+    // the information path (the user asked how to get the refund, not to apply): what the call gave, nothing asked,
+    // no mail read, no page opened (the user, 2026-11-04)
+    if !truthy(args.get("file").unwrap_or(&Value::Null)) {
+        out.insert("file".into(), json!(false));
+        return Checked::Valid(Value::Object(out));
+    }
+    out.insert("file".into(), json!(true));
     // the trip decides the rule (within 28 days of the departure, the same or the next day): known before the platform opens
     // the departure decides it (the arrival may be left for the platform: the user, 2026-11-02)
     let trip_known = ["out_flight", "out_date"]
@@ -662,6 +671,61 @@ pub struct Machine<'a> {
 }
 
 /// The next step of a run: the validated arguments, the transcript after the tool call.
+/// How to get the Hong Kong departure tax refund (the user asked about it, not to apply — the user, 2026-11-04): the
+/// rule's verdict when the departure is known, the deadline as a date, the documents, the official platform's link.
+/// Applying is for when the user asks for it (`file`).
+fn refund_info(f: &Facts, today: NaiveDate, window_days: i64) -> Value {
+    if let Some((code, why)) = ineligible(f, today, window_days) {
+        return json!({"status": "not_eligible", "reason": code, "rule": why,
+            "show": [S::fact("Not eligible for the Hong Kong departure tax refund", "不符合香港离境税退税条件", &why),
+                     S::link("Refund platform", "退税平台", "Airport Authority Hong Kong", HOME)],
+            "hints": ["the user asked about the refund: nothing was applied for"]});
+    }
+    let mut show = vec![S::fact(
+        "Who can claim",
+        "谁可以申请",
+        "a passenger who arrived in Hong Kong (by air, by land / sea, or through SkyPier) and flew out on the same or \
+         the next calendar day, paying the HK$120 / HK$200 Air Passenger Departure Tax on the ticket",
+    )];
+    if let Some(d) = f.out_date {
+        show.push(S::fact(
+            "Apply by",
+            "申请截止",
+            &format!(
+                "{} (28 days after the departure flight)",
+                long(d + Duration::days(window_days))
+            ),
+        ));
+    } else {
+        show.push(S::fact(
+            "Apply by",
+            "申请截止",
+            "within 28 days after the departure flight",
+        ));
+    }
+    show.push(S::fact(
+        "You need",
+        "需要",
+        "your passport's photo page, the boarding pass of the flight out (and of the flight in, if you arrived by \
+         air), the ticket or e-ticket receipt showing the departure tax, and how you want the refund (card, cash, \
+         Alipay / WeChat Pay)",
+    ));
+    show.push(S::link(
+        "Refund platform",
+        "退税平台",
+        "Airport Authority Hong Kong",
+        HOME,
+    ));
+    show.push(S::fact(
+        "Applying",
+        "代办",
+        "the platform is free; ask me to apply and I upload your documents there and give you the application's reference — the face check and Submit stay yours",
+    ));
+    json!({"status": "info", "home": HOME, "show": show,
+        "apply_by": f.out_date.map(|d| (d + Duration::days(window_days)).format("%Y-%m-%d").to_string()),
+        "hints": ["the user asked how to get the refund: the rule, the documents and the official link — nothing was applied for"]})
+}
+
 pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     debug_assert_eq!(tool, APDT_REFUND);
     let s = &APDT;
@@ -672,6 +736,9 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             .count()
         + 1;
     let f = Facts::from_args(args);
+    if !truthy(args.get("file").unwrap_or(&Value::Null)) {
+        return Step::Done(refund_info(&f, m.today, s.window_days));
+    }
     // 1. the documents: the fixed search, the hits, the attachments saved, every PDF read; the model reads them and
     //    calls again
     if truthy(args.get("read_mail").unwrap_or(&Value::Null)) {
@@ -1109,7 +1176,11 @@ card.";
         ]
     }
 
-    fn checked(args: Value, t: &[Value], mail_ready: bool) -> Checked {
+    /// The check of a call that APPLIES (`file: true` unless the test says otherwise: the user asked for it).
+    fn checked(mut args: Value, t: &[Value], mail_ready: bool) -> Checked {
+        if args.get("file").is_none() {
+            args["file"] = json!(true);
+        }
         let p = json!({"name_en": "LUCAS LU"});
         check(
             APDT_REFUND,
@@ -1140,6 +1211,11 @@ card.";
 
     /// Runs the machine from the latest `call_w` to its result; panics on a question after the platform opened.
     fn run(mut t: Vec<Value>, args: &Value, fill: &str) -> (Vec<Value>, Value) {
+        let mut applying = args.clone();
+        if applying.get("file").is_none() {
+            applying["file"] = json!(true);
+        }
+        let args = &applying;
         let from = t
             .iter()
             .rposition(|x| tool_calls(x).iter().any(|tc| get_str(tc, "id") == "call_w"))
@@ -1166,6 +1242,40 @@ card.";
             }
         }
         panic!("the run did not end")
+    }
+
+    #[test]
+    fn a_question_about_the_refund_gets_the_rule_the_deadline_and_the_link_and_nothing_is_applied()
+    {
+        // the user, 2026-11-04: "can I get the departure tax back?" gets who can claim, the deadline, the documents and
+        // the official link; applying is for when the user asks for it (file true)
+        let (t, a) = started(
+            Vec::new(),
+            json!({"file": false, "out_flight": "CX 500", "out_date": "2026-10-28", "in_date": "2026-10-27"}),
+            true,
+        );
+        assert_eq!(a["file"], false);
+        let (t, res) = run(t, &a, "");
+        assert!(
+            calls_of(&t, "browser_navigate").is_empty() && calls_of(&t, "gmail_search").is_empty()
+        );
+        assert_eq!(res["status"], "info", "{res}");
+        assert_eq!(res["apply_by"], "2026-11-25");
+        let lines = super::super::show::lines(&res, false).join("\n");
+        assert!(
+            lines.contains(HOME)
+                && lines.contains("boarding pass")
+                && lines.contains("25 November 2026"),
+            "{lines}"
+        );
+        // a trip outside the rule: not eligible, said without applying
+        let (t, late) = started(
+            Vec::new(),
+            json!({"file": false, "out_flight": "CX 500", "out_date": "2026-09-01"}),
+            true,
+        );
+        let (_, res) = run(t, &late, "");
+        assert_eq!(res["status"], "not_eligible", "{res}");
     }
 
     fn calls_of(t: &[Value], name: &str) -> Vec<Value> {

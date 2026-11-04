@@ -19,9 +19,7 @@ What the user does and sees for a card (`fill_card`): they ask Main's chat to fi
 asks something first, they answer once. When the agent asks them to take over, they look at the page in the browser
 view and hand it back without pressing anything. Checked (state and facts, never the model's words): the Travel bot did
 it; no approval dialog at all; a takeover card came and the page handed over is on the official site, inside the card's
-form; a form code fills is handed over on its FINAL page — the one with the user's Submit (read from the page's
-elements; a multi-page form shows only its last pieces there, the whole card shows only after Submit, which is the
-user's) — and a site that stops earlier is handed over at that step; nothing is submitted (the block code appends says
+form (a smoke check: where it stopped is printed, not checked — the form functions' stages are unit-tested); nothing is submitted (the block code appends says
 the card waits on the user); the passport number never appears in the chat. No per-field value check (user's
 decision, 2-Nov-2026)."""
 from __future__ import annotations
@@ -325,32 +323,14 @@ async def fill_card(u: U.User, card: Card, *, label: str = "", ask: str = "",
 
 
 def card_checks(label: str, card: Card, to: Takeover, a: U.Answer, *, mailbox: bool) -> None:
-    """The page handed over, by the elements the code declares for the card (driver.rs `CARDS`: the final page's Submit,
-    the user steps' markers — the same the machine checks before its hand-over). A form code fills is handed over on its
-    final page (a multi-page form shows only its last pieces there; the whole card shows only after Submit, the
-    user's); a site that stops earlier is handed over at that step. Nothing is submitted."""
+    """A smoke check of the page handed over (the user's request, 2026-11-04: no strict step-by-step form checks in the
+    e2e — the form functions' stages are unit-tested): it is inside the card's form on the official site, and nothing is
+    submitted. Where it stopped (the declared final page, a user step, the email step) is printed, not checked."""
     if card.path:
         check(f"{label}: the page handed over is inside the card's form ({card.path}), not the site's home page",
               card.path in to.form_url, to.form_url)
-    if card.handover == "email":
-        # (b) handed over at the email step (its declared marker on the page) with the line code appends saying the
-        # code could not be read — no mailbox, no mail in time, no code; or (a) the code was read and typed: the page
-        # handed over is the declared final page (Taiwan) or past the email step (the UK ETA's identity pages)
-        not_read = bool(to.step) and a.shows("could not read the verification code")
-        read = bool(to.final) if card.then_form else (not to.step and bool(to.form_url))
-        print(f"INFO {label}: email code {'read and typed' if read else 'not read (said so)' if not_read else '?'}")
-        check(f"{label}: either the emailed code was read and the run went on to "
-              f"{'the declared final page' if card.then_form else 'past the email step'}, or it was handed over at the "
-              f"email step saying the code could not be read", read or not_read,
-              (to.final, to.step, to.form_url, a.block[:200]))
-        if not mailbox:
-            check(f"{label}: no mailbox — handed over at the email step, saying so", not_read, (to.step, a.block[:200]))
-    elif card.handover == "form":
-        check(f"{label}: handed over on the form's final page (the declared Submit / last step is on the page)",
-              bool(to.final), (to.final, to.form_url))
-    else:
-        check(f"{label}: handed over at the user's step ({card.handover}): its declared marker is on the page",
-              bool(to.step), (to.step, to.form_url))
+    where = ("the final page" if to.final else f"a user step {to.step}" if to.step else "elsewhere")
+    print(f"INFO {label}: handed over at {where} ({card.handover} expected; mailbox {mailbox}) {to.form_url}")
     # nothing submitted: the block code appends says the card waits on the user (or stopped early)
     check(f"{label}: nothing submitted — the block code appends says the card waits on the user",
           a.shows("Waiting on your step") or a.shows("Not confirmed") or a.shows("Nothing has been submitted")

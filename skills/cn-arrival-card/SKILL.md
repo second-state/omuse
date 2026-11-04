@@ -8,6 +8,10 @@ profile: nationality
 ---
 # China online arrival card / 中国在线入境卡
 
+> **Ask first, fill on request.** A question about this card (what to file, when, what it needs) gets the requirements
+> and the official link: call `arrival_card_fill` with `file: false` (the default) — code answers and opens nothing.
+> Set `file: true` only when the user explicitly asks you to fill it in or apply for them.
+
 Since 20 November 2025 foreigners entering mainland China file the arrival card online, free, at https://s.nia.gov.cn/ArrivalCardFillingPC/ (or the NIA 12367 app and the WeChat / Alipay mini programs); it can also be done on the devices at the port, and paper cards still exist. It applies with or without a visa (visa-free entries included) and to air, land and sea arrivals. Exempt: holders of the Foreign Permanent Resident ID card, Mainland Travel Permit holders (HK / Macau residents), group-visa travellers, direct transit under 24 h inside the restricted area, cruise passengers in and out on the same ship, crew. The NIA warns about fake paid sites — only the addresses above.
 This is the traveller's own legal declaration: code fills it (a form function with fixed ids), the user reviews it and presses Submit.
 

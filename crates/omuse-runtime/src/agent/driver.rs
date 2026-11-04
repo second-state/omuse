@@ -343,10 +343,11 @@ pub fn tool_schemas() -> Vec<Value> {
     let countries: Vec<&str> = CARDS.iter().map(|c| c.country).collect();
     vec![fn_(
         ARRIVAL_CARD_FILL,
-        "Fill in an electronic arrival card or travel authorisation — Singapore SG Arrival Card, Malaysia MDAC, Korea \
+        "An electronic arrival card or travel authorisation — Singapore SG Arrival Card, Malaysia MDAC, Korea \
 e-Arrival Card, Indonesia All Indonesia, Taiwan TWAC, Thailand TDAC, China online arrival card, Japan Visit Japan Web, \
-Cambodia e-Arrival Card, Philippines eTravel, UK ETA — only when the user asks for it to be filled in or applied for. \
-Pass the country and every trip detail the user gave or a booking mail shows. When the trip is not given and a mailbox \
+Cambodia e-Arrival Card, Philippines eTravel, UK ETA. By default (file false) code answers what to file, when, what it \
+needs and the official link — nothing is opened. file true ONLY when the user explicitly asks you to fill it in or \
+apply for them: then pass the country and every trip detail the user gave or a booking mail shows. When the trip is not given and a mailbox \
 is connected, code fetches the bookings (status mail_read: read the flight and the stay in the mails just fetched and \
 call again with every field). Code checks the filing window (a reminder when it is too early), fills the official form \
 from these facts, the profile and the Vault, and hands the page to the user to review and submit. The JSON result has \
@@ -355,6 +356,7 @@ call again with every field; needs_choice: the user picks on the card shown, the
 invalid: fix the arguments and call again. Write the reply from the result, using its hints (code appends the facts in show to the reply).",
         json!({
             "country": {"type": "string", "enum": countries, "description": "the country whose card or authorisation to fill"},
+            "file": {"type": "boolean", "description": "true when the user asks you to do it — fill in, do or apply for the card for them (even when they will review or submit it themselves); false for a question about what to file or how"},
             "flight_no": {"type": "string", "description": "the flight that ARRIVES in the country: airline code and number (\"SQ 231\")"},
             "arrival_date": date("the day that flight arrives"),
             "origin_city": {"type": "string", "description": "the city the flight comes from (\"Sydney\")"},
@@ -512,10 +514,20 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
         let countries: Vec<&str> = CARDS.iter().map(|c| c.country).collect();
         return Checked::Invalid(vec![format!("country: one of {}", countries.join(", "))]);
     };
+    // the information path (the user asked what to file, not to file it): the country and, when given, the arrival
+    // day — no trip detail is asked for, no page opened
+    if !truthy(args.get("file").unwrap_or(&Value::Null)) {
+        let mut out = json!({"country": card.country, "file": false});
+        if let Ok(d) = NaiveDate::parse_from_str(&s_arg(args, "arrival_date"), "%Y-%m-%d") {
+            out["arrival_date"] = json!(d.format("%Y-%m-%d").to_string());
+        }
+        return Checked::Valid(out);
+    }
     let a = with_earlier(args, card.country, cx.transcript);
     let mut problems: Vec<String> = Vec::new();
     let mut out = Map::new();
     out.insert("country".into(), json!(card.country));
+    out.insert("file".into(), json!(true));
     let mut put = |k: &str, v: String| {
         if !v.is_empty() {
             out.insert(k.into(), json!(v));
@@ -840,6 +852,41 @@ fn assumptions(trip: &Trip, purpose_assumed: bool) -> Vec<String> {
 const WHICH_MARK: &str = "Which of these addresses";
 
 /// The next step of a run: the validated arguments, the transcript after the tool call.
+/// What to file for a country and how (the user asked about it, not to file it — the user, 2026-11-04: requirements
+/// and the official link; filling in is for when they ask): the card, the official site, the filing window as dates
+/// when the arrival day is known, and what the form asks for. Nothing is opened.
+pub fn card_info(card: &CardSpec, arrival: &str) -> Value {
+    let arrival = NaiveDate::parse_from_str(arrival, "%Y-%m-%d").ok();
+    let when = match (card.window_days, arrival) {
+        (0, _) => "any time before you arrive".to_string(),
+        (w, Some(a)) => format!(
+            "from {} to your arrival on {} (it opens {w} days before arrival)",
+            (a - chrono::Duration::days(w)).format("%Y-%m-%d"),
+            a.format("%Y-%m-%d")
+        ),
+        (w, None) => format!("within {w} days before you arrive"),
+    };
+    let show = vec![
+        S::fact("What to file", "要填的", &format!("{} ({})", card.name, card.country)),
+        S::fact("When", "何时", &when),
+        S::fact(
+            "You need",
+            "需要",
+            "your passport, the flight that arrives and its date, where you stay (the hotel's name and address) and \
+             the day you leave",
+        ),
+        S::link("Official site", "官方网站", card.name, card.start_url),
+        S::fact(
+            "Filling it in",
+            "代填",
+            "it is free on the official site; ask me to fill it in and I prepare it there for you to check and submit",
+        ),
+    ];
+    json!({"status": "info", "card": card.name, "country": card.country, "official_site": card.start_url,
+           "when": when, "show": show,
+           "hints": ["the user asked what to file: the requirements and the official link — nothing was filled in"]})
+}
+
 pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     debug_assert_eq!(tool, ARRIVAL_CARD_FILL);
     let Some(card) = card_of(&s_arg(args, "country")) else {
@@ -847,6 +894,9 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
             json!({"status": "error", "why": "unknown country", "hints": ["no arrival card for that country"]}),
         );
     };
+    if !truthy(args.get("file").unwrap_or(&Value::Null)) {
+        return Step::Done(card_info(card, &s_arg(args, "arrival_date")));
+    }
     let n = m.first
         + t.iter()
             .flat_map(tool_calls)
@@ -1442,7 +1492,11 @@ mod tests {
         ]
     }
 
-    fn checked(args: Value, profile: &Value, mail_ready: bool, t: &[Value]) -> Checked {
+    /// The check of a call that FILLS the card (`file: true` unless the test says otherwise: the user asked for it).
+    fn checked(mut args: Value, profile: &Value, mail_ready: bool, t: &[Value]) -> Checked {
+        if args.get("file").is_none() {
+            args["file"] = json!(true);
+        }
         check(
             ARRIVAL_CARD_FILL,
             &args,
@@ -1478,6 +1532,54 @@ mod tests {
         json!({"country": "Singapore", "flight_no": "SQ 231", "arrival_date": "2026-11-03", "origin_city": "Sydney",
                "arrival_airport": "SIN", "airline": "Singapore Airlines", "stay_name": "Marina Bayfront Hotel",
                "stay_address": "10 Bayfront Avenue, Singapore 018956", "stay_kind": "hotel", "purpose": "holiday"})
+    }
+
+    #[test]
+    fn a_question_about_a_card_gets_what_to_file_and_the_official_link_and_nothing_is_filled() {
+        // the user, 2026-11-04: "what do I need to file?" gets the requirements and the official link; filling in is
+        // for when the user asks for it (file true)
+        let p = json!({});
+        let a = valid(
+            json!({"country": "Singapore", "file": false, "arrival_date": "2026-11-10", "flight_no": "SQ 231"}),
+            &p,
+            false,
+            &[],
+        );
+        assert_eq!(
+            a,
+            json!({"country": "Singapore", "file": false, "arrival_date": "2026-11-10"})
+        );
+        let m = Machine {
+            profile: &p,
+            mail_ready: true,
+            today: today(),
+            first: 0,
+        };
+        let Step::Done(res) = next(ARRIVAL_CARD_FILL, &a, &started("x", &a)[1..], &m) else {
+            panic!("the information path opens nothing")
+        };
+        assert_eq!(res["status"], "info");
+        let lines = super::super::show::lines(&res, false).join("\n");
+        assert!(
+            lines.contains("SG Arrival Card")
+                && lines.contains("from 2026-11-07 to your arrival on 2026-11-10")
+                && lines.contains(card("sg-arrival-card").start_url),
+            "{lines}"
+        );
+        // no arrival day: the window in days
+        let a = valid(
+            json!({"country": "Thailand", "file": false}),
+            &p,
+            false,
+            &[],
+        );
+        let Step::Done(res) = next(ARRIVAL_CARD_FILL, &a, &started("x", &a)[1..], &m) else {
+            panic!()
+        };
+        assert!(
+            get_str(&res, "when").contains("days before you arrive"),
+            "{res}"
+        );
     }
 
     const BACK: &str = "\"Takeover finished: the user handed browser control back.\"";
@@ -1523,6 +1625,12 @@ mod tests {
         answer: impl Fn(&str, &Value) -> String,
         on_final: bool,
     ) -> (Vec<Value>, Value) {
+        // a run FILLS the card (the user asked for it) unless the test says otherwise
+        let mut filing = args.clone();
+        if filing.get("file").is_none() {
+            filing["file"] = json!(true);
+        }
+        let args = &filing;
         let from = t
             .iter()
             .rposition(|x| tool_calls(x).iter().any(|tc| get_str(tc, "id") == "call_w"))

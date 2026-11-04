@@ -4,11 +4,11 @@ it: nothing is paid, declared or submitted. The profile has the user's name, bir
 NRIC (for fwd.com.sg; clearly fake test values: S1234567D is the well-known dummy NRIC). "Auto-approve browser actions"
 is on (a fresh install).
 
-1. buy — the user asks the Insurance bot's short example ("Buy me FWD travel insurance for my Tokyo trip.") and answers
+1. buy — the user asks the short example ("Buy me FWD travel insurance for my Tokyo trip.") and answers
    the model's question with the trip (SQ 636 in 3 weeks, back a week later) and the rule (the cheapest with at least
    SGD 10,000 trip cancellation). On the real site code fills the quote, reads the plans, picks one by the rule and
    saves the quote with FWD (name, email, mobile from the profile, the NRIC from the Vault). Checked from the user's
-   side: the Insurance & claims bot answers; no takeover; the block lists the plans FWD quoted (real prices) and the
+   side: the Money bot answers; no takeover; the block lists the plans FWD quoted (real prices) and the
    chosen one is the cheapest of those with at least SGD 10,000 trip cancellation; the block links FWD's saved quote,
    and on another device (a fresh browser) that link and the mobile number open FWD's application at its declaration
    (nothing confirmed or paid); the NRIC never shows in the chat.
@@ -17,7 +17,7 @@ is on (a fresh install).
    (PNTR2012-34567890, FWD's format; fake). Code fills every step of FWD's real online claim and asks the user's
    approval to submit; the user DECLINES (a real insurer never gets a test claim), and the form is closed. Checked: no
    takeover; the approval dialog names the policy, the delay, the amount and FWD's declaration; the block gives the
-   delay (7 h 15 min), the amount (SGD 100), FWD's 30-day deadline as a date and that nothing was sent; the browser view
+   delay (7 h 15 min), the amount (SGD 100), FWD's 30-day deadline as a date and that nothing was sent;
    the NRIC never shows in the chat.
 One TIMING line per request; the live pictures go to OMUSE_E2E_OUT when it is set. In run_in_docker.sh's REAL_SITES
 (one at a time).
@@ -65,7 +65,7 @@ async def buy(u: U.User) -> None:
         await u.view_picture(os.path.join(OUT, "insurance_quote.png") if OUT else None)
         print(f"INFO takeover: {request!r} url {seen['url']!r}")
 
-    # the Insurance bot's example in the UI (bots/insurance.md), word for word: a short request — the model asks for
+    # the Money bot's example in the UI (once in bots/insurance.md), word for word: a short request — the model asks for
     # what the tool's JSON needs, and the user answers once, in the same chat
     a = await u.ask("Buy me FWD travel insurance for my Tokyo trip.",
                     label="buy", on_takeover=look_then_hand_back, timeout=1200)
@@ -78,7 +78,7 @@ async def buy(u: U.User) -> None:
         answers.append(a)
     takeovers = [t for x in answers for t in x.takeovers]
     check("buy: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
-    check("buy: the Insurance & claims bot did it (the link to continue in it)", any("nsurance" in x.bot_link for x in answers),
+    check("buy: the Money bot did it (the link to continue in it)", any("Money" in x.bot_link for x in answers),
           [x.bot_link for x in answers])
     # no takeover (the user, 2026-11-02): the quote is saved with FWD and the block links FWD's own page for it
     check("buy: the user was not asked to take over the server's browser", not takeovers, takeovers)
@@ -114,13 +114,6 @@ async def buy(u: U.User) -> None:
           (chosen.group(0) if chosen else None, plans))
     everything = await u.thread_text()
     check("buy: the NRIC never appears in the chat", NRIC not in everything, "")
-    # afterwards the user opens the browser view: still FWD's page, Pay never pressed
-    await u.page.goto(U.APP + "#browser")
-    await u.page.wait_for_selector(".bview", timeout=20000)
-    await u.page.wait_for_timeout(2500)
-    now = await u.view_url()
-    print(f"INFO browser view afterwards: url {now!r}")
-    check("buy: the browser view is still on FWD's site afterwards (Pay never pressed)", FWD in now, now)
 
 
 async def claim(u: U.User) -> None:
@@ -134,7 +127,7 @@ async def claim(u: U.User) -> None:
             return False
         return True
 
-    # the Insurance bot's example in the UI (bots/insurance.md), word for word: a short request — the model asks for
+    # the Money bot's example in the UI (once in bots/insurance.md), word for word: a short request — the model asks for
     # the flight, the times, the trip and the policy; the user answers in the same chat ("two days ago" = INC)
     a = await u.ask("My flight was delayed. Please claim it on my FWD travel insurance.", label="claim",
                     approve=decline_submit, timeout=1200)
@@ -165,7 +158,7 @@ async def claim(u: U.User) -> None:
         answers.append(a)
     takeovers = [t for x in answers for t in x.takeovers]
     check("claim: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
-    check("claim: the Insurance & claims bot did it", any("nsurance" in x.bot_link for x in answers), [x.bot_link for x in answers])
+    check("claim: the Money bot did it", any("Money" in x.bot_link for x in answers), [x.bot_link for x in answers])
     check("claim: no takeover — code fills FWD's claim form itself", not takeovers, takeovers)
     dialog = seen["dialogs"][0] if seen["dialogs"] else ""
     print(f"INFO claim: approval dialog {' '.join(dialog.split())[:600]!r}")

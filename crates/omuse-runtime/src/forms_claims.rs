@@ -400,6 +400,220 @@ fn premiums_priced() -> Op {
     )
 }
 
+/// FWD Thailand's travel insurance, sold by Dhipaya ("TIP Insure", `affinity.tipinsure.com`), walked 2026-11-03 with
+/// fake data to its payment page (docs/task-tools.md). Stages: `quote` (step 1: the country, single trip, the dates,
+/// one traveller, Next), `pick` (step 2: the package's own button), `details` (step 3: the application, Next to the
+/// summary), `pay` (step 4, only after the user's approval in the app: card payment, the purchase conditions, Pay,
+/// Dhipaya's conditions accepted in their dialog, Pay again — the 2C2P payment page, the user's).
+pub(super) fn fwd_th_tip(i: &Inputs) -> Vec<Op> {
+    let dmy = |k: &str| {
+        NaiveDate::parse_from_str(&i.arg(k), "%Y-%m-%d")
+            .map(|d| d.format("%d/%m/%Y").to_string())
+            .unwrap_or_default()
+    };
+    match i.arg("stage").as_str() {
+        "pick" => {
+            let plan = i.arg("plan");
+            if plan.is_empty() || plan.contains('"') {
+                return Vec::new();
+            }
+            vec![
+                click_sel(
+                    "plan",
+                    &format!("button[position=select-card][package_name=\"{plan}\"]"),
+                ),
+                slow_require(
+                    "application",
+                    "#customer_firstname",
+                    "Dhipaya's application did not open",
+                    20_000,
+                ),
+            ]
+        }
+        "details" => {
+            let (code, number) = phone_parts(&i.phone());
+            let phone = if code == "66" && !number.is_empty() {
+                format!("0{number}")
+            } else {
+                String::new()
+            };
+            let (given, family) = match (i.arg("given_names"), i.arg("family_name")) {
+                (g, f) if !g.is_empty() && !f.is_empty() => (g, f),
+                _ => i.name_parts(),
+            };
+            let (day, month, year) = i
+                .birthday()
+                .map(|d| {
+                    (
+                        d.format("%d").to_string(),
+                        d.format("%m").to_string(),
+                        d.format("%Y").to_string(),
+                    )
+                })
+                .unwrap_or_default();
+            let nationality = i.nationality().to_uppercase();
+            vec![
+                super::text("email", "#tip-login-tablet", &i.email()),
+                super::text("email_again", "#confirm_email", &i.email()),
+                super::text("phone", "#customer_phone", &phone),
+                click_sel("passport_tab", "#passport"),
+                wait(500),
+                super::vault("passport", "", "#passport-field", "number", ""),
+                jq_select(
+                    "passport_country",
+                    "#customer_passport_country",
+                    &nationality,
+                ),
+                jq_select("title", "#customer_title_name", &i.arg("title")),
+                super::text("first_name", "#customer_firstname", &given),
+                super::text("last_name", "#customer_lastname", &family),
+                jq_select("birth_day", "#customer_birth_date", &day),
+                jq_select("birth_month", "#customer_birth_month", &month),
+                jq_select("birth_year", "#customer_birth_year", &year),
+                super::text(
+                    "house_no",
+                    "#customer_address_house_no",
+                    &i.arg("address_house_no"),
+                ),
+                super::text("road", "#customer_address_road", &i.arg("address_road")),
+                jq_select(
+                    "province",
+                    "#customer_address_province",
+                    &i.arg("address_province"),
+                ),
+            ]
+            .into_iter()
+            .chain(list_loaded("district_list", "#customer_address_amphur"))
+            .collect()
+        }
+        // the district the user's address is in, by its value in Dhipaya's own list (the machine's choice)
+        "district" => std::iter::once(jq_select(
+            "district",
+            "#customer_address_amphur",
+            &i.arg("value"),
+        ))
+        .chain(list_loaded("subdistrict_list", "#customer_address_tumbon"))
+        .collect(),
+        "address_rest" => vec![
+            jq_select("subdistrict", "#customer_address_tumbon", &i.arg("value")),
+            wait(1500),
+            // the site fills the postcode from the sub-district; typed only into an empty box (no match otherwise)
+            Op::new(
+                "postcode",
+                json!({"op": "text", "sel": "#customer_address_post_code:placeholder-shown", "value": i.arg("address_postcode")}),
+                &i.arg("address_postcode"),
+            ),
+            super::tick_sel("beneficiary", "#legal"),
+            super::tick_sel("purpose", "#sightseeing"),
+            super::tick_sel("delivery", "#delivery-same-address"),
+            super::tick_sel("policy_by_email", "#email"),
+            super::tick_sel("consent_privacy", "#accept-condition-0"),
+            super::tick_sel("consent_terms", "#accept-condition-1"),
+            // the visible Next by its text (`button.tip-register` is another, hidden one: insurance_th_real 2026-11-03);
+            // right after the address lists it takes a second press: pressed again only when the summary did not come
+            super::button("details_next", "ต่อไป"),
+            Op::new(
+                "summary_first",
+                json!({"op": "await", "sel": "label.payment_type.creditcard", "wait_ms": 20_000}),
+                "x",
+            ),
+            Op::new(
+                "details_next_again",
+                json!({"op": "button", "sel": "button", "text": "ต่อไป", "only_if_failed": "summary_first"}),
+                "x",
+            ),
+            slow_require(
+                "summary",
+                "label.payment_type.creditcard",
+                "Dhipaya did not accept the application (a detail of the address or the ID)",
+                20_000,
+            ),
+        ],
+        "pay" => vec![
+            // payment by card: a label button (the radio itself is hidden), then the purchase conditions
+            click_sel("card_payment", "label.payment_type.creditcard"),
+            wait(800),
+            super::tick_sel("conditions", "#acceptance"),
+            wait(800),
+            click_sel("pay", "button.btn-next.paid"),
+            slow_require(
+                "terms",
+                "#modal-term.show #btn-acceptance",
+                "Dhipaya's conditions did not open",
+                10_000,
+            ),
+            click_sel("accept_terms", "#btn-acceptance"),
+            wait(2500),
+            click_sel("pay_again", "button.btn-next.paid"),
+            Op::new(
+                "payment_page",
+                json!({"op": "require", "sel": "input#tel-cardNumber", "why": "the payment page did not open", "wait_ms": 20_000}),
+                "x",
+            ),
+        ],
+        _ => {
+            let country = i.arg("destination").to_uppercase();
+            vec![
+                slow_require(
+                    "countries",
+                    "#select-country",
+                    "TIP Insure's page did not open",
+                    20_000,
+                ),
+                Op::new(
+                    "cookies",
+                    json!({"op": "click", "sel": "#onetrust-accept-btn-handler"}),
+                    "x",
+                ),
+                jq_select("destination", "#select-country", &country),
+                click_sel("single_trip", "#singletrip"),
+                super::date_box("depart", "#startDate", &dmy("depart")),
+                super::date_box("return", "#endDate", &dmy("return")),
+                click_sel("individual", "#individual"),
+                super::button("quote_next", "ต่อไป"),
+                slow_require(
+                    "packages",
+                    "button[position=select-card]",
+                    "TIP Insure did not list its packages for these dates",
+                    20_000,
+                ),
+            ]
+        }
+    }
+}
+
+/// A step of Dhipaya's slow site (insurance_th_real 2026-11-03: a page took over 20 s): `sel` required within 40 s.
+fn slow_require(field: &'static str, sel: &str, why: &str, _wait_ms: u64) -> Op {
+    require_within(field, sel, why, 40_000)
+}
+
+/// Wait for a select's list to load (its options are there, though a styled list hides them): up to 40 s, the
+/// site loads each address list after the one above it is chosen.
+fn list_loaded(field: &'static str, sel: &str) -> [Op; 2] {
+    let at = format!("{sel} option:not([value=\"\"])");
+    [
+        Op::new(
+            field,
+            json!({"op": "await", "sel": at, "attached": true, "wait_ms": 20_000}),
+            "x",
+        ),
+        Op::new(
+            field,
+            json!({"op": "await", "sel": at, "attached": true, "wait_ms": 20_000}),
+            "x",
+        ),
+    ]
+}
+
+/// A select whose next list loads from a jQuery handler: the option picked, then the page's own jQuery change.
+fn jq_select(field: &'static str, sel: &str, value: &str) -> Op {
+    Op::new(
+        field,
+        json!({"op": "select", "sel": sel, "value": value, "jquery": true}),
+        value,
+    )
+}
+
 /// FWD Hong Kong's insured areas (the page's "Check the insured area", 2026-11-03): Asia is these countries and
 /// territories, everywhere else is Worldwide.
 pub fn fwd_hk_region(country: &str) -> &'static str {
@@ -844,6 +1058,85 @@ mod tests {
         assert_eq!(
             by(&p, "depart")[2]["sel"],
             "[role=dialog] .flatpickr-day[aria-label=\"December 3, 2026\"]"
+        );
+    }
+
+    #[test]
+    fn tip_insures_stages_follow_the_walked_pages() {
+        // walked 2026-11-03 with fake data to Dhipaya's 2C2P page (docs/task-tools.md)
+        let th = json!({"name_en": "SOMCHAI JAIDEE", "birthday": "1990-01-01", "phone": "+66 81 234 5678",
+                        "email_personal": "somchai@example.com", "nationality": "Thailand"});
+        let pick = plan(
+            fwd_th_tip,
+            json!({"stage": "pick", "plan": "Backpack 2"}),
+            th.clone(),
+        );
+        assert_eq!(
+            by(&pick, "plan")[0]["sel"],
+            "button[position=select-card][package_name=\"Backpack 2\"]"
+        );
+        let d = plan(
+            fwd_th_tip,
+            json!({"stage": "details", "title": "Mr.", "family_name": "JAIDEE", "given_names": "SOMCHAI",
+                   "address_province": "Bangkok", "address_district": "Watthana",
+                   "address_subdistrict": "Khlong Toei Nuea", "address_postcode": "10110"}),
+            th.clone(),
+        );
+        let v = |f: &str| by(&d, f)[0].clone();
+        assert_eq!(v("phone")["value"], "0812345678");
+        assert_eq!(v("first_name")["value"], "SOMCHAI");
+        assert_eq!(v("birth_month")["value"], "01");
+        // the passport number from the Vault: never a value in the plan
+        assert_eq!(v("passport")["vault"]["field"], "number");
+        assert!(v("passport").get("value").is_none());
+        // the district list is awaited (present, though a styled list hides it) after the province; the district and
+        // the sub-district go in by the values the machine chose out of Dhipaya's own lists
+        let at = |f: &str| d.iter().position(|o| o["field"] == f).unwrap();
+        assert!(at("province") < at("district_list"));
+        assert_eq!(v("district_list")["attached"], true);
+        let dist = plan(
+            fwd_th_tip,
+            json!({"stage": "district", "value": "51"}),
+            th.clone(),
+        );
+        assert_eq!(
+            (&dist[0]["sel"], &dist[0]["value"], &dist[0]["jquery"]),
+            (
+                &json!("#customer_address_amphur"),
+                &json!("51"),
+                &json!(true)
+            )
+        );
+        assert_eq!(by(&dist, "subdistrict_list").len(), 2);
+        let rest = plan(
+            fwd_th_tip,
+            json!({"stage": "address_rest", "value": "601", "address_postcode": "10110"}),
+            th.clone(),
+        );
+        assert_eq!(rest[0]["value"], "601");
+        assert_eq!(by(&rest, "summary")[0]["op"], "require");
+        // pay: the card label, the conditions, Pay, Dhipaya's conditions accepted in their dialog, Pay again
+        let pay = plan(fwd_th_tip, json!({"stage": "pay"}), th);
+        let fields: Vec<&str> = pay
+            .iter()
+            .map(|o| o["field"].as_str().unwrap())
+            .filter(|f| *f != "wait")
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "card_payment",
+                "conditions",
+                "pay",
+                "terms",
+                "accept_terms",
+                "pay_again",
+                "payment_page"
+            ]
+        );
+        assert_eq!(
+            form_for("https://affinity.tipinsure.com/Tourist/ta_step_3/inter").map(|f| f.0),
+            Some("fwd-th-tip")
         );
     }
 

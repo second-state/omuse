@@ -8,6 +8,10 @@ profile: nationality
 ---
 # Thailand Digital Arrival Card (TDAC) / 泰国电子入境卡
 
+> **Ask first, fill on request.** A question about this card (what to file, when, what it needs) gets the requirements
+> and the official link: call `arrival_card_fill` with `file: false` (the default) — code answers and opens nothing.
+> Set `file: true` only when the user explicitly asks you to fill it in or apply for them.
+
 The TDAC replaced the paper TM6 card. All foreign nationals file it, free, within the 3 days before arrival, only at https://tdac.immigration.go.th (any site charging a fee is a scam). Transit passengers who do not pass immigration are exempt. Group submissions (families) are possible on the site. A reference / QR arrives by email and is shown at immigration with the passport.
 This is the traveller's own legal declaration: code fills it (a form function with fixed ids), the user reviews it and presses Submit.
 
