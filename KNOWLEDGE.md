@@ -1074,3 +1074,31 @@ only this one).
 
 `tests/insurance_real.py` and `tests/insurance_hk_real.py` are being rebuilt on the official sites (the stand-in pages
 and the seeded mail were removed 2026-11-02).
+
+## What's next (0.6.7, `whats-next`, the Main bot)
+
+`agent/whatsnext.rs`, three workflow tools: `whats_next` (code reads every calendar for today … the day after
+tomorrow and two fixed mail searches — bookings, invitations — then the first hits in full), `whats_next_items` (the
+model's JSON items; code numbers them in time order, three days at most) and `whats_next_publish` (the model's notes;
+code lays out `crate::whatsnext_report` under `artifacts/whats-next/` with `whats_next_report`, makes the daily
+schedule when `every_day_at` was asked, and on a scheduled run mails it to the user's own address).
+
+- Asked in the chat, `whats_next_items` first returns `confirm` with today's table (a `show` block) and one question.
+  `confirmed` is decided in code (`question_state`): it counts only when that question was shown and the user wrote
+  since; called with `confirmed: true` before the user answered, the check returns `needs_input`. The question is
+  carried into the reply's task (`required::open_question` reads the machine's `confirm` result behind the `running`
+  call), so the reply owes `whats_next_items` with the items and the user's additions (`source: user` → the default
+  calendar). A scheduled run asks nothing.
+- After `gathered` and `researched`, the next tool named by the result is owed (`required::machine_next`), and it is
+  the only workflow tool offered on that reply turn (`whatsnext::offered`).
+- The research, in one turn: a web search of each of today's flights' status and the same route's later flights
+  (`flights_search`, shown only when the model reads the flight as delayed or cancelled), the local news of today's city
+  (`browser_news_search`), a web search per external participant (not the user, not the user's own non-public mail
+  domain — `own_domains`), the earlier emails with the participants, and `events_search` (events, films) when no item
+  is after 18:00. The arrival card (`driver::card_info`, arriving abroad) and the tax refund
+  (`tax_refund::tax_refund_rules`, leaving abroad) come from code's tables, maps are Google Maps links. The machine's
+  own calls of other bots' tools (the Travel bot's searches) pass the bot check by their id prefix (`wnx_`).
+- Tests: `agent/whatsnext/tests.rs`, `whatsnext_report` (escaping, https-only links), `required` (the carried question,
+  the owed next step); `tests/whats_next_real.py` (the test inbox, no calendar: the table, the user's addition, the
+  report opens with it). A scheduled run is unit-tested only (the test inbox never sends).
+

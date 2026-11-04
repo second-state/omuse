@@ -445,6 +445,11 @@ pub fn sanitize_search_args(args: &mut Value) -> Vec<String> {
                         m.remove(&k);
                         continue;
                     }
+                    // a list or an object is not a count (whats_next_real 2026-11-05: a report's `people` — the
+                    // participants — became 1): only numbers and numeric strings are fixed
+                    if v.is_array() || v.is_object() {
+                        continue;
+                    }
                     let n = num(&v)
                         .filter(|x| *x >= 1.0)
                         .map(|x| x.floor() as i64)
@@ -456,6 +461,9 @@ pub fn sanitize_search_args(args: &mut Value) -> Vec<String> {
                 } else if ZERO_OK_KEYS.contains(&key) {
                     if v.is_null() {
                         m.remove(&k);
+                        continue;
+                    }
+                    if v.is_array() || v.is_object() {
                         continue;
                     }
                     let n = num(&v)
@@ -542,6 +550,16 @@ mod search_args_tests {
         let mut ok =
             json!({"min_rating": 4.5, "min_stars": 4, "max_price_level": 3, "min_price_level": 1});
         assert!(sanitize_search_args(&mut ok).is_empty());
+    }
+
+    #[test]
+    fn a_list_under_a_count_key_is_left_alone() {
+        // whats_next_real 2026-11-05: a report's participants (`people`, a list) became the number 1
+        let mut a = serde_json::json!({"report": {"today": [{"people": [{"name": "Aiko"}], "guests": {"x": 1}}]}, "people": 0});
+        let notes = sanitize_search_args(&mut a);
+        assert_eq!(a["report"]["today"][0]["people"][0]["name"], "Aiko");
+        assert_eq!(a["report"]["today"][0]["guests"]["x"], 1);
+        assert_eq!(a["people"], 1, "{notes:?}");
     }
 }
 

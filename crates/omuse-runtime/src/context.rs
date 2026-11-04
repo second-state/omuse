@@ -85,6 +85,7 @@ pub fn skill_topics(name: &str) -> &'static [&'static str] {
         }
         "restaurant-booking" | "michelin-dining" | "dining-dietary-translate" => &["dining"],
         "reply-email" | "morning-email-brief" => &["email"],
+        "whats-next" => &["email", "travel", "documents"],
         "news-research" | "news-search" => &["news", "documents"],
         "deep-research" => &["documents"],
         "pdf-forms" => &["forms"],
