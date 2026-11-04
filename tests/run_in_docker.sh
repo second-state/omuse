@@ -26,15 +26,16 @@ travel_receipts_real cards_claim_real"
 # page and hands it to browser-use, which fills it with the profile's fake data and hands over at the first step that is
 # the user's (sign-in, CAPTCHA, Pay); no card in the Vault, nothing paid. Run one at a time (`realsites` forces -j 1):
 # a real site sees one session at a time, never a burst.
-# The arrival cards (arrival_*_real) are here too: each opens the official government site, code fills what its form
-# function maps and hands over at the first user step (Cloudflare check, sign-in, passport photo, emailed code, Submit);
-# the Taiwan and UK ETA suites connect the test inbox (OMUSE_E2E_IMAP_*) to read the emailed code. Not in `real`: a
-# government site sees these runs only when `realsites` is asked for, never on every gate
 # The insurance, claims, baggage and departure-tax suites too: FWD Singapore's quote and claim, FWD Hong Kong and
 # Thailand's quotes, bolttech's PDF, WorldTracer's mybag.aero and the APDT platform, each stopped at the first user step.
-REAL_SITES="travel_book_real arrival_real arrival_cards_real arrival_cards2_real arrival_cards3_real \
-arrival_cards4_real arrival_address_real arrival_address2_real insurance_real insurance_hk_real insurance_th_real claims_real \
-apdt_real"
+REAL_SITES="travel_book_real insurance_real insurance_hk_real insurance_th_real claims_real apdt_real"
+# On demand only (the user, 2026-11-04): the arrival cards' walkthroughs on the official government sites — code fills
+# each card's form and hands over at the first user step (Cloudflare check, sign-in, passport photo, emailed code,
+# Submit); the Taiwan and UK ETA suites read the emailed code from the test inbox (OMUSE_E2E_IMAP_*). They are in no
+# list, so no gate runs them; run one by name, e.g.
+#   OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh arrival_cards2_real
+# REAL_SITES="$REAL_SITES arrival_real arrival_cards_real arrival_cards2_real arrival_cards3_real arrival_cards4_real \
+#   arrival_address_real arrival_address2_real"
 REAL_SUITES="$REAL_DATA_SUITES $REAL_APP_SUITES"
 
 # bash reads a script as it runs: a copy keeps a run going while the file is edited (another suite added to the lists)

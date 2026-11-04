@@ -234,8 +234,9 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
     automation is handed over at the block — never get around bot protection. `travel_book_real` (a Kiwi.com flight
     without a key, then a Google Hotels hotel with the SerpApi key). (Shopping has no browser path: the Shopping bot
     searches by API only, `shopping_real`.)
-    The arrival cards are in `REAL_SITES` too (`arrival_real`, `arrival_cards_real` … `arrival_cards4_real`,
-    `arrival_address_real`, `arrival_address2_real`): each opens the official government site, the card's form function
+    The arrival cards' walkthroughs (`arrival_real`, `arrival_cards_real` … `arrival_cards4_real`,
+    `arrival_address_real`, `arrival_address2_real`) run on demand only, by name (the user, 2026-11-04: commented out
+    of `REAL_SITES`, so no gate runs them): each opens the official government site, the card's form function
     (`forms.rs`, mapped from the live sites 2026-11-02) fills what it can reach and the hand-over is at the first user
     step — TDAC: the Cloudflare check on its home page; Visit Japan Web and eTravel: the sign-in to the user's account
     (the email put in); China: the passport photo of step 1; Taiwan and the UK ETA: the emailed code (`email_code`,
