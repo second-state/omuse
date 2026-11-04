@@ -690,12 +690,12 @@ pub(super) fn fwd_sg_quote(i: &Inputs) -> Vec<Op> {
         _ => "group",
     };
     let mut ops = vec![
-        // the Vue app draws its questions late
+        // the Vue app draws its questions late — past 15 s on a slow day (insurance_real 2026-11-04)
         require_within(
             "quote_form",
             "[role=combobox]",
             "FWD's quote questions did not open",
-            15_000,
+            40_000,
         ),
         Op::new(
             "plan_type",
