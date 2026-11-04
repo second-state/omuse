@@ -152,3 +152,54 @@ async fn keys_fill_a_masked_input_from_its_first_slot() {
     b.stop().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `only_if_failed`: a second try runs only when the op it names did not work (TIP Insure's Next takes a second press
+/// right after its address lists, insurance_th_real 2026-11-03). Skipped without Chromium or network.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn a_second_try_runs_only_after_its_op_failed() {
+    let dir = std::env::temp_dir().join(format!("omuse-browser-again-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("workspace")).unwrap();
+    let cfg = config(&dir);
+    if launch::find_executable(&cfg).is_none()
+        || reqwest::get("https://example.com/").await.is_err()
+    {
+        eprintln!("no chromium or no network: skipping");
+        return;
+    }
+    let b = Broker::new(cfg);
+    act(
+        &b,
+        "navigate",
+        json!({"task_id": "a1", "url": "example.com"}),
+    )
+    .await;
+    let page = b.page("a1").await.unwrap();
+    page.eval(
+        None,
+        "() => { window.presses = 0; document.body.innerHTML = '<button id=\"next\" onclick=\"window.presses++\">Next</button>'; return 1; }",
+        vec![],
+    )
+    .await
+    .unwrap();
+    let r = act(
+        &b,
+        "fill_form",
+        json!({"task_id": "a1", "fills": [
+            {"op": "button", "sel": "button", "text": "Next", "field": "next"},
+            // never there: this wait fails, so the second press runs
+            {"op": "await", "sel": "#summary", "wait_ms": 500, "field": "summary"},
+            {"op": "button", "sel": "button", "text": "Next", "field": "again", "only_if_failed": "summary"},
+            // there: this wait works, so the third press is skipped
+            {"op": "await", "sel": "#next", "wait_ms": 500, "field": "shown"},
+            {"op": "button", "sel": "button", "text": "Next", "field": "third", "only_if_failed": "shown"}]}),
+    )
+    .await;
+    let presses = page
+        .eval(None, "() => window.presses", vec![])
+        .await
+        .unwrap();
+    assert_eq!(presses, json!(2), "{r}");
+    b.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

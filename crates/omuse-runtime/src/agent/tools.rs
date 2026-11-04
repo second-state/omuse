@@ -243,6 +243,12 @@ fn local_tools() -> Vec<Value> {
     tools.extend(super::news::tool_schemas());
     // the news machine's market prices (code's own call, never offered to the model: `news::offered`)
     tools.push(super::news::market_schema());
+    // a code machine's one choice out of a page's own list (code's own call, never offered to the model)
+    tools.push(super::choose::schema());
+    // the shopping tax refunds for visitors, from the checked table (agent/tax_refund.rs)
+    tools.push(super::tax_refund::schema());
+    // how a foreign visitor pays in each Asian country, from the checked table (agent/pay_options.rs)
+    tools.push(super::pay_options::schema());
     tools.extend(super::claims::tool_schemas());
     tools.extend(super::driver::tool_schemas());
     tools.extend(super::apdt::tool_schemas());

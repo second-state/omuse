@@ -607,6 +607,15 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
         obj(json!({"query": {"type": S}, "city": {"type": S}, "area": {"type": S}, "min_rating": {"type": "number"},
                    "open_now": {"type": "boolean"}, "min_price_level": {"type": "integer", "minimum": 1, "maximum": 4},
                    "max_price_level": {"type": "integer", "minimum": 1, "maximum": 4}}), &["query", "city"])));
+    add("events_search", tool("travel", "search", "search", "low", "PUBLIC",
+        "活动与演出搜索（Google Events 数据）：城市、要找什么（演唱会、歌手、音乐节、爵士…）、何时；返回日期、场馆和购票链接 Concerts, shows, \
+         festivals and other local events (Google Events data): city, query = what (an artist, a concert, a festival, jazz, \
+         theatre …; omit for all events), when (today, tomorrow, this_week, this_weekend, next_week, this_month, next_month; \
+         omit for any date). Returns each event's title, when, venue, address and its ticket links (tickets: the sellers' \
+         booking pages) — code appends them to the answer. Without the SerpApi key the answer comes from web search.",
+        obj(json!({"query": {"type": S}, "city": {"type": S},
+                   "when": {"type": S, "enum": ["today", "tomorrow", "this_week", "this_weekend", "next_week", "this_month", "next_month"]}}),
+            &["city"])));
     add("place_details", tool("travel", "search", "read", "low", "PUBLIC",
         "一个地点的详情（Google Maps 数据）：每天的营业时间、电话、网站、菜单或预订链接、评分分布、几条评论 One place's details (Google Maps data, \
          place_id from places_search): hours per day, phone, website, menu or reservation links when Google lists them, the rating \
@@ -735,7 +744,7 @@ mod tests {
     #[test]
     fn table_shape() {
         let t = builtin_tools();
-        assert_eq!(t.len(), 78); // 78 with submit_confirm, 77 with shop_stores, 76 with shop_search, 75 with browser_read_elements; 55 before the eight Drive tools, 63 before the travel tools (now seven); browser_search became web_search; 70 with news_search, 71 with cars_search, 73 with form_fill and browser_fill_form, 74 with browser_news_search
+        assert_eq!(t.len(), 79); // 79 with events_search, 78 with submit_confirm, 77 with shop_stores, 76 with shop_search, 75 with browser_read_elements; 55 before the eight Drive tools, 63 before the travel tools (now seven); browser_search became web_search; 70 with news_search, 71 with cars_search, 73 with form_fill and browser_fill_form, 74 with browser_news_search
         let keys: Vec<&String> = t.keys().collect();
         assert_eq!(keys[0], "gmail_search");
         assert_eq!(keys[keys.len() - 1], "phone_hangup");

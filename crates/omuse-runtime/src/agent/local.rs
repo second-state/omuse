@@ -534,6 +534,8 @@ NOT in the PDF: {}.",
             "market_data" => self.market_data(&tid, a).await,
             // code's own call (the news machine's prices): the market data as JSON
             "market_quotes" => Ok(self.market_quotes(&tid, a).await.to_string()),
+            // code's own call (a machine's choice out of a page's list): the model picks one, as JSON
+            n if n == super::choose::TOOL => Ok(self.choose_option(&tid, a).await.to_string()),
             "stock_fundamentals" => self.stock_fundamentals(&tid, a).await,
             "data_query" => {
                 let me = self.arc();
@@ -553,6 +555,8 @@ NOT in the PDF: {}.",
                 };
                 Ok(v.to_string())
             }
+            "tax_refund_rules" => Ok(super::tax_refund::tax_refund_rules(a).to_string()),
+            "payment_options" => Ok(super::pay_options::payment_options(a).to_string()),
             "loan_payment" => {
                 let zh = super::lang::agent_lang(&self.settings()) != "en";
                 Ok(super::facts::loan_payment(a, zh).to_string())
@@ -1342,8 +1346,12 @@ these are listings from a results page, and a comparison of them takes `ranking`
                     }
                 }
                 let verified = kind == "comparison";
-                let info = json!({"type": "choices", "id": new_id("ch"), "kind": kind, "question": truncate(&sget(a, "question"), 300),
+                let mut info = json!({"type": "choices", "id": new_id("ch"), "kind": kind, "question": truncate(&sget(a, "question"), 300),
                                   "options": clean, "verified": verified, "task_id": tid});
+                // a code machine's travel card: each option's button opens its booking link in the user's browser
+                if code_card && a.get("open_links").and_then(Value::as_bool) == Some(true) {
+                    info["open_links"] = json!(true);
+                }
                 let cid = get_str(t, "conv_id");
                 self.store
                     .add_msg(&cid, "system", &pyjson::dumps(&info), &tid, None)

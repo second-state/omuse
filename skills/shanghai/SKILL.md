@@ -19,7 +19,7 @@ in October 2026 and carry their date.
 - Compare to what the user knows: New York (finance, skyline, a river between old and new), Hong Kong, Paris (the
   French Concession). Say when something that is normal in the West does not work here (Google, credit cards,
   walk-up museum tickets, indoor heating).
-- Hand off to the specialised skills when the question is about a task: arrival card → `cn-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: arrival card → `cn-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 
 ## Orientation
 - **Scale.** 24.85 million residents at end-2025 (city government, from the statistics bureau), of whom 15.11
@@ -199,6 +199,22 @@ in October 2026 and carry their date.
 | 2019 | STAR Market; Lingang special area |
 | 2024 | Airport Link Line between Pudong and Hongqiao (December) |
 | 2025 | GDP ¥5.67 trillion; metro reaches 906 km |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: Meet in Shanghai's events and festivals https://www.meet-in-shanghai.net/en/events-and-festivals/ and
+  its shows https://www.meet-in-shanghai.net/en/hit-show/
+- Tickets: Damai https://m.damai.cn/ (China's main ticket platform, Chinese; real-name tickets need the passport
+  number) and Maoyan's shows https://show.maoyan.com/ (Chinese). MAISEAT https://www.maiseat.com/ is Damai's
+  international site for visitors (language and payment not confirmed on the site). Big concerts are real-name: the
+  passport used to buy is checked at the gate.
 
 ## Sources to verify against
 - Visas, transit and arrival card: National Immigration Administration en.nia.gov.cn (s.nia.gov.cn for the card);

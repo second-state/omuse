@@ -8,6 +8,10 @@ profile: nationality
 ---
 # Singapore SG Arrival Card / 新加坡电子入境卡
 
+> **Ask first, fill on request.** A question about this card (what to file, when, what it needs) gets the requirements
+> and the official link: call `arrival_card_fill` with `file: false` (the default) — code answers and opens nothing.
+> Set `file: true` only when the user explicitly asks you to fill it in or apply for them.
+
 Every traveller entering Singapore (citizens and residents too) files the SG Arrival Card with its electronic health
 declaration, free, within the 3 days before arrival, only at the ICA site: https://eservices.ica.gov.sg/sgarrivalcard/
 (any site that charges a fee is a scam; never use one). Transit passengers who stay airside do not file. This is a

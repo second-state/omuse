@@ -917,14 +917,15 @@ this one: `get` resolves them, and the store moves their conversations to this b
 `description_zh` (what the main bot routes by), `skills` (comma list) and `tools` (comma list: tools only the bots
 that name them may use — the travel searches `flights_search`, `flight_offer`, `hotels_search`, `hotel_rooms`; a
 connector's `mcp_<server>__<name>` counts as `<name>`) and `examples` / `examples_zh` (3–5 requests it handles, `|`
-between them: shown as buttons above the chat input of the bot's empty conversation; a click fills the input); the body
+between them: shown in an Examples dropdown above the chat input of the bot's empty conversation; a click fills the input); the body
 is the bot's prompt, added to the executor prompt.
 
 - **Main** (`main`) is the entrance: it has every skill no specialised bot lists (imported skills included) plus the
   ones its own file names (`pdf-forms`). The specialised bots: Travel (`travel`: bookings, city guides, arrival cards
-  and entry rules — 0.5.3 merged City guides `cities` and Arrival & entry `arrival` into it), Insurance & claims
-  (`insurance`), Credit cards (`cards`), Photos & videos (`photos`). Bots may share skills (`pdf-forms`,
-  `credit-card-picker`, `csr-trip-claim`).
+  and entry rules — 0.5.3 merged City guides `cities` and Arrival & entry `arrival` into it), Money (`money`:
+  credit cards, insurance and claims, tax refunds, paying abroad — 0.6.6 merged Insurance & claims `insurance` and
+  Credit cards `cards` into it; their conversations move to Money), Photos & videos (`photos`), Shopping (`shopping`).
+  Bots may share skills (`pdf-forms`).
 - **A conversation belongs to one bot**: `conversations.bot_id` (`main` for older ones) and `parent_conv` (the main
   conversation that handed it over). `GET /api/bots`, `GET /api/conversations?bot=<id>`, `POST /api/chat` with `bot`
   for a new conversation. The executor's skill list and `load_skill` are the bot's; another bot's skill is refused

@@ -5,6 +5,10 @@ form: on
 ---
 # Hong Kong departure tax refund (APDT) / 香港机场离境税退款
 
+> **Ask first, apply on request.** A question about the refund gets who can claim, the deadline, the documents and the
+> official link: call `apdt_refund` with `file: false` (the default) — code answers and opens nothing. Set `file: true`
+> only when the user explicitly asks you to apply for them.
+
 Official site only: https://app.apdtrefund.hk/hkTaxMobile/?lang=en (the Airport Authority's Refund Application
 Platform; free — any other site, or one that charges, is a scam). Code checks the rule, goes through the platform's
 notes and entry mode and uploads the documents the user gave in the chat (the travel document's photo page, the

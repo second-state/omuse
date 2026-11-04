@@ -29,7 +29,8 @@ use chrono::NaiveDate;
 use serde_json::{json, Map, Value};
 
 /// The tools [`validate`] knows.
-pub const TOOLS: [&str; 9] = [
+pub const TOOLS: [&str; 10] = [
+    "events_search",
     "flights_search",
     "flight_offer",
     "hotels_search",
@@ -442,6 +443,19 @@ pub fn validate(tool: &str, args: &Value, today: NaiveDate) -> Result<Checked, S
         "place_details" => {
             v.need("place_id", "use a place_id from places_search")?;
         }
+        "events_search" => {
+            if text(&v.m, "query").is_empty() && text(&v.m, "city").is_empty() {
+                return Err(
+                    "events_search: give the city and what (a concert, an artist, a festival …)"
+                        .into(),
+                );
+            }
+            // a `when` Google's filters do not have is dropped: the search then lists every date
+            let when = text(&v.m, "when");
+            if !when.is_empty() && crate::serpapi::event_chip(&when).is_none() {
+                v.m.remove("when");
+            }
+        }
         "cars_search" => {
             for k in ["pickup", "dropoff"] {
                 let p = text(&v.m, k);
@@ -697,6 +711,15 @@ mod tests {
         assert_eq!(c.args, json!({"query": "sushi", "city": "Osaka"}));
         assert!(err("places_search", json!({"query": " ", "city": ""})).contains("give query"));
         assert!(err("place_details", json!({})).contains("place_id is required"));
+        assert!(err("events_search", json!({"query": " "})).contains("give the city"));
+        assert_eq!(
+            ok(
+                "events_search",
+                json!({"query": "jazz", "city": "Tokyo", "when": "soon"})
+            )
+            .args,
+            json!({"query": "jazz", "city": "Tokyo"})
+        );
         assert!(err("flight_offer", json!({"currency": "SGD"})).contains("offer_id is required"));
         for bad in [json!(0), json!(-1), json!(500), json!("x"), json!(2.5)] {
             let c = ok(

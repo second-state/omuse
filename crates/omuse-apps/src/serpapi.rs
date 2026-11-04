@@ -166,6 +166,7 @@ pub fn valid_request(params: &[(&str, String)], earliest: chrono::NaiveDate) -> 
             int_in("stops", 0, 3)?;
             int_in("max_price", 1, 1_000_000)?;
             flag("deep_search")?;
+            flag("show_hidden")?;
             // a flight search lists the whole day (the user, 2026-11-02): Google's hour filter is never sent
             if get("outbound_times").is_some() {
                 return Err(
@@ -233,6 +234,17 @@ pub fn valid_request(params: &[(&str, String)], earliest: chrono::NaiveDate) -> 
         }
         Some("google_immersive_product") => {
             need("page_token")?;
+            Ok(())
+        }
+        Some("google_events") => {
+            need("q")?;
+            if let Some(c) = get("htichips") {
+                if !EVENT_CHIPS.contains(&c) {
+                    return Err(format!(
+                        "htichips {c:?} is not one of Google Events' date filters"
+                    ));
+                }
+            }
             Ok(())
         }
         Some(e) => Err(format!("engine {e:?} is not one OMuse uses")),
@@ -887,10 +899,7 @@ fn compact_itinerary(it: &Value, currency: &str, search_url: Option<&str>) -> Va
                 "depart": get_str(&l["departure_airport"], "time"),
                 "to": get_str(&l["arrival_airport"], "id"),
                 "arrive": get_str(&l["arrival_airport"], "time"),
-                "duration_min": num(l.get("duration")),
-                "aircraft": get_str(l, "airplane"),
                 "cabin": get_str(l, "travel_class"),
-                "also_sold_by": arr(l, "ticket_also_sold_by"),
             })
         })
         .collect();
@@ -928,30 +937,15 @@ fn compact_itinerary(it: &Value, currency: &str, search_url: Option<&str>) -> Va
         out.insert("return_search".into(), json!(true));
     }
     out.insert("airlines".into(), json!(airlines.join(" + ")));
-    out.insert(
-        "route".into(),
-        json!(legs
-            .iter()
-            .map(|l| format!(
-                "{} {} {} {} → {} {}",
-                get_str(l, "airline"),
-                get_str(l, "flight_number"),
-                get_str(l, "from"),
-                get_str(l, "depart"),
-                get_str(l, "to"),
-                get_str(l, "arrive")
-            ))
-            .collect::<Vec<_>>()
-            .join(" | ")),
-    );
+    // the legs carry each flight's number, airports and times: no `route` line repeating them (a search lists up to
+    // 129 itineraries: every repeated field costs offers within the result's size)
     out.insert("duration_min".into(), num(it.get("total_duration")));
     out.insert("stops".into(), json!(layovers.len()));
     out.insert("layovers".into(), json!(layovers));
     out.insert("price".into(), num(it.get("price")));
-    out.insert("currency".into(), json!(currency));
-    out.insert("trip".into(), json!(get_str(it, "type")));
-    // one ticket from one airline (it answers for every connection) or, with several airlines and no common seller,
-    // possibly separate tickets — flight_offer's booking options say how it is sold
+    let _ = currency; // said once for the result (`compact_flights`)
+                      // one ticket from one airline (it answers for every connection) or, with several airlines and no common seller,
+                      // possibly separate tickets — flight_offer's booking options say how it is sold
     out.insert(
         "ticket".into(),
         json!(match one_ticket_seller(arr(it, "flights")) {
@@ -959,17 +953,9 @@ fn compact_itinerary(it: &Value, currency: &str, search_url: Option<&str>) -> Va
             None => "may be separate tickets (flight_offer shows how it is sold)".to_string(),
         }),
     );
+    // how to book is said once for the result (`compact_flights`'s `book`), not on every offer
     if let Some(u) = search_url.and_then(|u| itinerary_url(u, &legs)) {
-        let round = get_str(it, "type").eq_ignore_ascii_case("round trip") && !departure.is_empty();
         out.insert("booking_url".into(), json!(u));
-        out.insert(
-            "book".into(),
-            json!(if round {
-                "booking_url is this outbound on Google Flights; its return flights come from flights_search with return_of = this offer_id"
-            } else {
-                "booking_url is this itinerary on Google Flights (a round trip: both flights): book with the seller it lists (the airline's own site first)"
-            }),
-        );
     }
     out.insert("legs".into(), Value::Array(legs));
     let notes: Vec<String> = arr(it, "extensions")
@@ -983,23 +969,134 @@ fn compact_itinerary(it: &Value, currency: &str, search_url: Option<&str>) -> Va
     Value::Object(out)
 }
 
+/// The most characters a flight search's offers take (a tool result keeps 40,000).
+const FLIGHTS_BUDGET: usize = 30_000;
+
+/// An itinerary's airlines, ends, price and stops, for comparing.
+#[derive(PartialEq)]
+struct FlightKey {
+    airlines: String,
+    depart: String,
+    arrive: String,
+    price: f64,
+    stops: u64,
+}
+
+impl FlightKey {
+    /// `None` without times.
+    fn of(o: &Value) -> Option<FlightKey> {
+        let legs = o["legs"].as_array()?;
+        let (first, last) = (legs.first()?, legs.last()?);
+        let (depart, arrive) = (get_str(first, "depart"), get_str(last, "arrive"));
+        if depart.is_empty() || arrive.is_empty() {
+            return None;
+        }
+        Some(FlightKey {
+            airlines: get_str(o, "airlines"),
+            depart,
+            arrive,
+            price: o["price"].as_f64().unwrap_or(f64::MAX),
+            stops: o["stops"].as_u64().unwrap_or(9),
+        })
+    }
+
+    /// `self` beats `a`: the same airlines, leaving no earlier, landing no later, no dearer, no more stops — and not
+    /// the same on every count.
+    fn beats(&self, a: &FlightKey) -> bool {
+        self.airlines == a.airlines
+            && self.depart >= a.depart
+            && self.arrive <= a.arrive
+            && self.price <= a.price
+            && self.stops <= a.stops
+            && self != a
+    }
+}
+
+/// The itineraries no other one of the same airlines beats on every count — leaving no earlier, landing no later, no
+/// dearer, with no more stops (and better on one): a beaten one is never the answer to "the last", "the first", "the
+/// cheapest" or "the fastest" flight, nor to a flight on that airline. Google's hidden results (`show_hidden`) are
+/// mostly such long connections (HKG → SIN 2026-11-10: 129 itineraries, 65 not beaten). Order kept.
+fn undominated(offers: Vec<Value>) -> Vec<Value> {
+    let keys: Vec<Option<FlightKey>> = offers.iter().map(FlightKey::of).collect();
+    let beaten = |i: usize| -> bool {
+        let Some(a) = &keys[i] else { return false };
+        keys.iter()
+            .enumerate()
+            .any(|(j, b)| j != i && b.as_ref().is_some_and(|b| b.beats(a)))
+    };
+    offers
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !beaten(*i))
+        .map(|(_, o)| o)
+        .collect()
+}
+
+/// The offers within `budget` characters: every nonstop first, then the others in order; the original order is kept
+/// among those listed. Returns the offers and how many were left out.
+fn within_budget(offers: Vec<Value>, budget: usize) -> (Vec<Value>, usize) {
+    let mut order: Vec<usize> = (0..offers.len()).collect();
+    order.sort_by_key(|&i| offers[i]["stops"].as_u64().unwrap_or(9) != 0);
+    let mut keep = vec![false; offers.len()];
+    let mut used = 0;
+    for i in order {
+        let n = offers[i].to_string().len();
+        if used + n > budget {
+            continue;
+        }
+        used += n;
+        keep[i] = true;
+    }
+    let dropped = keep.iter().filter(|k| !**k).count();
+    let kept = offers
+        .into_iter()
+        .zip(keep)
+        .filter(|(_, k)| *k)
+        .map(|(o, _)| o)
+        .collect();
+    (kept, dropped)
+}
+
 /// The Google Flights reply, compact: EVERY itinerary of the day (`best_flights`, then `other_flights`, none cut — the
 /// pick is made over all of them, not over the top results), with Google's own price insight.
 pub fn compact_flights(data: &Value, currency: &str) -> Value {
     let search_url = get_str(&data["search_metadata"], "google_flights_url");
-    let mut offers: Vec<Value> = arr(data, "best_flights")
+    let all: Vec<Value> = arr(data, "best_flights")
         .iter()
         .chain(arr(data, "other_flights").iter())
         .map(|it| compact_itinerary(it, currency, Some(&search_url)))
         .collect();
+    let found = all.len();
+    let (mut offers, dropped) = within_budget(undominated(all), FLIGHTS_BUDGET);
     for (i, o) in offers.iter_mut().enumerate() {
         o["rank"] = json!(i + 1);
     }
+    let outbound = offers
+        .iter()
+        .any(|o| o["return_search"].as_bool() == Some(true));
+    let trip = arr(data, "best_flights")
+        .iter()
+        .chain(arr(data, "other_flights").iter())
+        .map(|it| get_str(it, "type"))
+        .find(|t| !t.is_empty())
+        .unwrap_or_default();
     let mut out = json!({
         "count": offers.len(),
+        "found": found,
         "currency": currency,
+        "trip": trip,
         "offers": offers,
+        "book": if outbound {
+            "each offer is a round trip's outbound, priced for the trip; its booking_url is the outbound on Google Flights, and its return flights come from flights_search with return_of = its offer_id"
+        } else {
+            "booking_url is the itinerary on Google Flights (both flights of a round trip chosen): book with the seller it lists (the airline's own site first)"
+        },
     });
+    if dropped > 0 {
+        out["not_listed"] = json!(format!(
+            "{dropped} more itineraries of the day, all with stops, were not listed (the list's size limit)"
+        ));
+    }
     if let Some(pi) = data.get("price_insights").filter(|p| p.is_object()) {
         out["price_insight"] = json!({
             "lowest_price": num(pi.get("lowest_price")),
@@ -1279,6 +1376,17 @@ fn compact_place(p: &Value) -> Value {
     out
 }
 
+/// The words of an events search: "<query> in <city>" ("Events in <city>" without a query); "" when neither is given.
+pub fn events_query(a: &Value) -> String {
+    let (query, city) = (get_str(a, "query"), get_str(a, "city"));
+    let q = match (query.trim().is_empty(), city.trim().is_empty()) {
+        (false, false) => format!("{} in {}", query.trim(), city.trim()),
+        (true, false) => format!("Events in {}", city.trim()),
+        _ => query.trim().to_string(),
+    };
+    q.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// The Google Maps search reply, compact (at most 15 places).
 pub fn compact_places(data: &Value) -> Value {
     let places: Vec<Value> = arr(data, "local_results")
@@ -1288,6 +1396,77 @@ pub fn compact_places(data: &Value) -> Value {
         .collect();
     let mut out = json!({"count": places.len(), "places": places, "data": "Google Maps",
                          "book": "on the restaurant's own site or the booking platform the user names (the website field, when present)"});
+    if let Some(e) = data.get("error").and_then(Value::as_str) {
+        out["note"] = json!(e);
+    }
+    out
+}
+
+/// Google Events' date filters (`htichips`), by the words OMuse's `when` takes.
+pub const EVENT_CHIPS: [&str; 7] = [
+    "date:today",
+    "date:tomorrow",
+    "date:week",
+    "date:weekend",
+    "date:next_week",
+    "date:month",
+    "date:next_month",
+];
+
+/// The `htichips` of a `when` (today, tomorrow, this_week, this_weekend, next_week, this_month, next_month); `None`
+/// for any other (every date).
+pub fn event_chip(when: &str) -> Option<&'static str> {
+    Some(match when.trim() {
+        "today" => "date:today",
+        "tomorrow" => "date:tomorrow",
+        "this_week" => "date:week",
+        "this_weekend" => "date:weekend",
+        "next_week" => "date:next_week",
+        "this_month" => "date:month",
+        "next_month" => "date:next_month",
+        _ => return None,
+    })
+}
+
+/// One event of Google Events (`events_results`), compact: the title, when, the venue and address, and its links —
+/// `tickets` (the ticket sellers' pages, `link_type` "tickets") and `more_info` (the others).
+fn compact_event(e: &Value) -> Value {
+    let links = |kind: bool| -> Vec<Value> {
+        arr(e, "ticket_info")
+            .iter()
+            .filter(|t| (get_str(t, "link_type") == "tickets") == kind)
+            .filter(|t| get_str(t, "link").starts_with("https://"))
+            .take(4)
+            .map(|t| json!({"source": get_str(t, "source"), "url": get_str(t, "link")}))
+            .collect()
+    };
+    let address: Vec<String> = arr(e, "address")
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    json!({
+        "title": get_str(e, "title"),
+        "when": get_str(&e["date"], "when"),
+        "start_date": get_str(&e["date"], "start_date"),
+        "venue": get_str(&e["venue"], "name"),
+        "address": address.join(", "),
+        "description": get_str(e, "description").chars().take(240).collect::<String>(),
+        "link": get_str(e, "link"),
+        "tickets": links(true),
+        "more_info": links(false),
+    })
+}
+
+/// The Google Events reply, compact (at most 10 events).
+pub fn compact_events(data: &Value) -> Value {
+    let events: Vec<Value> = arr(data, "events_results")
+        .iter()
+        .take(10)
+        .map(compact_event)
+        .filter(|e| !get_str(e, "title").is_empty())
+        .collect();
+    let mut out = json!({"count": events.len(), "events": events, "data": "Google Events"});
     if let Some(e) = data.get("error").and_then(Value::as_str) {
         out["note"] = json!(e);
     }
@@ -1532,6 +1711,9 @@ impl SerpApi {
         // every flight Google Flights' own page lists for the day (SerpApi's deep search), always: the whole day is
         // searched whatever the request says, and the pick over it is the model's (the user, 2026-11-02)
         params.push(("deep_search", "true".to_string()));
+        // and the results Google keeps behind "View more flights" (HKG → SIN 2026-11-10: 23 itineraries without, 129
+        // with — the connections), the beaten ones dropped by code (`undominated`)
+        params.push(("show_hidden", "true".to_string()));
         if let Some(st) = stops_param(a) {
             params.push(("stops", st.to_string()));
         }
@@ -1858,6 +2040,28 @@ impl SerpApi {
         }
         let data = self.get("search.json", &params).await?;
         Ok(compact_places(&data))
+    }
+
+    /// `events_search`: concerts, shows, festivals and other events on Google Events for a query in a city, with
+    /// their ticket links.
+    pub async fn events(&self, a: &Value) -> Result<Value, SerpError> {
+        let q = events_query(a);
+        if q.is_empty() {
+            return Err(SerpError(
+                "query (what — a concert, an artist, a festival, jazz …) or city is required"
+                    .into(),
+            ));
+        }
+        let mut params = vec![
+            ("engine", "google_events".to_string()),
+            ("q", q),
+            ("hl", "en".to_string()),
+        ];
+        if let Some(c) = event_chip(&get_str(a, "when")) {
+            params.push(("htichips", c.to_string()));
+        }
+        let data = self.get("search.json", &params).await?;
+        Ok(compact_events(&data))
     }
 
     /// `place_details`: one place by its Google place id — hours per day, contact, the links Google lists.
@@ -2344,11 +2548,25 @@ mod tests {
         assert_eq!(first["airlines"], "Singapore Airlines");
         assert_eq!(first["stops"], 0);
         assert_eq!(first["price"], 620);
-        assert_eq!(first["currency"], "SGD");
+        // the currency and the trip are said once for the result; each leg has its flight, airports and times
+        assert_eq!(out["currency"], "SGD");
         assert_eq!(first["rank"], 1);
+        assert!(first.get("route").is_none() && first.get("currency").is_none());
         assert_eq!(
-            first["route"],
-            "Singapore Airlines SQ 638 SIN 2026-11-20 09:25 → NRT 2026-11-20 17:15"
+            (
+                &first["legs"][0]["flight_number"],
+                &first["legs"][0]["from"],
+                &first["legs"][0]["depart"],
+                &first["legs"][0]["to"],
+                &first["legs"][0]["arrive"]
+            ),
+            (
+                &json!("SQ 638"),
+                &json!("SIN"),
+                &json!("2026-11-20 09:25"),
+                &json!("NRT"),
+                &json!("2026-11-20 17:15")
+            )
         );
         assert_eq!(first["notes"][0], "Checked baggage for a fee");
         let id = first["offer_id"].as_str().unwrap().to_string();
@@ -2360,6 +2578,63 @@ mod tests {
         assert_eq!(second["legs"].as_array().unwrap().len(), 2);
         assert_eq!(out["price_insight"]["lowest_price"], 510);
         assert_eq!(out["google_url"], "https://www.google.com/travel/flights?x");
+    }
+
+    #[test]
+    fn events_compact_with_their_ticket_links_and_the_date_filter() {
+        let data = json!({"events_results": [
+            {"title": "Coldplay: Music of the Spheres", "date": {"start_date": "Nov 22", "when": "Sat, Nov 22, 7 – 10 PM"},
+             "address": ["National Stadium", "1 Stadium Dr, Singapore 397629"], "link": "https://www.google.com/x",
+             "venue": {"name": "National Stadium"}, "description": "World tour",
+             "ticket_info": [
+                {"source": "Ticketmaster.sg", "link": "https://ticketmaster.sg/activity/detail/25sg_coldplay", "link_type": "tickets"},
+                {"source": "javascript", "link": "javascript:alert(1)", "link_type": "tickets"},
+                {"source": "Visit Singapore", "link": "https://www.visitsingapore.com/x", "link_type": "more info"}]},
+            {"title": "", "date": {}}]});
+        let c = compact_events(&data);
+        assert_eq!(c["count"], 1);
+        let e = &c["events"][0];
+        assert_eq!(e["venue"], "National Stadium");
+        assert_eq!(e["when"], "Sat, Nov 22, 7 – 10 PM");
+        assert_eq!(
+            e["tickets"],
+            json!([{"source": "Ticketmaster.sg", "url": "https://ticketmaster.sg/activity/detail/25sg_coldplay"}])
+        );
+        assert_eq!(e["more_info"][0]["source"], "Visit Singapore");
+        assert_eq!(
+            events_query(&json!({"query": "Coldplay", "city": "Singapore"})),
+            "Coldplay in Singapore"
+        );
+        assert_eq!(events_query(&json!({"city": "Tokyo"})), "Events in Tokyo");
+        assert_eq!(event_chip("this_weekend"), Some("date:weekend"));
+        assert_eq!(event_chip("whenever"), None);
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        fn p<'a>(v: &[(&'a str, &str)]) -> Vec<(&'a str, String)> {
+            v.iter().map(|(k, x)| (*k, x.to_string())).collect()
+        }
+        assert!(valid_request(
+            &p(&[
+                ("engine", "google_events"),
+                ("q", "jazz in Tokyo"),
+                ("htichips", "date:week")
+            ]),
+            day
+        )
+        .is_ok());
+        assert!(valid_request(
+            &p(&[("engine", "google_events"), ("htichips", "date:week")]),
+            day
+        )
+        .is_err());
+        assert!(valid_request(
+            &p(&[
+                ("engine", "google_events"),
+                ("q", "x"),
+                ("htichips", "date:soon")
+            ]),
+            day
+        )
+        .is_err());
     }
 
     #[test]
@@ -2405,7 +2680,6 @@ mod tests {
             {"airline": "Air China", "flight_number": "CA 4110", "ticket_also_sold_by": ["United"]}
         ]));
         assert_eq!(united["ticket"], "one ticket, sold by United");
-        assert_eq!(united["legs"][1]["also_sold_by"], json!(["United"]));
         // the codeshare on the first leg works the same way
         let first = it(json!([
             {"airline": "Air China", "flight_number": "CA 986", "ticket_also_sold_by": ["United"]},
@@ -2502,7 +2776,10 @@ mod tests {
         ] {
             assert!(text.contains(part), "{part} in {text:?}");
         }
-        assert!(o["book"].as_str().unwrap().contains("Google Flights"));
+        assert!(compact_flights(&data, "USD")["book"]
+            .as_str()
+            .unwrap()
+            .contains("Google Flights"));
         // a leg without a readable flight number: no link rather than a wrong one
         let mut bad = data.clone();
         bad["best_flights"][0]["flights"][1]["flight_number"] = json!("");
@@ -2597,6 +2874,39 @@ mod tests {
             flight(slices[1]).contains("CX")
                 && flight(slices[1]).contains("782")
                 && !flight(slices[1]).contains("785")
+        );
+    }
+
+    #[test]
+    fn beaten_itineraries_are_dropped_and_the_list_keeps_within_its_budget() {
+        let it = |air: &str, dep: &str, arr: &str, price: f64, stops: u64| {
+            json!({"airlines": air, "price": price, "stops": stops,
+                   "legs": [{"depart": format!("2026-11-10 {dep}"), "arrive": format!("2026-11-10 {arr}")}]})
+        };
+        let offers = vec![
+            it("Cathay Pacific", "16:05", "20:05", 6744.0, 0),
+            // beaten by CX 657 (leaves earlier, lands later, dearer, more stops): dropped
+            it("Cathay Pacific", "15:00", "23:00", 7000.0, 1),
+            // a different airline is never beaten by Cathay: kept
+            it("Philippine Airlines", "13:30", "23:45", 2369.0, 1),
+            // cheaper though slower: kept (it is the answer to "the cheapest")
+            it("Cathay Pacific", "08:00", "22:00", 3000.0, 1),
+            // the same itinerary twice: neither beats the other
+            it("Scoot", "22:00", "23:59", 1016.0, 0),
+            it("Scoot", "22:00", "23:59", 1016.0, 0),
+        ];
+        let kept = undominated(offers);
+        let prices: Vec<f64> = kept.iter().map(|o| o["price"].as_f64().unwrap()).collect();
+        assert_eq!(prices, vec![6744.0, 2369.0, 3000.0, 1016.0, 1016.0]);
+        // the budget: nonstops first, the order kept among those listed
+        let one = kept[0].to_string().len();
+        let (listed, dropped) = within_budget(kept, one * 3 + 5);
+        assert_eq!(dropped, 2);
+        assert!(
+            listed
+                .iter()
+                .all(|o| o["stops"] == 0 || o["price"] == 2369.0),
+            "{listed:?}"
         );
     }
 }

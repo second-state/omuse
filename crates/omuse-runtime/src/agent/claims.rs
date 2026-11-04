@@ -212,10 +212,13 @@ pub const SPECS: &[ClaimSpec] = &[
 
 /// FWD Hong Kong's MyTravel plan page (no form function: its quote goes to the `browser-use` skill).
 const HK_QUOTE_URL: &str = "https://www.fwd.com.hk/online-insurance/mytravel-insurance/en/";
-
-/// Card Claim Center's sign-in page by its password box (a fixed part of the page): still there after the hand-back =
-/// the user did not sign in.
-const CCC_PASSWORD: &str = "input[type=password]";
+/// FWD Thailand's travel insurance: Dhipaya's TIP Insure, FWD's affinity page (walked 2026-11-03).
+const TH_QUOTE_URL: &str = "https://affinity.tipinsure.com/product/affinity/TIPINSUREFWD/ta_inter";
+/// Dhipaya's conditions the user accepts with the purchase (its terms dialog, `#modal-term`, in English).
+const TH_CONDITIONS: &str = "Dhipaya's conditions (TIP Insure): the insured lives in Thailand and starts the trip from \
+Thailand, is 1–85 years old, in good health without disability, and is not travelling for medical treatment; one \
+policy per trip; once paid, cancellation and refunds follow the policy's conditions. By approving, you accept these \
+conditions and Dhipaya's purchase conditions, and the payment page opens for you to pay.";
 
 fn spec(flow: Flow) -> &'static ClaimSpec {
     SPECS.iter().find(|s| s.flow == flow).unwrap()
@@ -266,6 +269,7 @@ pub fn tool_schemas() -> Vec<Value> {
         "certificate_message_id": {"type": "string", "description": "FWD: the message_id of the airline's delay email (its PDF is attached to the claim)"}
     });
     // FWD Singapore's online claim (outside the literal above: json!'s recursion limit)
+    claim_props["file"] = json!({"type": "boolean", "description": "FWD: true when the user asks you to do it — file, start, prepare or fill in the claim or its form for them (even when they will sign, send or submit it themselves); false for a question about what is covered or how to claim (the answer gives the requirements and the claim's link). A Chase Sapphire claim is always prepared with Card Claim Center's link."});
     claim_props["leave_sg"] = date("FWD Singapore: the day the trip left Singapore");
     claim_props["return_sg"] = date("FWD Singapore: the day the trip was to return to Singapore");
     claim_props["destination"] =
@@ -292,14 +296,19 @@ reply from the JSON result, using its hints (code appends the facts in show to t
     );
     let buy = fn_(
         INSURANCE_BUY,
-        "Quote and buy FWD travel insurance (Singapore: code fills FWD's quote, reads the plans, picks one by the \
-user's rule, shows them as choice cards and, for buy, saves the quote with FWD and gives FWD's own link to it, which \
-the user opens on any device — the eligibility statements, the details and Pay are the user's; Hong Kong: the plan page goes to the browser-use skill). Pass the trip from the user's words and their \
+        "FWD travel insurance. By default (file false, no compare) code answers who can buy it and the official \
+page — nothing is opened. action compare: code fills the insurer's quote, reads the plans, picks one by the user's rule \
+and shows them as choice cards. file true with action buy ONLY when the user explicitly asks you to buy it: Singapore — saves the quote with FWD and gives FWD's own link to it \
+(the user opens it on any device; the eligibility statements, the details and Pay are theirs); Hong Kong (MyTravel) — \
+fills FWD's application with the insured's details and gives its link; Thailand (Dhipaya's TIP Insure, for Thai \
+residents) — fills the application, asks the user's approval in the app, accepts Dhipaya's conditions and gives the \
+payment page's link (the card details and Pay are the user's). Pass the trip from the user's words and their \
 booking emails; code reads the booking mail when the trip is missing (status mail_read: call insurance_buy again with \
 the trip from those emails). needs_input: ask the user, then call again with every field. Write the reply from the \
 JSON result, using its hints (code appends the facts in show to the reply).",
         json!({
-            "market": {"type": "string", "enum": ["sg", "hk"], "description": "where the user lives and buys (FWD Singapore or FWD Hong Kong)"},
+            "market": {"type": "string", "enum": ["sg", "hk", "th"], "description": "where the user lives and buys (FWD Singapore, FWD Hong Kong, FWD Thailand)"},
+            "file": {"type": "boolean", "description": "true when the user asks you to do it — buy, get or quote and apply for the cover for them (even when they will pay themselves); false for a question about cover, eligibility or plans"},
             "action": {"type": "string", "enum": ["compare", "buy"], "description": "compare: show the plans only; buy: also fill the application"},
             "destination": {"type": "string", "description": "the destination COUNTRY's ISO 3166 2-letter code (JP for a trip to Tokyo)"},
             "depart": date("the departure day"),
@@ -309,13 +318,33 @@ JSON result, using its hints (code appends the facts in show to the reply).",
             "cover_at_least": money("that cover's minimum (\"at least SGD 10,000 trip cancellation\" → 10000)"),
             "plan": {"type": "string", "description": "the plan the user chose: its name exactly as the plans card listed it"},
             "card": {"type": "string", "description": "the Vault card the user named to pay with: its id from vault_list (id=…), its card_id, or its label exactly as listed"},
-            "title": {"type": "string", "enum": ["Mr.", "Miss", "Mrs."], "description": "Hong Kong: the insured's title, from the profile or the conversation"},
+            "title": {"type": "string", "enum": ["Mr.", "Miss", "Mrs."], "description": "Hong Kong, Thailand: the insured's title, from the profile or the conversation"},
             "hkid_issue_date": {"type": "string", "description": "Hong Kong: YYYY-MM-DD, the date of issue on the insured's new Smart HKID card (asked)"},
-            "family_name": {"type": "string", "description": "Hong Kong: the insured's family name as on the HKID (\"CHAN\" of \"CHAN TAI MAN\")"},
-            "given_names": {"type": "string", "description": "Hong Kong: the insured's given names as on the HKID (\"TAI MAN\")"}
+            "family_name": {"type": "string", "description": "Hong Kong, Thailand: the insured's family name as on the HKID or the passport (\"CHAN\" of \"CHAN TAI MAN\")"},
+            "given_names": {"type": "string", "description": "Hong Kong, Thailand: the insured's given names as on the HKID or the passport (\"TAI MAN\")"}
         }),
         &[],
     );
+    // Thailand's application asks a Thai address, in the site's own parts (the model reads them from the profile's
+    // address; outside the literal above: json!'s recursion limit)
+    let mut buy = buy;
+    let thai = |what: &str| json!({"type": "string", "description": format!("Thailand: the insured's home address — {what}, in English as the profile writes it")});
+    for (k, what) in [
+        ("address_house_no", "the house number"),
+        ("address_road", "the road (\"Sukhumvit\")"),
+        (
+            "address_subdistrict",
+            "the sub-district, khwaeng / tambon (\"Khlong Toei Nuea\")",
+        ),
+        (
+            "address_district",
+            "the district, khet / amphoe (\"Watthana\")",
+        ),
+        ("address_province", "the province (\"Bangkok\")"),
+        ("address_postcode", "the 5-digit postcode"),
+    ] {
+        buy["function"]["parameters"]["properties"][k] = thai(what);
+    }
     let bag = fn_(
         BAG_TRACE,
         "Look up a delayed bag on WorldTracer by the Property Irregularity Report's file reference: code fills the \
@@ -428,6 +457,23 @@ pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
         return Checked::Invalid(problems);
     }
     let mut out = out;
+    // the information paths (the user asked about cover or a claim, not to buy or file: the user, 2026-11-04) ask
+    // for nothing: the requirements and the official link come from code
+    let info = match tool {
+        INSURANCE_BUY => out.get("action").and_then(Value::as_str) == Some("info"),
+        CLAIM_FILE => {
+            out.get("insurer").and_then(Value::as_str) == Some("fwd")
+                && !truthy(args.get("file").unwrap_or(&Value::Null))
+        }
+        _ => false,
+    };
+    if info {
+        out.insert("file".into(), json!(false));
+        return Checked::Valid(Value::Object(out));
+    }
+    if tool == CLAIM_FILE {
+        out.insert("file".into(), json!(true));
+    }
     if !missing.is_empty() {
         if cx.mail_ready && !mail_read(cx.transcript, tool) {
             out.insert("_read_mail".into(), json!(true));
@@ -544,10 +590,10 @@ fn market_from_mail(transcript: &[Value]) -> Option<&'static str> {
 
 /// The market from the profile's structured home country (`home_country`, else the home city's), else Singapore.
 fn market_from_profile(profile: &Value) -> &'static str {
-    if crate::places::home_country(profile) == "HK" {
-        "hk"
-    } else {
-        "sg"
+    match crate::places::home_country(profile).as_str() {
+        "HK" => "hk",
+        "TH" => "th",
+        _ => "sg",
     }
 }
 
@@ -852,18 +898,39 @@ fn check_buy(a: &Value, cx: &Ctx) -> Checks {
     let mut problems = Vec::new();
     let mut missing = Vec::new();
     let market = match s_arg(a, "market").as_str() {
-        m @ ("sg" | "hk") => m.to_string(),
+        m @ ("sg" | "hk" | "th") => m.to_string(),
         _ => market_from_profile(cx.profile).to_string(),
     };
     out.insert("market".into(), json!(market));
-    out.insert(
-        "action".into(),
-        json!(if s_arg(a, "action") == "compare" {
-            "compare"
-        } else {
-            "buy"
-        }),
-    );
+    // the reply to the tool's own question keeps the asked call's purchase: the user gave the missing facts, not a new
+    // request (insurance_real 2026-11-03: "Buy me FWD travel insurance" → the dates asked → the reply's call came as a
+    // compare, and no quote was saved)
+    let asked_to_buy = results_of(cx.transcript, INSURANCE_BUY)
+        .last()
+        .is_some_and(|(args, m)| {
+            sget(args, "action") == "buy"
+                && truthy(args.get("file").unwrap_or(&Value::Null))
+                && get_str(&json_of(m), "status") == "needs_input"
+        });
+    // a purchase only when the user asked for one (`file`), or the reply to the tool's question about one; a
+    // comparison quotes the plans; anything else is the information path (eligibility and the official link)
+    let wants_buy =
+        truthy(a.get("file").unwrap_or(&Value::Null)) && s_arg(a, "action") != "compare";
+    let action = if asked_to_buy || wants_buy {
+        "buy"
+    } else if s_arg(a, "action") == "compare" {
+        "compare"
+    } else {
+        "info"
+    };
+    out.insert("action".into(), json!(action));
+    if action == "info" {
+        let dest = s_arg(a, "destination");
+        if !dest.is_empty() {
+            out.insert("destination".into(), json!(dest));
+        }
+        return (out, problems, missing);
+    }
     // the destination's country, from the structured value: an ISO code, a country's name or a city of the table,
     // each compared whole; anything else goes back to the model (FWD's region is picked by the country — "Tokyo,
     // Japan" left it blank and the quote never opened, insurance_real 2026-11-02)
@@ -917,11 +984,17 @@ fn check_buy(a: &Value, cx: &Ctx) -> Checks {
     }
     text_arg(a, "plan", &mut out);
     text_arg(a, "card", &mut out);
-    // FWD Hong Kong's application (walked 2026-11-03): one traveller on the quote, the insured's title, and the date of
-    // issue of their new Smart HKID (the Vault keeps the number, not the date) — asked for a purchase
-    if market == "hk" {
+    let buying = s_arg(&Value::Object(out.clone()), "action") == "buy";
+    // Hong Kong's and Thailand's applications (walked 2026-11-03): one traveller here, the insured's title and the name
+    // in its parts (the model's reading: Hong Kong names come family name first)
+    if market == "hk" || market == "th" {
+        let site = if market == "hk" {
+            "FWD Hong Kong's"
+        } else {
+            "TIP Insure's"
+        };
         if travellers > 1 {
-            problems.push("travellers: FWD Hong Kong's quote is filled for one traveller here — 1, and the user adds the others on FWD's page".into());
+            problems.push(format!("travellers: {site} quote is filled for one traveller here — 1, and the user adds the others on the insurer's page"));
         }
         let title = s_arg(a, "title");
         match title.trim_end_matches('.').to_lowercase().as_str() {
@@ -936,9 +1009,30 @@ fn check_buy(a: &Value, cx: &Ctx) -> Checks {
                 out.insert("title".into(), json!("Mrs."));
             }
             other => problems.push(format!(
-                "title: \"{other}\" — Mr., Miss or Mrs. (FWD's list)"
+                "title: \"{other}\" — Mr., Miss or Mrs. (the insurer's list)"
             )),
         }
+        for k in ["family_name", "given_names"] {
+            let v = s_arg(a, k).to_uppercase();
+            if !v.is_empty() {
+                out.insert(k.into(), json!(v));
+            }
+        }
+        if buying {
+            if !(out.contains_key("family_name") && out.contains_key("given_names")) {
+                missing.push(
+                    "family_name and given_names (the insured's name as on the ID document, split)"
+                        .into(),
+                );
+            }
+            if !out.contains_key("title") && !problems.iter().any(|p| p.starts_with("title")) {
+                missing
+                    .push("title (Mr., Miss or Mrs. — the insurer's application asks it)".into());
+            }
+        }
+    }
+    // FWD Hong Kong: the date of issue of the insured's new Smart HKID (the Vault keeps the number, not the date)
+    if market == "hk" {
         let issued = date_arg(
             a,
             "hkid_issue_date",
@@ -947,27 +1041,60 @@ fn check_buy(a: &Value, cx: &Ctx) -> Checks {
             &mut out,
             &mut problems,
         );
-        // the name's parts are the model's reading of it (Hong Kong names come family name first)
-        for k in ["family_name", "given_names"] {
-            let v = s_arg(a, k).to_uppercase();
-            if !v.is_empty() {
-                out.insert(k.into(), json!(v));
-            }
-        }
-        if s_arg(&Value::Object(out.clone()), "action") == "buy"
-            && !(out.contains_key("family_name") && out.contains_key("given_names"))
+        if buying && issued.is_none() && !problems.iter().any(|p| p.starts_with("hkid_issue_date"))
         {
             missing.push(
-                "family_name and given_names (the insured's name as on the HKID, split)".into(),
+                "hkid_issue_date (the date of issue on the user's new Smart HKID card)".into(),
             );
         }
-        if s_arg(&Value::Object(out.clone()), "action") == "buy" {
-            if !out.contains_key("title") && !problems.iter().any(|p| p.starts_with("title")) {
-                missing.push("title (Mr., Miss or Mrs. — FWD's application asks it)".into());
+    }
+    // FWD Thailand (Dhipaya's TIP Insure, walked 2026-11-03): for residents of Thailand who start the trip there (its
+    // conditions); the application asks a Thai address in the site's own parts and the date of birth
+    if market == "th" {
+        let home = crate::places::home_country(cx.profile);
+        if !home.is_empty() && home != "TH" {
+            problems.push(format!(
+                "market: FWD Thailand (Dhipaya's TIP Insure) covers residents of Thailand who start the trip there — the profile's home country is {home}"
+            ));
+        }
+        for k in [
+            "address_house_no",
+            "address_road",
+            "address_subdistrict",
+            "address_district",
+            "address_province",
+        ] {
+            text_arg(a, k, &mut out);
+        }
+        let postcode = s_arg(a, "address_postcode");
+        if !postcode.is_empty() {
+            if postcode.len() == 5 && postcode.chars().all(|c| c.is_ascii_digit()) {
+                out.insert("address_postcode".into(), json!(postcode));
+            } else {
+                problems.push(format!("address_postcode: \"{postcode}\" — 5 digits"));
             }
-            if issued.is_none() && !problems.iter().any(|p| p.starts_with("hkid_issue_date")) {
+        }
+        if buying {
+            let need: Vec<&str> = [
+                "address_house_no",
+                "address_subdistrict",
+                "address_district",
+                "address_province",
+                "address_postcode",
+            ]
+            .into_iter()
+            .filter(|k| !out.contains_key(*k) && !problems.iter().any(|p| p.starts_with(*k)))
+            .collect();
+            if !need.is_empty() {
+                missing.push(format!(
+                    "{} (the insured's Thai home address, in the application's parts)",
+                    need.join(", ")
+                ));
+            }
+            if get_str(cx.profile, "birthday").is_empty() {
                 missing.push(
-                    "hkid_issue_date (the date of issue on the user's new Smart HKID card)".into(),
+                    "the insured's date of birth (the application asks it; the profile has none)"
+                        .into(),
                 );
             }
         }
@@ -1836,6 +1963,36 @@ fn cron_at(d: NaiveDate) -> String {
     format!("0 8 {} {} *", d.day(), d.month())
 }
 
+/// Whether a browser result of the run landed on the site's maintenance page: the page address it reports (a JSON
+/// field of the result), its path under `/maintenance` (FWD Singapore's whole site redirected to
+/// `/maintenance/index.html`, 2026-11-03).
+fn landed_on_maintenance(run: &[Value]) -> bool {
+    [
+        "browser_navigate",
+        "browser_fill_form",
+        "browser_read_elements",
+    ]
+    .iter()
+    .flat_map(|t| results_of(run, t))
+    .any(|(_, m)| {
+        let c = content_of(m);
+        let v: Value = match (c.find('{'), c.rfind('}')) {
+            (Some(i), Some(j)) => serde_json::from_str(&c[i..=j]).unwrap_or(Value::Null),
+            _ => Value::Null,
+        };
+        url::Url::parse(&get_str(&v, "url"))
+            .is_ok_and(|u| u.path().to_lowercase().starts_with("/maintenance"))
+    })
+}
+
+/// The insurer's site is in maintenance: nothing was quoted or bought; its page to try again later.
+fn site_down(name: &str, trip: &str, page: &str) -> Value {
+    json!({"status": "site_down", "trip": trip, "quote_page": page,
+        "show": [S::fact("Site down", "网站维护中", &format!("{name}'s site is showing its maintenance page — nothing was quoted or bought for {trip}; try again later")),
+                 S::link("Try again later", "稍后再试", name, page)],
+        "hints": ["the insurer's site is in maintenance: say so, nothing was bought; offer to try again later"]})
+}
+
 fn opened(run: &[Value], host: &str, path: &str) -> bool {
     results_of(run, "browser_navigate").iter().any(|(a, _)| {
         let u = sget(a, "url");
@@ -1880,7 +2037,17 @@ pub fn next(tool: &str, args: &Value, transcript: &[Value], from: usize, m: &Mac
         BAG_TRACE if read => read_mail(tool, spec(Flow::BagTrace), args, run, &ids),
         BAG_TRACE => next_bag(args, run, &ids),
         INSURANCE_BUY if read => read_mail(tool, spec(Flow::FwdSgBuy), args, run, &ids),
+        INSURANCE_BUY if s_arg(args, "action") == "info" => {
+            Step::Done(buy_info(&s_arg(args, "market")))
+        }
+        CLAIM_FILE
+            if s_arg(args, "insurer") == "fwd"
+                && !truthy(args.get("file").unwrap_or(&Value::Null)) =>
+        {
+            Step::Done(fwd_claim_info(args, m.today))
+        }
         INSURANCE_BUY if s_arg(args, "market") == "hk" => next_buy_hk(args, run, &ids),
+        INSURANCE_BUY if s_arg(args, "market") == "th" => next_buy_th(args, run, &ids),
         INSURANCE_BUY => next_buy(args, run, &ids, m),
         _ => {
             let s = if s_arg(args, "insurer") == "chase_sapphire" {
@@ -1919,53 +2086,12 @@ fn not_supported(s: &ClaimSpec) -> Step {
 
 // ---------------------------------------------------------------- the CSR trip claim
 
-fn next_csr(s: &ClaimSpec, args: &Value, run: &[Value], ids: &Ids, m: &Machine) -> Step {
+fn next_csr(s: &ClaimSpec, args: &Value, _run: &[Value], _ids: &Ids, m: &Machine) -> Step {
+    // the claim prepared — the benefit, the amount, the two dates, the documents — and Card Claim Center's link: the
+    // user signs in there, starts the claim and uploads the documents (the user, 2026-11-04: no takeover of the
+    // agent's browser; the claim pages behind the sign-in are the user's)
     let t = TripClaim::from_args(args);
-    if !opened(run, s.host, "/") {
-        return ids.one("browser_navigate", json!({"url": s.start_url}));
-    }
-    // the sign-in page: the account's email from the profile (its form function); the password and the sign-in are
-    // the user's, and the claim pages behind them are not mapped
-    let Some((_, fill)) = results_of(run, "form_fill").into_iter().next_back() else {
-        return ids.one("form_fill", json!({"stage": "login"}));
-    };
-    let fill_pos = pos(run, fill);
-    let reason = format!(
-        "{OWN_STEP}: sign in to Card Claim Center (where eClaimsLine moved; your email is filled in) or create your account. Then the {} claim: date of loss {}, amount USD {} ({}), reason \"{}\" — {} yourself. Hand the browser back after signing in and I will go on with the claim form.",
-        t.benefit,
-        t.loss.map(iso).unwrap_or_else(|| "to fill in".into()),
-        money(t.amount),
-        t.arithmetic(),
-        t.reason,
-        s.user_steps
-    );
-    let takeovers = results_of(run, "browser_request_takeover");
-    let back = match takeovers.iter().rfind(|(_, x)| pos(run, x) > fill_pos) {
-        None => return ids.one("browser_request_takeover", json!({"reason": reason})),
-        Some((_, x)) if handed_back(x) => pos(run, x),
-        Some(_) => return Step::Done(csr_result(s, &t, "waiting_on_user", m.today)),
-    };
-    // after the hand-back: the sign-in page still there (its password box) = not signed in
-    let read = results_of(run, "browser_read_elements")
-        .into_iter()
-        .find(|(_, x)| pos(run, x) > back);
-    let Some((_, read)) = read else {
-        return ids.one(
-            "browser_read_elements",
-            json!({"read": [{"name": "password", "sel": CCC_PASSWORD, "attr": "type"}]}),
-        );
-    };
-    if !super::confirm::element_values(read, "password").is_empty() {
-        return Step::Done(csr_result(s, &t, "waiting_on_user", m.today));
-    }
-    // signed in: the claim pages have no form function — the browser-use skill fills them with these facts
-    let url = match get_str(&json_of(read), "url") {
-        u if u.is_empty() => s.start_url.to_string(),
-        u => u,
-    };
-    let mut v = csr_result(s, &t, "browser_use", m.today);
-    v["url"] = json!(url);
-    Step::Done(v)
+    Step::Done(csr_result(s, &t, "prepared", m.today))
 }
 
 /// The CSR claim's result: the benefit, the two dates, the amount and its arithmetic, the status, the documents, the
@@ -2010,13 +2136,22 @@ fn csr_result(s: &ClaimSpec, t: &TripClaim, status: &str, today: NaiveDate) -> V
         ));
         dates = json!({"loss_date": iso(loss), "notify_by": iso(d20), "documents_by": iso(d90), "notice_window_closed": late});
     }
-    if status == "waiting_on_user" {
-        show.push(S::fact(
-            "Status",
-            "状态",
-            "Card Claim Center's sign-in is open in the browser tab (your email filled in): sign in or create your account, then ask me to continue — nothing has been filed",
+    if status == "prepared" {
+        show.push(S::link(
+            "Start the claim and upload the documents",
+            "立案并上传材料",
+            "Card Claim Center",
+            s.start_url,
         ));
-        must.push("the sign-in is the user's; nothing was filed".into());
+        show.push(S::fact(
+            "Next steps (yours)",
+            "下一步（你的）",
+            &format!(
+                "open the link, sign in (or create your account), start the {} claim with the facts above and upload the documents listed — nothing has been filed yet",
+                t.benefit
+            ),
+        ));
+        must.push("the claim is prepared; signing in, filing and the upload are the user's on Card Claim Center".into());
     }
     show.push(S::fact("Decides the claim", "审核方", s.decides));
     let doctor = if t.has_doctor_letter {
@@ -2029,6 +2164,19 @@ fn csr_result(s: &ClaimSpec, t: &TripClaim, status: &str, today: NaiveDate) -> V
     } else {
         "the supplier's written refund / non-refundable statement (ask the airline or hotel for it in writing)"
     };
+    if status == "prepared" {
+        show.push(S::fact(
+            "Documents to upload",
+            "要上传的材料",
+            &[
+                doctor,
+                "the e-ticket / itinerary",
+                "the card statement showing the charge",
+                supplier,
+            ]
+            .join("; "),
+        ));
+    }
     let mut v = json!({
         "status": status, "claim": s.name, "benefit": t.benefit, "card": t.card_product,
         "amount": amount, "arithmetic": t.arithmetic(), "reason_filed": t.reason,
@@ -2705,6 +2853,401 @@ fn next_buy_hk(args: &Value, run: &[Value], ids: &Ids) -> Step {
     }
 }
 
+/// Who can buy FWD's travel insurance in a market and where (the user asked about cover, not to buy — the user,
+/// 2026-11-04): the eligibility, the timing and the official page; buying is for when the user asks for it (`file`).
+fn buy_info(market: &str) -> Value {
+    let (name, who, page) = match market {
+        "hk" => (
+            "FWD Hong Kong MyTravel (underwritten by bolttech)",
+            "Hong Kong ID card holders who are in Hong Kong when applying, for a trip that starts from Hong Kong; buy before you leave (\"cancel for any reason\" cover needs the policy bought within 30 days of the first trip payment)",
+            HK_QUOTE_URL,
+        ),
+        "th" => (
+            "FWD Thailand (TIP Insure, Dhipaya Insurance)",
+            "residents of Thailand aged 1–85, in good health, for a trip that starts from Thailand (one policy per trip); buy before you leave",
+            TH_QUOTE_URL,
+        ),
+        _ => (
+            "FWD Singapore travel insurance",
+            "Singapore residents (citizens, PRs and NRIC / FIN holders) for a trip that starts in Singapore, never refused travel insurance before; buy before you leave",
+            spec(Flow::FwdSgBuy).start_url,
+        ),
+    };
+    let show = vec![
+        S::fact("Who can buy", "谁可以买", &format!("{name}: {who}")),
+        S::link("Get a quote", "报价", name, page),
+        S::fact(
+            "Buying",
+            "代购",
+            "ask me to buy it and I quote the plans, pick one by your rule and prepare the application — you check and pay",
+        ),
+    ];
+    json!({"status": "info", "insurer": name, "market": market, "quote_page": page, "show": show,
+           "hints": ["the user asked about the cover: who can buy it and the official page — nothing was bought"]})
+}
+
+/// How to claim on an FWD travel policy (the user asked about a claim, not to file it — the user, 2026-11-04): the
+/// insurer, the deadline as a date when the incident's day is known, the documents and the claim's page; filing is
+/// for when the user asks for it (`file`).
+fn fwd_claim_info(args: &Value, today: NaiveDate) -> Value {
+    let s = if s_arg(args, "market") == "hk" {
+        spec(Flow::FwdHkClaim)
+    } else {
+        spec(Flow::FwdSgClaim)
+    };
+    let _ = today;
+    let mut show = vec![S::fact("Decides the claim", "审核方", s.decides)];
+    match NaiveDate::parse_from_str(&s_arg(args, "incident_date"), "%Y-%m-%d") {
+        Ok(d) if s.notify_days > 0 => show.push(S::fact(
+            "Claim by",
+            "理赔截止",
+            &format!(
+                "{} ({} days after {})",
+                long(d + Duration::days(s.notify_days)),
+                s.notify_days,
+                long(d)
+            ),
+        )),
+        _ if s.notify_days > 0 => show.push(S::fact(
+            "Claim by",
+            "理赔截止",
+            &format!("within {} days of the incident", s.notify_days),
+        )),
+        _ => {}
+    }
+    show.push(S::fact(
+        "You need",
+        "需要",
+        "the policy number, the itinerary or e-ticket, the boarding pass, the airline's letter stating the delay or cancellation and its reason, and receipts for any extra costs",
+    ));
+    if s.claims_email.is_empty() {
+        show.push(S::link("Claim online", "网上理赔", s.decides, s.start_url));
+    } else {
+        show.push(S::link("Claim form", "理赔表格", s.decides, s.start_url));
+        show.push(S::fact("Send it to", "寄送到", s.claims_email));
+    }
+    show.push(S::fact(
+        "Filing",
+        "代办",
+        "ask me to file it and I fill in the claim from your documents — you approve before anything is sent",
+    ));
+    json!({"status": "info", "claim": s.name, "decides": s.decides, "portal": s.start_url, "show": show,
+           "hints": ["the user asked about the claim: the requirements and the official link — nothing was filed"]})
+}
+
+/// FWD Thailand (Dhipaya's TIP Insure): the quote, the packages read from their cards, the pick by the user's rule and
+/// the comparison card; to buy, the application filled, the user's approval in the app (the plan, the premium and
+/// Dhipaya's conditions), then the payment step — its 2C2P page, whose link the user pays on from any device. The
+/// session itself lives in cookies only: the payment link is what carries over.
+fn next_buy_th(args: &Value, run: &[Value], ids: &Ids) -> Step {
+    let dest = s_arg(args, "destination");
+    let (dep, ret) = (s_arg(args, "depart"), s_arg(args, "return"));
+    let trip = format!("{dest}, {dep} to {ret}, 1 traveller");
+    let insurer = "FWD Thailand (TIP Insure, Dhipaya Insurance)";
+    if !opened(
+        run,
+        "affinity.tipinsure.com",
+        "/product/affinity/tipinsurefwd",
+    ) && !opened(
+        run,
+        "affinity.tipinsure.com",
+        "/product/affinity/TIPINSUREFWD",
+    ) {
+        return ids.one("browser_navigate", json!({"url": TH_QUOTE_URL}));
+    }
+    let stage = |name: &str| {
+        results_of(run, "form_fill")
+            .into_iter()
+            .find(|(a, _)| sget(a, "stage") == name)
+            .map(|(_, msg)| msg)
+    };
+    let stopped_at = |why: &str| {
+        Step::Done(
+            json!({"status": "stopped", "why": why, "insurer": insurer, "trip": trip, "quote_page": TH_QUOTE_URL,
+            "show": [S::fact("Stopped", "已停止", &format!("{why} — nothing was bought")),
+                     S::link("TIP Insure (FWD Thailand)", "TIP Insure（FWD 泰国）", "TIP Insure", TH_QUOTE_URL)],
+            "hints": []}),
+        )
+    };
+    let Some(quoted) = stage("quote") else {
+        return ids.one(
+            "form_fill",
+            json!({"stage": "quote", "destination": th_country(&dest), "depart": dep, "return": ret}),
+        );
+    };
+    if landed_on_maintenance(run) {
+        return Step::Done(site_down("TIP Insure", &trip, TH_QUOTE_URL));
+    }
+    if let Some(why) = stopped(quoted) {
+        return stopped_at(&why);
+    }
+    let quote_pos = pos(run, quoted);
+    let Some((_, read)) = results_of(run, "browser_read_elements")
+        .into_iter()
+        .find(|(_, x)| pos(run, x) > quote_pos)
+    else {
+        return ids.one(
+            "browser_read_elements",
+            json!({"read": [{"name": "plans", "sel": ".package-item", "max": 8,
+                             "fields": {"name": {"sel": "button[position=select-card]", "attr": "package_name"},
+                                        "premium": {"sel": "button[position=select-card]", "attr": "price"},
+                                        "medical": ".detail-item:nth-of-type(2) b",
+                                        "baggage": ".detail-item:nth-of-type(4) b",
+                                        "delay": ".detail-item:nth-of-type(5) b"}}]}),
+        );
+    };
+    let plans = th_plans_of(read);
+    let minimum = match (s_arg(args, "cover"), n_arg(args, "cover_at_least")) {
+        (c, Some(x)) if !c.is_empty() => Some((c, x)),
+        _ => None,
+    };
+    let Some((picked, rule)) = pick_plan(&plans, &minimum, &s_arg(args, "plan")) else {
+        return stopped_at("TIP Insure listed no packages for these dates");
+    };
+    let listed: Vec<String> = plans.iter().map(|p| p.summary("THB")).collect();
+    let mut show = vec![
+        S::fact("Plans quoted", "报价方案", &listed.join("; ")),
+        S::amount(
+            &format!("Chosen: {}", picked.name),
+            &format!("已选：{}", picked.name),
+            picked.premium,
+            "THB",
+        ),
+        S::fact("Why", "选择理由", &rule),
+    ];
+    let mut result = json!({"insurer": insurer, "trip": trip, "plans": listed, "picked": picked.name,
+        "premium": format!("THB {}", money(picked.premium)), "rule": rule, "quote_page": TH_QUOTE_URL});
+    if results_of(run, "present_choices").is_empty() {
+        let options: Vec<Value> = plans
+            .iter()
+            .map(|p| json!({"label": p.name, "source_url": TH_QUOTE_URL,
+                            "details": p.cover.iter().map(|(c, v)| format!("{c} THB {}", whole(*v))).collect::<Vec<_>>(),
+                            "note": if p.name == picked.name { format!("picked: {rule}") } else { String::new() }}))
+            .collect();
+        return ids.one(
+            "present_choices",
+            json!({"question": format!("FWD Thailand (TIP Insure) packages for {trip}: the premium and the covers"),
+                   "kind": "comparison", "options": options, "picked": picked.name, "_code": true}),
+        );
+    }
+    if s_arg(args, "action") == "compare" {
+        result["status"] = json!("shown");
+        result["show"] = json!(show);
+        return Step::Done(result);
+    }
+    // the package's own button, then the application (the insured's details, the Thai address)
+    let Some(pick) = stage("pick") else {
+        return ids.one("form_fill", json!({"stage": "pick", "plan": picked.name}));
+    };
+    // a stop after the quote keeps what was quoted and chosen in the block
+    let stopped_after = |why: &str| {
+        let mut show = show.clone();
+        show.push(S::fact(
+            "Stopped",
+            "已停止",
+            &format!("{why} — nothing was bought"),
+        ));
+        show.push(S::link(
+            "TIP Insure (FWD Thailand)",
+            "TIP Insure（FWD 泰国）",
+            "TIP Insure",
+            TH_QUOTE_URL,
+        ));
+        let mut r = result.clone();
+        r["status"] = json!("stopped");
+        r["why"] = json!(why);
+        r["show"] = json!(show);
+        Step::Done(r)
+    };
+    if let Some(why) = stopped(pick) {
+        return stopped_after(&why);
+    }
+    let Some(details) = stage("details") else {
+        let mut a = json!({"stage": "details"});
+        for k in [
+            "title",
+            "family_name",
+            "given_names",
+            "address_house_no",
+            "address_road",
+            "address_province",
+            "address_postcode",
+        ] {
+            a[k] = json!(s_arg(args, k));
+        }
+        return ids.one("form_fill", a);
+    };
+    if let Some(why) = stopped(details) {
+        return stopped_after(&why);
+    }
+    // the district and the sub-district out of Dhipaya's own lists (its spellings: "Vadhana" for Watthana): the model
+    // picks the user's from each list, code selects it by its value — never a name matched to an option by code
+    let address = json!({"house_no": s_arg(args, "address_house_no"), "road": s_arg(args, "address_road"),
+        "subdistrict": s_arg(args, "address_subdistrict"), "district": s_arg(args, "address_district"),
+        "province": s_arg(args, "address_province"), "postcode": s_arg(args, "address_postcode")});
+    let mut after = pos(run, details);
+    for (list, sel, what, next_stage) in [
+        (
+            "districts",
+            "#customer_address_amphur option",
+            "district (khet / amphoe)",
+            "district",
+        ),
+        (
+            "subdistricts",
+            "#customer_address_tumbon option",
+            "sub-district (khwaeng / tambon)",
+            "address_rest",
+        ),
+    ] {
+        let Some((_, read)) = results_of(run, "browser_read_elements")
+            .into_iter()
+            .find(|(a, x)| pos(run, x) > after && sget(&a["read"][0], "name") == list)
+        else {
+            return ids.one(
+                "browser_read_elements",
+                json!({"read": [{"name": list, "sel": sel, "hidden": true, "max": 200,
+                                 "fields": {"text": {}, "value": {"attr": "value"}}}]}),
+            );
+        };
+        let options: Vec<(String, String)> = super::confirm::element_fields(read, list)
+            .into_iter()
+            .filter_map(|f| {
+                let (t, v) = (
+                    f.get("text")?.trim().to_string(),
+                    f.get("value")?.trim().to_string(),
+                );
+                (!t.is_empty() && !v.is_empty()).then_some((t, v))
+            })
+            .collect();
+        let Some((_, chose)) = results_of(run, super::choose::TOOL)
+            .into_iter()
+            .find(|(a, x)| pos(run, x) > pos(run, read) && sget(a, "for") == list)
+        else {
+            return ids.one(
+                super::choose::TOOL,
+                json!({"for": list,
+                       "question": format!("Which {what} of the insurer's list is the user's home address in?"),
+                       "about": json!({"address": address}).to_string(),
+                       "options": options.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>()}),
+            );
+        };
+        let picked = get_str(&json_of(chose), "choice");
+        let Some((_, value)) = options.iter().find(|(t, _)| *t == picked) else {
+            return stopped_after(&format!(
+                "the {what} of your address is not in TIP Insure's list — check the address in your profile"
+            ));
+        };
+        let Some(filled) = stage(next_stage) else {
+            return ids.one(
+                "form_fill",
+                json!({"stage": next_stage, "value": value, "address_postcode": s_arg(args, "address_postcode")}),
+            );
+        };
+        if let Some(why) = stopped(filled) {
+            return stopped_after(&why);
+        }
+        after = pos(run, filled);
+    }
+    // the user's approval of the purchase: the package, the premium, the insured and Dhipaya's conditions
+    let Some((_, approval)) = results_of(run, "submit_confirm").into_iter().next() else {
+        let name = format!(
+            "{} {}",
+            s_arg(args, "given_names"),
+            s_arg(args, "family_name")
+        );
+        let summary = vec![
+            format!("{}: THB {} for {trip}", picked.name, money(picked.premium)),
+            format!("Insured: {} {}", s_arg(args, "title"), name.trim()),
+            "Payment: by card on Dhipaya's payment page (2C2P) — you enter the card and pay"
+                .to_string(),
+        ];
+        return ids.one(
+            "submit_confirm",
+            json!({"site": "affinity.tipinsure.com", "form": "FWD Thailand (TIP Insure) travel insurance purchase",
+                   "summary": summary, "declaration": TH_CONDITIONS}),
+        );
+    };
+    if declined(approval) {
+        show.push(S::fact(
+            "Not ordered",
+            "未下单",
+            "you declined: Dhipaya's conditions were not accepted and no order was made — nothing was bought",
+        ));
+        result["status"] = json!("not_submitted");
+        result["show"] = json!(show);
+        result["hints"] = json!(["nothing was ordered: the user declined"]);
+        return Step::Done(result);
+    }
+    let Some(paid) = stage("pay") else {
+        return ids.one("form_fill", json!({"stage": "pay"}));
+    };
+    let landed = get_str(&json_of(paid), "url");
+    let on_gateway = url::Url::parse(&landed)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .is_some_and(|h| h == "pgw-ui.2c2p.com");
+    if stopped(paid).is_some() || !on_gateway {
+        return stopped_after(
+            &stopped(paid).unwrap_or_else(|| "Dhipaya's payment page did not open".into()),
+        );
+    }
+    show.push(S::link(
+        "Pay for your policy",
+        "为保单付款",
+        "Dhipaya's payment page",
+        &landed,
+    ));
+    show.push(S::fact(
+        "Next steps (yours)",
+        "下一步（你的）",
+        &format!("open the link on any device: Dhipaya's invoice for the {} package (THB {}) is ready — enter your card and pay there; nothing has been paid yet", picked.name, money(picked.premium)),
+    ));
+    result["status"] = json!("payment_link");
+    result["payment_link"] = json!(landed);
+    result["show"] = json!(show);
+    result["hints"] =
+        json!(["the order is made and unpaid: the user pays on the payment page's link"]);
+    Step::Done(result)
+}
+
+/// A destination as TIP Insure's country list names it (upper case: "JAPAN, ญี่ปุ่น", "KOREA, เกาหลี").
+fn th_country(name: &str) -> String {
+    match name.to_lowercase().as_str() {
+        "south korea" | "korea, republic of" => "KOREA".into(),
+        "laos" => "LAOS".into(),
+        other => other.to_uppercase(),
+    }
+}
+
+/// TIP Insure's packages from their cards: the name and the premium from the package's own button (`package_name`,
+/// `price`), the covers from its fixed rows (medical, baggage, delay; "-" = none).
+fn th_plans_of(read: &Value) -> Vec<Plan> {
+    let amount = |v: Option<&String>| -> Option<f64> {
+        v.and_then(|x| x.trim().replace(',', "").parse::<f64>().ok())
+    };
+    super::confirm::element_fields(read, "plans")
+        .into_iter()
+        .filter_map(|f| {
+            let name = f.get("name")?.trim().to_string();
+            let premium = amount(f.get("premium"))?;
+            if name.is_empty() || premium <= 0.0 || name.contains('"') {
+                return None;
+            }
+            let cover = ["medical", "baggage", "delay"]
+                .into_iter()
+                .filter_map(|c| amount(f.get(c)).map(|v| (c.to_string(), v)))
+                .collect();
+            Some(Plan {
+                name,
+                link: String::new(),
+                premium,
+                cover,
+            })
+        })
+        .collect()
+}
+
 /// The plans on FWD Hong Kong's MyTravel cards: the name, the premium FWD charges (`data-value`, after its offer) and
 /// the medical cover (the card's first amount), all from fixed elements.
 fn hk_plans_of(read: &Value) -> Vec<Plan> {
@@ -2777,9 +3320,15 @@ fn next_buy(args: &Value, run: &[Value], ids: &Ids, m: &Machine) -> Step {
         _ => None,
     };
     let Some((picked, rule)) = pick_plan(&plans, &minimum, &s_arg(args, "plan")) else {
+        // the site's own maintenance page (the address it landed on, insurance_real 2026-11-03): FWD is down, not
+        // without plans
+        if landed_on_maintenance(run) {
+            return Step::Done(site_down(s.name, &trip, s.start_url));
+        }
         return Step::Done(
             json!({"status": "nothing_found", "insurer": s.decides, "trip": trip, "quote_page": s.start_url,
-            "show": [S::fact("No plans listed", "没有可选方案", &format!("FWD's quote page listed no plans for {trip}: open the browser tab to see what it says — nothing was bought"))],
+            "show": [S::fact("No plans listed", "没有可选方案", &format!("FWD's quote page listed no plans for {trip} — nothing was bought")),
+                     S::link("FWD's quote page", "FWD 报价页面", s.name, s.start_url)],
             "hints": []}),
         );
     };

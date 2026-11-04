@@ -4237,7 +4237,7 @@ async fn run_in_bot(rt: &Arc<Runtime>, bot: &str, goal: &str) -> (Value, Vec<Val
 }
 
 #[tokio::test]
-async fn bag_trace_runs_its_machine_in_the_insurance_bot_and_the_reply_turn_has_no_claim_tools() {
+async fn bag_trace_runs_its_machine_in_the_travel_bot_and_the_reply_turn_has_no_claim_tools() {
     let (rt, _d, seen) = scripted_rt(
         |body| {
             if system_of(body).starts_with("You check an assistant") {
@@ -4257,7 +4257,8 @@ async fn bag_trace_runs_its_machine_in_the_insurance_bot_and_the_reply_turn_has_
         json!({"language": "en"}),
     )
     .await;
-    let (t, evs) = run_in_bot(&rt, "insurance", "Where is my bag? File NRTNH12345.").await;
+    // delayed bags are trip trouble: the Travel bot's (0.6.6)
+    let (t, evs) = run_in_bot(&rt, "travel", "Where is my bag? File NRTNH12345.").await;
     assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
     let tr = t["transcript"].as_array().unwrap();
     let running = tr

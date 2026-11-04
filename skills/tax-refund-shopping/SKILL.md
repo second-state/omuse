@@ -1,52 +1,25 @@
 ---
 name: tax-refund-shopping
-description: 游客退税：日本 2026 年 11 月 1 日起改为出境时退税（90 天内购买、行李托运前过机）、韩国即时退税与机场退税、新加坡 eTRS、泰国 P.P.10、台湾电子退税；门槛、单据、机场流程与时间，按行程提醒 Tourist tax refunds — Japan's switch to refund-at-departure from 1 November 2026, Korea instant and airport refunds, Singapore eTRS, Thailand P.P.10, Taiwan e-VAT; thresholds, paperwork, airport steps and timing, with reminders for the departure day.
+description: 游客购物退税（增值税/消费税）：日本（2026 年 11 月 1 日起出境退税）、韩国、中国大陆、台湾、新加坡 eTRS、泰国、越南、印尼；菲律宾（法律已通过、尚未实施）；马来西亚、香港、澳门没有游客退税。条件、最低消费、时限、流程与官方链接 Shopping tax refunds for visitors (VAT / GST / consumption tax) across Asia — Japan (refund at departure from 1 November 2026), Korea, mainland China, Taiwan, Singapore eTRS, Thailand, Vietnam, Indonesia; the Philippines (in law, not running yet); none in Malaysia, Hong Kong, Macau. Who can claim, the minimum, the time limits, how it works and the official links.
 ---
-# Tourist tax refunds / 游客退税
+# Shopping tax refunds for visitors / 游客购物退税
 
-Thresholds and procedures change; the facts here were checked in October 2026 and carry that date. Before quoting a
-threshold, browser_read the official customs / tax page named and give the date checked. Keep the user's receipts out
-of the answer except as a list.
+The rules come from code: call **tax_refund_rules** with the countries (or cities) the user shops in. Its JSON
+result is the checked table — who can claim, the minimum spend, the time limits, how it works at the shop and on the
+way out, how the refund is paid, what the official pages do not confirm, and the official links; code appends them to
+the reply. Never quote a threshold from memory.
 
-## 1. Country notes (verify, then apply to the trip dates)
-- **Japan** — until 31 Oct 2026: tax-free at the till (passport shown, 10% off, consumables sealed, ¥5,000 minimum per
-  shop per day). **From 1 Nov 2026**: pay the full price in the shop (passport scanned, purchase recorded), and claim
-  the consumption tax back at departure: scan the passport at the tax-free terminal in the public area **before
-  checking in luggage**; green = done, red = show the goods at the customs counter. Goods bought within 90 days of
-  departure; everything on one receipt must be present or that receipt is void; the consumables cap and sealing are
-  gone. No overlap period — a trip spanning 1 Nov follows both procedures. Refund paid later to the card / account
-  chosen in the shop's system. Official: Japan Customs / National Tax Agency pages.
-- **Korea** — VAT (and some individual consumption tax) refunded for foreigners staying under 6 months; "Tax Free"
-  shops; instant refund at the till up to a per-receipt and per-stay cap, otherwise airport refund (kiosk or counter
-  after customs stamping of goods above the inspection threshold); minimum per receipt around ₩15,000 — figures
-  differ between sources, verify on the Korea Customs Service page.
-- **Singapore** — GST (9%) refund through eTRS for tourists: minimum SGD 100 per shop (up to 3 same-day receipts),
-  passport at purchase, self-help eTRS kiosk at Changi **before immigration** for checked goods and **after** for
-  hand-carried, within 2 months of purchase; refund to card or cash counter; not for Singapore citizens / PRs /
-  long-term pass holders. Official: IRAS.
-- **Thailand** — VAT refund for tourists: shops with the "VAT Refund for Tourists" sign, at least ฿2,000 per shop per
-  day, ask for the P.P.10 form with the original receipt; at the airport show goods and forms at the VAT refund
-  office **before check-in** (customs stamp), collect after immigration (cash below ฿30,000, otherwise card / draft,
-  fees apply); minimum total ฿5,000 per trip. Official: Thai Revenue Department.
-- **Taiwan** — 5% VAT refund for foreign passports: NT$2,000 minimum per shop per day at TRS shops, within 90 days;
-  small amounts refunded in the shop or at E-VAT refund machines / service counters at the airport before check-in
-  (goods inspection for larger claims). Official: Taiwan Tax Refund (taxrefund.net.tw).
-- **Hong Kong, Macau**: no sales tax, no refund. **Mainland China**: departure tax refund at designated shops in
-  listed cities (¥200 minimum per shop per day, 11% VAT refunded at ~9%), at the airport before check-in — verify.
-- **Malaysia** (TRS at airports, RM300 minimum), **Indonesia** (VAT refund, IDR 500,000 per receipt, airport), **Vietnam**
-  (VAT refund counters at international airports, VND 2 million minimum) — verify each before quoting.
-
-## 2. Plan it into the trip
-- Before shopping: which shops, the passport (a copy is not enough), one receipt per shop per day where possible,
-  don't use or open goods that must be shown; for Japan after 1 Nov the goods and receipts must be in hand at the
-  terminal before bags are checked.
-- Departure day: add "tax refund — 60 min before check-in" to the airport timeline (calendar event or reminder,
-  schedule_create), with the counter's location (browser_read the airport page) and what to carry.
+## Answer
+- The user asks how to get the tax back: answer from the result — eligible or not, the minimum, where and when, what
+  to carry (the passport, the receipts, the goods unused), how the refund is paid — and give the official links. Say
+  what the table marks as not confirmed officially.
+- A country without a refund (Hong Kong, Macau: no sales tax; Malaysia: none since 2018) or not running yet (the
+  Philippines): say so plainly.
+- The Hong Kong **airport departure tax** refund is a different scheme: the **apdt_refund** tool (hk-apdt-refund
+  skill).
+- Plan it into the trip when the dates are known: the departure-day step ("tax refund — before check-in", with what
+  to carry) as a reminder (schedule_create) when the user wants one.
 - Expense trips: refunded tax is not a reimbursable cost — note it for `travel-expense-report`.
-
-## 3. Answer
-Per country: eligible? / minimum / where and when / documents / refund form (cash, card) / date checked / official
-link; then the departure-day steps in order. Say what was not verified; never invent a threshold.
 
 ## Remember what you learn (for next time)
 Whatever the user tells you here is worth keeping, so they are never asked twice — but each kind has its place:

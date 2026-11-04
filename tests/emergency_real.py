@@ -2,7 +2,7 @@
 The user is Australian, in Tokyo. A real-data suite (run_in_docker.sh REAL_DATA_SUITES): the web search and the
 Australian Embassy's pages (https://japan.embassy.gov.au) are the real ones.
 
-1. passport — "I lost my passport in Tokyo this morning — what do I do?" Checked: the Insurance & claims bot answers;
+1. passport — "I lost my passport in Tokyo this morning — what do I do?" Checked: the Travel bot answers;
    the embassy's number or the 24-hour Consular Emergency Centre (+61 2 6261 3305 / +81 3 5232 4111 on the embassy's
    site); and every international phone number in the answer is one the profile, the embassy's numbers or a page the
    answer links gives (the test reads those linked pages itself).
@@ -46,7 +46,7 @@ async def main():
     async with U.User() as u:
         a = await u.ask("I lost my passport in Tokyo this morning — what do I do?", label="passport", timeout=900)
         check("passport: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
-        check("passport: the Insurance & claims bot answered", "nsurance" in a.bot_link, a.bot_link)
+        check("passport: the Travel bot answered", "Travel" in a.bot_link, a.bot_link)
         check("passport: the embassy's emergency line or number from its page",
               # the local form a user dials in Japan (03-5232-4111) is the same line as +81 3 5232 4111
               {"62613305", "52324111"} & {p[-8:] for p in C.phones(a.text)}, C.phones(a.text))
@@ -56,7 +56,7 @@ async def main():
         a = await u.ask("I've had a high fever since last night in my hotel in Tokyo. Where can I see an English-speaking doctor, "
                         "and will my insurance pay for it?", label="illness", timeout=900)
         check("illness: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
-        check("illness: the Insurance & claims bot answered", "nsurance" in a.bot_link, a.bot_link)
+        check("illness: the Travel (or Money) bot answered", "Travel" in a.bot_link or "Money" in a.bot_link, a.bot_link)
         check("illness: an English-speaking clinic or hospital in Tokyo",
               re.search(r"(clinic|hospital|medical cent(er|re))", a.text, re.I) and re.search(r"English", a.text, re.I), a.text[:1200])
         check("illness: with a Tokyo phone number (+81 3 … / 03-…)",

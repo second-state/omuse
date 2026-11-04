@@ -1,10 +1,15 @@
 ---
 name: fwd-travel-insurance
-description: FWD 旅行保险：在新加坡或香港买 FWD 旅行保险（报价、比较方案、填表、付款交给用户），以及出事后理赔（新加坡在 FWD 网上表格提交；香港的旅行保险由 bolttech 承保，理赔表填好后发邮件到 claims.hk@bolttechinsurance.com）FWD travel insurance in Singapore and Hong Kong — buy a policy (quote, compare plans, fill the application, the user pays) and claim after a delay, lost bag, medical bill or cancellation (Singapore: FWD's online claim form; Hong Kong: plans underwritten by bolttech, the claim form filled and emailed to bolttech).
+description: FWD 旅行保险：在新加坡、香港或泰国买 FWD 旅行保险（报价、比较方案、填表、付款交给用户），以及出事后理赔（新加坡在 FWD 网上表格提交；香港的旅行保险由 bolttech 承保，理赔表填好后发邮件到 claims.hk@bolttechinsurance.com）FWD travel insurance in Singapore, Hong Kong and Thailand — buy a policy (quote, compare plans, fill the application, the user pays) and claim after a delay, lost bag, medical bill or cancellation (Singapore: FWD's online claim form; Hong Kong: plans underwritten by bolttech, the claim form filled and emailed to bolttech).
 form: on
 form_kind: claim
 ---
-# FWD travel insurance (Singapore, Hong Kong) / FWD 旅行保险
+# FWD travel insurance (Singapore, Hong Kong, Thailand) / FWD 旅行保险
+
+> **Ask first, buy or file on request.** A question about cover or a claim gets the eligibility, the requirements and
+> the official link: call `insurance_buy` / `claim_file` with `file: false` (the default) — code answers and opens
+> nothing (`action: compare` quotes the plans when the user wants to compare). Set `file: true` only when the user
+> explicitly asks you to buy the cover or file the claim for them.
 
 Use this for "buy FWD travel insurance for my trip to Tokyo", "which FWD plan covers cancellation?", "claim my FWD
 travel insurance for the delayed flight", "file a claim with FWD for the clinic bill in Bangkok". FWD has no API: buying
@@ -19,12 +24,15 @@ signs; you prepare everything else.
   bolttech Insurance (Hong Kong) Company Limited**; FWD Financial Limited runs the website as bolttech's appointed
   agency. Buying is on `www.fwd.com.hk`; **claims go to bolttech**, not to FWD (FWD's eServices app is for FWD's own
   life and accident policies). Say this once so the user knows who decides the claim.
-- Neither market has a travel product for someone who lives elsewhere; never buy one market's plan for a resident of
-  the other.
+- **Thailand** — FWD's travel insurance is sold by **Dhipaya Insurance ("TIP Insure")** on
+  `affinity.tipinsure.com`, for **residents of Thailand who start the trip in Thailand** (Dhipaya's conditions). Claims
+  go to Dhipaya's call centre (1736).
+- No market has a travel product for someone who lives elsewhere; never buy one market's plan for a resident of
+  another.
 
 ## 1. Buy a policy: call `insurance_buy`
 Buy before departure; it never covers something that already happened.
-- Call **insurance_buy** with the trip from the request and the booking emails: `market` (sg / hk), `action` (`buy`, or
+- Call **insurance_buy** with the trip from the request and the booking emails: `market` (sg / hk / th), `action` (`buy`, or
   `compare` when the user only asks which plan), `destination`, `depart`, `return`, `travellers`, the user's rule
   (`cover` + `cover_at_least`, e.g. cancellation 10000), `plan` when the user picked one from the comparison cards, and
   `card` when they named the Vault card to pay with. Trip missing and the mailbox connected: code reads the booking
@@ -37,11 +45,19 @@ Buy before departure; it never covers something that already happened.
   resident with an NRIC / FIN, never refused travel insurance, nothing withheld), the plan, the add-ons, the details
   and **Pay** are the user's; nothing is paid for them. Without a Singapore mobile in the profile the page is handed
   over instead (status `handed_over`).
-- **Hong Kong** — the plan pages (**MyTravel** `https://www.fwd.com.hk/online-insurance/mytravel-insurance/en/`,
-  `…/travelcare-plus-insurance/en/`, `…/gba-easy-travel-insurance/en`) have no form function: the result is
-  `browser_use` and the plan page goes to the browser-use skill. Eligibility: **HKID card holder, in Hong Kong when
-  applying, the trip starts from Hong Kong**. HK MyTravel's "cancel for any reason" cover needs the policy **bought
-  within 30 days of the first trip payment** and the cancellation made **before the original departure**.
+- **Hong Kong** (MyTravel) — code prices the plans on FWD's page, picks by the rule, shows the cards, and for `buy`
+  opens the plan's application and fills the insured's details (`title`, `family_name` + `given_names` split from the
+  HKID name, `hkid_issue_date` of the new Smart HKID; the HKID number from the Vault): status `saved` with the
+  application's link, which opens prefilled on any device. Eligibility: **HKID card holder, in Hong Kong when applying,
+  the trip starts from Hong Kong**. "Cancel for any reason" cover needs the policy **bought within 30 days of the first
+  trip payment** and the cancellation made **before the original departure**.
+- **Thailand** (TIP Insure) — code quotes Dhipaya's packages (Backpack 1 … Backpack Go 3, THB), picks by the rule and
+  shows the cards; for `buy` pass `title`, `family_name` + `given_names` (as on the passport) and the Thai home address
+  in its parts from the profile (`address_house_no`, `address_road`, `address_subdistrict`, `address_district`,
+  `address_province`, `address_postcode`; the passport number comes from the Vault). Code fills the application, then
+  the user approves in the app (the package, the premium, Dhipaya's conditions); only then code accepts the conditions
+  and opens the payment page: status `payment_link` with its link (2C2P — the user enters the card and pays, on any
+  device). Declined: `not_submitted`, no order made.
 - Point out what the trip needs (cancellation for any reason, cover for an activity such as skiing, pre-existing
   conditions — FWD Singapore lists them on `…/travel-insurance/pre-existing-medical-conditions/`).
 - After a purchase: memory_remember (domain=trip: insurer, plan, policy number, period — no ID numbers).

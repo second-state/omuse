@@ -8,6 +8,10 @@ profile: nationality
 ---
 # Korea e-Arrival Card / 韩国电子入境卡
 
+> **Ask first, fill on request.** A question about this card (what to file, when, what it needs) gets the requirements
+> and the official link: call `arrival_card_fill` with `file: false` (the default) — code answers and opens nothing.
+> Set `file: true` only when the user explicitly asks you to fill it in or apply for them.
+
 Foreign visitors without a K-ETA or a Korean residence file the e-Arrival Card, free, within the 3 days before arrival at https://www.e-arrivalcard.go.kr; it stays valid for 72 hours. K-ETA holders and registered residents are exempt (verify the exemption list; the K-ETA waiver for a list of countries runs to 31 Dec 2026 as of Oct 2026). Children under 14 are filed by a parent. K-ETA itself (k-eta.go.kr, a paid authorisation applied for days ahead) is a different form: say which one the traveller needs.
 This is the traveller's own legal declaration: code fills it (a form function with fixed ids), the user reviews it and presses Submit.
 

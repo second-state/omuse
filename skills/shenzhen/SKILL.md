@@ -21,8 +21,8 @@ Australia. Figures were checked in October 2026 and carry their date.
   travel or enter, hand off to `entry-requirements`. A number not on this sheet and not from a data tool is "not in
   my data", not a guess.
 - Hand off to the specialised skills when the question is about a task: arrival card → `cn-arrival-card` (overview
-  `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`,
-  transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus →
+  `arrival-cards`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`,
+  transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus →
   `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants →
   `restaurant-booking` / `michelin-dining`.
 - Compare to what the user knows: Hong Kong, London, New York. Say when something that is normal in the West does
@@ -204,6 +204,22 @@ Australia. Figures were checked in October 2026 and carry their date.
 | 2019 | Named "pilot demonstration area of socialism with Chinese characteristics" |
 | 2024 | Shenzhen–Zhongshan Link opens across the Pearl River |
 | 2025 | Population passes 18 million; metro beyond 600 km |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: Amazing Shenzhen's events https://www.amazingshenzhen.com.cn/node_400949.htm (the city's English
+  portal, EyeShenzhen https://www.eyeshenzhen.com/)
+- Tickets: Damai https://m.damai.cn/ (China's main ticket platform, Chinese; real-name tickets need the passport
+  number) and Maoyan's shows https://show.maoyan.com/ (Chinese). MAISEAT https://www.maiseat.com/ is Damai's
+  international site for visitors (language and payment not confirmed on the site). Big concerts are real-name: the
+  passport used to buy is checked at the gate.
 
 ## Sources to verify against
 - Visas and ports: National Immigration Administration en.nia.gov.cn; Chinese embassy sites; HK Immigration Department.

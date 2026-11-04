@@ -5,6 +5,10 @@ profile: nationality
 ---
 # Arrival cards and travel authorisations / 电子入境卡
 
+> **Ask first, fill on request.** A question about this card (what to file, when, what it needs) gets the requirements
+> and the official link: call `arrival_card_fill` with `file: false` (the default) — code answers and opens nothing.
+> Set `file: true` only when the user explicitly asks you to fill it in or apply for them.
+
 One skill per system fills the form (`sg-arrival-card`, `th-arrival-card`, `my-arrival-card`, `kr-arrival-card`,
 `jp-visit-japan-web`, `cn-arrival-card`, `tw-arrival-card`, `id-arrival-card`, `ph-etravel`, `kh-arrival-card`,
 `uk-eta`, `eu-etias`). This one decides which apply and when, from the trip (mail / calendar via `trip-today`, or the

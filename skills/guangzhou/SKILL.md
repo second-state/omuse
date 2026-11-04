@@ -20,7 +20,7 @@ October 2026 and carry their date.
   Say when something normal in the West does not work here (Google, credit cards, English).
 - Guangzhou is not Hong Kong: RMB not HK$, mainland visa rules, the Great Firewall, mainland apps. Street language is
   Cantonese 粤语 among locals, but everyone understands Mandarin, and written Chinese uses simplified characters.
-- Hand off to the specialised skills when the question is about a task: arrival card → `cn-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: arrival card → `cn-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 
 ## Orientation
 - **Scale.** 19.10 million permanent residents at end-2025, up 123,000 in the year; GDP ¥3.20 trillion in 2025
@@ -194,6 +194,22 @@ freshest wins". Spice is rare; the opposite problem is that almost everything ha
 | 2018 | High-speed rail to Hong Kong West Kowloon |
 | 2025 | Baiyun Airport T3 opens; metro reaches 779.9 km; population 19.1 m |
 | 2026 | International flights move to T3 (January); T1 closes for renovation (May); 140th Canton Fair (October–November) |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: Life of Guangzhou https://www.lifeofguangzhou.com/170601.shtml (an English city portal; no events
+  calendar of its own — events_search covers the rest)
+- Tickets: Damai https://m.damai.cn/ (China's main ticket platform, Chinese; real-name tickets need the passport
+  number) and Maoyan's shows https://show.maoyan.com/ (Chinese). MAISEAT https://www.maiseat.com/ is Damai's
+  international site for visitors (language and payment not confirmed on the site). Big concerts are real-name: the
+  passport used to buy is checked at the gate.
 
 ## Sources to verify against
 - Visas, transit and the arrival card: National Immigration Administration en.nia.gov.cn and s.nia.gov.cn; Chinese

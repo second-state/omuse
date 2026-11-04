@@ -17,6 +17,16 @@ Conventions for every tool
 - **Invalid**: `{"status": "invalid", "problems": [...]}` — the model fixes its JSON and calls again (no question).
 - **Output**: always `status`, `show` (facts code appends: references, links, amounts, deadlines, what is still the
   user's) and `hints` (for the model's wording). A session link or reference is in `show`, never only in prose.
+- **Ask first, file on request** (the user, 2026-11-04): every form tool (`apdt_refund`, `insurance_buy`,
+  `claim_file`, the arrival cards' `arrival_card`) takes a boolean `file`. A question ("how do I get it back?", "what
+  do I need to file?", "am I covered?") is `file: false`: code answers from its own tables with `status: "info"` (or
+  `not_eligible`) — who can, the deadline as a date, what is needed, the official link — and opens no page. Only an
+  explicit request ("apply for me", "fill it in", "buy it", "file the claim") is `file: true` and runs the site
+  process below. `insurance_buy`'s `action: "info"` is the same answer for a purchase question.
+- **Fact tables** (no site, no form): `tax_refund_rules{countries}` (agent/tax_refund.rs: the shopping tax refund for
+  visitors in 12 Asian countries) and `payment_options{countries}` (agent/pay_options.rs: how a foreign visitor pays —
+  apps, transit cards, cash — with the official sign-up and download links). Both are the Money bot's; each returns
+  `countries`, `unknown` and `show` (every fact and link, with the date the table was checked).
 
 ---------------------------------------------------------------------------------------------------------------------
 
@@ -71,8 +81,7 @@ the platform's link.
 ## `insurance_buy` — FWD travel insurance
 
 Machine: `agent/claims.rs::next_buy`; form function: `forms_claims.rs::fwd_sg_quote`. Singapore walked 2026-11-02;
-Hong Kong: `forms_claims.rs::fwd_hk_mytravel` (walked 2026-11-03). Thailand: walked, the tool comes in 0.6.6 (its
-session lives only in cookies).
+Hong Kong: `forms_claims.rs::fwd_hk_mytravel`; Thailand: `forms_claims.rs::fwd_th_tip` (both walked 2026-11-03).
 
 ### Conversation
 Look up: the trip in the booking mails (fixed search), the profile (home country → market; name, email, mobile). Ask
@@ -81,7 +90,7 @@ once: the destination, the dates, the travellers, the user's rule (a cover and i
 ### Input JSON
 | field | type | required | from |
 |---|---|---|---|
-| `market` | sg \| hk | yes (else the profile's home country) | the profile, the words |
+| `market` | sg \| hk \| th | yes (else the profile's home country) | the profile, the words |
 | `action` | buy \| compare | default buy | the words |
 | `destination` | country | yes | the words, the booking |
 | `depart`, `return` | YYYY-MM-DD (not in the past) | yes | the words, the booking |
@@ -109,7 +118,12 @@ Hong Kong: `title` (Mr. / Miss / Mrs.), `hkid_issue_date` (YYYY-MM-DD), `family_
 the HKID name: Hong Kong names come family name first). Output `saved` with `quote_link` = the application's link;
 `details_needed` when FWD refused a field (the link still opens the application at its first step).
 
-### Thailand (FWD × Dhipaya "TIP Insure") — 0.6.6; walked 2026-11-03 with fake data up to step 4
+### Thailand (FWD × Dhipaya "TIP Insure") — 0.6.6; walked 2026-11-03 with fake data to the payment page
+Decided by the user (2026-11-03): code quotes, picks by the rule and fills the application; the user approves in the
+app (the plan, the premium and Dhipaya's conditions); code accepts the conditions and opens the payment page, whose
+link (2C2P, with the invoice number) the user pays on from any device. Dhipaya's own pages keep the session in cookies
+only (a fresh browser on step 4 shows "หมดเวลาทำรายการ", session timed out).
+
 `https://affinity.tipinsure.com/product/affinity/TIPINSUREFWD/ta_inter` → `/Tourist/ta_step_1/inter`: countries
 (`#select-country`, up to 3, jQuery), single / annual (`#singletrip` / `#annualtrip`), `#startDate` / `#endDate`
 (dd/mm/yyyy, jQuery datepicker), who (`#individual` / `#multipax` / `#family`), "ต่อไป" → `/ta_step_2/inter`: a tutorial
@@ -118,12 +132,17 @@ dialog (`#modal-tutorial`, button "ตกลง"), the packages (Backpack 1 … 
 `#passport` (`#passport-field`, `#customer_passport_country` — option values are ids, e.g. "1" = THAILAND),
 `#customer_title_name` (MR. / MISS / MRS. / MASTER), `#customer_firstname` / `#customer_lastname` (English),
 `#customer_birth_date` / `_month` / `_year` ("01", "01", "1990"), a Thai address (`#customer_address_house_no`, `_moo`,
-`_village`, `_soi`, `_road`, `_province` → `_amphur` → `_tumbon` loaded in turn, `_post_code` filled by the site),
-beneficiary `#legal` / `#other`, purpose `#sightseeing` …, delivery `#delivery-same-address`, policy by `#email` /
-`#postal`, consents `#accept-condition-0` / `-1` → `/ta_step_4/inter`: the summary (insured, trip, plan, total premium),
-payment `#creditcard` / `#netbanking` (counter) / `#promtpay` / `#2c2p_airpay` (ShopeePay), `#acceptance` (the purchase
-conditions) and Next to the payment gateway. The session lives only in cookies: no step up to 4 gives a link or a
-reference that opens on another device.
+`_village`, `_soi`, `_road`, `_province` → `_amphur` → `_tumbon`, each list loaded after the one above — slow, up to
+~30 s —, `_post_code` filled by the site, else typed), beneficiary `#legal` / `#other`, purpose `#sightseeing` …,
+delivery `#delivery-same-address`, policy by `#email` / `#postal`, consents `#accept-condition-0` / `-1`, "ต่อไป" →
+`/ta_step_4/inter`: the summary (insured, trip, plan, total premium "ราคาเบี้ยประกันรวม"), payment as label buttons
+(`label.payment_type.creditcard` / `.netbanking` (counter) / promptpay / ShopeePay — the label, not the hidden radio),
+`#acceptance` (the purchase conditions), then the button becomes "ชำระเงิน" (`button.btn-next.paid`): it opens
+`#modal-term` (Dhipaya's conditions and key exclusions — the insured lives in Thailand and starts the trip there, is
+1–85 and in good health, one policy per trip; buttons "ไม่ยอมรับ" decline / `#btn-acceptance` "ยอมรับ" accept); accept,
+then "ชำระเงิน" again → `https://pgw-ui.2c2p.com/payment/4.3/#/token/<token>`: Dhipaya's invoice
+("เลขที่ใบแจ้งหนี้", e.g. 2611G1000582), the amount, the card form — the same link opens on another device. The card
+details and "ชำระเงินต่อ" are the user's.
 
 ### Output JSON
 | `status` | when | fields |
@@ -131,6 +150,9 @@ reference that opens on another device.
 | `shown` | compare | `plans`, `picked`, `premium`, `rule` |
 | `saved` | buy | + `quote_link` (Singapore: the saved quote, `quotation_no`; Hong Kong: the application) |
 | `details_needed` | buy (Hong Kong): FWD refused a detail | `quote_link` (the application at its first step) |
+| `payment_link` | buy (Thailand), approved | `payment_link` (Dhipaya's 2C2P payment page, any device) |
+| `not_submitted` | buy (Thailand), declined | no order made |
+| `site_down` | the insurer's site shows its maintenance page | `quote_page` |
 | `handed_over` | no Singapore mobile / the save failed | the page is handed over (fallback) |
 | `nothing_found` | no plans listed | `quote_page` |
 
@@ -180,3 +202,22 @@ declaration; never auto-approved) → agree and submit → the page FWD lands on
 
 `show`: the delay, the claim amount, the rule (policy), tell FWD by, **Submitted** / **Not submitted**, **Your claim on
 FWD** or "FWD emails the claim link", reminders.
+
+---------------------------------------------------------------------------------------------------------------------
+
+## `claim_file` (Chase Sapphire) — a card's trip cancellation or interruption claim
+
+### Conversation
+The Money bot. The model asks once for the bookings (supplier, reference), what was paid on the card and what was
+refunded, the date and covered reason (in general terms, never the diagnosis), whose illness (`who`) and the documents
+the user has.
+
+### What the tool does
+No page is opened: code counts the claim (paid − refunded, or the unrefunded nights plus the change fee for an
+interruption) and the deadlines (notify within 20 days, documents within 90), and prepares the claim.
+
+### Output JSON
+`status: "prepared"`, `amount`, `arithmetic`, `dates`, `documents`, `portal`. `show`: the benefit and the amount, how it
+adds up, notify by, documents by, **Start the claim and upload the documents** (Card Claim Center's link), the next
+steps that are the user's (sign in, start the claim, upload; nothing has been filed), the documents to upload.
+

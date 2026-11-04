@@ -25,11 +25,13 @@ use super::util::{content_of, sget, stored_call, tool_calls};
 use super::workflow::{hints, RESULT_PREFIX, RESULT_SUFFIX};
 
 /// The code tools whose JSON results carry `hints` facts (the model calls them with JSON arguments).
-pub const FACT_TOOLS: [&str; 4] = [
+pub const FACT_TOOLS: [&str; 6] = [
     "emergency_contacts",
     "visa_rules",
     "fx_convert",
     "loan_payment",
+    "tax_refund_rules",
+    "payment_options",
 ];
 
 /// What the reply is written for: its language, whether a schedule ran it, and whether it answers a workflow machine's
@@ -97,7 +99,66 @@ pub fn tool_hints(transcript: &[Value]) -> Vec<String> {
 /// request's trusted results, then the run's structured facts as items.
 pub fn show_items(transcript: &[Value], ctx: Ctx) -> Vec<Value> {
     let mut out = super::show::collect(transcript);
+    out.extend(event_items(transcript));
     out.extend(super::show::run_fact_items(&run_facts(transcript, ctx)));
+    out
+}
+
+/// The events an `events_search` found in this request (Google Events data, read by code from the result's fields —
+/// never its text): each event with a ticket link, as a link to book it with when and where (at most 8). A web search
+/// fallback has no `events`, and a broadened search (the city's events, not the user's) is the model's to pick from,
+/// so neither adds anything.
+pub fn event_items(transcript: &[Value]) -> Vec<Value> {
+    let last_user = transcript
+        .iter()
+        .rposition(|m| get_str(m, "role") == "user")
+        .unwrap_or(0);
+    let transcript = &transcript[last_user..];
+    let ids: Vec<String> = transcript
+        .iter()
+        .flat_map(tool_calls)
+        .filter(|tc| stored_call(tc).0 == "events_search")
+        .map(|tc| get_str(tc, "id"))
+        .collect();
+    let mut out = Vec::new();
+    for m in transcript.iter().filter(|m| get_str(m, "role") == "tool") {
+        if !ids.contains(&get_str(m, "tool_call_id")) {
+            continue;
+        }
+        let Some(v) = json_of(&content_of(m)) else {
+            continue;
+        };
+        let data = if v.get("content").is_some_and(Value::is_object) {
+            &v["content"]
+        } else {
+            &v
+        };
+        // a broadened search (all the city's events, the user's words found none): the model names the matching ones;
+        // code appends none of them
+        if data.get("broadened").is_some() {
+            continue;
+        }
+        for e in data["events"].as_array().into_iter().flatten() {
+            let Some(t) = e["tickets"].as_array().and_then(|t| t.first()) else {
+                continue;
+            };
+            let (url, title) = (get_str(t, "url"), get_str(e, "title"));
+            if !url.starts_with("https://") || title.is_empty() || out.len() >= 8 {
+                continue;
+            }
+            let at = [get_str(e, "when"), get_str(e, "venue")]
+                .into_iter()
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let text = match get_str(t, "source") {
+                src if src.is_empty() => at,
+                src if at.is_empty() => format!("tickets on {src}"),
+                src => format!("{at} — tickets on {src}"),
+            };
+            out.push(S::link(&title, &title, &text, &url));
+        }
+    }
     out
 }
 
@@ -658,6 +719,81 @@ mod tests {
             emergency_call_refusal("phone_call", &json!({"number": "+6561234567"}), false)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn an_events_search_appends_each_events_ticket_link() {
+        let res = json!({"trust": "untrusted", "source": "Google Events", "content": {"count": 2, "events": [
+            {"title": "Coldplay: Music of the Spheres", "when": "Sat, Nov 22, 7 PM", "venue": "National Stadium",
+             "tickets": [{"source": "Ticketmaster.sg", "url": "https://ticketmaster.sg/activity/detail/25sg_coldplay"}]},
+            {"title": "No tickets here", "when": "Sun", "venue": "Park", "tickets": []}]}});
+        let t = vec![
+            json!({"role": "user", "content": "Coldplay tickets in Singapore?"}),
+            call(
+                "c1",
+                "events_search",
+                json!({"query": "Coldplay", "city": "Singapore"}),
+            ),
+            tool("c1", &res.to_string()),
+        ];
+        let shown: Vec<String> = show_items(&t, Ctx::default())
+            .iter()
+            .filter_map(|i| S::render(i, false))
+            .collect();
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert!(
+            shown[0].contains("https://ticketmaster.sg/activity/detail/25sg_coldplay")
+                && shown[0].contains("Coldplay: Music of the Spheres")
+                && shown[0].contains("National Stadium — tickets on Ticketmaster.sg"),
+            "{shown:?}"
+        );
+        // the same JSON from another tool (a page read) adds nothing
+        let t = vec![
+            json!({"role": "user", "content": "x"}),
+            call("c1", "browser_read", json!({})),
+            tool("c1", &res.to_string()),
+        ];
+        assert!(event_items(&t).is_empty());
+        // a broadened search (all the city's events): nothing appended
+        let mut broad = res.clone();
+        broad["content"]["broadened"] = json!("Google Events had nothing for \"jazz in Tokyo\"");
+        let t = vec![
+            json!({"role": "user", "content": "x"}),
+            call(
+                "c1",
+                "events_search",
+                json!({"query": "jazz", "city": "Tokyo"}),
+            ),
+            tool("c1", &broad.to_string()),
+        ];
+        assert!(event_items(&t).is_empty());
+    }
+
+    #[test]
+    fn the_tax_refund_and_payment_tables_facts_are_appended_to_the_reply() {
+        // money_real 2026-11-04: the tables' show items never reached the reply (they were not fact tools)
+        let t = vec![
+            json!({"role": "user", "content": "how do I pay in Shanghai?"}),
+            call("c1", "payment_options", json!({"countries": ["Shanghai"]})),
+            tool(
+                "c1",
+                &super::super::pay_options::payment_options(&json!({"countries": ["Shanghai"]}))
+                    .to_string(),
+            ),
+            call("c2", "tax_refund_rules", json!({"countries": ["Tokyo"]})),
+            tool(
+                "c2",
+                &super::super::tax_refund::tax_refund_rules(&json!({"countries": ["Tokyo"]}))
+                    .to_string(),
+            ),
+        ];
+        let shown = show_items(&t, Ctx::default())
+            .iter()
+            .filter_map(|i| S::render(i, false))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(shown.contains("id333206289"), "{shown}");
+        assert!(shown.contains("customs.go.jp"), "{shown}");
     }
 
     #[test]

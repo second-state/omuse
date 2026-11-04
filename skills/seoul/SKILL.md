@@ -17,7 +17,7 @@ carry their date.
 - **No browser.** Answer from this sheet: it is the curated data, and each volatile fact carries the date it was checked. For live numbers use data tools, never the browser: exchange rates → market_data; flights, hotels and prices → the travel data connector (mcp_* tools) when it is connected; the user's own bookings → mail and calendar via `trip-today`. When a fact here may have changed since its date (visa rules, fares, opening hours, new lines), say the date and name the official source from the list at the end; for a rule that decides whether the user can travel or enter, hand off to `entry-requirements`. A number not on this sheet and not from a data tool is "not in my data", not a guess.
 - Compare to what the user knows: Tokyo, London, New York. Say when something normal in the West does not work here
   (Google Maps navigation, booking apps that need a Korean phone number, foreign cards in some apps).
-- Hand off to the specialised skills when the question is about a task: arrival card → `kr-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: arrival card → `kr-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 
 ## Orientation
 - **Scale.** About 9.4 million registered residents in Seoul proper (9.39 million in 2024, slowly falling as people
@@ -198,6 +198,21 @@ carry their date.
 | 2024 | GTX-A opens (March) |
 | 2025 | e-Arrival card launched (24 February); subway base fare ₩1,550 (June) |
 | 2026 | Google map-data export approved (27 February); K-ETA exemption extended to 31 December 2026 |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: Visit Seoul's events https://english.visitseoul.net/events
+- Tickets in English: NOL World (formerly Interpark Global) https://world.nol.com/en (concerts, musicals, K-pop) and
+  YES24 Ticket English https://ticket.yes24.com/English (takes PayPal); Melon Ticket Global https://tkglobal.melon.com/
+  for many K-pop shows. K-pop tickets sell out in minutes: say when sales open if the event's page gives it.
+- Nationwide listings: VisitKorea https://english.visitkorea.or.kr/
 
 ## Sources to verify against
 - Entry: K-ETA k-eta.go.kr; e-Arrival card e-arrivalcard.go.kr; Korea Visa Portal visa.go.kr; HiKorea hikorea.go.kr

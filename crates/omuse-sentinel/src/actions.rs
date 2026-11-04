@@ -2500,6 +2500,43 @@ hotel with the price its page shows, saying it is a \"from\" price, and the comp
             return Ok(web);
         }
         "places_search" => return places_with_fallback(st, store, task_id, &keyed, args).await,
+        // Google Events with the SerpApi key; the web search for the same words without it, or when Google finds none
+        "events_search" => {
+            let mut failed = Vec::new();
+            if keyed {
+                // Google Events answers few narrow queries in Asia ("Jazz events in Tokyo": none; "Concerts in Tokyo":
+                // nine — 2026-11-04): with none for the user's words, the city's events on the same dates, marked broader
+                let city_only = json!({"city": fstr(args, "city"), "when": fstr(args, "when")});
+                let tries = [(args, false), (&city_only, true)];
+                for (a, broader) in tries.iter().filter(|(_, b)| !b || !fstr(args, "query").trim().is_empty()) {
+                    match travel_client(st)?.events(a).await {
+                        Ok(mut d) if d["count"].as_u64().unwrap_or(0) > 0 => {
+                            if *broader {
+                                d["broadened"] = json!(format!(
+                                    "Google Events had nothing for \"{}\": these are all of the city's events for the dates — \
+name the ones that match what the user asked; if none does, say so and give the city's listings and ticket sites",
+                                    omuse_apps::serpapi::events_query(args)
+                                ));
+                            }
+                            return untrusted_travel(store, task_id, "Google Events", d);
+                        }
+                        Ok(_) => failed.push(format!(
+                            "Google Events (SerpApi) found no events for \"{}\"",
+                            omuse_apps::serpapi::events_query(a)
+                        )),
+                        Err(e) => {
+                            failed.push(format!("Google Events (SerpApi) failed: {e}"));
+                            break;
+                        }
+                    }
+                }
+            } else {
+                failed.push("no SerpApi key for Google Events".into());
+            }
+            let query = omuse_apps::serpapi::events_query(args);
+            let when = fstr(args, "when").replace('_', " ");
+            return web_fallback(st, task_id, &format!("{query} {when} tickets"), &failed, "events").await;
+        }
         // ONE web search for the rental companies and their "from" prices, and the booking link built from the rental:
         // Kayak's results page, else (only when Kayak's page does not answer) Rentalcars.com's
         "cars_search" => {

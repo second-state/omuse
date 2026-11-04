@@ -1,12 +1,16 @@
 ---
 name: csr-trip-claim
-description: 用 Chase Sapphire Reserve（或 Preferred）刷的机票/酒店/行程，因生病、受伤等原因没去成或中途中断：判断该报行程取消还是行程中断、20 天/90 天时限、先向航空公司要退款和书面说明、医生证明、在理赔管理方的 Card Claim Center（cardclaimcenter.com，eclaimsline.com 已转到这里）立案（登录和最终提交交给用户）、整理理赔材料包 PDF、设提醒 Trip cancellation / interruption claim on the Chase Sapphire Reserve (or Preferred) card — you fell sick or were hurt and missed a flight, hotel or tour paid with the card: which benefit applies, the 20-day and 90-day clocks, the airline refund and letter first, the physician statement, the claim started on the administrator's Card Claim Center portal, cardclaimcenter.com (where www.eclaimsline.com now redirects; login and final submit are the user's), a claim packet PDF, and reminders until it is paid.
+description: 用 Chase Sapphire Reserve（或 Preferred）刷的机票/酒店/行程，因生病、受伤等原因没去成或中途中断：判断该报行程取消还是行程中断、20 天/90 天时限、先向航空公司要退款和书面说明、医生证明、准备好理赔并给出理赔管理方 Card Claim Center（cardclaimcenter.com，eclaimsline.com 已转到这里）的链接（用户登录、立案、上传材料）、整理理赔材料包 PDF、设提醒 Trip cancellation / interruption claim on the Chase Sapphire Reserve (or Preferred) card — you fell sick or were hurt and missed a flight, hotel or tour paid with the card: which benefit applies, the 20-day and 90-day clocks, the airline refund and letter first, the physician statement, the claim prepared with the link to the administrator's Card Claim Center portal, cardclaimcenter.com (where www.eclaimsline.com now redirects; the user signs in, files and uploads there), a claim packet PDF, and reminders until it is paid.
 
 plan: on
 form: on
 form_kind: claim
 ---
 # Chase Sapphire trip cancellation / interruption claim / Sapphire 卡行程保险理赔
+
+> **The claim is prepared, the filing is the user's.** `claim_file` works out the benefit, the amount and the two
+> deadlines and gives Card Claim Center's link with the documents to upload; the user signs in there, starts the claim
+> and uploads — nothing is opened in the agent's browser.
 
 Use this for "I got sick and missed my flight, get my money back from the Sapphire Reserve insurance", "claim the trip
 insurance on my Chase card", "we had to cut the trip short, the CSR covers that?". The card's **Trip Cancellation /
@@ -35,11 +39,10 @@ a full number), `doctor_letter`, `supplier_letter`, `travellers`.
   searches (result `mail_read`, the emails above it) — read them and call claim_file again with every fact.
 - `needs_input`: ask the user once for the missing facts, then call again with every field. `invalid`: fix and call again.
 - Code then computes the amount (paid − refunded, or the supplier's non-refundable figure; plus the change fee for an
-  interruption; within the caps) and the deadlines (loss date + 20 days to notify, + 90 days for the documents), opens
-  Card Claim Center's sign-in (eClaimsLine moved there; the email from the profile is filled in) and hands it over:
-  signing in or creating the account is the user's. After the hand-back, still on the sign-in: the result is
-  `waiting_on_user` with every fact; signed in: `browser_use` — the claim pages have no form function, so the
-  browser-use skill fills them with the result's facts, and **Submit** stays the user's (never you).
+  interruption; within the caps) and the deadlines (loss date + 20 days to notify, + 90 days for the documents), and
+  returns the claim prepared (status `prepared`) with Card Claim Center's link (eClaimsLine moved there) and the
+  documents to upload: the user signs in or creates the account there, starts the claim with these facts and uploads
+  the documents. Nothing is opened in the agent's browser; **Submit** stays the user's (never you).
 - Its JSON result has the status, the amount and its arithmetic, the dates, the documents and `show`. Never say the
   claim was filed or submitted.
 - By phone, when the portal cannot be reached: Sapphire Reserve 1-800-350-1697, Sapphire Preferred 1-800-350-1362

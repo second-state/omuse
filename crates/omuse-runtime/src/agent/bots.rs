@@ -607,7 +607,8 @@ mod tests {
             "g",
             ok,
         );
-        assert_eq!(r, Route::Bot(json!({"bot": "cards", "question": "q"})));
+        // an old bot's id (Credit cards, merged into Money in 0.6.6) routes to the bot that took it over
+        assert_eq!(r, Route::Bot(json!({"bot": "money", "question": "q"})));
         // no question: the request itself; a merged bot's old id is the bot it was merged into
         let r = checked_route(&json!({"bot": "cities"}), " what to see in Osaka ", ok);
         assert_eq!(

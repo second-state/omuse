@@ -239,7 +239,7 @@ from the JSON result (code appends the facts in show to the reply).",
         "Pick from the flights a travel_search / travel_book result listed (status pick_needed). Read every flight against \
 the user's request and give the offer_ids of exactly the flights that meet it, in the order to show them: ONE id when \
 the request names one flight (the last, the first, the earliest, the latest, the cheapest, the shortest …), several only \
-when the user asked for options or a comparison. Stick to what the user asked: never add a cheaper or \"better\" flight \
+when the user asked for options or a comparison. \"The last flight\" is the one that DEPARTS last among the flights meeting the user's other conditions (\"the last flight that lands before midnight\": the latest departure that still lands that day — not the one landing latest); \"the first\" departs first. Stick to what the user asked: never add a cheaper or \"better\" flight \
 they did not ask for, and default to the cheapest only when the user gave no criterion at all. Times are local at each \
 airport; arrives_days_later 0 = it lands on the departure day (before midnight), 1 = the next day; a flight's `return` \
 is its return flight (a round trip). A round trip whose returns come from a second search: pick the outbound the \
@@ -1065,7 +1065,7 @@ impl RunnerUps {
         // built from the search's structured result: a code card (`_code`), nothing to verify against pages
         Some(
             json!({"question": self.title, "kind": "comparison", "options": options,
-                    "picked": label(&self.best), "_code": true}),
+                    "picked": label(&self.best), "_code": true, "open_links": true}),
         )
     }
 }
@@ -1088,11 +1088,30 @@ pub fn runner_ups(t: &[Value], pick_result: &Value, request: &str) -> Option<Run
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| get_str(&pick_result["pick"], "offer_id"));
     let best = src.flights.iter().find(|o| o.id == best_id)?.clone();
-    let others: Vec<Offer> = src
-        .flights
-        .into_iter()
-        .filter(|o| o.id != best_id)
+    // the model picks the runner-ups by the user's request; code only leaves out a flight another one (the best match
+    // included) beats on every count — leaving no earlier, landing no later, no dearer, no more stops — which is never
+    // the answer to any request ("the last", "the cheapest", "direct"); the question asks for cheap and nonstop ones
+    // (the user, 2026-11-04: no expensive flight with many stops)
+    let all: Vec<Offer> = src.flights;
+    let beaten = |o: &Offer| {
+        let (p, s) = (o.price.unwrap_or(f64::MAX), o.stops.unwrap_or(9));
+        all.iter().any(|q| {
+            let (qp, qs) = (q.price.unwrap_or(f64::MAX), q.stops.unwrap_or(9));
+            q.id != o.id
+                && !o.depart.is_empty()
+                && !q.depart.is_empty()
+                && q.depart >= o.depart
+                && q.arrive <= o.arrive
+                && qp <= p
+                && qs <= s
+                && (q.depart != o.depart || q.arrive != o.arrive || qp < p || qs < s)
+        })
+    };
+    let others: Vec<Offer> = all
+        .iter()
+        .filter(|o| o.id != best_id && !beaten(o))
         .take(RUNNER_UP_POOL)
+        .cloned()
         .collect();
     if others.is_empty() {
         return None;
@@ -1102,7 +1121,8 @@ pub fn runner_ups(t: &[Value], pick_result: &Value, request: &str) -> Option<Run
     Some(RunnerUps {
         question: format!(
             "The best match for the user's request is {}. Which of the other flights also meet the request well enough to \
-             offer as runner-ups? Choose up to {RUNNER_UPS_MAX}, best first; \"{NO_RUNNER_UP}\" when no other flight meets it.",
+             offer as runner-ups? Prefer cheap and nonstop flights; never an expensive flight with many stops. Choose up to {RUNNER_UPS_MAX}, best first; \"{NO_RUNNER_UP}\" when no \
+             other flight meets it.",
             best.label
         ),
         context: context.to_string(),
@@ -2068,14 +2088,10 @@ pub fn offer_of(kind: Kind, o: &Value, default_currency: &str) -> Offer {
 /// times, the stops, the price, a mixed cabin and the baggage, as the result gives them.
 fn flight_details(o: &Value, currency: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let dep = get_str(&o["departure"], "time");
-    let arr = get_str(&o["arrival"], "time");
+    // the ends from the offer's `departure` / `arrival`, else its legs (Google Flights' offers carry only legs)
+    let (dep_at, dep, arr_at, arr) = flight_ends(o);
     if !dep.is_empty() && !arr.is_empty() {
-        out.push(format!(
-            "{} {dep} → {} {arr}",
-            get_str(&o["departure"], "airport"),
-            get_str(&o["arrival"], "airport")
-        ));
+        out.push(format!("{dep_at} {dep} → {arr_at} {arr}"));
     } else {
         let route = get_str(o, "route");
         if !route.is_empty() {
@@ -3141,8 +3157,10 @@ fn present(s: Shown, t: &[Value], m: &Machine, ids: &Ids) -> Step {
             .collect();
         return ids.calls(
             "present_choices",
+            // each option's button opens its booking page in the user's own browser (the user, 2026-11-04: a choice
+            // sent as a message searched again and opened the link in the agent's browser)
             json!({"question": format!("{} for {}", choice_title(kind), searched_line(kind, req)),
-                   "kind": "comparison", "options": options, "picked": pick.label}),
+                   "kind": "comparison", "options": options, "picked": pick.label, "open_links": true}),
         );
     }
     // 3b. the pick's own data: a Google Flights offer's sellers and, for the comparison, a hotel's rooms (the booking

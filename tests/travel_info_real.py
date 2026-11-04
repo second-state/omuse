@@ -11,6 +11,8 @@ Yahoo's. The checks judge what a careful answer from those live pages must carry
    the Narita Express with at least two departure times and a yen fare, named from the operator (JR East).
 3. pay — "Tokyo and Shanghai next month, how do I pay and stay online; I think in SGD". Checked: today's SGD → JPY and
    SGD → CNY rates in the block (within the real range, with where they come from).
+4. file — the Travel bot's example "What do I need to file before my holiday in Singapore next week?" (asked first, in
+   Main): Travel answers; the block names the SG Arrival Card with ICA's official link; nothing is filled.
 No request asks the user to take over a browser. One TIMING line per request.
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh travel_info_real"""
@@ -73,8 +75,19 @@ async def pay(u: U.User) -> None:
           "market data of" in a.block, a.block)
 
 
+async def file_sg(u: U.User) -> None:
+    # the Travel bot's example, word for word: a question gets what to file, when, and the official link; nothing is filled
+    a = await u.ask("What do I need to file before my holiday in Singapore next week?", label="file")
+    T2.answered("file", a)
+    check("file: the Travel bot answered", "Travel" in a.bot_link, a.bot_link)
+    check("file: the block names the SG Arrival Card and links ICA's official site, and nothing is filled (no takeover)",
+          "SG Arrival Card" in a.block and any("ica.gov.sg" in x for x in a.block_links) and not a.takeovers,
+          (a.block[:800], a.block_links, a.takeovers))
+
+
 async def main():
     async with U.User() as u:
+        await file_sg(u)
         await entry(u)
         await narita(u)
         await pay(u)

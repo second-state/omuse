@@ -17,11 +17,11 @@ set -u
 # OMUSE_E2E_REAL (OMUSE_E2E_ENV_FILE)
 # REAL_DATA_SUITES: read-only use cases on the real web and the real APIs (search, flights/hotels/cars, market data, …)
 REAL_DATA_SUITES=" travel_user_real travel_kiwi_real travel_brave_real travel_connect_real web_search_real travel_info_real \
-emergency_real tax_refund_real market_real research_real library_real cards_real cards_markets_real news_report_real \
-travel_ask_real stream_real bots_real btc_monitor_real shopping_real "
+emergency_real money_real market_real research_real library_real cards_real cards_markets_real news_report_real \
+travel_ask_real stream_real bots_real btc_monitor_real shopping_real travel_events_real "
 # the other e2e suites: the app with the real model and the real image / video provider, nothing outside faked
 REAL_APP_SUITES="assistant_real automations_real memory_real chat_real docs_real chart_real media_real attach_media_real \
-travel_receipts_real"
+travel_receipts_real cards_claim_real"
 # REAL_SITES: bookings and orders on the real booking sites and shops — code searches and picks, opens the real booking
 # page and hands it to browser-use, which fills it with the profile's fake data and hands over at the first step that is
 # the user's (sign-in, CAPTCHA, Pay); no card in the Vault, nothing paid. Run one at a time (`realsites` forces -j 1):
@@ -30,11 +30,11 @@ travel_receipts_real"
 # function maps and hands over at the first user step (Cloudflare check, sign-in, passport photo, emailed code, Submit);
 # the Taiwan and UK ETA suites connect the test inbox (OMUSE_E2E_IMAP_*) to read the emailed code. Not in `real`: a
 # government site sees these runs only when `realsites` is asked for, never on every gate
-# The insurance, claims, baggage and departure-tax suites too: FWD Singapore's quote and claim, bolttech's PDF, Card
-# Claim Center's sign-in, WorldTracer's mybag.aero and the APDT platform, each stopped at the first user step.
+# The insurance, claims, baggage and departure-tax suites too: FWD Singapore's quote and claim, FWD Hong Kong and
+# Thailand's quotes, bolttech's PDF, WorldTracer's mybag.aero and the APDT platform, each stopped at the first user step.
 REAL_SITES="travel_book_real arrival_real arrival_cards_real arrival_cards2_real arrival_cards3_real \
-arrival_cards4_real arrival_address_real arrival_address2_real insurance_real insurance_hk_real claims_real \
-cards_claim_real cards_interruption_real apdt_real"
+arrival_cards4_real arrival_address_real arrival_address2_real insurance_real insurance_hk_real insurance_th_real claims_real \
+apdt_real"
 REAL_SUITES="$REAL_DATA_SUITES $REAL_APP_SUITES"
 
 # bash reads a script as it runs: a copy keeps a run going while the file is edited (another suite added to the lists)

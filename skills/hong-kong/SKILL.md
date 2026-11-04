@@ -19,7 +19,7 @@ in October 2026 and carry their date.
 - Compare to what the user knows: London, New York, Singapore. Say when Hong Kong differs from mainland China
   (Google, WhatsApp and Visa cards work; Shenzhen is another visa regime) and from the West (tiny flats, typhoon
   days off, service charge instead of tips).
-- Hand off to the specialised skills when the question is about a task: arrival card → none needed for most visitors (overview `arrival-cards`; Shenzhen trips → `cn-arrival-card`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: arrival card → none needed for most visitors (overview `arrival-cards`; Shenzhen trips → `cn-arrival-card`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 - Mainland questions (Shenzhen, Guangzhou) → the `shenzhen` skill.
 
 ## Orientation
@@ -204,6 +204,21 @@ in October 2026 and carry their date.
 | 2024 | Article 23 security ordinance (March); airport three-runway system commissioned (November) |
 | 2025 | Kai Tak Sports Park opens (March); ride-hailing licensing law passed (October) |
 | 2026 | TTPS list expanded to 200 universities (January); population 7.52 million (mid-year) |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: Discover Hong Kong's events https://www.discoverhongkong.com/eng/explore/events.html, the LCSD's
+  venues and programmes https://www.lcsd.gov.hk/en/ and art-mate https://www.art-mate.net/ (arts listings)
+- Tickets: URBTIX https://www.urbtix.hk/en (the government venues: Cultural Centre, City Hall), Cityline
+  https://www.cityline.com/en/ and HK Ticketing https://www.hkticketing.com/ (concerts, Kai Tak Stadium shows).
+  Foreign-card rules are not stated on all of them — say so.
 
 ## Sources to verify against
 - Entry, visas, e-Channel, talent schemes: Immigration Department immd.gov.hk.

@@ -285,6 +285,8 @@ class User:
         if new_chat:
             await self.new_chat()
         before = await pg.locator(".msg.assistant:not(.live):has(.bubble:not(.filecard):not(.choices))").count()
+        prev_last = pg.locator(".msg.assistant:not(.live) .bubble:not(.filecard):not(.choices)")
+        prev_text = (await prev_last.last.inner_text()) if await prev_last.count() else ""
         await pg.fill("#chatInput", text)
         t0 = time.monotonic()
         await pg.keyboard.press("Enter")
@@ -349,7 +351,7 @@ class User:
         return out
 
     async def open_bot(self, name: str) -> None:
-        """The user clicks a bot in the menu by its name ("Travel", "Credit cards", …) and starts a new chat with it;
+        """The user clicks a bot in the menu by its name ("Travel", "Money", …) and starts a new chat with it;
         then `ask(…, new_chat=False)` talks to that bot."""
         pg = self.page
         await pg.goto(APP + "#chat")

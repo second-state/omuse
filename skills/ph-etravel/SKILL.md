@@ -8,6 +8,10 @@ profile: nationality
 ---
 # Philippines eTravel / 菲律宾 eTravel
 
+> **Ask first, fill on request.** A question about this card (what to file, when, what it needs) gets the requirements
+> and the official link: call `arrival_card_fill` with `file: false` (the default) — code answers and opens nothing.
+> Set `file: true` only when the user explicitly asks you to fill it in or apply for them.
+
 Arriving passengers (Filipino and foreign) register on eTravel, free, within the 72 hours before arrival at https://etravel.gov.ph; departing Filipino citizens register too (no later than 3 hours before departure). The portal gives a QR code shown at immigration. Diplomats and some official passports are exempt. Any site charging a fee is not eTravel.
 This is the traveller's own legal declaration: code fills it (a form function with fixed ids), the user reviews it and presses Submit.
 

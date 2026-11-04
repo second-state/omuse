@@ -2,8 +2,8 @@
 
 The user's Vault holds three US cards (issuing country USA): Chase Sapphire Reserve and Citi Double Cash saved by their
 names only (number, expiry and CVC UNKNOWN) and an American Express Gold Card with its details. In Main's chat:
-  1. dinner — which card for a US$300 dinner at a New York restaurant: the Credit cards bot answers (its "Continue in
-     💳 Credit cards" link); the block code appends gives the catalog's date (August 2026); no card number.
+  1. dinner — which card for a US$300 dinner at a New York restaurant: the Money bot answers (its "Continue in
+     💳 Money" link); the block code appends gives the catalog's date (August 2026); no card number.
   2. flight — a US$1,200 flight booked directly on united.com: the same.
   3. missing — "I also have a Bread Cashback American Express": the block says it is not in the card catalog; the
      Memory page's Vault card then shows "Bread Cashback" by name, marked name-only, once.
@@ -34,7 +34,7 @@ def no_number(text: str) -> bool:
 
 
 def by_cards(a: U.Answer, step: str) -> None:
-    check(f"{step}: answered by the Credit cards bot (its link in the answer)", "Credit cards" in a.bot_link, a.bot_link)
+    check(f"{step}: answered by the Money bot (its link in the answer)", "Money" in a.bot_link, a.bot_link)
     check(f"{step}: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.seconds)
     check(f"{step}: the block code appends after the answer says the card terms are from the catalog as of August 2026",
           "Card terms from the catalog as of" in a.block and bool(C.CATALOG_DATE.search(a.block)), (a.block, a.text[-300:]))
@@ -54,7 +54,7 @@ async def main():
         # 3. a card that is not in the catalog
         a = await u.ask("I also have a Bread Cashback American Express card. Would it beat my other cards for a US$500 TV at Best Buy?",
                         label="missing", timeout=1200)
-        check("missing: answered by the Credit cards bot", "Credit cards" in a.bot_link, a.bot_link)
+        check("missing: answered by the Money bot", "Money" in a.bot_link, a.bot_link)
         check("missing: the block code appends after the answer says the Bread Cashback is not in the card catalog",
               bool(re.search(r"Bread Cashback[^\n]*is not in the card catalog", a.block)), (a.block, a.text[:300]))
         check("missing: no card number in the answer", no_number(a.text), a.text[:300])

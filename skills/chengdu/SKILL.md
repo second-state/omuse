@@ -18,7 +18,7 @@ North America or Australia. Figures were checked in October 2026 and carry their
 - Compare to what the user knows: London, New York, Shanghai. Say when something normal in the West does not work
   here (Google, credit cards, English), and always ask which **airport** (Tianfu or Shuangliu) before giving
   directions.
-- Hand off to the specialised skills when the question is about a task: arrival card → `cn-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: arrival card → `cn-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 
 ## Orientation
 - **Scale.** 21.54 million permanent residents at end-2025 (up 61,000); GDP ¥2.48 trillion in 2025 (+5.8 %, roughly
@@ -197,6 +197,21 @@ cuisine claims "a hundred dishes, a hundred flavours" (fish-fragrant, strange-fl
 | 2023 | International flights move to Tianfu (March); World University Games (July–August) |
 | 2025 | World Games (August); metro passes 750 km (December) |
 | 2026 | Shuangliu reopens a Hong Kong/Macau/Taiwan hall (30 July) |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: GoChengdu's events https://www.gochengdu.cn/en/news/events
+- Tickets: Damai https://m.damai.cn/ (China's main ticket platform, Chinese; real-name tickets need the passport
+  number) and Maoyan's shows https://show.maoyan.com/ (Chinese). MAISEAT https://www.maiseat.com/ is Damai's
+  international site for visitors (language and payment not confirmed on the site). Big concerts are real-name: the
+  passport used to buy is checked at the gate.
 
 ## Sources to verify against
 - Visas, transit and the arrival card: National Immigration Administration en.nia.gov.cn and s.nia.gov.cn; Chinese

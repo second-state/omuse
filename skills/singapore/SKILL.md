@@ -24,7 +24,7 @@ Europe, North America or Australia. Figures were checked in October 2026 and car
 - Compare to what the user knows: Hong Kong, London, Sydney, New York. Say when something normal at home is an
   offence here (vaping, eating on the MRT, littering) and when Singapore is simply easier (English everywhere,
   contactless everything, tap water is drinkable).
-- Hand off to the specialised skills when the question is about a task: arrival card → `sg-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying and SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → `tax-refund-shopping`, allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
+- Hand off to the specialised skills when the question is about a task: arrival card → `sg-arrival-card` (overview `arrival-cards`), visas and entry rules → `entry-requirements`, paying → the Money bot (`pay-in-asia`), SIMs → `payments-connectivity-asia`, transit tickets and rail passes → `getting-around-asia`, tax refunds → the Money bot (`tax-refund-shopping`), allergies and menus → `dining-dietary-translate`, emergencies → `travel-health-emergency`, today's bookings → `trip-today`, restaurants → `restaurant-booking` / `michelin-dining`.
 
 ## Orientation
 - **Scale.** 6.21 million people at June 2026 (Population in Brief 2026, released 25 September 2026): 3.68 million
@@ -209,6 +209,19 @@ Europe, North America or Australia. Figures were checked in October 2026 and car
 | 2025 | Changi Terminal 5 construction begins (May) |
 | 2026 | No-Boarding Directives (30 January); Circle Line loop completed (12 July); population 6.21 million (June) |
 | 2027 | RTS Link to Johor Bahru expected (February); EP salary threshold rises (1 January) |
+
+## Local events
+
+- **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
+  **events_search** with the city, what (`query`) and when (`when`: today, tomorrow, this_week, this_weekend,
+  next_week, this_month, next_month). Code returns each event's date, venue and ticket links and appends the booking
+  links to the reply — answer from the result; never a ticket link from memory. Without the SerpApi key the result is
+  a web search: give the pages it found.
+- **Browsing** ("what's on", "any concerts while I'm there"): the trip's dates go into `when` (or the month), and the
+  listings below let the user look further.
+- What's on: Visit Singapore's happenings https://www.visitsingapore.com/whats-happening/all-happenings/
+- Tickets: SISTIC https://www.sistic.com.sg/ (Esplanade, theatres, most concerts) and Ticketmaster
+  https://www.ticketmaster.sg/ (stadium concerts at the National Stadium and Indoor Stadium).
 
 ## Sources to verify against
 - Entry, visas, SG Arrival Card, automated lanes: Immigration & Checkpoints Authority ica.gov.sg.

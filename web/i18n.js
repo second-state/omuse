@@ -692,6 +692,7 @@ window.OMUSE_EN = {
 "✓ 已核对：名称和细节都摘自 Agent 读过的原网页": "✓ Verified: names and details are quoted from pages the agent actually read",
 "我选：{0}": "I choose: {0}",
 "选这个 Choose": "Choose",
+"去预订 Book": "Book",
 "要监控的网页": "Page to watch",
 "条件：change / text / price_below": "Condition: change / text / price_below",
 "等待出现的文字（mode=text）": "Text to wait for (mode=text)",

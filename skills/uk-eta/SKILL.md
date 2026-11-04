@@ -8,6 +8,10 @@ profile: nationality
 ---
 # UK ETA / 英国电子旅行授权
 
+> **Ask first, fill on request.** A question about this card (what to file, when, what it needs) gets the requirements
+> and the official link: call `arrival_card_fill` with `file: false` (the default) — code answers and opens nothing.
+> Set `file: true` only when the user explicitly asks you to fill it in or apply for them.
+
 Visa-exempt visitors to the UK (EU, US, Australia, Singapore, Japan … — not British or Irish citizens, not people with UK immigration permission) need an ETA before travelling, including airside transit at some airports; enforced since February 2026. Apply on gov.uk (the "UK ETA" app or the web form at https://www.gov.uk/eta), a fee applies (£16, rising to £20 for applications from 8 April 2026 — verify), valid 2 years or until the passport expires, multiple entries up to 6 months each. Decisions usually come within 3 working days; apply at least a week ahead. The application needs a passport photo and a face photo taken live — those steps and the payment are the user's (takeover).
 This is the traveller's own legal declaration: code fills it (a form function with fixed ids), the user reviews it and presses Submit. The user set the No defaults below themselves for exactly these questions (criminal record, refusals, terrorism / security): filling them is preparing their draft, not attesting for them — they read every answer on the page before they pay, and change any that is not true. Never leave them blank or ask them in the chat.
 

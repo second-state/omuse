@@ -918,6 +918,8 @@ fn the_options_are_mailed_only_with_a_connected_mail_account() {
     );
     // several flights picked: the choice card lists exactly them, in the model's order
     let pc = &args_of(&t, "present_choices")[0];
+    // a travel card: each option's button opens its booking page in the user's own browser
+    assert_eq!(pc["open_links"], true);
     let labels: Vec<String> = pc["options"]
         .as_array()
         .unwrap()
@@ -2709,6 +2711,28 @@ fn one_flight_shown_gets_runner_ups_from_the_same_search_on_a_card_after_the_rep
         "{:?}",
         ru.choices
     );
+    // never a flight another one beats on every count (the user, 2026-11-04: no expensive flight with many stops):
+    // CX 759 (09:00 → 13:00, HKD 3,604) loses to SQ 899 (09:05 → 12:55, HKD 2,715); HU 706 and 9G 531 (stops, landing
+    // the next day) lose to TR 983 (later, lands earlier, cheaper, nonstop) — the model picks among the rest, and a later
+    // dearer flight stays a choice (CX 657: no flight both leaves later and lands earlier)
+    for gone in ["fl_cx759", "fl_hu706", "fl_9g531"] {
+        assert!(
+            !ru.choices.iter().any(|c| c == gone),
+            "{gone}: {:?}",
+            ru.choices
+        );
+    }
+    assert!(
+        ru.choices.iter().any(|c| c == "fl_cx657"),
+        "{:?}",
+        ru.choices
+    );
+    assert!(
+        ru.question
+            .contains("never an expensive flight with many stops"),
+        "{}",
+        ru.question
+    );
     let ctx: Value = serde_json::from_str(&ru.context).unwrap();
     assert_eq!(ctx["best_match"]["offer_id"], "fl_sq895");
     assert_eq!(ctx["request"], ask);
@@ -3075,6 +3099,17 @@ fn a_google_round_trip_searches_the_returns_of_the_outbound_picked_and_shows_bot
     // the card offers the other outbound (choosing it searches its own returns)
     let ru = runner_ups(&t, &shown, "bali").expect("runner-ups");
     assert_eq!(ru.choices, vec!["fl_out0800".to_string()]);
+    // travel cards open each option's booking page in the user's own browser (no new message, no new search)
+    let card = ru.card(&["fl_out0800".to_string()]).expect("card");
+    assert_eq!(card["open_links"], true);
+    assert!(card["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|o| !get_str(o, "source_url").is_empty()));
+    for a in args_of(&t, "present_choices") {
+        assert_eq!(a["open_links"], true, "{a}");
+    }
 }
 
 #[test]

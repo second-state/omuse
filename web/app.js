@@ -562,7 +562,14 @@ function renderThread(thread) {
   if (oldComp) oldComp.remove();
   const comp = h('div', { class: 'composer' }); comp.dataset.key = compKey;
   const examples = (!d || !d.messages.length) ? botExamples(myBot) : [];
-  if (examples.length) comp.append(h('div', { class: 'suggest', 'aria-label': T('示例 Examples') }, examples.map(s => h('button', { onclick: () => { ta.value = s; S.draft = s; grow(); ta.focus(); } }, s))));
+  // the bot's example requests in a small dropdown above the input (the user, 2026-11-04: pills took too much space);
+  // choosing one puts it in the input and closes the list
+  if (examples.length) {
+    const box = h('details', { class: 'suggest' }, h('summary', null, T('示例 Examples')));
+    box.append(h('div', { class: 'suggest-list', role: 'menu' }, examples.map(s => h('button', { role: 'menuitem', onclick: () => {
+      ta.value = s; S.draft = s; grow(); box.open = false; ta.focus(); } }, s))));
+    comp.append(box);
+  }
   const hadFocus = document.activeElement && document.activeElement.id === 'chatInput';
   const narrow = isNarrow();
   const ph = S.conv ? (narrow ? T('继续这个对话…') : T('继续这个对话… (Enter 发送，Shift+Enter 换行)'))
@@ -720,8 +727,12 @@ function choicesCard(j, active) {
       o.details && o.details.length ? h('ul', { class: 'small' }, o.details.map(x => h('li', null, x))) : null,
       o.note ? h('div', { class: 'small muted' }, '💬 ' + o.note) : null,
       safe(o.source_url) ? h('a', { class: 'small', href: safe(o.source_url), target: '_blank', rel: 'noopener noreferrer' }, '🔗 ' + host(o.source_url)) : null,
-      h('button', { class: 'btn small' + (active ? ' primary' : ''), disabled: !active, onclick: () => pick(o) },
-        active ? T('选这个 Choose') : T('已结束 done')))))));
+      // a travel card (open_links): the option's booking page opens in this browser, on the user's own device — no
+      // new message, no new search, nothing in the agent's browser
+      j.open_links && safe(o.source_url)
+        ? h('a', { class: 'btn small primary', href: safe(o.source_url), target: '_blank', rel: 'noopener noreferrer' }, T('去预订 Book'))
+        : h('button', { class: 'btn small' + (active ? ' primary' : ''), disabled: !active, onclick: () => pick(o) },
+          active ? T('选这个 Choose') : T('已结束 done')))))));
 }
 
 function planList(plan) {
