@@ -331,6 +331,25 @@ pub async fn run_schedule(st: St, UrlPath(sid): UrlPath<String>) -> R {
     Ok(Json(json!({"task_id": t["id"]})))
 }
 
+/// `GET /api/run_pending_tasks_brief` (Sentinel's `/run_pending_tasks` for a caller who did not sign in): starts every
+/// task that is due, like [`run_pending_tasks`], and answers at once with the counts only — `{"pending", "started",
+/// "skipped", "errors"}`: never a task's name, answer or error text, and the runs go on in the background.
+pub async fn run_pending_tasks_brief(st: St) -> R {
+    let due = st.sched.pending(now_ts()).map_err(Fail::Internal)?;
+    let (mut started, mut skipped, mut errors) = (0, 0, 0);
+    let now = now_ts();
+    for sch in &due {
+        match st.sched.fire(sch, now).await {
+            Ok(sc::Fired::Started(_)) => started += 1,
+            Ok(_) => skipped += 1,
+            Err(_) => errors += 1,
+        }
+    }
+    Ok(Json(
+        json!({"pending": due.len(), "started": started, "skipped": skipped, "errors": errors}),
+    ))
+}
+
 /// `GET /api/run_pending_tasks` (also `/run_pending_tasks` on Sentinel): runs every task that is due but has not run
 /// yet — a machine that slept or was suspended leaves them pending — and streams the progress as NDJSON, one JSON
 /// object a line: `pending` (what is due), `started` / `skipped` per task, `finished` per run (its status and answer),

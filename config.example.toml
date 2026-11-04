@@ -101,7 +101,6 @@ relay_url = ""             # GOOGLE_RELAY_URL ("" = the default relay page)
 managed_file = ""          # GOOGLE_MANAGED_FILE
 managed_client_id = ""     # OMUSE_GOOGLE_CLIENT_ID — the OAuth client (type Web application) of your Cloud project
 managed_client_secret = "" # OMUSE_GOOGLE_CLIENT_SECRET — its secret (a personal server may keep it here)
-broker_url = ""            # GOOGLE_BROKER_URL — instead of the secret: a token broker that holds it
 picker_api_key = ""        # OMUSE_GOOGLE_PICKER_KEY — API key restricted to the Google Picker API (Drive picker)
 project_number = ""        # OMUSE_GOOGLE_PROJECT_NUMBER — the Cloud project's number (the picker's app id)
 

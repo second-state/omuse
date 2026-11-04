@@ -36,6 +36,10 @@ async fn fake_runtime() -> String {
             get(|| async { "{\"event\": \"pending\", \"count\": 0}\n{\"event\": \"done\"}\n" }),
         )
         .route(
+            "/api/run_pending_tasks_brief",
+            get(|| async { axum::Json(json!({"pending": 0, "started": 0, "skipped": 0, "errors": 0})) }),
+        )
+        .route(
             "/api/length",
             put(|h: axum::http::HeaderMap, body: axum::body::Bytes| async move {
                 let cl = h.get("content-length").and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -311,6 +315,70 @@ async fn run_pending_tasks_reaches_the_runtime() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     assert!(String::from_utf8_lossy(&body).ends_with("{\"event\": \"done\"}\n"));
+}
+
+#[tokio::test]
+async fn run_pending_tasks_needs_no_password_and_tells_a_stranger_only_counts() {
+    use base64::Engine;
+    // behind the login gate: no credentials → the brief counts; Basic auth → the full stream; a forged "signed in"
+    // header from the caller is stripped by the gate
+    let rt = fake_runtime().await;
+    let (ctx, _d) = ctx_with(&rt, true);
+    let r = app(ctx).unwrap();
+    let body = |resp: axum::response::Response| async move {
+        String::from_utf8_lossy(&resp.into_body().collect().await.unwrap().to_bytes()).into_owned()
+    };
+    let resp = r
+        .clone()
+        .oneshot(
+            req("GET", "/run_pending_tasks")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body(resp).await,
+        r#"{"pending":0,"started":0,"skipped":0,"errors":0}"#
+    );
+    let forged = req("GET", "/run_pending_tasks")
+        .header(omuse_web::gate::SIGNED_IN_HEADER, "1")
+        .body(Body::empty())
+        .unwrap();
+    let resp = r.clone().oneshot(forged).await.unwrap();
+    assert!(body(resp).await.contains("\"started\""));
+    let basic = base64::engine::general_purpose::STANDARD.encode("omuse:secret-pass");
+    let signed = req("GET", "/run_pending_tasks")
+        .header("authorization", format!("Basic {basic}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = r.clone().oneshot(signed).await.unwrap();
+    assert!(body(resp).await.ends_with("{\"event\": \"done\"}\n"));
+    // a wrong password is just a stranger here: counts, no stream
+    let bad = base64::engine::general_purpose::STANDARD.encode("omuse:wrong");
+    let resp = r
+        .clone()
+        .oneshot(
+            req("GET", "/run_pending_tasks")
+                .header("authorization", format!("Basic {bad}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body(resp).await.contains("\"started\""));
+    // everything else stays behind the login
+    let resp = r
+        .clone()
+        .oneshot(
+            req("GET", "/api/run_pending_tasks")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

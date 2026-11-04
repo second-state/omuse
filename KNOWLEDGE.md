@@ -914,8 +914,12 @@ does, a link to its chat and Delete (the chat is kept). A schedule's chat is its
 makes it again under the same id (`Scheduler::ensure_conv`; a goal's final check does the same), so the link keeps
 working.
 
-**`/run_pending_tasks`** (Sentinel, behind the login gate: `curl -N -u user:password https://…/run_pending_tasks`;
-the runtime's `GET /api/run_pending_tasks`) runs every pending task now and streams NDJSON: `pending` (what is due),
+**`/run_pending_tasks`** (Sentinel) runs every pending task now and needs no password (the user, 2026-11-04: it only
+starts tasks that are due anyway). The login gate lets it through (`gate::PUBLIC_PATHS`) and marks whether the caller
+signed in (`x-omuse-signed-in`, a caller's own copy stripped). A caller who did not sign in gets the runtime's
+`GET /api/run_pending_tasks_brief`: the due tasks are started and only `{"pending", "started", "skipped", "errors"}`
+comes back, at once — no names, no answers, no connection held open. Signed in (`curl -N -u user:password
+https://…/run_pending_tasks`, or no gate at all) it is the runtime's `GET /api/run_pending_tasks`, which streams NDJSON: `pending` (what is due),
 `started` / `skipped` per task, `finished` per run (status, answer), a `waiting` heartbeat every 15 s, and `done`, then
 closes. A run that stops for the user (an approval, a takeover) counts as finished. The background loop (every 20 s)
 and this URL claim a due task the same way (`Scheduler::fire`: `next_run` moved on by compare-and-set), so a task never

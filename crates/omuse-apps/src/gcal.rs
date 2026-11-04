@@ -105,8 +105,6 @@ pub struct GoogleSettings {
     pub managed_client_id: String,
     /// `GOOGLE_MANAGED_CLIENT_SECRET`.
     pub managed_client_secret: String,
-    /// `GOOGLE_BROKER_URL`.
-    pub broker_url: String,
     /// The Drive picker's API key and app id (the Cloud project number), "" when not configured.
     pub picker_api_key: String,
     pub project_number: String,
@@ -132,7 +130,6 @@ impl GoogleSettings {
             managed_file,
             managed_client_id: g.managed_client_id.clone(),
             managed_client_secret: g.managed_client_secret.clone(),
-            broker_url: g.broker_url.clone(),
             picker_api_key: g.picker_api_key.trim().to_string(),
             project_number: g.project_number.trim().to_string(),
         }
@@ -257,26 +254,25 @@ pub fn add_to_calendar_links(a: &Value, tz: &str) -> Result<Value, GCalError> {
 }
 
 // ------------------------------------------------------------------ OMuse's own ("managed") Google client
-// One OAuth client registered by the OMuse publisher, so users just "Sign in with Google" — no Google Cloud project.
-// Every Olares box has its own domain and Google only accepts pre-registered redirect URIs, so Google redirects to one
-// fixed relay page (relay) that forwards the code to the box named in `state`; the box checks the state it issued and
-// exchanges the code (PKCE). The client secret is either built in, or kept by a tiny token broker (broker) that adds
-// it to token requests, so it never ships in the app. Tokens are stored only in the box's vault.
+// One OAuth client (`[google]` in config.toml, or google_managed.json), so users just "Sign in with Google" — no Google
+// Cloud project of their own. Every box has its own domain and Google only accepts pre-registered redirect URIs, so
+// Google redirects to one fixed relay page (relay) that forwards the code to the box named in `state` after the user
+// confirms that box; the box checks the state it issued and exchanges the code with the client secret and PKCE.
+// Tokens are stored only in the box's vault.
 
-/// `{client_id, client_secret, relay, broker, source}`: the build's OMuse client (`source == "build"`) or one
+/// `{client_id, client_secret, relay, source}`: the build's OMuse client (`source == "build"`) or one
 /// saved on this box (`source == "box"`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Managed {
     pub client_id: String,
     pub client_secret: String,
     pub relay: String,
-    pub broker: String,
     pub source: String,
 }
 
 impl Managed {
     pub fn to_value(&self) -> Value {
-        json!({"client_id": self.client_id, "client_secret": self.client_secret, "relay": self.relay, "broker": self.broker, "source": self.source})
+        json!({"client_id": self.client_id, "client_secret": self.client_secret, "relay": self.relay, "source": self.source})
     }
 }
 
@@ -310,13 +306,9 @@ fn built_in(settings: &GoogleSettings) -> Option<Managed> {
                 r
             }
         },
-        broker: pick("broker", &settings.broker_url),
         source: String::new(),
     };
-    if m.client_id.is_empty()
-        || m.relay.is_empty()
-        || (m.client_secret.is_empty() && m.broker.is_empty())
-    {
+    if m.client_id.is_empty() || m.relay.is_empty() || m.client_secret.is_empty() {
         return None;
     }
     Some(m)
@@ -342,7 +334,6 @@ pub fn managed(settings: &GoogleSettings, store: Option<&Store>) -> Option<Manag
         } else {
             relay
         },
-        broker: String::new(),
         source: "box".into(),
     })
 }
@@ -364,14 +355,6 @@ pub fn picker(settings: &GoogleSettings, store: Option<&Store>) -> Option<(Strin
     let app = pick(&settings.project_number, "project_number");
     (!key.is_empty() && !app.is_empty() && app.bytes().all(|b| b.is_ascii_digit()))
         .then_some((key, app))
-}
-
-/// The token endpoint: the broker's `/token` for a managed client with a broker, else Google's.
-pub fn token_url(settings: &GoogleSettings, m: Option<&Managed>) -> String {
-    match m {
-        Some(m) if !m.broker.is_empty() => format!("{}/token", m.broker.trim_end_matches('/')),
-        _ => settings.token_url.clone(),
-    }
 }
 
 /// Google's consent URL (offline access, forced consent, optional PKCE S256 challenge).
@@ -699,14 +682,6 @@ impl GCal {
             token: tokio::sync::Mutex::new((access_token.to_string(), expires_at)),
             ..self
         }
-    }
-
-    /// Use another token endpoint (the broker); "" keeps Google's.
-    pub fn with_token_url(mut self, url: &str) -> Self {
-        if !url.is_empty() {
-            self.token_url = url.to_string();
-        }
-        self
     }
 
     /// Persist refreshed access tokens.
@@ -1377,7 +1352,6 @@ mod tests {
             managed_file: PathBuf::from("/nonexistent/google_managed.json"),
             managed_client_id: String::new(),
             managed_client_secret: String::new(),
-            broker_url: String::new(),
             picker_api_key: String::new(),
             project_number: String::new(),
         }
@@ -1396,7 +1370,7 @@ mod tests {
         // a relay set in config.toml wins
         s.relay_override = "https://relay.example/".into();
         assert_eq!(managed(&s, None).unwrap().relay, "https://relay.example/");
-        // no secret and no broker: not usable
+        // no secret: not usable
         s.managed_client_secret.clear();
         assert!(managed(&s, None).is_none());
     }
@@ -1493,20 +1467,6 @@ mod tests {
             "a%40group.calendar.google.com"
         );
         assert!(eid("../../x").is_err() && eid("ev1").is_ok());
-        assert_eq!(
-            token_url(
-                &s,
-                Some(&Managed {
-                    client_id: "c".into(),
-                    client_secret: "".into(),
-                    relay: "r".into(),
-                    broker: "https://b/".into(),
-                    source: "build".into()
-                })
-            ),
-            "https://b/token"
-        );
-        assert_eq!(token_url(&s, None), "https://accounts.test/g/token");
         assert_eq!(today_str("Asia/Singapore").len(), 10);
     }
 
@@ -1521,21 +1481,15 @@ mod tests {
         std::fs::write(&s.managed_file, r#"{"client_id": "omuse-test.apps.googleusercontent.com", "client_secret": "GOCSPX-test", "relay": "https://relay/cb"}"#).unwrap();
         let m = managed(&s, None).unwrap();
         assert_eq!(
-            (m.source.as_str(), m.relay.as_str(), m.broker.as_str()),
-            ("build", "https://relay/cb", "")
+            (m.source.as_str(), m.relay.as_str()),
+            ("build", "https://relay/cb")
         );
-        std::fs::write(
-            &s.managed_file,
-            r#"{"client_id": "c", "relay": "https://relay/cb", "broker": "https://b/broker"}"#,
-        )
-        .unwrap();
-        assert_eq!(managed(&s, None).unwrap().broker, "https://b/broker");
         std::fs::write(
             &s.managed_file,
             r#"{"client_id": "c", "relay": "https://relay/cb"}"#,
         )
         .unwrap();
-        assert!(managed(&s, None).is_none(), "secret or broker required");
+        assert!(managed(&s, None).is_none(), "the secret is required");
         s.managed_client_secret = "sec".into();
         assert!(managed(&s, None).is_some());
         std::fs::write(&s.managed_file, "{}").unwrap();

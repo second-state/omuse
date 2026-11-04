@@ -232,6 +232,10 @@ pub fn router(state: Arc<State>) -> Router {
         .route("/api/schedules/{sid}/poll", post(auto::poll_schedule))
         .route("/api/schedules/{sid}/run", post(auto::run_schedule))
         .route("/api/run_pending_tasks", get(auto::run_pending_tasks))
+        .route(
+            "/api/run_pending_tasks_brief",
+            get(auto::run_pending_tasks_brief),
+        )
         .route("/api/goals", get(auto::goals).post(auto::add_goal))
         .route(
             "/api/goals/{gid}",

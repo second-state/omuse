@@ -726,6 +726,52 @@ fn relpath_like_python() {
 }
 
 #[tokio::test]
+async fn the_brief_run_starts_the_due_tasks_and_says_only_how_many() {
+    // what a caller who did not sign in gets (Sentinel's /run_pending_tasks without a password): counts, at once
+    let e = env();
+    let s = crate::scheduler::create_schedule(
+        &e.state.rt.store,
+        "Daily mail",
+        "summarise my new emails",
+        "cron",
+        &json!("0 8 * * *"),
+        "UTC",
+        "",
+        "",
+    )
+    .unwrap();
+    let sid = omuse_common::util::get_str(&s, "id");
+    e.state
+        .rt
+        .store
+        .db
+        .execute(
+            "UPDATE schedules SET next_run=? WHERE id=?",
+            omuse_common::params![omuse_common::util::now_ts() - 600.0, sid.as_str()],
+        )
+        .unwrap();
+    let (st, _, body) = raw(&e.app, "GET", "/api/run_pending_tasks_brief", None, &[]).await;
+    assert_eq!(st, StatusCode::OK);
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        v,
+        json!({"pending": 1, "started": 1, "skipped": 0, "errors": 0})
+    );
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        !text.contains("Daily mail") && !text.contains(&sid),
+        "{text}"
+    );
+    // started once: a second call finds nothing due
+    let (_, _, body) = raw(&e.app, "GET", "/api/run_pending_tasks_brief", None, &[]).await;
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        (v["pending"].clone(), v["started"].clone()),
+        (json!(0), json!(0))
+    );
+}
+
+#[tokio::test]
 async fn run_pending_tasks_streams_until_the_due_runs_are_done() {
     let e = env();
     // nothing due: the stream says so and closes

@@ -16,8 +16,9 @@
 //! An unauthenticated browser navigation is redirected to `/login?next=<url>`; a browser fetch gets a 401 JSON answer
 //! and the web app sends the user to /login. GET or POST /logout clears the cookie.
 //!
-//! Not gated: `/sentinel/api/health` (container health check) and `/internal/*` (the runtime's calls; those carry
-//! their own runtime token and Sentinel checks it). The phone port is a separate app that is public by design.
+//! Not gated: `/sentinel/api/health` (container health check), `/internal/*` (the runtime's calls; those carry
+//! their own runtime token and Sentinel checks it) and `/run_pending_tasks` (it only starts tasks that are due; a
+//! caller who is not signed in gets counts only, see [`PUBLIC_PATHS`]). The phone port is a separate app that is public by design.
 //!
 //! Mount: `Router::layer(axum::middleware::from_fn_with_state(Arc<Gate>, Gate::layer))` — `/login` and `/logout`
 //! are answered inside the middleware, so the router needs no routes for them.
@@ -47,6 +48,12 @@ use omuse_common::util;
 
 /// Paths that need no login.
 pub const OPEN_PATHS: &[&str] = &["/sentinel/api/health"];
+/// Paths anyone may call, signed in or not (the user, 2026-11-04: `/run_pending_tasks` only starts tasks that are
+/// due anyway, so a cron job or a pinger needs no password). The gate tells Sentinel whether the caller signed in
+/// ([`SIGNED_IN_HEADER`]), and Sentinel answers a caller who did not with counts only.
+pub const PUBLIC_PATHS: &[&str] = &["/run_pending_tasks"];
+/// Set by the gate on a [`PUBLIC_PATHS`] request: `1` when the caller signed in. A copy the caller sent is removed.
+pub const SIGNED_IN_HEADER: &str = "x-omuse-signed-in";
 /// Path prefixes that need no login.
 pub const OPEN_PREFIXES: &[&str] = &["/internal/"];
 /// Seconds to wait after bad credentials (slows password guessing).
@@ -570,6 +577,16 @@ impl Gate {
         }
         if path == LOGOUT_PATH {
             return self.logout(&req);
+        }
+        if PUBLIC_PATHS.contains(&path.as_str()) {
+            let signed_in = self.authorized(req.headers());
+            let mut req = req;
+            req.headers_mut().remove(SIGNED_IN_HEADER);
+            if signed_in {
+                req.headers_mut()
+                    .insert(SIGNED_IN_HEADER, HeaderValue::from_static("1"));
+            }
+            return next.run(req).await;
         }
         let headers = req.headers();
         if OPEN_PATHS.contains(&path.as_str())

@@ -3168,17 +3168,12 @@ fn google_client(
     }
     let access = gaccounts::access_handle(service, aid);
     let cache = store.get_secret(&access)?.unwrap_or_else(|| json!({}));
-    let (mut secret, mut url) = (sarg(sec, "client_secret"), String::new());
+    let mut secret = sarg(sec, "client_secret");
     if sec.get("managed").is_some_and(truthy) {
         let Some(m) = gcal::managed(&st.google, Some(store)) else {
             return Err(act("这个版本没有内置 OMuse 的 Google 登录，请在「连接」页重新连接 Google (managed client missing)"));
         };
-        secret = if m.broker.is_empty() {
-            m.client_secret.clone()
-        } else {
-            String::new()
-        };
-        url = gcal::token_url(&st.google, Some(&m));
+        secret = m.client_secret.clone();
     }
     let keeper: Arc<Store> = store.clone();
     let (svc, handle) = (service.to_string(), access.clone());
@@ -3203,8 +3198,7 @@ fn google_client(
         tz,
     )
     .with_on_token(keep)
-    .with_access_token(&sarg(&cache, "access_token"), expires_at)
-    .with_token_url(&url))
+    .with_access_token(&sarg(&cache, "access_token"), expires_at))
 }
 
 /// Is the calendar a read-only iCal feed?

@@ -1976,13 +1976,7 @@ async fn calendar_callback_inner(
                 "这个版本没有内置 OMuse 的 Google 登录 (managed client missing)",
             ));
         };
-        let turl = gcal::token_url(&ctx.google, Some(&m));
-        let sec = if m.broker.is_empty() {
-            m.client_secret.clone()
-        } else {
-            String::new()
-        };
-        (m.client_id.clone(), sec, turl)
+        (m.client_id.clone(), m.client_secret.clone(), String::new())
     } else {
         let cl = store
             .get_secret("cred_calendar_client")
@@ -2036,7 +2030,7 @@ async fn calendar_callback_inner(
                 "",
             )
             .with_access_token(&get_str(&tok, "access_token"), now_ts() + exp as f64)
-            .with_token_url(&turl)
+
         };
         let gc = mk();
         let who = gc.userinfo().await?;
