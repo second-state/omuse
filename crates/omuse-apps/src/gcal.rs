@@ -301,14 +301,15 @@ fn built_in(settings: &GoogleSettings) -> Option<Managed> {
     let m = Managed {
         client_id: pick("client_id", &settings.managed_client_id),
         client_secret: pick("client_secret", &settings.managed_client_secret),
-        relay: pick(
-            "relay",
-            if settings.relay_url == DEFAULT_RELAY {
-                ""
+        // the relay: config.toml's, else the managed file's, else Second State's page (DEFAULT_RELAY)
+        relay: {
+            let r = pick("relay", &settings.relay_override);
+            if r.is_empty() {
+                settings.relay_url.clone()
             } else {
-                &settings.relay_url
-            },
-        ),
+                r
+            }
+        },
         broker: pick("broker", &settings.broker_url),
         source: String::new(),
     };
@@ -1380,6 +1381,24 @@ mod tests {
             picker_api_key: String::new(),
             project_number: String::new(),
         }
+    }
+
+    #[test]
+    fn a_client_in_config_toml_signs_in_through_second_states_relay() {
+        // a personal server: the client id and secret in config.toml, no relay or broker set
+        let mut s = settings("http://x");
+        s.managed_client_id = "123-abc.apps.googleusercontent.com".into();
+        s.managed_client_secret = "GOCSPX-test".into();
+        let m = managed(&s, None).expect("the config's client");
+        assert_eq!(m.source, "build");
+        assert_eq!(m.relay, "https://second-state.github.io/omuse-oauth/");
+        assert_eq!(m.client_secret, "GOCSPX-test");
+        // a relay set in config.toml wins
+        s.relay_override = "https://relay.example/".into();
+        assert_eq!(managed(&s, None).unwrap().relay, "https://relay.example/");
+        // no secret and no broker: not usable
+        s.managed_client_secret.clear();
+        assert!(managed(&s, None).is_none());
     }
 
     #[test]

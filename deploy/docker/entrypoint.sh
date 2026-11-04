@@ -68,6 +68,11 @@ if [ ! -s "$CONFIG" ]; then
       for s in "${skills[@]}"; do s=$(echo "$s" | xargs); [ -n "$s" ] && { printf '%s%s' "$sep" "$(toml_str "$s")"; sep=", "; }; done
       echo "]"
     fi
+    if [ -n "${OMUSE_GOOGLE_CLIENT_ID:-}" ]; then
+      echo "[google]"
+      kv managed_client_id OMUSE_GOOGLE_CLIENT_ID; kv managed_client_secret OMUSE_GOOGLE_CLIENT_SECRET
+      kv picker_api_key OMUSE_GOOGLE_PICKER_KEY; kv project_number OMUSE_GOOGLE_PROJECT_NUMBER
+    fi
     echo "[shopping]"
     kv shopify_client_id OMUSE_SHOPIFY_CLIENT_ID; kv shopify_client_secret OMUSE_SHOPIFY_CLIENT_SECRET
     echo "[stripe]"

@@ -87,7 +87,10 @@ customer_id = ""
 subscription_id = ""
 api = "https://api.stripe.com"   # STRIPE_API
 
-[google]                   # GOOGLE_*: OAuth for Google Calendar and Google Drive (one sign-in covers both)
+[google]                   # GOOGLE_*: OAuth for Google Calendar and Google Drive. With the four values below set, the
+                           # Calendar and Drive cards sign in with one click (the user approves on Google's page);
+                           # register relay_url's page (default https://second-state.github.io/omuse-oauth/) as the
+                           # OAuth client's redirect URI.
 auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
 token_url = "https://oauth2.googleapis.com/token"
 userinfo_url = "https://www.googleapis.com/oauth2/v3/userinfo"
@@ -96,9 +99,11 @@ gdrive_api = "https://www.googleapis.com/drive/v3"
 gdrive_upload_api = "https://www.googleapis.com/upload/drive/v3"
 relay_url = ""             # GOOGLE_RELAY_URL ("" = the default relay page)
 managed_file = ""          # GOOGLE_MANAGED_FILE
-managed_client_id = ""     # GOOGLE_MANAGED_CLIENT_ID
-managed_client_secret = "" # GOOGLE_MANAGED_CLIENT_SECRET
-broker_url = ""            # GOOGLE_BROKER_URL
+managed_client_id = ""     # OMUSE_GOOGLE_CLIENT_ID — the OAuth client (type Web application) of your Cloud project
+managed_client_secret = "" # OMUSE_GOOGLE_CLIENT_SECRET — its secret (a personal server may keep it here)
+broker_url = ""            # GOOGLE_BROKER_URL — instead of the secret: a token broker that holds it
+picker_api_key = ""        # OMUSE_GOOGLE_PICKER_KEY — API key restricted to the Google Picker API (Drive picker)
+project_number = ""        # OMUSE_GOOGLE_PROJECT_NUMBER — the Cloud project's number (the picker's app id)
 
 [endpoints]                # third-party API bases (tests point them at fakes)
 notion = "https://api.notion.com"        # NOTION_API
