@@ -239,7 +239,7 @@ from the JSON result (code appends the facts in show to the reply).",
         "Pick from the flights a travel_search / travel_book result listed (status pick_needed). Read every flight against \
 the user's request and give the offer_ids of exactly the flights that meet it, in the order to show them: ONE id when \
 the request names one flight (the last, the first, the earliest, the latest, the cheapest, the shortest …), several only \
-when the user asked for options or a comparison. Stick to what the user asked: never add a cheaper or \"better\" flight \
+when the user asked for options or a comparison. \"The last flight\" is the one that DEPARTS last among the flights meeting the user's other conditions (\"the last flight that lands before midnight\": the latest departure that still lands that day — not the one landing latest); \"the first\" departs first. Stick to what the user asked: never add a cheaper or \"better\" flight \
 they did not ask for, and default to the cheapest only when the user gave no criterion at all. Times are local at each \
 airport; arrives_days_later 0 = it lands on the departure day (before midnight), 1 = the next day; a flight's `return` \
 is its return flight (a round trip). A round trip whose returns come from a second search: pick the outbound the \

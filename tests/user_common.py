@@ -285,6 +285,8 @@ class User:
         if new_chat:
             await self.new_chat()
         before = await pg.locator(".msg.assistant:not(.live):has(.bubble:not(.filecard):not(.choices))").count()
+        prev_last = pg.locator(".msg.assistant:not(.live) .bubble:not(.filecard):not(.choices)")
+        prev_text = (await prev_last.last.inner_text()) if await prev_last.count() else ""
         await pg.fill("#chatInput", text)
         t0 = time.monotonic()
         await pg.keyboard.press("Enter")
