@@ -1441,20 +1441,29 @@ fn fwd_thailand_asks_the_application_fields_and_keeps_to_thai_residents() {
         Checked::Valid(v) => assert_eq!(v["market"], "th"),
         other => panic!("{other:?}"),
     }
-    // Dhipaya's conditions: residents of Thailand only; a postcode is 5 digits
+    // where the user lives decides the market (FWD sells only to each market's residents): a Singapore resident who
+    // names FWD Thailand is quoted FWD Singapore, where they can buy (2026-11-05)
     let sg = json!({"home_country": "SG", "birthday": "1990-01-01"});
     match check(
         INSURANCE_BUY,
         &json!({"market": "th", "action": "compare", "destination": "JP", "depart": "2026-12-03",
-                "return": "2026-12-09", "address_postcode": "1011"}),
+                "return": "2026-12-09"}),
         &cx(&sg, false, &[]),
+    ) {
+        Checked::Valid(v) => assert_eq!(v["market"], "sg"),
+        other => panic!("{other:?}"),
+    }
+    // Dhipaya's conditions for a Thai resident: a postcode is 5 digits
+    let th = json!({"home_country": "TH", "birthday": "1990-01-01"});
+    match check(
+        INSURANCE_BUY,
+        &json!({"market": "th", "action": "compare", "destination": "JP", "depart": "2026-12-03",
+                "return": "2026-12-09", "address_postcode": "1011"}),
+        &cx(&th, false, &[]),
     ) {
         Checked::Invalid(p) => {
             let p = p.join(" | ");
-            assert!(
-                p.contains("residents of Thailand") && p.contains("address_postcode"),
-                "{p}"
-            );
+            assert!(p.contains("address_postcode"), "{p}");
         }
         other => panic!("{other:?}"),
     }

@@ -3224,15 +3224,15 @@ fn a_flight_named_by_its_place_in_the_day_is_picked_by_code() {
         Some("a")
     );
     assert_eq!(
-        rule(json!({"order": "latest_departure", "arrive_by": "23:00"})).as_deref(),
+        rule(json!({"order": "latest_departure", "lands_by": "23:00"})).as_deref(),
         Some("b")
     );
     assert_eq!(
-        rule(json!({"order": "earliest_departure", "depart_after": "12:00"})).as_deref(),
+        rule(json!({"order": "earliest_departure", "leaves_after": "12:00"})).as_deref(),
         Some("a")
     );
     assert_eq!(
-        rule(json!({"order": "latest_departure", "arrive_by": "06:00"})),
+        rule(json!({"order": "latest_departure", "lands_by": "06:00"})),
         None
     );
 }

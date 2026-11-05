@@ -253,9 +253,9 @@ the result as JSON; write the reply from it (code appends the facts in show to t
                 "properties": {
                     "order": {"type": "string", "enum": ["latest_departure", "earliest_departure", "latest_arrival", "earliest_arrival"]},
                     "lands_same_day": {"type": "boolean", "description": "it must land on the day it leaves (\"before midnight\")"},
-                    "arrive_by": {"type": "string", "description": "HH:MM local at the arrival airport, same day"},
-                    "depart_after": {"type": "string", "description": "HH:MM local"},
-                    "depart_before": {"type": "string", "description": "HH:MM local"}}}
+                    "lands_by": {"type": "string", "description": "HH:MM local at the arrival airport, same day"},
+                    "leaves_after": {"type": "string", "description": "HH:MM local"},
+                    "leaves_before": {"type": "string", "description": "HH:MM local"}}}
         }),
         &[],
     );
@@ -1227,7 +1227,7 @@ pub fn pick_by_rule(flights: &[Offer], order: &str, rule: &Value) -> Option<Stri
             .and_then(|v| chrono::NaiveTime::parse_from_str(v.trim(), "%H:%M").ok())
             .map(|t| t.format("%H:%M").to_string())
     };
-    let (arrive_by, after, before) = (hm("arrive_by"), hm("depart_after"), hm("depart_before"));
+    let (arrive_by, after, before) = (hm("lands_by"), hm("leaves_after"), hm("leaves_before"));
     let same_day = rule.get("lands_same_day").is_some_and(truthy) || arrive_by.is_some();
     let date = |s: &str| s.get(..10).unwrap_or("").to_string();
     let time = |s: &str| s.get(11..16).unwrap_or("").to_string();
