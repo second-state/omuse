@@ -459,6 +459,13 @@ fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
                         o["price"].as_f64().unwrap_or(0.0),
                         &get_str(o, "currency"),
                     ));
+                    // where it goes, as for a Google Shopping pick (shopping_real 2026-11-05: a Shopify store's pick
+                    // said nothing about the delivery)
+                    show.push(S::fact(
+                        "Delivery",
+                        "配送",
+                        &format!("to {country} (the offer ships there; the store's checkout confirms your address)"),
+                    ));
                     return Some(Step::Done(
                         json!({"status": "link", "offer": o, "show": show,
                         "hints": ["nothing has been bought: the user pays on the store's checkout"]}),

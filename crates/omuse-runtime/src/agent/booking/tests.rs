@@ -1793,6 +1793,10 @@ fn a_shopping_pick_to_buy_links_the_stores_checkout() {
         m.contains("Check out and pay in your browser") && m.contains(&get_str(o, "checkout_url")),
         "{m}"
     );
+    assert!(
+        m.contains("the store's checkout confirms your address"),
+        "{m}"
+    );
     assert!(!names(&t2).iter().any(|n| n.starts_with("browser_")));
 }
 
