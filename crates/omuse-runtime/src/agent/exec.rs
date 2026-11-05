@@ -489,7 +489,8 @@ impl Runtime {
                 || super::apdt::TOOLS.contains(&name)
                 || super::trains::TOOLS.contains(&name)
                 || super::flightstatus::TOOLS.contains(&name)
-                || super::entry::TOOLS.contains(&name))
+                || super::entry::TOOLS.contains(&name)
+                || super::whatsnext::TOOLS.contains(&name))
                 && crate::bots::has_tool(self.bot_of(t), name)
             {
                 // a workflow tool: its arguments checked by the JSON layer (repair, schema, the tool's field checks, the
@@ -528,7 +529,11 @@ call was not run.".to_string();
             } else if allow.is_some_and(|a| !a.contains(&name)) {
                 content = format!("ERROR: tool {} is not available to this agent.", name);
                 ok = false;
-            } else if !crate::bots::has_tool(self.bot_of(t), name) {
+            } else if !crate::bots::has_tool(self.bot_of(t), name)
+                // the "What's next" machine's own research calls (the flight and event searches are the Travel
+                // bot's; the machine runs in Main): code's calls, never the model's
+                && !call.id.starts_with(super::whatsnext::PREFIX)
+            {
                 // another bot's tool (crate::bots, `tools:`): never run here, whatever the model asked for
                 let owners: Vec<String> = crate::bots::tool_owners(name)
                     .iter()

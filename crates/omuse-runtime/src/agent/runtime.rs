@@ -338,6 +338,7 @@ impl Runtime {
             .chain(super::trains::tool_schemas())
             .chain(super::flightstatus::tool_schemas())
             .chain(super::entry::tool_schemas())
+            .chain(super::whatsnext::tool_schemas())
             .find(|s| tool_name(s) == tool)
             .map(|s| s["function"]["parameters"].clone())
             .unwrap_or_else(|| json!({}));
@@ -395,6 +396,8 @@ impl Runtime {
                 super::trains::check(tool, &a, today)
             } else if super::flightstatus::TOOLS.contains(&tool) {
                 super::flightstatus::check(tool, &a)
+            } else if super::whatsnext::TOOLS.contains(&tool) {
+                super::whatsnext::check(tool, &a, &super::whatsnext::Ctx { today, transcript })
             } else if super::entry::TOOLS.contains(&tool) {
                 super::entry::check(tool, &a, &profile, today)
             } else {
@@ -590,6 +593,18 @@ impl Runtime {
                     first: first(t, from, super::trains::PREFIX),
                 };
                 super::trains::next(tool, args, &t[from..], &m)
+            }
+            Machine::Workflow { tool, args, from }
+                if super::whatsnext::TOOLS.contains(&tool.as_str()) =>
+            {
+                let from = (*from).min(t.len());
+                let m = super::whatsnext::Machine {
+                    profile: &profile,
+                    today,
+                    scheduled,
+                    first: first(t, from, super::whatsnext::PREFIX),
+                };
+                super::whatsnext::next(tool, args, &t[from..], &m)
             }
             Machine::Workflow { tool, args, from }
                 if super::flightstatus::TOOLS.contains(&tool.as_str()) =>
@@ -1747,7 +1762,13 @@ message to use as written) stays in that language. Output only the rewritten rep
             .prev_task(conv_id, exclude_task)
             .ok()
             .flatten()
-            .map(|t| super::required::open_question(arr(&t, "transcript")))
+            .map(|t| {
+                let prev = arr(&t, "transcript");
+                // and the shop's last review, so a pick in the next task matches the offers the user saw
+                let mut out = super::booking::shopping::carried_review(prev);
+                out.extend(super::required::open_question(prev));
+                out
+            })
             .unwrap_or_default()
     }
 
@@ -2704,6 +2725,7 @@ yourself; ask_bot is not available for it."
                                 || super::flightstatus::TOOLS.contains(&tool_name(x))
                                 || super::entry::TOOLS.contains(&tool_name(x))))
                             && super::news::offered(&transcript, tool_name(x))
+                            && super::whatsnext::offered(&transcript, tool_name(x))
                             // travel_pick only on the reply to a flight search's every-flight result
                             && super::booking::offered(&transcript, tool_name(x))
                     })
@@ -2751,6 +2773,7 @@ yourself; ask_bot is not available for it."
                 .or_else(|| super::workflow::active(&transcript, &super::apdt::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::trains::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::flightstatus::TOOLS))
+                .or_else(|| super::workflow::active(&transcript, &super::whatsnext::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::entry::TOOLS))
                 .map(|(from, tool, args)| Machine::Workflow { tool, args, from });
             let driven = match &machine {
@@ -3255,6 +3278,7 @@ yourself; ask_bot is not available for it."
                 || super::workflow::active(&transcript, &super::claims::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::trains::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::flightstatus::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::whatsnext::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::entry::TOOLS).is_some()
                 || workflow_reply.is_some();
             // the confirmation after a hand-back is read by code: a snapshot the model skipped is taken here, once,
@@ -4153,6 +4177,8 @@ pub fn compress_with(
                 || id.starts_with(super::trains::PREFIX)
                 || super::flightstatus::TOOLS.contains(&name.as_str())
                 || id.starts_with(super::flightstatus::PREFIX)
+                || super::whatsnext::TOOLS.contains(&name.as_str())
+                || id.starts_with(super::whatsnext::PREFIX)
                 || super::entry::TOOLS.contains(&name.as_str())
                 || super::apdt::TOOLS.contains(&name.as_str())
                 || (id.starts_with(super::apdt::PREFIX)

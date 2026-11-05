@@ -1793,6 +1793,10 @@ fn a_shopping_pick_to_buy_links_the_stores_checkout() {
         m.contains("Check out and pay in your browser") && m.contains(&get_str(o, "checkout_url")),
         "{m}"
     );
+    assert!(
+        m.contains("the store's checkout confirms your address"),
+        "{m}"
+    );
     assert!(!names(&t2).iter().any(|n| n.starts_with("browser_")));
 }
 
@@ -3187,4 +3191,134 @@ fn a_party_of_zero_is_not_said_and_the_search_goes_on() {
         },
     );
     assert!(matches!(bad, Checked::Invalid(_)), "{bad:?}");
+}
+
+#[test]
+fn a_flight_named_by_its_place_in_the_day_is_picked_by_code() {
+    // travel_user_real 2026-11-05: "the last flight that lands before midnight" — the latest departure that still lands
+    // the same day (18:50 → 22:50), not the one landing latest (13:30 → 23:45) nor the late one landing tomorrow
+    let f = |id: &str, dep: &str, arr: &str| super::Offer {
+        id: id.into(),
+        label: id.into(),
+        depart: dep.into(),
+        arrive: arr.into(),
+        ..Default::default()
+    };
+    let fl = vec![
+        f("a", "2026-11-07 13:30", "2026-11-07 23:45"),
+        f("b", "2026-11-07 18:50", "2026-11-07 22:50"),
+        f("c", "2026-11-07 23:40", "2026-11-08 03:30"),
+        f("d", "2026-11-07 07:05", "2026-11-07 10:55"),
+    ];
+    let rule = |r: Value| super::pick_by_rule(&fl, r["order"].as_str().unwrap(), &r);
+    assert_eq!(
+        rule(json!({"order": "latest_departure", "lands_same_day": true})).as_deref(),
+        Some("b")
+    );
+    assert_eq!(
+        rule(json!({"order": "latest_departure"})).as_deref(),
+        Some("c")
+    );
+    assert_eq!(
+        rule(json!({"order": "earliest_departure"})).as_deref(),
+        Some("d")
+    );
+    assert_eq!(
+        rule(json!({"order": "latest_arrival", "lands_same_day": true})).as_deref(),
+        Some("a")
+    );
+    assert_eq!(
+        rule(json!({"order": "latest_departure", "lands_by": "23:00"})).as_deref(),
+        Some("b")
+    );
+    assert_eq!(
+        rule(json!({"order": "earliest_departure", "leaves_after": "12:00"})).as_deref(),
+        Some("a")
+    );
+    assert_eq!(
+        rule(json!({"order": "latest_departure", "lands_by": "06:00"})),
+        None
+    );
+}
+
+#[test]
+fn the_pick_is_the_offer_the_model_named_by_id_or_by_its_cards_label() {
+    // shopping_real 2026-11-05: the pick came as the card's label (title, price, rating, store) and the price had moved
+    let offers = vec![
+        json!({"offer_id": "google-1", "title": "Nike Pegasus 42 Men's", "price": 200.87}),
+        json!({"offer_id": "google-2", "title": "Nike Pegasus 42", "price": 180.0}),
+    ];
+    let label = "Nike Pegasus 42 Men's — S$200.80, 4.8/5 (692 ratings), distance-store.com";
+    let id = |o: Option<&Value>| o.map(|o| get_str(o, "offer_id"));
+    assert_eq!(
+        id(super::shopping::picked_offer(&offers, label, &[])).as_deref(),
+        Some("google-1")
+    );
+    assert_eq!(
+        id(super::shopping::picked_offer(
+            &offers,
+            "Nike Pegasus 42 Mens",
+            &[]
+        ))
+        .as_deref(),
+        Some("google-1")
+    );
+    assert_eq!(
+        id(super::shopping::picked_offer(
+            &offers,
+            "anything",
+            &["google-2".into()]
+        ))
+        .as_deref(),
+        Some("google-2")
+    );
+    assert_eq!(
+        super::shopping::picked_offer(&offers, "Adidas Adizero", &[]),
+        None
+    );
+}
+
+#[test]
+fn the_shops_review_is_found_behind_its_card_and_carried_into_the_next_task() {
+    // shopping_real 2026-11-05: the pick ("I'll take the Nike Vomero 18") came as a new task and matched nothing
+    use super::shopping::{carried_review, last_review, CARRIED_REVIEW};
+    let review = json!({"status": "review", "offers": [{"offer_id": "google-1", "title": "Nike Vomero 18", "provider": "google"}]});
+    let mut prev = vec![json!({"role": "user", "content": "Nike running shoes under S$250"})];
+    prev.extend(workflow::result_exchange(&prev, SHOP_ORDER, &review));
+    prev.extend(workflow::result_exchange(
+        &prev,
+        SHOP_ORDER,
+        &json!({"status": "shown"}),
+    ));
+    assert_eq!(
+        last_review(&prev).unwrap()["offers"][0]["title"],
+        "Nike Vomero 18"
+    );
+    let carried = carried_review(&prev);
+    assert_eq!(carried.len(), 2);
+    let mut next = vec![json!({"role": "system", "content": ""})];
+    next.extend(carried);
+    next.push(json!({"role": "user", "content": "I'll take the Nike Vomero 18."}));
+    assert_eq!(
+        last_review(&next).unwrap()["offers"][0]["offer_id"],
+        "google-1"
+    );
+    // the next task's own results never take the carried id
+    next.extend(workflow::result_exchange(
+        &next,
+        SHOP_ORDER,
+        &json!({"status": "shown"}),
+    ));
+    let ids: Vec<String> = next
+        .iter()
+        .flat_map(super::super::util::tool_calls)
+        .map(|tc| get_str(tc, "id"))
+        .collect();
+    assert_eq!(
+        ids.iter().filter(|i| *i == CARRIED_REVIEW).count(),
+        1,
+        "{ids:?}"
+    );
+    // nothing to carry without a review
+    assert!(carried_review(&[json!({"role": "user", "content": "x"})]).is_empty());
 }

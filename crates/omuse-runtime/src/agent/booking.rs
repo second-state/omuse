@@ -239,7 +239,8 @@ from the JSON result (code appends the facts in show to the reply).",
         "Pick from the flights a travel_search / travel_book result listed (status pick_needed). Read every flight against \
 the user's request and give the offer_ids of exactly the flights that meet it, in the order to show them: ONE id when \
 the request names one flight (the last, the first, the earliest, the latest, the cheapest, the shortest …), several only \
-when the user asked for options or a comparison. \"The last flight\" is the one that DEPARTS last among the flights meeting the user's other conditions (\"the last flight that lands before midnight\": the latest departure that still lands that day — not the one landing latest); \"the first\" departs first. Stick to what the user asked: never add a cheaper or \"better\" flight \
+when the user asked for options or a comparison. A flight the user named by its place in the day (the last, the \
+first, the earliest to arrive, the last that lands before midnight): give `rule` instead and code picks it from the list. \"The last flight\" is the one that DEPARTS last among the flights meeting the user's other conditions (\"the last flight that lands before midnight\": the latest departure that still lands that day — not the one landing latest); \"the first\" departs first. Stick to what the user asked: never add a cheaper or \"better\" flight \
 they did not ask for, and default to the cheapest only when the user gave no criterion at all. Times are local at each \
 airport; arrives_days_later 0 = it lands on the departure day (before midnight), 1 = the next day; a flight's `return` \
 is its return flight (a round trip). A round trip whose returns come from a second search: pick the outbound the \
@@ -247,9 +248,16 @@ user asked for (ONE id), code lists its returns (leg: return, priced for the who
 same way. When no flight meets the request, do not call this: say so. Code shows the flights picked (and books the first after travel_book) and returns \
 the result as JSON; write the reply from it (code appends the facts in show to the reply).",
         json!({
-            "offer_ids": {"type": "array", "items": {"type": "string"}, "description": "offer_id of each flight that meets the request, as the result listed it, in the order to show"}
+            "offer_ids": {"type": "array", "items": {"type": "string"}, "description": "offer_id of each flight that meets the request, as the result listed it, in the order to show"},
+            "rule": {"type": "object", "description": "when the user named ONE flight by its place in the day (the last, the first, the earliest to arrive, the last that lands before midnight …): that rule, and code picks the flight by it (offer_ids may then be empty)",
+                "properties": {
+                    "order": {"type": "string", "enum": ["latest_departure", "earliest_departure", "latest_arrival", "earliest_arrival"]},
+                    "lands_same_day": {"type": "boolean", "description": "it must land on the day it leaves (\"before midnight\")"},
+                    "lands_by": {"type": "string", "description": "HH:MM local at the arrival airport, same day"},
+                    "leaves_after": {"type": "string", "description": "HH:MM local"},
+                    "leaves_before": {"type": "string", "description": "HH:MM local"}}}
         }),
-        &["offer_ids"],
+        &[],
     );
     vec![search, book, shop, pick]
 }
@@ -1210,6 +1218,37 @@ fn pick_source(t: &[Value], with_picks: bool) -> Option<PickFrom> {
     })
 }
 
+/// The one flight a rule names (`order` with its limits), from the flights listed — times are each airport's local
+/// "YYYY-MM-DD HH:MM" as the search gives them. `None` when none meets the limits.
+pub fn pick_by_rule(flights: &[Offer], order: &str, rule: &Value) -> Option<String> {
+    let hm = |k: &str| {
+        rule.get(k)
+            .and_then(Value::as_str)
+            .and_then(|v| chrono::NaiveTime::parse_from_str(v.trim(), "%H:%M").ok())
+            .map(|t| t.format("%H:%M").to_string())
+    };
+    let (arrive_by, after, before) = (hm("lands_by"), hm("leaves_after"), hm("leaves_before"));
+    let same_day = rule.get("lands_same_day").is_some_and(truthy) || arrive_by.is_some();
+    let date = |s: &str| s.get(..10).unwrap_or("").to_string();
+    let time = |s: &str| s.get(11..16).unwrap_or("").to_string();
+    let ok: Vec<&Offer> = flights
+        .iter()
+        .filter(|o| o.depart.len() >= 16 && o.arrive.len() >= 16)
+        .filter(|o| !same_day || date(&o.arrive) == date(&o.depart))
+        .filter(|o| arrive_by.as_ref().is_none_or(|t| time(&o.arrive) <= *t))
+        .filter(|o| after.as_ref().is_none_or(|t| time(&o.depart) >= *t))
+        .filter(|o| before.as_ref().is_none_or(|t| time(&o.depart) <= *t))
+        .collect();
+    let best = match order {
+        "latest_departure" => ok.iter().max_by(|a, b| a.depart.cmp(&b.depart)),
+        "earliest_departure" => ok.iter().min_by(|a, b| a.depart.cmp(&b.depart)),
+        "latest_arrival" => ok.iter().max_by(|a, b| a.arrive.cmp(&b.arrive)),
+        "earliest_arrival" => ok.iter().min_by(|a, b| a.arrive.cmp(&b.arrive)),
+        _ => None,
+    };
+    best.map(|o| o.id.clone())
+}
+
 /// `travel_pick`: the offer ids must be ids of the flights the latest flight search listed; the validated arguments
 /// carry those flights (in the model's order), the search's arguments and its facts, so the run needs nothing else.
 fn check_pick(a: &Value, t: &[Value]) -> Checked {
@@ -1222,6 +1261,19 @@ fn check_pick(a: &Value, t: &[Value]) -> Checked {
     for id in list_arg(a, "offer_ids") {
         if !ids.contains(&id) {
             ids.push(id);
+        }
+    }
+    // a flight named by its place in the day: code picks it by the rule (travel_user_real 2026-11-05: "the last flight
+    // that lands before midnight" — the model's own pick took the one landing latest, three runs in four)
+    if let Some(order) = a["rule"].get("order").and_then(Value::as_str) {
+        match pick_by_rule(&src.flights, order, &a["rule"]) {
+            Some(id) => ids = vec![id],
+            None => {
+                return Checked::Invalid(vec![format!(
+                    "rule: no flight the search listed meets it ({}); say so to the user instead of picking",
+                    a["rule"]
+                )])
+            }
         }
     }
     if ids.is_empty() {

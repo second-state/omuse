@@ -6,13 +6,18 @@
 <meta name="referrer" content="no-referrer">
 <title>OMuse sign-in</title>
 <style>
-  :root { color-scheme: light dark; --bg:#fafaf7; --fg:#1d1d1b; --muted:#6b6b66; --ok:#1F6F5C; --bad:#B42318; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#161615; --fg:#ecece8; --muted:#a3a39c; } }
+  :root { color-scheme: light dark; --bg:#fafaf7; --fg:#1d1d1b; --muted:#6b6b66; --ok:#1F6F5C; --bad:#B42318; --line:#d9d9d2; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161615; --fg:#ecece8; --muted:#a3a39c; --line:#3a3a37; } }
   body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
   main { max-width:520px; margin:12vh auto; padding:0 16px; }
   h1 { font-size:20px; margin:0 0 8px; }
   p { color:var(--muted); margin:6px 0; }
   .bad { color:var(--bad); }
+  .host { color:var(--fg); font-weight:600; word-break:break-all; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
+  button { font:inherit; padding:9px 16px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--fg); cursor:pointer; }
+  button.go { background:var(--ok); border-color:var(--ok); color:#fff; }
+  [hidden] { display:none !important; }
 </style>
 </head>
 <body>
@@ -20,11 +25,24 @@
   <h1 id="t">Returning to OMuse… 正在返回 OMuse…</h1>
   <p id="m">This page only passes Google's one-time sign-in code back to your own OMuse. Nothing is stored here.<br>
   本页只把 Google 的一次性授权码转回你自己的 OMuse，不保存任何信息。</p>
+  <div id="ask" hidden>
+    <p>Your Google sign-in will go to the OMuse server at<br>Google 授权将交给这台 OMuse 服务器：</p>
+    <p class="host" id="host"></p>
+    <p>Continue only if this is your own OMuse and you just pressed Connect there. If not, close this page: whoever runs
+    that server would get access to your Google account.<br>
+    只有这是你自己的 OMuse、并且你刚在那里点了「连接」时才继续。否则请关闭本页：那台服务器的主人会拿到你 Google 账号的访问权限。</p>
+    <div class="row">
+      <button class="go" id="go" type="button">Continue 继续</button>
+      <button id="no" type="button">Cancel 取消</button>
+    </div>
+  </div>
 </main>
 <script>
 /* OMuse OAuth relay. Google redirects here (one fixed redirect URI for every OMuse install); `state` was created by
    the user's own OMuse and names its callback ({"r": "https://<box>/sentinel/api/connections/calendar/callback", "n": nonce}).
-   We forward code/state/error there. The box only accepts a state it issued itself and exchanges the code with PKCE. */
+   We forward code/state/error there. The box only accepts a state it issued itself and exchanges the code with PKCE.
+   Anyone can put any server in `state`, so before a code goes to a server that is not this computer the user confirms
+   the destination's host name (a phishing link would otherwise send the code to its own server). */
 (function () {
   var q = new URLSearchParams(location.search);
   var st = q.get('state') || '', r = '';
@@ -34,18 +52,36 @@
     r = JSON.parse(atob(b)).r || '';
   } catch (e) { r = ''; }
   var path = '/sentinel/api/connections/calendar/callback';
+  var local = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/[^?#\s]*$/.test(r) || /^https:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/[^?#\s]*$/.test(r);
   var ok = typeof r === 'string' && r.slice(-path.length) === path &&
-    (/^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/[^?#\s]*$/.test(r) || /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/[^?#\s]*$/.test(r));
+    (/^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/[^?#\s]*$/.test(r) || local);
+  var t = document.getElementById('t'), m = document.getElementById('m');
   if (!ok) {
-    document.getElementById('t').textContent = 'Sign-in link is invalid 授权链接无效';
-    document.getElementById('t').className = 'bad';
-    document.getElementById('m').textContent = 'Go back to OMuse → Connections and start the sign-in again. 请回到 OMuse「连接」页重新开始。';
+    t.textContent = 'Sign-in link is invalid 授权链接无效';
+    t.className = 'bad';
+    m.textContent = 'Go back to OMuse → Connections and start the sign-in again. 请回到 OMuse「连接」页重新开始。';
     return;
   }
   var out = new URLSearchParams();
   ['code', 'state', 'error'].forEach(function (k) { if (q.has(k)) out.set(k, q.get(k)); });
   history.replaceState(null, '', location.pathname);   // drop the code from this page's history entry
-  location.replace(r + '?' + out.toString());
+  var target = r + '?' + out.toString();
+  // nothing to steal (Google sent an error, no code) or this computer itself: straight back
+  if (!q.has('code') || local) { location.replace(target); return; }
+  var host = new URL(r).host;
+  t.textContent = 'Continue to OMuse? 继续到 OMuse？';
+  m.hidden = true;
+  document.getElementById('host').textContent = host;
+  document.getElementById('ask').hidden = false;
+  var go = document.getElementById('go');
+  go.textContent = 'Continue to ' + host + ' 继续';
+  go.onclick = function () { go.disabled = true; location.replace(target); };
+  document.getElementById('no').onclick = function () {
+    document.getElementById('ask').hidden = true;
+    t.textContent = 'Sign-in cancelled 已取消授权';
+    m.hidden = false;
+    m.textContent = 'Nothing was sent. You can close this page. 什么都没有发送，可以关闭本页。';
+  };
 })();
 </script>
 </body>

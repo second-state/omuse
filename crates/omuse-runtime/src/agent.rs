@@ -65,6 +65,7 @@ pub mod tools;
 pub mod trains;
 pub(crate) mod util;
 pub mod videos;
+pub mod whatsnext;
 pub mod workflow;
 
 #[cfg(test)]

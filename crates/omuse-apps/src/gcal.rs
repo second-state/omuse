@@ -25,9 +25,9 @@ use crate::pydt::{py_max, py_min, PyDt, PyTz};
 /// OAuth scopes requested at consent for the calendar.
 pub const SCOPES: &str =
     "openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly";
-/// The Drive scope (full access: the agent lists, downloads, uploads and trashes the user's own files; `drive.file`
-/// would only see files the app created). Google classes it as restricted: fine for the user's own OAuth client.
-pub const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
+/// The Drive scope: `drive.file` — the files OMuse created and the ones the user picked in the Google Drive picker
+/// (the user's decision, 2026-11-04). Google classes it as non-sensitive: no restricted-scope review.
+pub const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 
 /// The scope string for one Google sign-in covering `services` (any of "calendar", "drive"; both when empty).
 pub fn scopes_for(services: &[String]) -> String {
@@ -60,7 +60,7 @@ pub fn granted_services(scope: &str) -> Vec<String> {
 /// HTTP timeout (seconds) of every Google call.
 pub const TIMEOUT: f64 = 30.0;
 /// The relay page Google redirects to when no other is configured.
-pub const DEFAULT_RELAY: &str = "https://drlucaslu.github.io/omuse-oauth/";
+pub const DEFAULT_RELAY: &str = "https://second-state.github.io/omuse-oauth/";
 /// Vault handle of a Google client the user pasted on this box (redirect URI = the relay).
 pub const BOX_CLIENT: &str = "cred_google_oauth_client";
 
@@ -105,8 +105,9 @@ pub struct GoogleSettings {
     pub managed_client_id: String,
     /// `GOOGLE_MANAGED_CLIENT_SECRET`.
     pub managed_client_secret: String,
-    /// `GOOGLE_BROKER_URL`.
-    pub broker_url: String,
+    /// The Drive picker's API key and app id (the Cloud project number), "" when not configured.
+    pub picker_api_key: String,
+    pub project_number: String,
 }
 
 impl GoogleSettings {
@@ -129,7 +130,8 @@ impl GoogleSettings {
             managed_file,
             managed_client_id: g.managed_client_id.clone(),
             managed_client_secret: g.managed_client_secret.clone(),
-            broker_url: g.broker_url.clone(),
+            picker_api_key: g.picker_api_key.trim().to_string(),
+            project_number: g.project_number.trim().to_string(),
         }
     }
 }
@@ -252,26 +254,25 @@ pub fn add_to_calendar_links(a: &Value, tz: &str) -> Result<Value, GCalError> {
 }
 
 // ------------------------------------------------------------------ OMuse's own ("managed") Google client
-// One OAuth client registered by the OMuse publisher, so users just "Sign in with Google" — no Google Cloud project.
-// Every Olares box has its own domain and Google only accepts pre-registered redirect URIs, so Google redirects to one
-// fixed relay page (relay) that forwards the code to the box named in `state`; the box checks the state it issued and
-// exchanges the code (PKCE). The client secret is either built in, or kept by a tiny token broker (broker) that adds
-// it to token requests, so it never ships in the app. Tokens are stored only in the box's vault.
+// One OAuth client (`[google]` in config.toml, or google_managed.json), so users just "Sign in with Google" — no Google
+// Cloud project of their own. Every box has its own domain and Google only accepts pre-registered redirect URIs, so
+// Google redirects to one fixed relay page (relay) that forwards the code to the box named in `state` after the user
+// confirms that box; the box checks the state it issued and exchanges the code with the client secret and PKCE.
+// Tokens are stored only in the box's vault.
 
-/// `{client_id, client_secret, relay, broker, source}`: the build's OMuse client (`source == "build"`) or one
+/// `{client_id, client_secret, relay, source}`: the build's OMuse client (`source == "build"`) or one
 /// saved on this box (`source == "box"`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Managed {
     pub client_id: String,
     pub client_secret: String,
     pub relay: String,
-    pub broker: String,
     pub source: String,
 }
 
 impl Managed {
     pub fn to_value(&self) -> Value {
-        json!({"client_id": self.client_id, "client_secret": self.client_secret, "relay": self.relay, "broker": self.broker, "source": self.source})
+        json!({"client_id": self.client_id, "client_secret": self.client_secret, "relay": self.relay, "source": self.source})
     }
 }
 
@@ -296,21 +297,18 @@ fn built_in(settings: &GoogleSettings) -> Option<Managed> {
     let m = Managed {
         client_id: pick("client_id", &settings.managed_client_id),
         client_secret: pick("client_secret", &settings.managed_client_secret),
-        relay: pick(
-            "relay",
-            if settings.relay_url == DEFAULT_RELAY {
-                ""
+        // the relay: config.toml's, else the managed file's, else Second State's page (DEFAULT_RELAY)
+        relay: {
+            let r = pick("relay", &settings.relay_override);
+            if r.is_empty() {
+                settings.relay_url.clone()
             } else {
-                &settings.relay_url
-            },
-        ),
-        broker: pick("broker", &settings.broker_url),
+                r
+            }
+        },
         source: String::new(),
     };
-    if m.client_id.is_empty()
-        || m.relay.is_empty()
-        || (m.client_secret.is_empty() && m.broker.is_empty())
-    {
+    if m.client_id.is_empty() || m.relay.is_empty() || m.client_secret.is_empty() {
         return None;
     }
     Some(m)
@@ -336,17 +334,27 @@ pub fn managed(settings: &GoogleSettings, store: Option<&Store>) -> Option<Manag
         } else {
             relay
         },
-        broker: String::new(),
         source: "box".into(),
     })
 }
 
-/// The token endpoint: the broker's `/token` for a managed client with a broker, else Google's.
-pub fn token_url(settings: &GoogleSettings, m: Option<&Managed>) -> String {
-    match m {
-        Some(m) if !m.broker.is_empty() => format!("{}/token", m.broker.trim_end_matches('/')),
-        _ => settings.token_url.clone(),
-    }
+/// The Google Drive picker's `(api_key, app_id)`: the build's (`[google]`), else the ones pasted on the box with its
+/// own client; `None` while either is missing.
+pub fn picker(settings: &GoogleSettings, store: Option<&Store>) -> Option<(String, String)> {
+    let rec = store
+        .and_then(|s| s.get_secret(BOX_CLIENT).ok().flatten())
+        .unwrap_or(json!({}));
+    let pick = |built: &str, k: &str| -> String {
+        if built.is_empty() {
+            get_str(&rec, k).trim().to_string()
+        } else {
+            built.to_string()
+        }
+    };
+    let key = pick(&settings.picker_api_key, "picker_api_key");
+    let app = pick(&settings.project_number, "project_number");
+    (!key.is_empty() && !app.is_empty() && app.bytes().all(|b| b.is_ascii_digit()))
+        .then_some((key, app))
 }
 
 /// Google's consent URL (offline access, forced consent, optional PKCE S256 challenge).
@@ -598,6 +606,33 @@ pub(crate) fn range_label(start: &PyDt, end: &PyDt, z: PyTz) -> String {
     )
 }
 
+/// The `free_slots` result for a range and the busy windows of one or several calendars (merged here), in the zone
+/// `tz` (the default calendar's; "" → UTC).
+pub fn free_slots_over(
+    tz: &str,
+    start: PyDt,
+    end: PyDt,
+    mut busy: Vec<(PyDt, PyDt)>,
+    duration_minutes: i64,
+    day_start: &str,
+    day_end: &str,
+) -> Result<Value, GCalError> {
+    let tz = if tz.is_empty() { "UTC" } else { tz };
+    let z = zone_of(tz);
+    busy.sort();
+    let dur = slot_duration(duration_minutes);
+    let slots = free_slot_pairs(start, end, &busy, dur, day_start, day_end, z)?;
+    Ok(free_slots_value(
+        tz,
+        dur,
+        day_start,
+        day_end,
+        busy.len(),
+        &slots,
+        z,
+    ))
+}
+
 /// Called with every refreshed access token: `(access_token, expires_at)`.
 pub type TokenHook = Arc<dyn Fn(&str, f64) + Send + Sync>;
 
@@ -647,14 +682,6 @@ impl GCal {
             token: tokio::sync::Mutex::new((access_token.to_string(), expires_at)),
             ..self
         }
-    }
-
-    /// Use another token endpoint (the broker); "" keeps Google's.
-    pub fn with_token_url(mut self, url: &str) -> Self {
-        if !url.is_empty() {
-            self.token_url = url.to_string();
-        }
-        self
     }
 
     /// Persist refreshed access tokens.
@@ -963,7 +990,25 @@ impl GCal {
         day_end: &str,
         calendar_id: &str,
     ) -> Result<Value, GCalError> {
-        let z = self.zone(None);
+        let (start, end, busy) = self.busy(time_min, time_max, calendar_id).await?;
+        free_slots_over(
+            &self.tz,
+            start,
+            end,
+            busy,
+            duration_minutes,
+            day_start,
+            day_end,
+        )
+    }
+
+    /// The range asked for and the busy windows in it (Google's free/busy), sorted.
+    pub async fn busy(
+        &self,
+        time_min: &Value,
+        time_max: &Value,
+        calendar_id: &str,
+    ) -> Result<(PyDt, PyDt, Vec<(PyDt, PyDt)>), GCalError> {
         let (start, end) = (
             self.parse_time(time_min, None)?,
             self.parse_time(time_max, None)?,
@@ -1002,17 +1047,7 @@ impl GCal {
             busy.push((p("start")?, p("end")?));
         }
         busy.sort();
-        let dur = slot_duration(duration_minutes);
-        let slots = free_slot_pairs(start, end, &busy, dur, day_start, day_end, z)?;
-        Ok(free_slots_value(
-            &self.tz,
-            dur,
-            day_start,
-            day_end,
-            busy.len(),
-            &slots,
-            z,
-        ))
+        Ok((start, end, busy))
     }
 
     /// One event.
@@ -1317,8 +1352,58 @@ mod tests {
             managed_file: PathBuf::from("/nonexistent/google_managed.json"),
             managed_client_id: String::new(),
             managed_client_secret: String::new(),
-            broker_url: String::new(),
+            picker_api_key: String::new(),
+            project_number: String::new(),
         }
+    }
+
+    #[test]
+    fn a_client_in_config_toml_signs_in_through_second_states_relay() {
+        // a personal server: the client id and secret in config.toml, no relay or broker set
+        let mut s = settings("http://x");
+        s.managed_client_id = "123-abc.apps.googleusercontent.com".into();
+        s.managed_client_secret = "GOCSPX-test".into();
+        let m = managed(&s, None).expect("the config's client");
+        assert_eq!(m.source, "build");
+        assert_eq!(m.relay, "https://second-state.github.io/omuse-oauth/");
+        assert_eq!(m.client_secret, "GOCSPX-test");
+        // a relay set in config.toml wins
+        s.relay_override = "https://relay.example/".into();
+        assert_eq!(managed(&s, None).unwrap().relay, "https://relay.example/");
+        // no secret: not usable
+        s.managed_client_secret.clear();
+        assert!(managed(&s, None).is_none());
+    }
+
+    #[test]
+    fn the_drive_picker_needs_a_key_and_a_project_number_from_the_build_or_the_box() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let mut s = settings("http://x");
+        assert_eq!(picker(&s, Some(&store)), None);
+        // pasted on the box with its own client
+        store
+            .put_secret(
+                "calendar",
+                &json!({"client_id": "c", "client_secret": "s", "picker_api_key": "AIzaKEY", "project_number": "123"}),
+                Some(BOX_CLIENT),
+            )
+            .unwrap();
+        assert_eq!(
+            picker(&s, Some(&store)),
+            Some(("AIzaKEY".into(), "123".into()))
+        );
+        // the build's win; a project number that is not digits is no app id
+        s.picker_api_key = "AIzaBUILD".into();
+        assert_eq!(
+            picker(&s, Some(&store)),
+            Some(("AIzaBUILD".into(), "123".into()))
+        );
+        s.project_number = "my-project".into();
+        assert_eq!(picker(&s, Some(&store)), None);
+        // drive.file only, never the full Drive scope
+        assert!(scopes_for(&["drive".into()]).ends_with("auth/drive.file"));
+        assert!(!scopes_for(&["drive".into()]).contains("calendar"));
     }
 
     #[test]
@@ -1382,20 +1467,6 @@ mod tests {
             "a%40group.calendar.google.com"
         );
         assert!(eid("../../x").is_err() && eid("ev1").is_ok());
-        assert_eq!(
-            token_url(
-                &s,
-                Some(&Managed {
-                    client_id: "c".into(),
-                    client_secret: "".into(),
-                    relay: "r".into(),
-                    broker: "https://b/".into(),
-                    source: "build".into()
-                })
-            ),
-            "https://b/token"
-        );
-        assert_eq!(token_url(&s, None), "https://accounts.test/g/token");
         assert_eq!(today_str("Asia/Singapore").len(), 10);
     }
 
@@ -1410,21 +1481,15 @@ mod tests {
         std::fs::write(&s.managed_file, r#"{"client_id": "omuse-test.apps.googleusercontent.com", "client_secret": "GOCSPX-test", "relay": "https://relay/cb"}"#).unwrap();
         let m = managed(&s, None).unwrap();
         assert_eq!(
-            (m.source.as_str(), m.relay.as_str(), m.broker.as_str()),
-            ("build", "https://relay/cb", "")
+            (m.source.as_str(), m.relay.as_str()),
+            ("build", "https://relay/cb")
         );
-        std::fs::write(
-            &s.managed_file,
-            r#"{"client_id": "c", "relay": "https://relay/cb", "broker": "https://b/broker"}"#,
-        )
-        .unwrap();
-        assert_eq!(managed(&s, None).unwrap().broker, "https://b/broker");
         std::fs::write(
             &s.managed_file,
             r#"{"client_id": "c", "relay": "https://relay/cb"}"#,
         )
         .unwrap();
-        assert!(managed(&s, None).is_none(), "secret or broker required");
+        assert!(managed(&s, None).is_none(), "the secret is required");
         s.managed_client_secret = "sec".into();
         assert!(managed(&s, None).is_some());
         std::fs::write(&s.managed_file, "{}").unwrap();

@@ -7,6 +7,11 @@ plan: on
 ---
 # Photo story book from Drive / 用 Drive 照片做故事书
 
+**Drive access is `drive.file`** (0.6.7): OMuse sees only the files the user picked and the ones it made. Photos the
+user picked with the chat's ＋ → From Google Drive arrive as attachments (`uploads/…`): use those directly. When the
+photos are not attached and `drive_search` does not find them, ask the user once to pick them with ＋ → From Google
+Drive — never ask for a folder link or a Drive-wide search.
+
 Use this for "make a story book from my Kyoto photos", "turn the photos in the Birthday folder into a picture book
 for Mia", "an album PDF with captions", "a bedtime story with these pictures". Photos come from Drive with the Drive
 tools, editing is `edit_image` / `caption_image` / `upscale_image`, the book is `make_pdf`, the result goes back with

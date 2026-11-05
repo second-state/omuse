@@ -638,6 +638,22 @@ pub fn router(ctx: App) -> Router {
             post(connections::drive_test),
         )
         .route(
+            "/sentinel/api/connections/drive/picker",
+            get(connections::drive_picker),
+        )
+        .route(
+            "/sentinel/api/connections/drive/file",
+            get(connections::drive_file),
+        )
+        .route(
+            "/sentinel/api/connections/{name}/accounts/{aid}",
+            delete(connections::google_account_remove),
+        )
+        .route(
+            "/sentinel/api/connections/{name}/default",
+            post(connections::google_account_default),
+        )
+        .route(
             "/sentinel/api/connections/slack/credential",
             post(connections::slack_cred).delete(connections::delete_cred_slack),
         )

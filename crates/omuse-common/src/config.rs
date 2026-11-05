@@ -332,10 +332,14 @@ pub struct GoogleConfig {
     pub relay_url: String,
     /// `GOOGLE_MANAGED_FILE` ("" = `google_managed.json` next to the binary's data).
     pub managed_file: String,
-    /// `GOOGLE_MANAGED_CLIENT_ID` / `GOOGLE_MANAGED_CLIENT_SECRET` / `GOOGLE_BROKER_URL`.
+    /// `GOOGLE_MANAGED_CLIENT_ID` / `GOOGLE_MANAGED_CLIENT_SECRET`.
     pub managed_client_id: String,
     pub managed_client_secret: String,
-    pub broker_url: String,
+    /// The Google Drive picker (the chat's attach button): an API key restricted to the Picker API and the Cloud
+    /// project number (the picker's app id: picking a file grants OMuse's `drive.file` access to it). Either may also be
+    /// pasted on the box with its own Google client.
+    pub picker_api_key: String,
+    pub project_number: String,
 }
 
 impl Default for GoogleConfig {
@@ -351,7 +355,8 @@ impl Default for GoogleConfig {
             managed_file: String::new(),
             managed_client_id: String::new(),
             managed_client_secret: String::new(),
-            broker_url: String::new(),
+            picker_api_key: String::new(),
+            project_number: String::new(),
         }
     }
 }
@@ -650,7 +655,7 @@ impl Config {
     /// `GOOGLE_RELAY_URL` or the default relay page.
     pub fn google_relay_url(&self) -> String {
         if self.google.relay_url.is_empty() {
-            "https://drlucaslu.github.io/omuse-oauth/".into()
+            "https://second-state.github.io/omuse-oauth/".into()
         } else {
             self.google.relay_url.clone()
         }

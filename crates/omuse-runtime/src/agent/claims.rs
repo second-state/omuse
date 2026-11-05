@@ -589,6 +589,16 @@ fn market_from_mail(transcript: &[Value]) -> Option<&'static str> {
 }
 
 /// The market from the profile's structured home country (`home_country`, else the home city's), else Singapore.
+/// The FWD market of the profile's home country, when it is one of them.
+fn home_market(profile: &Value) -> Option<&'static str> {
+    match crate::places::home_country(profile).as_str() {
+        "SG" => Some("sg"),
+        "HK" => Some("hk"),
+        "TH" => Some("th"),
+        _ => None,
+    }
+}
+
 fn market_from_profile(profile: &Value) -> &'static str {
     match crate::places::home_country(profile).as_str() {
         "HK" => "hk",
@@ -897,9 +907,13 @@ fn check_buy(a: &Value, cx: &Ctx) -> Checks {
     let mut out = Map::new();
     let mut problems = Vec::new();
     let mut missing = Vec::new();
-    let market = match s_arg(a, "market").as_str() {
-        m @ ("sg" | "hk" | "th") => m.to_string(),
-        _ => market_from_profile(cx.profile).to_string(),
+    // FWD sells only to residents of each market: where the user lives (the profile's home country) decides it; the
+    // model's market counts only when the profile has none (insurance_th_real 2026-11-05: a Bangkok user's request
+    // came as market "sg" and went to FWD Singapore)
+    let market = match (home_market(cx.profile), s_arg(a, "market").as_str()) {
+        (Some(m), _) => m.to_string(),
+        (None, m @ ("sg" | "hk" | "th")) => m.to_string(),
+        (None, _) => "sg".to_string(),
     };
     out.insert("market".into(), json!(market));
     // the reply to the tool's own question keeps the asked call's purchase: the user gave the missing facts, not a new

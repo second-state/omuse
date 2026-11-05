@@ -254,6 +254,15 @@ fn local_tools() -> Vec<Value> {
     tools.extend(super::apdt::tool_schemas());
     tools.extend(super::trains::tool_schemas());
     tools.extend(super::flightstatus::tool_schemas());
+    // "What's next" (Main): the plan from mail and calendar, researched, as an HTML report (agent/whatsnext.rs); its
+    // layout tool is code's own call (`whatsnext::offered`)
+    tools.extend(super::whatsnext::tool_schemas());
+    tools.push(super::tools::fn_(
+        super::whatsnext::REPORT_TOOL,
+        "Lay out the What's next report (code's own call).",
+        json!({"report": {"type": "object"}}),
+        &["report"],
+    ));
     tools.extend(super::entry::tool_schemas());
     // an unknown site's confirmation reference, read by the model after the hand-back and passed as JSON
     tools.push(super::confirm::schema());

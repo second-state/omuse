@@ -5,6 +5,7 @@
 
 pub mod catalog;
 pub mod errors;
+pub mod gaccounts;
 pub use errors::ActionError;
 pub mod guard;
 pub mod ledger;

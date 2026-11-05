@@ -547,11 +547,12 @@ class User:
         return [" ".join(t.split()) for t in await pg.locator(".convlist .conv .ct").all_inner_texts()]
 
     async def attach(self, *paths: str) -> list[dict]:
-        """The user clicks ＋ in the chat, picks files and waits until each chip is uploaded or failed:
-        [{"name", "bad", "text"}] as the chips show them."""
+        """The user clicks ＋ in the chat, then "From this device" (0.6.7: ＋ opens a menu — this device or Google Drive),
+        picks files and waits until each chip is uploaded or failed: [{"name", "bad", "text"}] as the chips show them."""
         pg = self.page
         async with pg.expect_file_chooser() as fc:
             await pg.locator("button.attach").click()
+            await pg.locator(".attach-menu button", has_text="From this device").click()
         await (await fc.value).set_files(list(paths))
         await pg.wait_for_function("n => { const c = [...document.querySelectorAll('.chip-att')]; "
                                    "return c.length >= n && c.every(x => !/%$/.test(x.querySelector('.small').textContent.trim())); }",

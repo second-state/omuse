@@ -1441,20 +1441,29 @@ fn fwd_thailand_asks_the_application_fields_and_keeps_to_thai_residents() {
         Checked::Valid(v) => assert_eq!(v["market"], "th"),
         other => panic!("{other:?}"),
     }
-    // Dhipaya's conditions: residents of Thailand only; a postcode is 5 digits
+    // where the user lives decides the market (FWD sells only to each market's residents): a Singapore resident who
+    // names FWD Thailand is quoted FWD Singapore, where they can buy (2026-11-05)
     let sg = json!({"home_country": "SG", "birthday": "1990-01-01"});
     match check(
         INSURANCE_BUY,
         &json!({"market": "th", "action": "compare", "destination": "JP", "depart": "2026-12-03",
-                "return": "2026-12-09", "address_postcode": "1011"}),
+                "return": "2026-12-09"}),
         &cx(&sg, false, &[]),
+    ) {
+        Checked::Valid(v) => assert_eq!(v["market"], "sg"),
+        other => panic!("{other:?}"),
+    }
+    // Dhipaya's conditions for a Thai resident: a postcode is 5 digits
+    let th = json!({"home_country": "TH", "birthday": "1990-01-01"});
+    match check(
+        INSURANCE_BUY,
+        &json!({"market": "th", "action": "compare", "destination": "JP", "depart": "2026-12-03",
+                "return": "2026-12-09", "address_postcode": "1011"}),
+        &cx(&th, false, &[]),
     ) {
         Checked::Invalid(p) => {
             let p = p.join(" | ");
-            assert!(
-                p.contains("residents of Thailand") && p.contains("address_postcode"),
-                "{p}"
-            );
+            assert!(p.contains("address_postcode"), "{p}");
         }
         other => panic!("{other:?}"),
     }
@@ -1728,4 +1737,24 @@ fn questions_about_cover_or_a_claim_get_the_requirements_and_the_link_and_nothin
             && lines.contains(spec(Flow::FwdSgClaim).start_url),
         "{lines}"
     );
+}
+
+#[test]
+fn where_the_user_lives_decides_fwds_market_not_the_models_guess() {
+    // insurance_th_real 2026-11-05: a Bangkok user's request came as market "sg" and went to FWD Singapore
+    let th = json!({"home_country": "TH", "address_home": "12 Sukhumvit Road, Bangkok 10110"});
+    let args = json!({"market": "sg", "destination": "Japan", "depart": "2026-12-03", "return": "2026-12-09"});
+    let decided = |p: &Value| -> String {
+        let mut out = serde_json::Map::new();
+        let (o, _, _) = super::check_buy(&args, &cx(p, false, &[]));
+        out.extend(o);
+        get_str(&Value::Object(out), "market")
+    };
+    assert_eq!(decided(&th), "th");
+    assert_eq!(decided(&json!({"home_country": "HK"})), "hk");
+    // no home country in the profile: the model's market
+    assert_eq!(decided(&json!({})), "sg");
+    let hk_args = json!({"market": "hk"});
+    let (o, _, _) = super::check_buy(&hk_args, &cx(&json!({}), false, &[]));
+    assert_eq!(o["market"], "hk");
 }

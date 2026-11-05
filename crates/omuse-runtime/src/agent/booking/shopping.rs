@@ -52,6 +52,12 @@ fn offer_json(o: &Value) -> Value {
     let mut out = json!({"offer_id": get_str(o, "offer_id"), "title": get_str(o, "title"),
         "price": price, "currency": cur, "merchant": get_str(&o["seller"], "name"),
         "merchant_site": get_str(&o["seller"], "url"), "url": get_str(o, "url"), "provider": get_str(o, "provider")});
+    // a Google Shopping offer's product token: the stores selling it are looked up with it when the user picks it (kept
+    // in the review, which is carried into the pick's task — the search's own results are not)
+    let product_ref = get_str(o, "product_ref");
+    if !product_ref.is_empty() && get_str(o, "provider") == "google" {
+        out["product_ref"] = json!(product_ref);
+    }
     // the variant's own checkout (Shopify's cart link to the store's checkout): where the user pays
     let checkout = get_str(o, "checkout_url");
     if checkout.starts_with("https://") {
@@ -147,19 +153,40 @@ fn apply_all(rule: &crate::listings::Ranking, listings: &[Listing]) -> Vec<Strin
 
 /// The latest review result of `shop_order` in `transcript` (code's own JSON).
 pub fn last_review(transcript: &[Value]) -> Option<Value> {
+    // the latest result that IS a review (after the comparison card the latest result is the card's: shopping_real
+    // 2026-11-05, the pick then matched nothing and searched again)
     let want = format!("{SHOP_ORDER}{RESULT_SUFFIX}");
-    let id = transcript
+    let ids: Vec<String> = transcript
         .iter()
         .flat_map(tool_calls)
         .filter(|tc| get_str(tc, "id").starts_with(RESULT_PREFIX) && stored_call(tc).0 == want)
         .map(|tc| get_str(tc, "id"))
-        .next_back()?;
-    let m = transcript
-        .iter()
-        .find(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == id)?;
-    serde_json::from_str::<Value>(&content_of(m))
-        .ok()
-        .filter(|v| get_str(v, "status") == REVIEW)
+        .collect();
+    ids.iter().rev().find_map(|id| {
+        let m = transcript
+            .iter()
+            .find(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == *id)?;
+        serde_json::from_str::<Value>(&content_of(m))
+            .ok()
+            .filter(|v| get_str(v, "status") == REVIEW)
+    })
+}
+
+/// The id the carried review keeps in the next task (never one the run numbers itself).
+pub const CARRIED_REVIEW: &str = "res_carried_review";
+
+/// The previous task's shop review, carried into the conversation's next task as its code exchange: the user's pick
+/// ("I'll take the …") comes as a new task, whose history is text only — without the review the pick matched nothing
+/// and the buy searched again (shopping_real 2026-11-05).
+pub fn carried_review(prev: &[Value]) -> Vec<Value> {
+    let Some(review) = last_review(prev) else {
+        return Vec::new();
+    };
+    vec![
+        json!({"role": "assistant", "content": "", "tool_calls": [{"id": CARRIED_REVIEW, "type": "function",
+               "function": {"name": format!("{SHOP_ORDER}{RESULT_SUFFIX}"), "arguments": "{}"}}]}),
+        json!({"role": "tool", "tool_call_id": CARRIED_REVIEW, "content": review.to_string()}),
+    ]
 }
 
 /// Whether `shop_order` stays offered on the reply turn: right after a review result, the model chooses from it.
@@ -252,17 +279,23 @@ fn home_city_name(profile: &Value) -> String {
 /// the offer's seller (else the first) — its own page, the total with shipping and its delivery / returns notes as
 /// Google gives them. Nothing is bought: the user pays on the store's page.
 fn google_pick(o: &Value, t: &[Value], m: &Machine, ids: &Ids, country: &str) -> Step {
-    let token = calls_of(m.before, SEARCH)
-        .into_iter()
-        .chain(calls_of(t, SEARCH))
-        .flat_map(|(_, msg)| {
-            data_of(msg)["offers"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
+    // the review's own token first (shopping_real 2026-11-05: the pick came as a new task, without the search's
+    // results, and ended on Google's product page instead of a store's)
+    let token = Some(get_str(o, "product_ref"))
+        .filter(|x| !x.is_empty())
+        .or_else(|| {
+            calls_of(m.before, SEARCH)
+                .into_iter()
+                .chain(calls_of(t, SEARCH))
+                .flat_map(|(_, msg)| {
+                    data_of(msg)["offers"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .find(|x| get_str(x, "offer_id") == get_str(o, "offer_id"))
+                .map(|x| get_str(&x, "product_ref"))
         })
-        .find(|x| get_str(x, "offer_id") == get_str(o, "offer_id"))
-        .map(|x| get_str(&x, "product_ref"))
         .unwrap_or_default();
     let product_page = || {
         Step::Done(json!({"status": "link", "offer": o,
@@ -368,6 +401,28 @@ fn title_key(title: &str) -> String {
         .collect()
 }
 
+/// The offer the user picked: the one offer id the model's `choices` names, when the review listed it; else the offer
+/// whose title the pick is, or starts with — the model may copy the card's whole label, "<title> — S$200.80, 4.8/5 …"
+/// (shopping_real 2026-11-05: the label did not match the title, and the buy searched again and found no store page).
+pub fn picked_offer<'a>(offers: &'a [Value], pick: &str, choices: &[String]) -> Option<&'a Value> {
+    if let [id] = choices {
+        if let Some(o) = offers.iter().find(|o| get_str(o, "offer_id") == *id) {
+            return Some(o);
+        }
+    }
+    let want = title_key(pick);
+    if want.is_empty() {
+        return None;
+    }
+    offers
+        .iter()
+        .filter(|o| {
+            let k = title_key(&get_str(o, "title"));
+            !k.is_empty() && (k == want || want.starts_with(&k))
+        })
+        .max_by_key(|o| title_key(&get_str(o, "title")).len())
+}
+
 /// The search, the review and the card; `None` for a shop's link (not searched: no page is opened).
 fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
     if !sr.url.is_empty() && sr.query.is_empty() && sr.choices.is_empty() && sr.pick.is_empty() {
@@ -379,12 +434,8 @@ fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
     if !sr.choices.is_empty() || !sr.pick.is_empty() {
         if let Some(review) = last_review(m.before) {
             if !sr.pick.is_empty() {
-                let want = title_key(&sr.pick);
                 let offers = review["offers"].as_array().cloned().unwrap_or_default();
-                if let Some(o) = offers
-                    .iter()
-                    .find(|o| !want.is_empty() && title_key(&get_str(o, "title")) == want)
-                {
+                if let Some(o) = picked_offer(&offers, &sr.pick, &sr.choices) {
                     // a Google Shopping offer: the stores selling it (one more SerpApi request, for the pick only)
                     if get_str(o, "provider") == "google" {
                         return Some(google_pick(o, t, m, ids, &country));
@@ -419,6 +470,13 @@ fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
                         "价格",
                         o["price"].as_f64().unwrap_or(0.0),
                         &get_str(o, "currency"),
+                    ));
+                    // where it goes, as for a Google Shopping pick (shopping_real 2026-11-05: a Shopify store's pick
+                    // said nothing about the delivery)
+                    show.push(S::fact(
+                        "Delivery",
+                        "配送",
+                        &format!("to {country} (the offer ships there; the store's checkout confirms your address)"),
                     ));
                     return Some(Step::Done(
                         json!({"status": "link", "offer": o, "show": show,

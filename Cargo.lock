@@ -2351,6 +2351,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rrule",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "url",

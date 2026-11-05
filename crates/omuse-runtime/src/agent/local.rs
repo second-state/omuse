@@ -436,6 +436,7 @@ request — keep it short and leave out what the request does not need. The skil
             }
             "send_file" => self.send_file(t, a).await,
             "news_report" => self.news_report(t, a).await,
+            "whats_next_report" => self.whats_next_report(t, a).await,
             "file_look" => Ok(self
                 .file_look(&tid, &sget(a, "path"), &sget(a, "question"))
                 .await),
@@ -2656,6 +2657,42 @@ threshold. The price is ALREADY below the threshold, so no alert will come unles
 
     /// Post workspace files into the conversation (images inline, video/audio players, other files as downloads)
     /// and to Telegram when the chat came from there.
+    /// `whats_next_report` (the What's next machine's own call): the report laid out in code
+    /// (crate::whatsnext_report) under `artifacts/whats-next/`, given to the user as a file card and served at
+    /// `/artifacts/…` (Sentinel, signed in). A scheduled run also notifies the user.
+    pub(crate) async fn whats_next_report(&self, t: &Value, a: &Value) -> R {
+        use crate::whatsnext_report::{path, render, Report};
+        let r: Report =
+            match serde_json::from_value(a.get("report").cloned().unwrap_or(Value::Null)) {
+                Ok(r) => r,
+                Err(e) => return Ok(format!("ERROR: the report: {e}")),
+            };
+        let now = chrono::Local::now();
+        let mut rel = path(now);
+        let mut n = 2;
+        while self.path(&rel)?.exists() {
+            rel = path(now).replace(".html", &format!("-{n}.html"));
+            n += 1;
+        }
+        let abs = self.path(&rel)?;
+        if let Some(dir) = abs.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&abs, render(&r, now))?;
+        self.send_file(t, &json!({"paths": [rel], "note": r.title}))
+            .await?;
+        if get_str(t, "source") == "schedule" {
+            let _ = self
+                .local(
+                    t,
+                    "notify_user",
+                    &json!({"title": format!("🗓 {}", r.title), "message": format!("{} items today. /{rel}", r.today.len())}),
+                )
+                .await;
+        }
+        Ok(json!({"published": true, "title": r.title, "html_url": format!("/{rel}"), "html_path": rel}).to_string())
+    }
+
     /// `news_report`: the stories and insights the model researched, laid out in code in the news-research skill's
     /// newspaper template — the HTML and its PDF under `artifacts/news/<subject>/`, given to the user as file cards and
     /// served at `/artifacts/…` (Sentinel, signed in). A scheduled run also notifies the user of the new edition.

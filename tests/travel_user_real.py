@@ -187,15 +187,18 @@ async def main():
         # block has the outbound on Friday morning and the return on Sunday, and the trip's link opens Google's
         # booking options with both flights chosen.
         fri = TODAY + dt.timedelta(days=(4 - TODAY.weekday()) % 7 or 7)
-        sun = fri + dt.timedelta(days=2)
+        # run on a Friday before noon, "Friday morning" may be this very morning (2026-11-06 02:17 in Singapore: the
+        # model took today, the check wanted next week) — both are the user's Friday morning
+        fridays = [fri] + ([TODAY] if TODAY.weekday() == 4 and dt.datetime.now().hour < 9 else [])
         a = await u.ask("Find me the best flight from Hong Kong to Bali. Leaving on Friday morning and back on Sunday evening.",
                         label="round trip")
         out = re.search(r"(?m)^[^\n:]*: HKG (\d{4}-\d\d-\d\d) (\d\d):\d\d → DPS", a.block)
         ret = re.search(r"Return [^:\n]*: DPS (\d{4}-\d\d-\d\d) (\d\d):(\d\d) → HKG", a.block)
         print(f"INFO round trip: block {a.block[:600]!r}")
         dep = out.groups() if out else None
-        check(f"round trip: the block's outbound leaves Hong Kong on Friday {fri} in the morning",
-              dep is not None and dep[0] == fri.isoformat() and int(dep[1]) < 12, dep)
+        check(f"round trip: the block's outbound leaves Hong Kong on Friday ({' or '.join(map(str, fridays))}) in the morning",
+              dep is not None and dep[0] in [f.isoformat() for f in fridays] and int(dep[1]) < 12, dep)
+        sun = (dt.date.fromisoformat(dep[0]) if dep else fri) + dt.timedelta(days=2)
         check(f"round trip: the block names the return flight, from Bali on Sunday {sun}",
               ret is not None and ret.group(1) == sun.isoformat(), a.block[:600])
         check("round trip: the return leaves in the afternoon or evening (the search lists the whole day)",

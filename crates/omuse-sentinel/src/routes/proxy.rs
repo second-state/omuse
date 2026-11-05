@@ -182,11 +182,22 @@ pub async fn proxy(State(ctx): State<App>, Path(path): Path<String>, req: Reques
     resp
 }
 
-/// `GET /run_pending_tasks` → `<runtime>/api/run_pending_tasks`: runs the tasks a sleeping or suspended machine left
-/// due, streaming their progress (NDJSON) until all are done. Behind the login gate like everything else (a script
-/// signs in with Basic auth: `curl -N -u user:password https://…/run_pending_tasks`).
+/// `GET /run_pending_tasks`: runs the tasks a sleeping or suspended machine left due. No password is needed (the
+/// user, 2026-11-04: it only starts what is due anyway — a cron job or pinger just calls it). A caller who signed in
+/// (Basic auth or the session cookie, as the login gate reports; everyone when there is no gate) gets the runtime's
+/// live NDJSON stream with each task's name and answer (`curl -N -u user:password https://…/run_pending_tasks`); anyone
+/// else gets `<runtime>/api/run_pending_tasks_brief`: the due tasks are started and only their counts come back, at
+/// once — no names, no answers, no connection held open.
 pub async fn run_pending_tasks(ctx: State<App>, req: Request) -> Response {
-    proxy(ctx, Path("run_pending_tasks".to_string()), req).await
+    let gated = ctx.cfg.auth_enabled() && ctx.cfg.auth.gate;
+    let signed_in =
+        !gated || header(req.headers(), omuse_web::gate::SIGNED_IN_HEADER).as_deref() == Some("1");
+    let path = if signed_in {
+        "run_pending_tasks"
+    } else {
+        "run_pending_tasks_brief"
+    };
+    proxy(ctx, Path(path.to_string()), req).await
 }
 
 /// `GET /`: the page shell; also learns the public address users reach this OMuse at.

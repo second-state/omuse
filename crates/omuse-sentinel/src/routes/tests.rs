@@ -36,6 +36,10 @@ async fn fake_runtime() -> String {
             get(|| async { "{\"event\": \"pending\", \"count\": 0}\n{\"event\": \"done\"}\n" }),
         )
         .route(
+            "/api/run_pending_tasks_brief",
+            get(|| async { axum::Json(json!({"pending": 0, "started": 0, "skipped": 0, "errors": 0})) }),
+        )
+        .route(
             "/api/length",
             put(|h: axum::http::HeaderMap, body: axum::body::Bytes| async move {
                 let cl = h.get("content-length").and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -314,6 +318,70 @@ async fn run_pending_tasks_reaches_the_runtime() {
 }
 
 #[tokio::test]
+async fn run_pending_tasks_needs_no_password_and_tells_a_stranger_only_counts() {
+    use base64::Engine;
+    // behind the login gate: no credentials → the brief counts; Basic auth → the full stream; a forged "signed in"
+    // header from the caller is stripped by the gate
+    let rt = fake_runtime().await;
+    let (ctx, _d) = ctx_with(&rt, true);
+    let r = app(ctx).unwrap();
+    let body = |resp: axum::response::Response| async move {
+        String::from_utf8_lossy(&resp.into_body().collect().await.unwrap().to_bytes()).into_owned()
+    };
+    let resp = r
+        .clone()
+        .oneshot(
+            req("GET", "/run_pending_tasks")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body(resp).await,
+        r#"{"pending":0,"started":0,"skipped":0,"errors":0}"#
+    );
+    let forged = req("GET", "/run_pending_tasks")
+        .header(omuse_web::gate::SIGNED_IN_HEADER, "1")
+        .body(Body::empty())
+        .unwrap();
+    let resp = r.clone().oneshot(forged).await.unwrap();
+    assert!(body(resp).await.contains("\"started\""));
+    let basic = base64::engine::general_purpose::STANDARD.encode("omuse:secret-pass");
+    let signed = req("GET", "/run_pending_tasks")
+        .header("authorization", format!("Basic {basic}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = r.clone().oneshot(signed).await.unwrap();
+    assert!(body(resp).await.ends_with("{\"event\": \"done\"}\n"));
+    // a wrong password is just a stranger here: counts, no stream
+    let bad = base64::engine::general_purpose::STANDARD.encode("omuse:wrong");
+    let resp = r
+        .clone()
+        .oneshot(
+            req("GET", "/run_pending_tasks")
+                .header("authorization", format!("Basic {bad}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body(resp).await.contains("\"started\""));
+    // everything else stays behind the login
+    let resp = r
+        .clone()
+        .oneshot(
+            req("GET", "/api/run_pending_tasks")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn proxy_streams_sse_without_buffering() {
     let rt = fake_runtime().await;
     let (ctx, _d) = ctx_with(&rt, false);
@@ -418,6 +486,96 @@ async fn delete_credential_on_shadowed_route() {
         assert_eq!(s, StatusCode::OK, "{name}");
         assert_eq!(v, json!({"ok": true}));
     }
+}
+
+#[tokio::test]
+async fn each_google_account_is_listed_made_default_and_disconnected_on_its_own() {
+    let (ctx, _d) = ctx_with("http://127.0.0.1:9", false);
+    for (email, tok) in [("me@example.com", "r1"), ("work@example.com", "r2")] {
+        omuse_apps::gaccounts::save_account(
+            &ctx.store,
+            "calendar",
+            email,
+            &json!({"refresh_token": tok}),
+            &json!({"mode": "google", "time_zone": "Asia/Singapore"}),
+        )
+        .unwrap();
+    }
+    let r = router(ctx.clone());
+    let ui = |m: &str, u: &str, body: Value| {
+        req(m, u)
+            .header("X-Persona-UI", "1")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let (s, v) = send(
+        &r,
+        ui(
+            "POST",
+            "/sentinel/api/connections/calendar/default",
+            json!({"account": "c2"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["default"], "c2");
+    let emails: Vec<&str> = v["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["email"].as_str())
+        .collect();
+    assert_eq!(emails, ["me@example.com", "work@example.com"]);
+    let (s, v) = send(
+        &r,
+        ui(
+            "DELETE",
+            "/sentinel/api/connections/calendar/accounts/c2",
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (
+            v["accounts"].as_array().unwrap().len(),
+            v["default"].clone()
+        ),
+        (1, json!("c1"))
+    );
+    assert!(ctx.store.get_secret("cred_calendar_2").unwrap().is_none());
+    // an unknown service or account is a 404, gmail keeps its own routes
+    let (s, _) = send(
+        &r,
+        ui(
+            "POST",
+            "/sentinel/api/connections/notion/default",
+            json!({"account": "c1"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = send(
+        &r,
+        ui(
+            "POST",
+            "/sentinel/api/connections/calendar/default",
+            json!({"account": "c9"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // the picker is not configured in this build and no drive is connected: said, not an error
+    let (s, v) = send(
+        &r,
+        req("GET", "/sentinel/api/connections/drive/picker")
+            .header("X-Persona-UI", "1")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((s, v["ok"].clone()), (StatusCode::OK, json!(false)), "{v}");
 }
 
 #[tokio::test]

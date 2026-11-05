@@ -940,18 +940,23 @@ for the user and say so in the takeover reason.)"
 
     // ---------------------------------------------------------------- calendar rules
     if connector == "calendar" {
-        if !store.has_secret("cred_calendar_1")? {
+        if crate::gaccounts::ready(store, "calendar")?.is_empty() {
             return Ok(Decision::new(
                 DENY,
                 &t_risk,
                 "Google 日历尚未连接：请在「连接 Connections」页设置 (not connected)",
             ));
         }
-        if capability == "write"
-            && store
-                .get_secret("cred_calendar_1")?
-                .is_some_and(|s| truthy(&s["ical_url"]))
-        {
+        // a write goes to the calendar the event is in (`c2:<id>`), else the one named, else the default one
+        let target = match get_str(args, "event_id") {
+            id if id.contains(':') => Some(crate::gaccounts::split_id("calendar", &id).0),
+            _ => Some(get_str(args, "account")).filter(|a| !a.trim().is_empty()),
+        };
+        let read_only = crate::gaccounts::find(store, "calendar", target.as_deref())?
+            .map(|a| crate::gaccounts::handle("calendar", &get_str(&a, "id")))
+            .and_then(|h| store.get_secret(&h).ok().flatten())
+            .is_some_and(|s| truthy(&s["ical_url"]));
+        if capability == "write" && read_only {
             return Ok(Decision::new(DENY, &t_risk, ICAL_READ_ONLY));
         }
         if tool == "calendar_create_event" && truthy(&args["attendees"]) {
@@ -976,7 +981,7 @@ for the user and say so in the takeover reason.)"
 
     // ---------------------------------------------------------------- Google Drive rules
     if connector == "drive" {
-        if !store.has_secret("cred_drive_1")? {
+        if crate::gaccounts::ready(store, "drive")?.is_empty() {
             return Ok(Decision::new(
                 DENY,
                 &t_risk,

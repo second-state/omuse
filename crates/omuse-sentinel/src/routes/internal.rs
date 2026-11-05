@@ -39,8 +39,14 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
         let c = store.connection(name).map_err(ierr)?;
         let conf = &c["config"];
         let mut ready = truthy(&c["enabled"]);
-        if matches!(name, "notion" | "slack" | "calendar" | "drive") {
+        if matches!(name, "notion" | "slack") {
             ready = ready && store.has_secret(&format!("cred_{name}_1")).unwrap_or(false);
+        }
+        if matches!(name, "calendar" | "drive") {
+            ready = ready
+                && !omuse_apps::gaccounts::ready(store, name)
+                    .unwrap_or_default()
+                    .is_empty();
         }
         if name == "travel" {
             ready = true; // flights_search always works (Kiwi.com data); the hotel tools say when they need the key

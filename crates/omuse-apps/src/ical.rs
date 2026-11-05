@@ -20,10 +20,7 @@ use parking_lot::Mutex;
 use regex::Regex;
 use serde_json::{json, Value};
 
-use crate::gcal::{
-    clamp_results, free_slot_pairs, free_slots_value, parse_time_in, range_label, range_too_long,
-    slot_duration, GCalError,
-};
+use crate::gcal::{clamp_results, parse_time_in, range_label, range_too_long, GCalError};
 use crate::py::httpx_name;
 use crate::pydt::{PyDt, PyTz};
 
@@ -716,7 +713,24 @@ impl ICalFeed {
         day_end: &str,
         _calendar_id: &str,
     ) -> Result<Value, GCalError> {
-        let z = self.z();
+        let (start, end, busy) = self.busy(time_min, time_max).await?;
+        crate::gcal::free_slots_over(
+            &self.tz,
+            start,
+            end,
+            busy,
+            duration_minutes,
+            day_start,
+            day_end,
+        )
+    }
+
+    /// The range asked for and the feed's busy windows in it (timed, opaque, not cancelled), sorted.
+    pub async fn busy(
+        &self,
+        time_min: &Value,
+        time_max: &Value,
+    ) -> Result<(PyDt, PyDt, Vec<(PyDt, PyDt)>), GCalError> {
         let (start, end) = (self.parse_time(time_min)?, self.parse_time(time_max)?);
         if range_too_long(&start, &end) {
             return Err(GCalError(
@@ -735,17 +749,7 @@ impl ICalFeed {
             .map(|(b, f, _)| (b, f))
             .collect();
         busy.sort();
-        let dur = slot_duration(duration_minutes);
-        let slots = free_slot_pairs(start, end, &busy, dur, day_start, day_end, z)?;
-        Ok(free_slots_value(
-            &self.tz,
-            dur,
-            day_start,
-            day_end,
-            busy.len(),
-            &slots,
-            z,
-        ))
+        Ok((start, end, busy))
     }
 
     /// One instance by the id `list_events` gave (`uid@YYYYMMDDTHHMMSSZ`), or a master by uid.

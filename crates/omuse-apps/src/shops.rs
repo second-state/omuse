@@ -271,13 +271,22 @@ pub fn trim(offers: Vec<Value>) -> Vec<Value> {
         .collect()
 }
 
+/// The short reference of a Google Shopping product token: the same for the same product in any search, so a pick in a
+/// later task (the review carried into it) still names that product, never another search's `p1`.
+pub fn product_ref(token: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut h);
+    format!("p{:010x}", h.finish() & 0xff_ffff_ffff)
+}
+
 /// An offer with only [`OFFER_FIELDS`]; a Google Shopping product token (hundreds of characters) is swapped for a short
 /// reference in `refs` (`product_ref`), which `shop_stores` takes back.
 pub fn compact(o: &Value, refs: &mut Vec<(String, String)>) -> Value {
     let mut out = serde_json::Map::new();
     let token = get_str(o, "product_token");
     if !token.is_empty() {
-        let r = format!("p{}", refs.len() + 1);
+        let r = product_ref(&token);
         refs.push((r.clone(), token));
         out.insert("product_ref".into(), json!(r));
     }
@@ -344,7 +353,13 @@ mod tests {
         let small = json!({"offers": out}).to_string().len();
         assert!(small < 25_000, "{small} chars (raw {raw})");
         assert_eq!(refs.len(), PER_PROVIDER);
-        assert_eq!(out[0]["product_ref"], "p1");
+        let r = get_str(&out[0], "product_ref");
+        assert!(r.starts_with('p') && r.len() == 11, "{r}");
+        assert_eq!(
+            r,
+            product_ref(&refs[0].1),
+            "the same product, the same reference"
+        );
         assert!(out[0].get("product_token").is_none());
     }
 
