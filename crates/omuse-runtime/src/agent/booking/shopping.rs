@@ -368,6 +368,28 @@ fn title_key(title: &str) -> String {
         .collect()
 }
 
+/// The offer the user picked: the one offer id the model's `choices` names, when the review listed it; else the offer
+/// whose title the pick is, or starts with — the model may copy the card's whole label, "<title> — S$200.80, 4.8/5 …"
+/// (shopping_real 2026-11-05: the label did not match the title, and the buy searched again and found no store page).
+pub fn picked_offer<'a>(offers: &'a [Value], pick: &str, choices: &[String]) -> Option<&'a Value> {
+    if let [id] = choices {
+        if let Some(o) = offers.iter().find(|o| get_str(o, "offer_id") == *id) {
+            return Some(o);
+        }
+    }
+    let want = title_key(pick);
+    if want.is_empty() {
+        return None;
+    }
+    offers
+        .iter()
+        .filter(|o| {
+            let k = title_key(&get_str(o, "title"));
+            !k.is_empty() && (k == want || want.starts_with(&k))
+        })
+        .max_by_key(|o| title_key(&get_str(o, "title")).len())
+}
+
 /// The search, the review and the card; `None` for a shop's link (not searched: no page is opened).
 fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
     if !sr.url.is_empty() && sr.query.is_empty() && sr.choices.is_empty() && sr.pick.is_empty() {
@@ -379,12 +401,8 @@ fn next_api(sr: &ShopReq, t: &[Value], m: &Machine, ids: &Ids) -> Option<Step> {
     if !sr.choices.is_empty() || !sr.pick.is_empty() {
         if let Some(review) = last_review(m.before) {
             if !sr.pick.is_empty() {
-                let want = title_key(&sr.pick);
                 let offers = review["offers"].as_array().cloned().unwrap_or_default();
-                if let Some(o) = offers
-                    .iter()
-                    .find(|o| !want.is_empty() && title_key(&get_str(o, "title")) == want)
-                {
+                if let Some(o) = picked_offer(&offers, &sr.pick, &sr.choices) {
                     // a Google Shopping offer: the stores selling it (one more SerpApi request, for the pick only)
                     if get_str(o, "provider") == "google" {
                         return Some(google_pick(o, t, m, ids, &country));

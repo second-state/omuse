@@ -1729,3 +1729,23 @@ fn questions_about_cover_or_a_claim_get_the_requirements_and_the_link_and_nothin
         "{lines}"
     );
 }
+
+#[test]
+fn where_the_user_lives_decides_fwds_market_not_the_models_guess() {
+    // insurance_th_real 2026-11-05: a Bangkok user's request came as market "sg" and went to FWD Singapore
+    let th = json!({"home_country": "TH", "address_home": "12 Sukhumvit Road, Bangkok 10110"});
+    let args = json!({"market": "sg", "destination": "Japan", "depart": "2026-12-03", "return": "2026-12-09"});
+    let decided = |p: &Value| -> String {
+        let mut out = serde_json::Map::new();
+        let (o, _, _) = super::check_buy(&args, &cx(p, false, &[]));
+        out.extend(o);
+        get_str(&Value::Object(out), "market")
+    };
+    assert_eq!(decided(&th), "th");
+    assert_eq!(decided(&json!({"home_country": "HK"})), "hk");
+    // no home country in the profile: the model's market
+    assert_eq!(decided(&json!({})), "sg");
+    let hk_args = json!({"market": "hk"});
+    let (o, _, _) = super::check_buy(&hk_args, &cx(&json!({}), false, &[]));
+    assert_eq!(o["market"], "hk");
+}
