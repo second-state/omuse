@@ -147,19 +147,40 @@ fn apply_all(rule: &crate::listings::Ranking, listings: &[Listing]) -> Vec<Strin
 
 /// The latest review result of `shop_order` in `transcript` (code's own JSON).
 pub fn last_review(transcript: &[Value]) -> Option<Value> {
+    // the latest result that IS a review (after the comparison card the latest result is the card's: shopping_real
+    // 2026-11-05, the pick then matched nothing and searched again)
     let want = format!("{SHOP_ORDER}{RESULT_SUFFIX}");
-    let id = transcript
+    let ids: Vec<String> = transcript
         .iter()
         .flat_map(tool_calls)
         .filter(|tc| get_str(tc, "id").starts_with(RESULT_PREFIX) && stored_call(tc).0 == want)
         .map(|tc| get_str(tc, "id"))
-        .next_back()?;
-    let m = transcript
-        .iter()
-        .find(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == id)?;
-    serde_json::from_str::<Value>(&content_of(m))
-        .ok()
-        .filter(|v| get_str(v, "status") == REVIEW)
+        .collect();
+    ids.iter().rev().find_map(|id| {
+        let m = transcript
+            .iter()
+            .find(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == *id)?;
+        serde_json::from_str::<Value>(&content_of(m))
+            .ok()
+            .filter(|v| get_str(v, "status") == REVIEW)
+    })
+}
+
+/// The id the carried review keeps in the next task (never one the run numbers itself).
+pub const CARRIED_REVIEW: &str = "res_carried_review";
+
+/// The previous task's shop review, carried into the conversation's next task as its code exchange: the user's pick
+/// ("I'll take the …") comes as a new task, whose history is text only — without the review the pick matched nothing
+/// and the buy searched again (shopping_real 2026-11-05).
+pub fn carried_review(prev: &[Value]) -> Vec<Value> {
+    let Some(review) = last_review(prev) else {
+        return Vec::new();
+    };
+    vec![
+        json!({"role": "assistant", "content": "", "tool_calls": [{"id": CARRIED_REVIEW, "type": "function",
+               "function": {"name": format!("{SHOP_ORDER}{RESULT_SUFFIX}"), "arguments": "{}"}}]}),
+        json!({"role": "tool", "tool_call_id": CARRIED_REVIEW, "content": review.to_string()}),
+    ]
 }
 
 /// Whether `shop_order` stays offered on the reply turn: right after a review result, the model chooses from it.

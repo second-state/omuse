@@ -1762,7 +1762,13 @@ message to use as written) stays in that language. Output only the rewritten rep
             .prev_task(conv_id, exclude_task)
             .ok()
             .flatten()
-            .map(|t| super::required::open_question(arr(&t, "transcript")))
+            .map(|t| {
+                let prev = arr(&t, "transcript");
+                // and the shop's last review, so a pick in the next task matches the offers the user saw
+                let mut out = super::booking::shopping::carried_review(prev);
+                out.extend(super::required::open_question(prev));
+                out
+            })
             .unwrap_or_default()
     }
 

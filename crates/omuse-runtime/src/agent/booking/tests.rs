@@ -3273,3 +3273,48 @@ fn the_pick_is_the_offer_the_model_named_by_id_or_by_its_cards_label() {
         None
     );
 }
+
+#[test]
+fn the_shops_review_is_found_behind_its_card_and_carried_into_the_next_task() {
+    // shopping_real 2026-11-05: the pick ("I'll take the Nike Vomero 18") came as a new task and matched nothing
+    use super::shopping::{carried_review, last_review, CARRIED_REVIEW};
+    let review = json!({"status": "review", "offers": [{"offer_id": "google-1", "title": "Nike Vomero 18", "provider": "google"}]});
+    let mut prev = vec![json!({"role": "user", "content": "Nike running shoes under S$250"})];
+    prev.extend(workflow::result_exchange(&prev, SHOP_ORDER, &review));
+    prev.extend(workflow::result_exchange(
+        &prev,
+        SHOP_ORDER,
+        &json!({"status": "shown"}),
+    ));
+    assert_eq!(
+        last_review(&prev).unwrap()["offers"][0]["title"],
+        "Nike Vomero 18"
+    );
+    let carried = carried_review(&prev);
+    assert_eq!(carried.len(), 2);
+    let mut next = vec![json!({"role": "system", "content": ""})];
+    next.extend(carried);
+    next.push(json!({"role": "user", "content": "I'll take the Nike Vomero 18."}));
+    assert_eq!(
+        last_review(&next).unwrap()["offers"][0]["offer_id"],
+        "google-1"
+    );
+    // the next task's own results never take the carried id
+    next.extend(workflow::result_exchange(
+        &next,
+        SHOP_ORDER,
+        &json!({"status": "shown"}),
+    ));
+    let ids: Vec<String> = next
+        .iter()
+        .flat_map(super::super::util::tool_calls)
+        .map(|tc| get_str(tc, "id"))
+        .collect();
+    assert_eq!(
+        ids.iter().filter(|i| *i == CARRIED_REVIEW).count(),
+        1,
+        "{ids:?}"
+    );
+    // nothing to carry without a review
+    assert!(carried_review(&[json!({"role": "user", "content": "x"})]).is_empty());
+}
