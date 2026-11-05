@@ -52,6 +52,12 @@ fn offer_json(o: &Value) -> Value {
     let mut out = json!({"offer_id": get_str(o, "offer_id"), "title": get_str(o, "title"),
         "price": price, "currency": cur, "merchant": get_str(&o["seller"], "name"),
         "merchant_site": get_str(&o["seller"], "url"), "url": get_str(o, "url"), "provider": get_str(o, "provider")});
+    // a Google Shopping offer's product token: the stores selling it are looked up with it when the user picks it (kept
+    // in the review, which is carried into the pick's task — the search's own results are not)
+    let product_ref = get_str(o, "product_ref");
+    if !product_ref.is_empty() && get_str(o, "provider") == "google" {
+        out["product_ref"] = json!(product_ref);
+    }
     // the variant's own checkout (Shopify's cart link to the store's checkout): where the user pays
     let checkout = get_str(o, "checkout_url");
     if checkout.starts_with("https://") {
@@ -273,17 +279,23 @@ fn home_city_name(profile: &Value) -> String {
 /// the offer's seller (else the first) — its own page, the total with shipping and its delivery / returns notes as
 /// Google gives them. Nothing is bought: the user pays on the store's page.
 fn google_pick(o: &Value, t: &[Value], m: &Machine, ids: &Ids, country: &str) -> Step {
-    let token = calls_of(m.before, SEARCH)
-        .into_iter()
-        .chain(calls_of(t, SEARCH))
-        .flat_map(|(_, msg)| {
-            data_of(msg)["offers"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
+    // the review's own token first (shopping_real 2026-11-05: the pick came as a new task, without the search's
+    // results, and ended on Google's product page instead of a store's)
+    let token = Some(get_str(o, "product_ref"))
+        .filter(|x| !x.is_empty())
+        .or_else(|| {
+            calls_of(m.before, SEARCH)
+                .into_iter()
+                .chain(calls_of(t, SEARCH))
+                .flat_map(|(_, msg)| {
+                    data_of(msg)["offers"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .find(|x| get_str(x, "offer_id") == get_str(o, "offer_id"))
+                .map(|x| get_str(&x, "product_ref"))
         })
-        .find(|x| get_str(x, "offer_id") == get_str(o, "offer_id"))
-        .map(|x| get_str(&x, "product_ref"))
         .unwrap_or_default();
     let product_page = || {
         Step::Done(json!({"status": "link", "offer": o,

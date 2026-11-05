@@ -2278,8 +2278,11 @@ pub async fn shop_search(st: &AppState, args: &Value) -> Value {
             .map(|o| shops::compact(o, &mut refs))
             .collect();
         *offers = compacted;
+        // kept across searches (a pick may come in a later task); each reference is its product's own
         let mut cache = PRODUCT_REFS.lock();
-        cache.clear();
+        if cache.len() > 2000 {
+            cache.clear();
+        }
         cache.extend(refs);
     }
     out
