@@ -205,6 +205,14 @@ in October 2026 and carry their date.
 | 2025 | Kai Tak Sports Park opens (March); ride-hailing licensing law passed (October) |
 | 2026 | TTPS list expanded to 200 universities (January); population 7.52 million (mid-year) |
 
+## Arrival card and tax
+
+From OMuse's own tables (the same facts `arrival_card_fill` and `tax_refund_rules` answer with; tax table checked 2026-11-04). Asked how, give the requirement and the official link; file only when the user asks.
+
+- **Arrival card**: none to file before arriving in Hong Kong (no card in OMuse's arrival-card table); visas and entry rules: `entry-requirements`.
+- **Shopping tax refund (visitors)** — no refund: Hong Kong has no sales tax or VAT (its airport departure tax refund is a different scheme). Official: Brand Hong Kong — no sales tax: https://www.brandhk.gov.hk/en/only-in-hong-kong/unique-advantages.
+- **Airport departure tax refund (APDT)**: a passenger who arrived in Hong Kong and flew out on the same or the next calendar day can get the HK$120 / HK$200 Air Passenger Departure Tax on the ticket back; apply within 28 days after the departure flight on the official platform https://app.apdtrefund.hk/hkTaxMobile/?lang=en — the Money bot (`hk-apdt-refund`) gives the rule and the deadline, and applies when asked.
+
 ## Local events
 
 - **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call

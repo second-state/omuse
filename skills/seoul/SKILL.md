@@ -199,6 +199,13 @@ carry their date.
 | 2025 | e-Arrival card launched (24 February); subway base fare ₩1,550 (June) |
 | 2026 | Google map-data export approved (27 February); K-ETA exemption extended to 31 December 2026 |
 
+## Arrival card and tax
+
+From OMuse's own tables (the same facts `arrival_card_fill` and `tax_refund_rules` answer with; tax table checked 2026-11-04). Asked how, give the requirement and the official link; file only when the user asks.
+
+- **Arrival card — what to file**: Korea e-Arrival Card (Korea). **When**: within 3 days before you arrive. **You need**: your passport, the flight that arrives and its date, where you stay (the hotel's name and address) and the day you leave. **Official site** (free): https://www.e-arrivalcard.go.kr/portal/main/index.do?locale=EN. OMuse fills it in when asked (`kr-arrival-card`).
+- **Shopping tax refund (visitors)** — tax refund — immediate at the shop, or downtown, at the airport, by mailbox or mobile. Who: non-residents (foreigners staying under 6 months; overseas Koreans abroad 2+ years, in Korea 3 months or less); not diplomats, US forces or people employed in Korea. Minimum: KRW 15,000 per receipt; immediate refund at the shop for each payment under KRW 1,000,000 and up to KRW 5,000,000 per trip. Time limit: the goods leave Korea within 3 months of purchase. Official: VisitKorea — tax refund guide: https://english.visitkorea.or.kr/svc/contents/contentsView.do?vcontsId=248765; Korea Customs Service — tax refund: https://www.customs.go.kr/english/cm/cntnts/cntntsView.do?mi=10803&cntntsId=5504. The steps and what to carry: the Money bot (`tax-refund-shopping`).
+
 ## Local events
 
 - **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call

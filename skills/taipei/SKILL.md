@@ -193,6 +193,13 @@ Figures were checked in October 2026 and carry their date.
 | 2025 | Online arrival card TWAC replaces paper (1 October) |
 | 2026 | Sanying metro line opens in New Taipei (30 June) |
 
+## Arrival card and tax
+
+From OMuse's own tables (the same facts `arrival_card_fill` and `tax_refund_rules` answer with; tax table checked 2026-11-04). Asked how, give the requirement and the official link; file only when the user asks.
+
+- **Arrival card — what to file**: Taiwan Arrival Card (TWAC) (Taiwan). **When**: within 3 days before you arrive. **You need**: your passport, the flight that arrives and its date, where you stay (the hotel's name and address) and the day you leave. **Official site** (free): https://twac.immigration.gov.tw/. OMuse fills it in when asked (`tw-arrival-card`).
+- **Shopping tax refund (visitors)** — VAT refund for foreign travellers (Taiwan Tax Refund), 5% VAT. Who: foreign travellers who have stayed 183 days or less; ask for the refund form on the day of purchase. Minimum: NT$2,000 including VAT at one authorised shop on one day. Time limit: the goods leave Taiwan within 90 days; the claim is approved before departure. Official: Ministry of Finance — VAT refund for foreign travellers: https://www.mof.gov.tw/eng/singlehtml/f48d641f159a4866b1d31c0916fbcc71?cntId=32bc7af09c4840d1a781991c4f753851; Taiwan Tax Refund — questions and answers: https://www.taxrefund.net.tw/ttr/ttr001e/articles?lang=en_US. The steps and what to carry: the Money bot (`tax-refund-shopping`).
+
 ## Local events
 
 - **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call

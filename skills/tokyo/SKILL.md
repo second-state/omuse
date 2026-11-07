@@ -201,6 +201,13 @@ October 2026 and carry their date.
 | 2024 | Tokyo Metro listed on the stock exchange |
 | 2026 | JR East fare rise (March); departure tax ¥3,000 (1 July); tax-free refund system (1 November) |
 
+## Arrival card and tax
+
+From OMuse's own tables (the same facts `arrival_card_fill` and `tax_refund_rules` answer with; tax table checked 2026-11-04). Asked how, give the requirement and the official link; file only when the user asks.
+
+- **Arrival card — what to file**: Visit Japan Web registration (Japan). **When**: any time before you arrive. **You need**: your passport, the flight that arrives and its date, where you stay (the hotel's name and address) and the day you leave. **Official site** (free): https://www.vjw.digital.go.jp/main/#/vjwplo001. OMuse fills it in when asked (`jp-visit-japan-web`).
+- **Shopping tax refund (visitors)** — tax-free shopping — a refund at departure for purchases from 1 November 2026 (until 31 October 2026 the tax was taken off at the till). Who: visitors with a temporary-visitor status (most foreign tourists), passport shown at the shop. Minimum: ¥5,000 before tax per shop per day (no upper limit in money; what you can carry out yourself). Time limit: the customs check within 90 days of purchase, before you check in your bags; then the goods leave Japan. Official: Japan Tourism Agency — tax-free shopping (for travellers): https://www.mlit.go.jp/kankocho/tax-free/page01_000001_00028.html; Japan Customs — tax refund at departure: https://www.customs.go.jp/kaigairyoko/taxrefund.htm. The steps and what to carry: the Money bot (`tax-refund-shopping`).
+
 ## Local events
 
 - **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call

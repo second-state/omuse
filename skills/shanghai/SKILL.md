@@ -200,6 +200,13 @@ in October 2026 and carry their date.
 | 2024 | Airport Link Line between Pudong and Hongqiao (December) |
 | 2025 | GDP ¥5.67 trillion; metro reaches 906 km |
 
+## Arrival card and tax
+
+From OMuse's own tables (the same facts `arrival_card_fill` and `tax_refund_rules` answer with; tax table checked 2026-11-04). Asked how, give the requirement and the official link; file only when the user asks.
+
+- **Arrival card — what to file**: China online arrival card (China). **When**: any time before you arrive. **You need**: your passport, the flight that arrives and its date, where you stay (the hotel's name and address) and the day you leave. **Official site** (free): https://s.nia.gov.cn/ArrivalCardFillingPC/. OMuse fills it in when asked (`cn-arrival-card`).
+- **Shopping tax refund (visitors)** — departure tax refund for overseas travellers, with refund-upon-purchase at many shops. Who: holders of a passport, or of a Mainland Travel Permit for Hong Kong / Macau / Taiwan residents, leaving within 183 days of the latest entry. Minimum: ¥200 at one refund shop on one day. Time limit: leave within 90 days of purchase (within 28 days for an instant refund at the shop). Official: State Taxation Administration — departure tax refund measures: https://fgk.chinatax.gov.cn/eng/c101269/c5250095/content.html; Shanghai government — departure tax refund: https://english.shanghai.gov.cn/en-Individuals-ShoppingandTaxRefund-Departuretaxrefund/20260813/469b30ac4ff348b8ac3a1259f0e12d23.html. The steps and what to carry: the Money bot (`tax-refund-shopping`).
+
 ## Local events
 
 - **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call
