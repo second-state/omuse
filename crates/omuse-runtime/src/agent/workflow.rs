@@ -27,6 +27,20 @@ pub const RESULT_PREFIX: &str = "res_";
 /// The suffix of the code exchange that carries a workflow tool's result (`travel_search_result`).
 pub const RESULT_SUFFIX: &str = "_result";
 
+/// The id prefixes of every code machine's own calls (`PREFIX` of each machine module): the booking machine, the news
+/// report, What's next, the email brief, the long-task framework, the claims, the arrival cards, the trains, the
+/// flight status, the APDT refund.
+pub const MACHINE_PREFIXES: [&str; 10] = [
+    "bkg_", "nws_", "wnx_", "brf_", "lts_", "clm_", "drv_", "trn_", "fst_", "apd_",
+];
+
+/// Whether a tool call is a code machine's own (by its id prefix): its result is read by code, so it is kept whole
+/// (`exec::CODE_RESULT_LIMIT`, never the model's result limit — google_real 2026-11-08: What's next's three-day calendar
+/// list cut at the model's limit was no longer JSON and read as no events).
+pub fn machine_call(id: &str) -> bool {
+    MACHINE_PREFIXES.iter().any(|p| id.starts_with(p))
+}
+
 /// What validation made of a workflow tool's arguments.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Checked {

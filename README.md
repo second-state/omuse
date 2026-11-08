@@ -16,9 +16,12 @@ other knowledge files — is in [KNOWLEDGE.md](KNOWLEDGE.md). Repository rules, 
 ## Features
 
 - **Chat → plan → act** – every step and tool call is visible; independent steps run in parallel as sub-agents.
-- **Bots** – the chat is split into bots, listed in the menu with **Main** at the top: Travel (bookings, city guides,
-  arrival cards and entry rules, trouble on a trip), Money (which credit card, travel insurance and claims, tax refunds, paying
-  abroad), Photos & videos, Shopping. Each has its own skills and conversations; all share your memory, profile, Vault and
+- **Bots** – the chat is split into bots. The menu's first section is **Main** and the long-running tasks, each a bot
+  of its own: News report (newspaper-style research reports and price monitors), What's next (today's plan from mail
+  and calendar, researched) and Email brief; every scheduled run of one opens a new conversation under its bot, titled
+  with the time, where you can ask about that run. The second section holds the specialised bots: Travel (bookings,
+  city guides, arrival cards and entry rules, trouble on a trip), Money (which credit card, travel insurance and claims,
+  tax refunds, paying abroad, shopping), Social media (pictures, photos and videos). Each has its own skills and conversations; all share your memory, profile, Vault and
   connections, and offers a few example requests in a small Examples menu above the input. Ask Main anything: the planner model reads each request and either
   lets Main answer it or hands it, with the context from your conversation, to the right bot; then shows that bot's answer with a link to continue in the bot's conversation. While the bot works, Main shows its progress and streams its answer.
   An approval the bot needs shows in Main too.

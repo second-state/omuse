@@ -389,6 +389,38 @@ fn compress_shrinks_old_results_first() {
 }
 
 #[test]
+fn compress_keeps_a_fact_tools_result_whole() {
+    // emergency_real 2026-11-07: emergency_contacts, then three long page reads — the compressed result was no longer
+    // JSON, so the consular line and the embassy's number were missing from the answer's appended block
+    let facts = json!({"emergency": "lost_or_stolen_documents", "consular": {"phone": "+61 2 6261 3305",
+        "embassy": {"name": "Australian Embassy Tokyo", "phone": "+81 3 5232 4111"}},
+        "show": [{"kind": "fact", "label": "x".repeat(900), "value": "+81 3 5232 4111"}], "hints": []});
+    let mut tr = vec![
+        json!({"role": "system", "content": ""}),
+        json!({"role": "user", "content": "I lost my passport in Tokyo"}),
+        json!({"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "emergency_contacts", "arguments": "{}"}}]}),
+        json!({"role": "tool", "tool_call_id": "c1", "content": facts.to_string()}),
+    ];
+    for i in 0..5 {
+        tr.push(json!({"role": "assistant", "tool_calls": [{"id": format!("w{i}"), "function": {"name": "browser_read", "arguments": "{}"}}]}));
+        tr.push(
+            json!({"role": "tool", "tool_call_id": format!("w{i}"), "content": "p".repeat(30000)}),
+        );
+    }
+    let out = runtime::compress_with(tr, None, 0);
+    assert_eq!(out[3]["content"].as_str().unwrap(), facts.to_string());
+    assert!(out[5]["content"]
+        .as_str()
+        .unwrap()
+        .contains(COMPRESSED_MARK));
+    let shown = facts::show_items(&out, facts::Ctx::default());
+    assert!(
+        shown.iter().any(|i| sget(i, "value").contains("5232 4111")),
+        "{shown:?}"
+    );
+}
+
+#[test]
 fn search_key_ignores_order_and_case() {
     assert_eq!(
         search_key(&json!("Singapore Weather october")),
@@ -821,7 +853,7 @@ async fn a_schedule_made_in_this_task_is_not_deleted_by_it() {
 }
 
 /// A machine's offer on a choice card keeps its structured price, currency and id (shopping_real 2026-11-02: the
-/// Shopping bot's card reached the chat without them).
+/// Money bot's shopping card reached the chat without them).
 #[tokio::test]
 async fn a_choice_cards_offers_keep_their_price_and_id() {
     let (rt, _d) = rt();
@@ -908,6 +940,35 @@ fn format_external_shapes() {
     assert!(rt
         .format_external("x", &json!({"status": "error", "error": "boom"}))
         .starts_with("ERROR: boom."));
+}
+
+#[test]
+fn a_machines_call_gets_its_whole_result_whatever_the_models_limit() {
+    // google_real 2026-11-08: What's next's calendar list for three days (long meeting descriptions) was cut at the
+    // model's result limit — no longer JSON, so the machine read no events; every machine's call reads the whole result
+    for p in super::workflow::MACHINE_PREFIXES {
+        assert!(super::workflow::machine_call(&format!("{p}7")), "{p}");
+    }
+    assert!(!super::workflow::machine_call("call_abc"));
+    assert!(!super::workflow::machine_call("res_1"));
+    let (rt, _d) = rt();
+    let events: Vec<Value> = (0..40)
+        .map(|i| json!({"id": format!("e{i}"), "title": format!("Meeting {i}"), "start": "2026-11-08 19:30",
+                        "description": "d".repeat(400)}))
+        .collect();
+    let res = json!({"status": "ok", "result": {"trust": "untrusted", "source": "Google Calendar",
+        "content": {"calendar": "primary", "events": events}}});
+    let whole =
+        rt.format_external_within("calendar_list_events", &res, super::exec::CODE_RESULT_LIMIT);
+    assert!(whole.contains("Meeting 39"));
+    assert_eq!(
+        super::driver::json_of(&json!({"role": "tool", "content": whole}))["content"]["events"]
+            .as_array()
+            .map(Vec::len),
+        Some(40)
+    );
+    let cut = rt.format_external("calendar_list_events", &res);
+    assert!(super::driver::json_of(&json!({"role": "tool", "content": cut})).is_null());
 }
 
 // ---------------------------------------------------------------- 429 + Retry-After: cancel stops a sleeping model call
@@ -1521,6 +1582,94 @@ async fn a_browser_off_skill_hides_the_browser_until_another_skill_is_loaded() {
 
 // ---------------------------------------------------------------- bots: the main bot hands a request over
 #[tokio::test]
+async fn a_reply_to_a_bots_open_question_goes_back_to_that_bot_without_the_router() {
+    // whats_next_real 2026-11-07: the bot asked "anything missing from today?"; the user's reply in Main was kept in
+    // Main by the planner. A reply to a bot's open question is the bot's, decided in code.
+    let (rt, _d) = rt();
+    let main_cid = rt.store.create_conv("trip", "chat", None).unwrap();
+    let bot_cid = rt.store.create_conv("what's next", "chat", None).unwrap();
+    rt.store
+        .set_conv_bot(&bot_cid, "whatsnext", &main_cid)
+        .unwrap();
+    // the bot's task ended with its question (the machine's `confirm` behind the running call)
+    let child = rt
+        .store
+        .create_task("What's next for me today?", &bot_cid, "chat", "", "", None)
+        .unwrap();
+    let mut tr = vec![
+        json!({"role": "user", "content": "What's next for me today?"}),
+        call_msg("c1", "whats_next", "{}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": r#"{"status": "running", "args": {}}"#}),
+    ];
+    tr.extend(crate::agent::workflow::result_exchange(
+        &tr,
+        "whats_next",
+        &json!({"status": "confirm", "items": [], "question": "Is anything missing from today?"}),
+    ));
+    rt.store
+        .update_task(
+            &get_str(&child, "id"),
+            &json!({"transcript": tr, "status": "COMPLETED"}),
+        )
+        .unwrap();
+    // Main's latest answer is the bot's (the hand-over link)
+    rt.store
+        .add_msg(&main_cid, "user", "What's next for me today?", "", None)
+        .unwrap();
+    rt.store
+        .add_msg(
+            &main_cid,
+            "assistant",
+            "Nothing today. Anything to add?",
+            "",
+            Some(&json!({"handoff": {"bot": "whatsnext", "conv_id": bot_cid}})),
+        )
+        .unwrap();
+    let r = rt
+        .open_bot_question(&main_cid, "Please add dinner at Den at 7pm. Nothing else.")
+        .unwrap();
+    assert_eq!(
+        r,
+        json!({"bot": "whatsnext", "question": "Please add dinner at Den at 7pm. Nothing else.", "conversation_id": bot_cid})
+    );
+    // the question answered (a later task of the bot with no question): the router decides again
+    let next = rt
+        .store
+        .create_task("x", &bot_cid, "chat", "", "", None)
+        .unwrap();
+    let mut tr2 = vec![json!({"role": "user", "content": "x"})];
+    tr2.extend(crate::agent::workflow::result_exchange(
+        &tr2,
+        "whats_next",
+        &json!({"status": "published"}),
+    ));
+    rt.store
+        .update_task(&get_str(&next, "id"), &json!({"transcript": tr2}))
+        .unwrap();
+    assert!(rt.open_bot_question(&main_cid, "thanks").is_none());
+    // a schedule offer is not a question of the tool's: the user may move on, so the planner routes that reply
+    let mut tr3 = vec![
+        json!({"role": "user", "content": "x"}),
+        call_msg("c3", "whats_next", "{}"),
+        json!({"role": "tool", "tool_call_id": "c3", "content": r#"{"status": "running", "args": {}}"#}),
+    ];
+    tr3.extend(crate::agent::workflow::result_exchange(
+        &tr3,
+        "whats_next",
+        &json!({"status": "published", "schedule_offer": {"task": {}, "key": "k", "every": "every day at 07:00"}}),
+    ));
+    rt.store
+        .update_task(&get_str(&next, "id"), &json!({"transcript": tr3}))
+        .unwrap();
+    assert!(rt.open_bot_question(&main_cid, "yes at 6:30").is_none());
+    // no hand-over in Main's latest answer: nothing
+    rt.store
+        .add_msg(&main_cid, "assistant", "ok", "", None)
+        .unwrap();
+    assert!(rt.open_bot_question(&main_cid, "yes").is_none());
+}
+
+#[tokio::test]
 async fn ask_bot_opens_a_bot_conversation_and_the_answer_comes_back_to_main() {
     let (rt, _d) = rt();
     let main_cid = rt.store.create_conv("trip", "chat", None).unwrap();
@@ -1703,7 +1852,7 @@ async fn load_skill_stays_inside_the_bot() {
         .unwrap();
     assert!(!r.starts_with("ERROR"), "{}", &r[..r.len().min(200)]);
     let cid = rt.store.create_conv("y", "chat", None).unwrap();
-    rt.store.set_conv_bot(&cid, "photos", "").unwrap();
+    rt.store.set_conv_bot(&cid, "social", "").unwrap();
     let t2 = rt
         .store
         .create_task("y", &cid, "chat", "", "", None)
@@ -1712,7 +1861,7 @@ async fn load_skill_stays_inside_the_bot() {
         .local(&t2, "load_skill", &json!({"name": "news-search"}))
         .await
         .unwrap();
-    assert!(r.contains("not to the Photos & videos bot"), "{r}");
+    assert!(r.contains("not to the Social media bot"), "{r}");
     let r = rt
         .local(&t2, "load_skill", &json!({"name": "drive-video-edit"}))
         .await
@@ -2602,6 +2751,83 @@ fn a_takeover_on_a_known_form_before_form_fill_is_refused_once() {
     );
 }
 
+#[test]
+fn a_specialised_bots_question_before_its_skill_or_tool_is_refused_once() {
+    // money_real 2026-11-08: "can I get the departure tax back?" — the Money bot asked for the dates instead of calling
+    // apdt_refund (its information path answers with the rule, the deadline and the link, nothing asked)
+    use super::local::ask_before_any_skill;
+    let money = crate::bots::get("money").unwrap();
+    let r = ask_before_any_skill(money, &[]).unwrap();
+    assert_eq!(r["refused"], "load_skill_first");
+    // after the skill's load, or the refusal itself, the question goes through
+    let loaded = vec![
+        json!({"type": "tool_call", "data": {"name": "load_skill", "args": {"name": "hk-apdt-refund"}}}),
+    ];
+    assert_eq!(ask_before_any_skill(money, &loaded), None);
+    let refused =
+        vec![json!({"type": "ask_user_refused", "data": {"refused": "load_skill_first"}})];
+    assert_eq!(ask_before_any_skill(money, &refused), None);
+    let called = vec![json!({"type": "workflow_call", "data": {"tool": "apdt_refund"}})];
+    assert_eq!(ask_before_any_skill(money, &called), None);
+    // Main asks freely (it has no workflow tools of its own)
+    assert_eq!(
+        ask_before_any_skill(crate::bots::get("main").unwrap(), &[]),
+        None
+    );
+}
+
+#[test]
+fn a_models_hand_over_after_fwds_quote_is_saved_is_refused() {
+    // insurance_real 2026-11-08: the quote saved, the model handed FWD's summary page over at the start of the retry
+    use super::guards::saved_quote_guard;
+    let takeover = crate::llm::ToolCall {
+        id: "c9".into(),
+        name: "browser_request_takeover".into(),
+        args: json!({"reason": "FWD has saved the quote; confirm the statements and pay"}),
+    };
+    let mut t = vec![
+        json!({"role": "system", "content": ""}),
+        json!({"role": "user", "content": "Buy me FWD travel insurance for Japan"}),
+    ];
+    t.extend(tool_step(
+        "c1",
+        "insurance_buy",
+        json!({"market": "sg"}),
+        r#"{"status": "running"}"#,
+    ));
+    // the machine's result: no plans — a hand-over is still the model's to ask for
+    t.extend(super::workflow::result_exchange(
+        &t,
+        "insurance_buy",
+        &json!({"status": "no_plans"}),
+    ));
+    assert_eq!(saved_quote_guard(&t, &takeover), None);
+    // the quote saved: the user continues on its link; the model's hand-over is refused, in this request and the next
+    t.extend(super::workflow::result_exchange(&t, "insurance_buy", &json!({"status": "saved", "quote_link": "https://www.fwd.com.sg/travel-insurance/quote?hash=x"})));
+    let r = saved_quote_guard(&t, &takeover).unwrap_or_default();
+    assert!(
+        r.starts_with("ERROR: [saved_quote]") && r.contains("link"),
+        "{r}"
+    );
+    t.push(json!({"role": "user", "content": "Try again please"}));
+    t.extend(tool_step(
+        "c2",
+        "load_skill",
+        json!({"name": "fwd-travel-insurance"}),
+        "---",
+    ));
+    let r = saved_quote_guard(&t, &takeover).unwrap_or_default();
+    assert!(r.starts_with("ERROR: [saved_quote]"), "{r}");
+    // a code-made hand-over passes; a request that is not an FWD insurance run is left alone
+    let auto = crate::llm::ToolCall {
+        id: format!("{}3", super::guards::AUTO_HANDOVER),
+        ..takeover.clone()
+    };
+    assert_eq!(saved_quote_guard(&t, &auto), None);
+    t.push(json!({"role": "user", "content": "Open my bank's site and log me in"}));
+    assert_eq!(saved_quote_guard(&t, &takeover), None);
+}
+
 fn tool_step(id: &str, name: &str, args: Value, result: &str) -> Vec<Value> {
     vec![
         json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function",
@@ -3025,7 +3251,7 @@ async fn main_hands_another_bots_skill_to_that_bot_in_code() {
     assert!(evs.iter().any(|e| get_str(e, "type") == "handoff"));
     // a specialised bot keeps load_skill's own answer (no hand-over from there)
     let cid = rt.store.create_conv("y", "chat", None).unwrap();
-    rt.store.set_conv_bot(&cid, "photos", "").unwrap();
+    rt.store.set_conv_bot(&cid, "social", "").unwrap();
     let t2 = rt
         .store
         .create_task("y", &cid, "chat", "", "", None)
@@ -3808,13 +4034,21 @@ async fn the_planner_regenerates_wrong_json_and_repaired_syntax_is_reported() {
 
 // ---------------------------------------------------------------- the news workflow tools (agent/news.rs)
 
+/// A long task end to end (agent/longtask.rs, the user's design of 2026-11-07): ONE news_gather call does the whole
+/// edition (search, read, the edition's subagent — JSON in and out —, layout); the chat run offers a schedule; the
+/// user's "yes" (a new task) owes task_schedule, which stores the task's JSON in the schedule; the schedule's run calls
+/// news_gather with that JSON — the model only words the reply.
 #[tokio::test]
-async fn news_gather_returns_the_articles_then_the_model_publishes_them_as_json() {
+async fn a_long_task_runs_in_one_call_offers_a_schedule_and_the_schedule_runs_the_same_json() {
     let (rt, _d, seen) = scripted_rt(
         |body| {
             let sys = system_of(body);
-            if sys.starts_with("You check an assistant") {
-                return json!({"role": "assistant", "content": "{\"ok\": true, \"problem\": \"\", \"language_ok\": true}"});
+            if sys.starts_with("You are a subagent of a program") {
+                // the edition's subagent: the articles as JSON in, the edition as JSON out
+                assert!(last_of(body).contains("40 megawatts") && !last_of(body).contains("news.example"));
+                return json!({"role": "assistant", "content": json!({"title": "The Tidal Current", "stories": [
+                    {"article": 2, "headline": "Brussels backs Brittany", "summary": "The EU awarded Lumora €120 million."},
+                    {"article": 7, "headline": "made up", "summary": "x"}], "insights": ["Tidal power grows."]}).to_string()});
             }
             if sys.starts_with("You rewrite a reply") {
                 panic!("nothing to rewrite: the links are appended by code");
@@ -3822,21 +4056,17 @@ async fn news_gather_returns_the_articles_then_the_model_publishes_them_as_json(
             if let Some(r) = helper_reply(body) {
                 return r;
             }
-            let tools = tool_msgs(body);
-            match tools.last() {
-                None => call_msg("c1", "news_gather", &json!({"subject": "Lumora", "window": "week"}).to_string()),
-                Some(m) if get_str(m, "tool_call_id").starts_with("res_") && get_str(m, "content").contains("\"gathered\"") => {
-                    // the articles came back as JSON: the edition is written as JSON, story by article number
-                    assert!(get_str(m, "content").contains("40 megawatts"));
-                    call_msg("c2", "news_publish", &json!({"title": "The Tidal Current", "stories": [
-                        {"article": 2, "headline": "Brussels backs Brittany", "summary": "The EU awarded Lumora €120 million."},
-                        {"article": 7, "headline": "made up", "summary": "x"}],
-                        "insights": ["Tidal power grows."]}).to_string())
-                }
-                Some(m) if get_str(m, "tool_call_id").starts_with("res_") => {
-                    json!({"role": "assistant", "content": "Here is your edition, The Tidal Current."})
-                }
-                Some(m) => panic!("the model was called while the machine ran: {m}"),
+            let msgs = body["messages"].as_array().unwrap();
+            let last = msgs.last().unwrap();
+            if last["role"] == "tool" {
+                assert!(get_str(last, "tool_call_id").starts_with("res_"), "the model was called while the machine ran: {last}");
+                return json!({"role": "assistant", "content": "Here is your edition, The Tidal Current."});
+            }
+            let user = msgs.iter().rev().find(|m| m["role"] == "user").map(|m| get_str(m, "content")).unwrap_or_default();
+            if user.starts_with("yes") {
+                call_msg("c9", "task_schedule", &json!({"answer": "yes", "time": "09:00"}).to_string())
+            } else {
+                call_msg("c1", "news_gather", &json!({"subject": "Lumora", "window": "week"}).to_string())
             }
         },
         json!({"language": "en"}),
@@ -3868,31 +4098,40 @@ async fn news_gather_returns_the_articles_then_the_model_publishes_them_as_json(
         };
         Box::pin(async move { Ok(r) })
     })));
-    let (t, evs) = run_task(
-        &rt,
-        "Research the latest news on Lumora and make me a newspaper report",
-    )
-    .await;
-    assert_eq!(get_str(&t, "status"), "COMPLETED", "{t}");
-    let tr = t["transcript"].as_array().unwrap();
-    let names: Vec<String> = tr
-        .iter()
-        .flat_map(crate::agent::util::tool_calls)
-        .map(|tc| crate::agent::util::stored_call(tc).0)
-        .collect();
+    let names = |t: &Value| -> Vec<String> {
+        t["transcript"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(crate::agent::util::tool_calls)
+            .map(|tc| crate::agent::util::stored_call(tc).0)
+            .collect()
+    };
+    // 1. the request: one call of the model's, code does the rest
+    // the News report bot's conversation (the long tasks are their bots'; Main hands them over with ask_bot)
+    let conv = rt.store.create_conv("c", "chat", None).unwrap();
+    rt.store.set_conv_bot(&conv, "news", "").unwrap();
+    let request = "Research the latest news on Lumora and make me a newspaper report";
+    rt.store.add_msg(&conv, "user", request, "", None).unwrap();
+    let t1 = rt
+        .store
+        .create_task(request, &conv, "chat", "", "", None)
+        .unwrap();
+    rt.run(&get_str(&t1, "id")).await.unwrap();
+    let t1 = rt.store.task(&get_str(&t1, "id")).unwrap().unwrap();
+    assert_eq!(get_str(&t1, "status"), "COMPLETED", "{t1}");
     assert_eq!(
-        names,
+        names(&t1),
         [
             "news_gather",
             "browser_news_search",
             "browser_read",
-            "news_gather_result",
-            "news_publish",
+            "subagent_json",
             "news_report",
-            "news_publish_result"
+            "news_gather_result"
         ]
     );
-    // the report's links are the gathered articles', the made-up story is dropped, the omitted article added
+    let tr = t1["transcript"].as_array().unwrap();
     let rep = tr
         .iter()
         .flat_map(crate::agent::util::tool_calls)
@@ -3900,6 +4139,7 @@ async fn news_gather_returns_the_articles_then_the_model_publishes_them_as_json(
         .find(|(n, _)| n == "news_report")
         .unwrap()
         .1;
+    // the links are the gathered articles', the made-up story dropped, the omitted article added
     let urls: Vec<String> = rep["stories"]
         .as_array()
         .unwrap()
@@ -3910,31 +4150,80 @@ async fn news_gather_returns_the_articles_then_the_model_publishes_them_as_json(
         urls,
         ["https://news.example/news/b", "https://news.example/news/a"]
     );
-    let res = events_of(&evs, "workflow_result");
-    assert_eq!(
-        res.iter().map(|r| get_str(r, "status")).collect::<Vec<_>>(),
-        ["gathered", "published"]
-    );
-    // the model writes the stories with news_publish offered (never news_report), then replies with no news tool
+    // the model was offered news_gather, never the layout tool nor the subagent; no news tool on the reply
     let ex = executor_calls(&seen);
-    assert_eq!(ex.len(), 3, "{ex:?}");
+    assert_eq!(ex.len(), 2, "{ex:?}");
     assert!(offered(&ex[0]).contains(&"news_gather".to_string()));
-    assert!(ex
+    assert!(ex.iter().all(|b| !offered(b)
         .iter()
-        .all(|b| !offered(b).contains(&"news_report".to_string())));
-    assert!(offered(&ex[1]).contains(&"news_publish".to_string()));
-    assert!(!offered(&ex[1]).contains(&"news_gather".to_string()));
-    assert!(!offered(&ex[2])
+        .any(|n| n == "news_report" || n == "subagent_json" || n == "news_publish")));
+    assert!(!offered(&ex[1])
         .iter()
         .any(|n| crate::agent::news::TOOLS.contains(&n.as_str())));
-    // gate 40 news_report_real: the reply left the editions out; code appends their links after it, after a rule
-    let answer = get_str(&t, "result");
+    // the answer: the prose, then code's block with the editions and the schedule offer
+    let answer = get_str(&t1, "result");
     let (prose, block) = answer.rsplit_once("\n---\n").expect("the appended block");
     assert_eq!(prose.trim(), "Here is your edition, The Tidal Current.");
     assert!(
         block.contains("- HTML edition: [The Tidal Current](/artifacts/news/lumora/"),
         "{answer}"
     );
+    assert!(block.contains("- Run it automatically?: not scheduled yet — answer yes to get it every Monday at 08:00"), "{answer}");
+    let key = crate::agent::longtask::task_key(
+        &json!({"tool": "news_gather", "args": {"subject": "Lumora", "window": "week"}}),
+    );
+    assert!(rt.store.schedule_offered(&conv, &key).unwrap());
+
+    // 2. the user's yes (a new task in the chat): it owes task_schedule; the schedule stores the task's JSON
+    rt.store
+        .add_msg(&conv, "user", "yes, at 9 please", "", None)
+        .unwrap();
+    let t2 = rt
+        .store
+        .create_task("yes, at 9 please", &conv, "chat", "", "", None)
+        .unwrap();
+    rt.run(&get_str(&t2, "id")).await.unwrap();
+    let t2 = rt.store.task(&get_str(&t2, "id")).unwrap().unwrap();
+    assert!(
+        names(&t2).contains(&"schedule_create".to_string()),
+        "{:?}",
+        names(&t2)
+    );
+    let sch = rt.store.schedules().unwrap();
+    assert_eq!(sch.len(), 1);
+    assert_eq!(get_str(&sch[0], "spec"), "0 9 * * 1");
+    assert_eq!(get_str(&sch[0], "conv_id"), conv);
+    let task = crate::store::Store::schedule_task(&sch[0]).unwrap();
+    assert_eq!(
+        task,
+        json!({"tool": "news_gather", "args": {"subject": "Lumora", "window": "week"}})
+    );
+    assert!(
+        get_str(&t2, "result").contains("- Scheduled: News report: Lumora — every Monday at 09:00"),
+        "{}",
+        get_str(&t2, "result")
+    );
+
+    // 3. the schedule's run: the stored call, as it is; the model only words the reply
+    let before = executor_calls(&seen).len();
+    let sid = get_str(&sch[0], "id");
+    let t3 = rt
+        .store
+        .create_task("News report: Lumora", &conv, "schedule", &sid, "", None)
+        .unwrap();
+    rt.run(&get_str(&t3, "id")).await.unwrap();
+    let t3 = rt.store.task(&get_str(&t3, "id")).unwrap().unwrap();
+    assert_eq!(get_str(&t3, "status"), "COMPLETED", "{t3}");
+    let n3 = names(&t3);
+    assert_eq!(n3.first().map(String::as_str), Some("news_gather"));
+    assert!(
+        n3.contains(&"news_report".to_string()) && !n3.contains(&"schedule_create".to_string()),
+        "{n3:?}"
+    );
+    let ex = executor_calls(&seen);
+    assert_eq!(ex.len() - before, 1, "one model turn: the reply");
+    // a scheduled run offers nothing
+    assert!(!get_str(&t3, "result").contains("Run it automatically?"));
 }
 
 // ---------------------------------------------------------------- facts the answer shows (agent/facts.rs)
@@ -4162,7 +4451,7 @@ fn a_file_the_user_asked_for_is_sent_when_the_run_forgot() {
         "written",
     );
     assert_eq!(
-        unsent_files(&t),
+        unsent_files(&t, ""),
         vec!["helsinki-packing-list.md".to_string()]
     );
     // no file asked for: nothing sent; already sent: nothing more; a failed write: nothing
@@ -4172,21 +4461,30 @@ fn a_file_the_user_asked_for_is_sent_when_the_run_forgot() {
         json!({"path": "notes.md", "content": "x"}),
         "written",
     );
-    assert!(unsent_files(&plain).is_empty());
+    assert!(unsent_files(&plain, "Done.").is_empty());
+    // the answer links the file (chat_real 2026-11-08: a made-up "workspace:" link, no deliver_as): sent, with its card
+    assert_eq!(
+        unsent_files(&plain, "[Download the Markdown file](workspace:/notes.md)"),
+        vec!["notes.md".to_string()]
+    );
+    assert_eq!(
+        super::guards::written_files(&plain),
+        vec!["notes.md".to_string()]
+    );
     t.extend(tool_step(
         "c2",
         "send_file",
         json!({"path": "helsinki-packing-list.md"}),
         "sent",
     ));
-    assert!(unsent_files(&t).is_empty());
+    assert!(unsent_files(&t, "").is_empty());
     let failed = tool_step(
         "c3",
         "files_write",
         json!({"path": "x.md", "deliver_as": ["md"]}),
         "ERROR: disk full",
     );
-    assert!(unsent_files(&failed).is_empty());
+    assert!(unsent_files(&failed, "").is_empty());
     // the formats wanted come from the same JSON (a PDF and a spreadsheet of the list)
     let both = tool_step(
         "c4",

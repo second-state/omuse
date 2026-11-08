@@ -45,8 +45,8 @@ async def main():
         await pg.goto(B + "#chat")
         await pg.wait_for_selector("#navlinks a.botlink")
         bots = await pg.evaluate("() => [...document.querySelectorAll('#navlinks a.botlink')].map(a => [a.dataset.bot, a.getAttribute('href'), a.classList.contains('active')])")
-        check("the menu lists the five bots, Main first and active on #chat", [b[0] for b in bots] == ["main", "travel", "money", "photos", "shopping"]
-              and bots[0][1] == "#chat" and bots[1][1] == "#bot/travel" and bots[0][2] and not bots[1][2], bots)
+        check("the menu lists the seven bots, Main first and active on #chat", [b[0] for b in bots] == ["main", "news", "whatsnext", "brief", "travel", "money", "social"]
+              and bots[0][1] == "#chat" and bots[1][1] == "#bot/news" and bots[4][1] == "#bot/travel" and bots[0][2] and not bots[1][2], bots)
         check("the title is the bot's name", (await pg.inner_text("#viewTitle")).strip() == "Main")
         mb = next(b for b in K.c.get(K.B + "/api/bots", headers=K.H).json()["bots"] if b["id"] == "main")
         # the examples sit in a small dropdown above the input (closed until the user opens it)

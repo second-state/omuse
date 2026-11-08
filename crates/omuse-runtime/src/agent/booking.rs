@@ -198,6 +198,11 @@ missing fields, then call again with every field; invalid: fix the arguments and
         travel.clone(),
         &["kind"],
     );
+    // a flight's departure windows per leg, from the request's words (applied at the picks in code)
+    travel["leaves_after"] = json!({"type": "string", "description": "flight: HH:MM local — the earliest departure the user wants for the outbound (\"afternoon\": 12:00, \"evening\": 17:00, \"night\": 20:00)"});
+    travel["leaves_before"] = json!({"type": "string", "description": "flight: HH:MM local — the latest departure the user wants for the outbound (\"morning\": 12:00, \"afternoon\": 18:00)"});
+    travel["return_leaves_after"] = json!({"type": "string", "description": "round trip: the same for the return flight (\"back on Sunday evening\": 17:00)"});
+    travel["return_leaves_before"] = json!({"type": "string", "description": "round trip: the latest departure for the return flight (\"back Sunday morning\": 12:00)"});
     travel["pick"] = json!({"type": "string", "description": "the option the user chose: its label exactly as the choice card listed it (the text after \"I choose: \") or a flight's offer_id; empty = the pick by rule (a flight: the search's flights come back for travel_pick)"});
     let book = fn_(
         TRAVEL_BOOK,
@@ -249,13 +254,13 @@ same way. When no flight meets the request, do not call this: say so. Code shows
 the result as JSON; write the reply from it (code appends the facts in show to the reply).",
         json!({
             "offer_ids": {"type": "array", "items": {"type": "string"}, "description": "offer_id of each flight that meets the request, as the result listed it, in the order to show"},
-            "rule": {"type": "object", "description": "when the user named ONE flight by its place in the day (the last, the first, the earliest to arrive, the last that lands before midnight …): that rule, and code picks the flight by it (offer_ids may then be empty)",
+            "rule": {"type": "object", "description": "when the user named ONE flight by its place in the day (the last, the first, the earliest to arrive, the last that lands before midnight …) or by a part of the day (\"Friday morning\", \"Sunday evening\"): that rule, and code picks the flight by it (offer_ids may then be empty). A part of the day alone is a window without `order`: code picks the cheapest flight in it",
                 "properties": {
-                    "order": {"type": "string", "enum": ["latest_departure", "earliest_departure", "latest_arrival", "earliest_arrival"]},
+                    "order": {"type": "string", "enum": ["cheapest", "latest_departure", "earliest_departure", "latest_arrival", "earliest_arrival"], "description": "cheapest for \"the cheapest flight\" (the lowest price among the flights in the window); the others only when the user named the flight's place in the day (the last, the first, the latest, the earliest) — never earliest_departure for \"cheapest\", never any of them for \"morning\" or \"evening\" alone"},
                     "lands_same_day": {"type": "boolean", "description": "it must land on the day it leaves (\"before midnight\")"},
                     "lands_by": {"type": "string", "description": "HH:MM local at the arrival airport, same day"},
-                    "leaves_after": {"type": "string", "description": "HH:MM local"},
-                    "leaves_before": {"type": "string", "description": "HH:MM local"}}}
+                    "leaves_after": {"type": "string", "description": "HH:MM local (\"afternoon\": 12:00, \"evening\": 17:00, \"night\": 20:00)"},
+                    "leaves_before": {"type": "string", "description": "HH:MM local (\"morning\": 12:00, \"afternoon\": 18:00)"}}}
         }),
         &[],
     );
@@ -575,6 +580,30 @@ fn check_travel(a: &Value, cx: &Ctx, book: bool) -> Checked {
         }
     } else if table {
         out.insert("time".into(), json!("19:00"));
+    }
+    // a flight's departure windows, per leg, from the request's own words — kept in the search's JSON and applied at
+    // the picks in code (travel_user_real 2026-11-08: the model put the outbound's morning window on the return)
+    if kind == Kind::Flight {
+        for k in [
+            "leaves_after",
+            "leaves_before",
+            "return_leaves_after",
+            "return_leaves_before",
+        ] {
+            let v = s_arg(a, k);
+            if v.is_empty() {
+                continue;
+            }
+            match HHMM.captures(&v) {
+                Some(c) => {
+                    out.insert(
+                        k.into(),
+                        json!(format!("{:02}:{}", c[1].parse::<u32>().unwrap_or(0), &c[2])),
+                    );
+                }
+                None => problems.push(format!("{k}: \"{v}\" — give HH:MM (24-hour)")),
+            }
+        }
     }
     let dist = if kind == Kind::Michelin {
         s_arg(a, "distinction").to_lowercase()
@@ -1244,9 +1273,35 @@ pub fn pick_by_rule(flights: &[Offer], order: &str, rule: &Value) -> Option<Stri
         "earliest_departure" => ok.iter().min_by(|a, b| a.depart.cmp(&b.depart)),
         "latest_arrival" => ok.iter().max_by(|a, b| a.arrive.cmp(&b.arrive)),
         "earliest_arrival" => ok.iter().min_by(|a, b| a.arrive.cmp(&b.arrive)),
+        // "the cheapest" (travel_book_real 2026-11-08: the model's "earliest_departure" for "the cheapest flight" booked
+        // the dearer one), and a part of the day alone ("Friday morning": leaves_before 12:00), a window: the cheapest
+        // flight in it (an offer without a price after the priced ones), in the search's order among equals
+        // (travel_user_real 2026-11-07: the model's "latest_departure" for "Friday morning" picked the 22:00 flight)
+        "cheapest" => ok
+            .iter()
+            .min_by(|a, b| cmp_price(a.price).cmp(&cmp_price(b.price))),
+        _ if windowed(rule) => ok
+            .iter()
+            .min_by(|a, b| cmp_price(a.price).cmp(&cmp_price(b.price))),
         _ => None,
     };
     best.map(|o| o.id.clone())
+}
+
+/// Whether a pick rule limits the flight's times (a window), with or without an `order`.
+pub fn windowed(rule: &Value) -> bool {
+    ["lands_by", "leaves_after", "leaves_before"]
+        .iter()
+        .any(|k| !sget(rule, k).trim().is_empty())
+        || rule.get("lands_same_day").is_some_and(truthy)
+}
+
+/// A price as a total order for `min_by`: the cheapest first, no price last.
+fn cmp_price(p: Option<f64>) -> (bool, i64) {
+    match p {
+        Some(x) if x.is_finite() => (false, (x * 100.0).round() as i64),
+        _ => (true, 0),
+    }
 }
 
 /// `travel_pick`: the offer ids must be ids of the flights the latest flight search listed; the validated arguments
@@ -1265,13 +1320,32 @@ fn check_pick(a: &Value, t: &[Value]) -> Checked {
     }
     // a flight named by its place in the day: code picks it by the rule (travel_user_real 2026-11-05: "the last flight
     // that lands before midnight" — the model's own pick took the one landing latest, three runs in four)
-    if let Some(order) = a["rule"].get("order").and_then(Value::as_str) {
-        match pick_by_rule(&src.flights, order, &a["rule"]) {
+    // the leg's departure window from the search's own JSON (the user's "Friday morning", "Sunday evening", captured
+    // once) overrides whatever window the model put in the rule (travel_user_real 2026-11-08: the outbound's 06–12
+    // window copied onto the return, which then left at 01:20)
+    let req = Req::from_args(&src.args);
+    let (after, before) = if src.outbound.is_some() {
+        (&req.return_leaves_after, &req.return_leaves_before)
+    } else {
+        (&req.leaves_after, &req.leaves_before)
+    };
+    let mut rule = if a["rule"].is_object() {
+        a["rule"].clone()
+    } else {
+        json!({})
+    };
+    if !after.is_empty() || !before.is_empty() {
+        // the request's window, both sides: the model's own is dropped (a morning limit copied onto an evening return)
+        rule["leaves_after"] = json!(after);
+        rule["leaves_before"] = json!(before);
+    }
+    let order = sget(&rule, "order");
+    if !order.trim().is_empty() || windowed(&rule) {
+        match pick_by_rule(&src.flights, order.trim(), &rule) {
             Some(id) => ids = vec![id],
             None => {
                 return Checked::Invalid(vec![format!(
-                    "rule: no flight the search listed meets it ({}); say so to the user instead of picking",
-                    a["rule"]
+                    "rule: no flight the search listed meets it ({rule}); say so to the user instead of picking"
                 )])
             }
         }
@@ -1429,6 +1503,12 @@ pub struct Req {
     pub any_terms: bool,
     /// HH:MM
     pub time: String,
+    /// a flight's departure window for the outbound (HH:MM local, "" = none), from the request's words
+    pub leaves_after: String,
+    pub leaves_before: String,
+    /// the same for a round trip's return flight
+    pub return_leaves_after: String,
+    pub return_leaves_before: String,
     /// Michelin: "3 stars" | "2 stars" | "1 star" | "stars" | "bib gourmand" | ""
     pub distinction: String,
     pub cuisine: String,
@@ -1485,6 +1565,10 @@ impl Req {
             free_cancel: b_arg(a, "free_cancellation"),
             any_terms: b_arg(a, "any_terms"),
             time: s_arg(a, "time"),
+            leaves_after: s_arg(a, "leaves_after"),
+            leaves_before: s_arg(a, "leaves_before"),
+            return_leaves_after: s_arg(a, "return_leaves_after"),
+            return_leaves_before: s_arg(a, "return_leaves_before"),
             distinction: s_arg(a, "distinction"),
             cuisine: s_arg(a, "cuisine"),
             requests: s_arg(a, "requests"),
@@ -2911,7 +2995,7 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     let ids = Ids::new(t, m.first);
     if tool == SHOP_ORDER {
         let sr = ShopReq::from_args(args);
-        // the store providers by API (the Shopping bot): no page is opened
+        // the store providers by API (the Money bot's shopping): no page is opened
         return shopping::next(&sr, t, m, &ids);
     }
     if tool == TRAVEL_PICK {

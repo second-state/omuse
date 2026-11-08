@@ -105,7 +105,7 @@ pub fn show_items(transcript: &[Value], ctx: Ctx) -> Vec<Value> {
 }
 
 /// The events an `events_search` found in this request (Google Events data, read by code from the result's fields —
-/// never its text): each event with a ticket link, as a link to book it with when and where (at most 8). A web search
+/// never its text): each event with a ticket link, or else its own page, as a link with when and where (at most 8). A web search
 /// fallback has no `events`, and a broadened search (the city's events, not the user's) is the model's to pick from,
 /// so neither adds anything.
 pub fn event_items(transcript: &[Value]) -> Vec<Value> {
@@ -139,10 +139,17 @@ pub fn event_items(transcript: &[Value]) -> Vec<Value> {
             continue;
         }
         for e in data["events"].as_array().into_iter().flatten() {
-            let Some(t) = e["tickets"].as_array().and_then(|t| t.first()) else {
-                continue;
+            // the first ticket seller's page; without one, the event's own page (Google's "more info" link —
+            // travel_events_real 2026-11-08: Tokyo's concerts of the week had venue pages and no ticket sellers)
+            let first = |k: &str| e[k].as_array().and_then(|t| t.first().cloned());
+            let (t, tickets) = match first("tickets") {
+                Some(t) => (t, true),
+                None => match first("more_info") {
+                    Some(t) => (t, false),
+                    None => continue,
+                },
             };
-            let (url, title) = (get_str(t, "url"), get_str(e, "title"));
+            let (url, title) = (get_str(&t, "url"), get_str(e, "title"));
             if !url.starts_with("https://") || title.is_empty() || out.len() >= 8 {
                 continue;
             }
@@ -151,10 +158,11 @@ pub fn event_items(transcript: &[Value]) -> Vec<Value> {
                 .filter(|x| !x.is_empty())
                 .collect::<Vec<_>>()
                 .join(" · ");
-            let text = match get_str(t, "source") {
+            let on = if tickets { "tickets on" } else { "details on" };
+            let text = match get_str(&t, "source") {
                 src if src.is_empty() => at,
-                src if at.is_empty() => format!("tickets on {src}"),
-                src => format!("{at} — tickets on {src}"),
+                src if at.is_empty() => format!("{on} {src}"),
+                src => format!("{at} — {on} {src}"),
             };
             out.push(S::link(&title, &title, &text, &url));
         }
@@ -726,7 +734,9 @@ mod tests {
         let res = json!({"trust": "untrusted", "source": "Google Events", "content": {"count": 2, "events": [
             {"title": "Coldplay: Music of the Spheres", "when": "Sat, Nov 22, 7 PM", "venue": "National Stadium",
              "tickets": [{"source": "Ticketmaster.sg", "url": "https://ticketmaster.sg/activity/detail/25sg_coldplay"}]},
-            {"title": "No tickets here", "when": "Sun", "venue": "Park", "tickets": []}]}});
+            {"title": "Free show", "when": "Sun", "venue": "Park", "tickets": [],
+             "more_info": [{"source": "JamBase", "url": "https://www.jambase.com/show/free-show"}]},
+            {"title": "No links here", "when": "Sun", "venue": "Park", "tickets": [], "more_info": []}]}});
         let t = vec![
             json!({"role": "user", "content": "Coldplay tickets in Singapore?"}),
             call(
@@ -740,11 +750,17 @@ mod tests {
             .iter()
             .filter_map(|i| S::render(i, false))
             .collect();
-        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert_eq!(shown.len(), 2, "{shown:?}");
         assert!(
             shown[0].contains("https://ticketmaster.sg/activity/detail/25sg_coldplay")
                 && shown[0].contains("Coldplay: Music of the Spheres")
                 && shown[0].contains("National Stadium — tickets on Ticketmaster.sg"),
+            "{shown:?}"
+        );
+        // no ticket seller: the event's own page
+        assert!(
+            shown[1].contains("https://www.jambase.com/show/free-show")
+                && shown[1].contains("Park — details on JamBase"),
             "{shown:?}"
         );
         // the same JSON from another tool (a page read) adds nothing

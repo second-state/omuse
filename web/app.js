@@ -217,7 +217,8 @@ const VIEWS = [
   ['tasks', '🗂', T('任务'), 'Tasks'], ['schedules', '⚡', T('自动化'), 'Automations'], ['timers', '⏰', T('任务'), 'Tasks'],
 ];
 // the sections: [Chinese title, English title, views] ('chat' = the bots)
-const NAV = [[T('助手'), 'Bots', ['chat']], [T('工具'), 'Tools', ['timers', 'browser', 'connections', 'memory']],
+// ('chat' = Main and the long-running task bots, `group: tasks`; 'bots' = the specialised bots, `group: bots`)
+const NAV = [[T('助手'), 'Assistant', ['chat']], [T('专门助手'), 'Bots', ['bots']], [T('工具'), 'Tools', ['timers', 'browser', 'connections', 'memory']],
   [T('可信'), 'Trust', ['trust', 'activity']], [T('配置'), 'Config', ['skills', 'settings']]];
 
 // A bot's icon: a robot head with a badge for what the bot does (bots/<id>.md `badge`). Fixed markup, no user data.
@@ -228,6 +229,10 @@ const BOT_BADGES = {   // each drawn in a 10 × 10 box, placed on the badge
   card: '<rect class="bg" x=".5" y="1.8" width="9" height="6.4" rx="1.1"/><rect class="bb-fill" x=".5" y="3.2" width="9" height="1.4"/>',
   camera: '<rect class="bg" x=".5" y="2.6" width="9" height="6.4" rx="1.3"/><rect class="bg" x="3.2" y="1.1" width="3.6" height="2.2" rx=".5"/><circle class="bb-fill" cx="5" cy="5.8" r="1.9"/>',
   cart: '<path class="bg" d="M.4 1.2h1.7l1.3 5.2h5l1.2-3.9H2.6Z"/><circle class="bg" cx="3.9" cy="8.4" r="1"/><circle class="bg" cx="7.7" cy="8.4" r="1"/>',
+  // the long-running tasks: a newspaper, a calendar page, an envelope
+  news: '<rect class="bg" x=".6" y="1.2" width="8.8" height="7.6" rx="1"/><rect class="bb-fill" x="1.8" y="2.6" width="2.6" height="2.2"/><rect class="bb-fill" x="5.2" y="2.6" width="3" height=".9"/><rect class="bb-fill" x="5.2" y="4" width="3" height=".8"/><rect class="bb-fill" x="1.8" y="5.8" width="6.4" height=".8"/><rect class="bb-fill" x="1.8" y="7.1" width="6.4" height=".8"/>',
+  calendar: '<rect class="bg" x=".6" y="1.6" width="8.8" height="7.6" rx="1"/><rect class="bb-fill" x=".6" y="3.4" width="8.8" height=".8"/><rect class="bb-fill" x="2.4" y=".6" width="1" height="2"/><rect class="bb-fill" x="6.6" y=".6" width="1" height="2"/><rect class="bb-fill" x="2.2" y="5.2" width="1.6" height="1.4"/><rect class="bb-fill" x="4.2" y="5.2" width="1.6" height="1.4"/><rect class="bb-fill" x="6.2" y="5.2" width="1.6" height="1.4"/>',
+  mail: '<rect class="bg" x=".5" y="1.8" width="9" height="6.4" rx="1"/><path class="bb-fill" d="M.5 2.8 5 5.9l4.5-3.1v1.3L5 7.2.5 4.1Z"/>',
 };
 function botIcon(b) {
   const el = h('span', { class: 'ic boticon', 'aria-hidden': 'true' });
@@ -244,9 +249,9 @@ function renderNav() {
   NAV.forEach(([zh, en, group]) => {
     nav.append(h('div', { class: 'navhead', role: 'heading', 'aria-level': '2' }, LANG === 'en' ? en : zh));
     for (const id of group) {
-      if (id === 'chat' && S.bots.length) {
-        // the bots in place of Chat: Main first (the entrance), then the specialised ones
-        for (const b of S.bots) {
+      if ((id === 'chat' || id === 'bots') && S.bots.length) {
+        // the bots: Main (the entrance) and the long-running tasks on top; the specialised bots in their own section
+        for (const b of S.bots.filter(b => (id === 'chat') === (b.group !== 'bots'))) {
           const on = S.view === 'chat' && S.bot === b.id;
           nav.append(h('a', { href: convHash(b.id), class: 'botlink' + (on ? ' active' : ''), title: botDesc(b), 'data-bot': b.id },
             botIcon(b), botName(b),
@@ -254,6 +259,7 @@ function renderNav() {
         }
         continue;
       }
+      if (id === 'bots') continue;
       const [, ic, zh, en] = VIEWS.find(x => x[0] === id);
       // approvals and takeovers are answered in the chat: the waiting count sits on Chat
       nav.append(h('a', { href: '#' + id, class: S.view === id ? 'active' : '' }, h('span', { class: 'ic' }, ic), LANG === 'en' ? en : ZH(zh),
@@ -368,7 +374,7 @@ async function deleteConv(id) {
   const c = S.convs.find(x => x.id === id);
   if (!c) return;
   const title = c.title || T('无标题');
-  const q = c.kind === 'schedule' ? Tf("删除定时任务「{0}」？它将停止运行，并从「任务」中移除。", title) : Tf("删除对话「{0}」？任务记录仍保留在「任务」和「审计」里。", title);
+  const q = c.kind === 'schedule' ? Tf("删除定时任务「{0}」的对话？任务会继续运行，只能在「任务」里删除。", title) : Tf("删除对话「{0}」？任务记录仍保留在「任务」和「审计」里。", title);
   if (!confirmInline(q)) return;
   await api('conversations/' + id, { method: 'DELETE' });
   if (S.conv === id) newChat();
@@ -1531,7 +1537,9 @@ async function viewTimers(root) {
     h('div', { class: 'small muted' }, s.describe || ''),
     h('div', null, s.goal || ''),
     h('div', { class: 'row', style: 'gap:8px' },
-      s.conv_id ? h('a', { class: 'btn small', href: convHash('main', s.conv_id) }, T('打开对话 Open chat')) : null,
+      // a long task's latest run has a conversation of its own under the task's bot; other schedules post into their chat
+      s.last_conv ? h('a', { class: 'btn small', href: convHash(s.last_bot || 'main', s.last_conv) }, T('打开对话 Open chat'))
+        : s.conv_id ? h('a', { class: 'btn small', href: convHash(s.conv_bot || 'main', s.conv_id) }, T('打开对话 Open chat')) : null,
       h('button', { class: 'btn danger small', onclick: safe(async () => {
         if (!confirmInline(Tf("删除任务「{0}」？它的对话会保留。", s.name || ''))) return;
         await api('schedules/' + s.id, { method: 'DELETE' }); route(); }) }, T('删除'))));
@@ -1670,8 +1678,10 @@ async function viewSchedules(root) {
       isTrig ? h('button', { class: 'btn small', onclick: safe(async () => { const p = await api(`schedules/${s.id}/poll`, { method: 'POST', body: {} });
         // a notify-only watch starts no run: it notifies (task_id is set only when a run started)
         toast(p.error ? '⚠️ ' + p.error : p.fired && p.task_id ? T('发现新事件，已开始运行') : p.fired ? T('发现新事件，已通知你') : T('没有新事件 Nothing new'), !!p.error); route(); }) }, T('🔍 立即检查 Check now'))
-        : h('button', { class: 'btn small', onclick: safe(async () => { await api(`schedules/${s.id}/run`, { method: 'POST', body: {} }); toast(T('已开始运行')); }) }, T('▶ 立即运行 Run now')),
-      h('button', { class: 'btn small', onclick: () => { location.hash = 'chat'; setTimeout(() => openConv(s.conv_id), 50); } }, T('查看结果 Results')),
+        // the card is drawn again: Results now opens the run that just started (a long task's run has a conversation of its own)
+        : h('button', { class: 'btn small', onclick: safe(async () => { await api(`schedules/${s.id}/run`, { method: 'POST', body: {} }); toast(T('已开始运行')); route(); }) }, T('▶ 立即运行 Run now')),
+      h('button', { class: 'btn small', onclick: () => { const [bot, cid] = s.last_conv ? [s.last_bot || 'main', s.last_conv] : [s.conv_bot || 'main', s.conv_id];
+        location.hash = convHash(bot, cid); } }, T('查看结果 Results')),
       h('button', { class: 'btn danger small', onclick: safe(async () => { await api('schedules/' + s.id, { method: 'DELETE' }); route(); }) }, T('删除 Delete'))));
   const trig = h('div', { class: 'card stack' }, h('h3', null, T('⚡ 事件触发 Triggers')),
     h('p', { class: 'sub' }, T('「当……发生时，自动做……」。例如：收到老板的邮件就总结给我；Slack #support 有人提到 urgent 就整理问题；Notion 任务表有新任务就排进计划。')),

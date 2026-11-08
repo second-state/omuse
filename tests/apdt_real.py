@@ -98,25 +98,50 @@ async def with_documents(u: U.User, docs: str, doc_no: str) -> None:
     await pg.goto("https://app.apdtrefund.hk/hkTaxMobile/?lang=en", wait_until="domcontentloaded")
     await pg.wait_for_selector("span.check-img", timeout=60000)
 
-    async def close_notices():
-        for _ in range(4):
-            shown = await pg.evaluate("() => [...document.querySelectorAll('.mask')].filter(m => m.getClientRects().length).length")
+    async def close_notices(wait_s: float = 60.0) -> bool:
+        """Close the platform's notices (`.mask` with a button) and wait out its overlays (`.mask-bg`: the waiting room
+        or a loading screen, which intercept every click — 2026-11-08: the notes checkbox click timed out under one).
+        False when the page is still covered after `wait_s`."""
+        for _ in range(int(wait_s / 0.8)):
+            shown = await pg.evaluate("() => [...document.querySelectorAll('.mask, .mask-bg')].filter(m => m.getClientRects().length).length")
             if not shown:
-                return
-            await pg.locator(".mask div.button, .mask button").first.click()
+                return True
+            btn = pg.locator(".mask div.button, .mask button, .mask-bg div.button, .mask-bg button").first
+            if await btn.count():
+                try:
+                    await btn.click(timeout=2000)
+                except Exception:
+                    pass
             await pg.wait_for_timeout(800)
+        return False
+
+    async def click_or_skip(loc) -> bool:
+        """Click `loc`, clearing the platform's overlays between short attempts (an overlay can appear after the page
+        settled and stay — 2026-11-08: a `.mask-bg` held the notes checkbox for the whole 30 s click wait). False when
+        the platform kept its page covered for about 90 s (its waiting room): the other-device check cannot run,
+        which is the platform's availability, not the product's — said, not failed."""
+        for _ in range(12):
+            await close_notices(wait_s=6)
+            try:
+                await loc.click(timeout=4000)
+                return True
+            except Exception:
+                continue
+        print("INFO docs: the platform kept its overlay for ~90 s (waiting room) — the other-device check was skipped")
+        await other.close()
+        return False
 
     for k in range(2):
         await pg.wait_for_timeout(1200)
-        await close_notices()
-        await pg.locator("span.check-img").nth(k).click()
+        if not await click_or_skip(pg.locator("span.check-img").nth(k)):
+            return
     await pg.wait_for_timeout(1200)
-    await close_notices()
-    await pg.locator("div.button", has_text="Start").first.click()
+    if not await click_or_skip(pg.locator("div.button", has_text="Start").first):
+        return
     await pg.wait_for_selector("div.btn:has-text('View Application')", timeout=20000)
     await pg.wait_for_timeout(1500)
-    await close_notices()
-    await pg.locator("div.btn", has_text="View Application").first.click()
+    if not await click_or_skip(pg.locator("div.btn", has_text="View Application").first):
+        return
     await pg.wait_for_selector("input.el-input__inner", timeout=20000)
     await pg.locator("input.el-input__inner").first.fill(doc_no)
     await pg.get_by_text("Use reference number (6 digits & letters)", exact=True).first.click()

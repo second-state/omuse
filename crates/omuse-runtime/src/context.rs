@@ -106,7 +106,9 @@ pub fn tool_topics(name: &str) -> &'static [&'static str] {
         "arrival_card_fill" => &["travel", "forms"],
         "claim_file" | "insurance_buy" => &["travel", "finance"],
         "shop_order" | "orders_list" => &["shopping"],
-        "news_gather" | "news_publish" => &["news", "documents"],
+        "news_gather" => &["news", "documents"],
+        "email_brief" => &["email"],
+        "whats_next" => &["calendar", "email"],
         "phone_call" => &["phone_calls"],
         "make_pdf" | "make_docx" | "make_xlsx" => &["documents"],
         "pdf_form_fields" | "pdf_form_fill" => &["forms"],
@@ -445,8 +447,10 @@ fn with_extra(f: &Value, score: f64, why: &str) -> Value {
 
 /// The facts that matter for this request, best first, from their structured fields: a trigger the user said (10),
 /// an entity the request names (6, with its aliases), a rule that always applies (5), shared topics with the
-/// request or the task (3 + up to 2; a site habit only when its site is named), an unsorted fact the model picked
-/// (4); plus a little for facts used often. Identity-document facts never. Each returned fact gets `score` and `why`.
+/// request or the task (3 + up to 2; a site habit only when its site is named, a person's fact only when that person
+/// is — memory_real 2026-11-08: the wife's jazz records, tagged "shopping", came along for the user's running shoes),
+/// an unsorted fact the model picked (4); plus a little for facts used often. Identity-document facts never. Each
+/// returned fact gets `score` and `why`.
 pub fn select(
     facts: &[Value],
     rel: &Relevance,
@@ -509,7 +513,9 @@ pub fn select(
             .filter(|t| topics.contains(&t.as_str()))
             .collect();
         let site_elsewhere = get_str(f, "domain") == "site" && !by_entity;
-        if !shared.is_empty() && !site_elsewhere {
+        // a fact about another person rides on that person, never on a topic alone
+        let person_elsewhere = get_str(f, "domain") == "person" && !ent.is_empty() && !by_entity;
+        if !shared.is_empty() && !site_elsewhere && !person_elsewhere {
             s += 3.0 + std::cmp::min(2, shared.len() - 1) as f64;
             why.push(format!("topics: {}", shared.join("/")));
         }
@@ -790,6 +796,45 @@ mod tests {
             entities: entities.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn another_persons_fact_comes_only_with_that_person_never_by_topic_alone() {
+        // memory_real 2026-11-08: the model tagged "Mei collects jazz vinyl" with the topic "shopping"; the user's
+        // running-shoe request (topics clothing + shopping) must not bring it, a present for the wife (Mei named) must
+        let mut facts = memory();
+        facts.push(fact(
+            "mei_shop",
+            "The user's wife Mei collects jazz vinyl records.",
+            "person",
+            "Mei",
+            "topic",
+            &["shopping"],
+        ));
+        let got = ids(&select(
+            &facts,
+            &rel(&["clothing", "shopping"], &["shop.example"]),
+            &TaskData::default(),
+            &[],
+            12,
+        ));
+        assert!(
+            got.contains(&"shoes".into()) && !got.contains(&"mei_shop".into()),
+            "{got:?}"
+        );
+        let sel = select(
+            &facts,
+            &rel(&["gifts"], &["Mei"]),
+            &TaskData::default(),
+            &[],
+            12,
+        );
+        let got = ids(&sel);
+        assert!(
+            got.contains(&"mei_shop".into()) && got.contains(&"mei".into()),
+            "{got:?}"
+        );
+        assert!(get_str(&sel[0], "why").contains("entity: Mei"));
     }
 
     #[test]

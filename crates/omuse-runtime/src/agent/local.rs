@@ -537,6 +537,10 @@ NOT in the PDF: {}.",
             "market_quotes" => Ok(self.market_quotes(&tid, a).await.to_string()),
             // code's own call (a machine's choice out of a page's list): the model picks one, as JSON
             n if n == super::choose::TOOL => Ok(self.choose_option(&tid, a).await.to_string()),
+            // code's own call (a long task's subagent): JSON in, JSON out (agent/longtask.rs)
+            n if n == super::longtask::SUBAGENT_TOOL => {
+                Ok(self.subagent_json(t, a).await.to_string())
+            }
             "stock_fundamentals" => self.stock_fundamentals(&tid, a).await,
             "data_query" => {
                 let me = self.arc();
@@ -1120,7 +1124,16 @@ memory. Tell the user to add it to the vault (Memory page → Vault (记忆 → 
             }
             "schedule_create" => {
                 let schedules = self.store.schedules().map_err(stores_err)?;
-                if let Some(dup) = same_schedule(&schedules, &sget(a, "name"), &sget(a, "goal")) {
+                // a long task's schedule (code's own call): its call as JSON, run as it is (agent/longtask.rs)
+                let task = a
+                    .get("task")
+                    .filter(|x| super::longtask::long_task(&get_str(x, "tool")).is_some())
+                    .cloned();
+                let dup = task
+                    .as_ref()
+                    .and_then(|x| super::longtask::scheduled(&schedules, x).cloned())
+                    .or_else(|| same_schedule(&schedules, &sget(a, "name"), &sget(a, "goal")));
+                if let Some(dup) = dup {
                     let own = get_str(&dup, "id") == get_str(t, "schedule_id");
                     return Ok(format!("ERROR: 已有同样的定时任务，没有再建 — a schedule for this already exists: id={} \
 ({}; {}){}. Don't create duplicates (they run in parallel and repeat the work). It already runs again by itself; \
@@ -1149,6 +1162,11 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                     &get_str(t, "conv_id"),
                 )
                 .map_err(value_err)?;
+                if let Some(task) = &task {
+                    self.store
+                        .set_schedule_task(&get_str(&sch, "id"), task)
+                        .map_err(stores_err)?;
+                }
                 self.publish(json!({"kind": "schedule_update"})).await;
                 self.audit("executor", "schedule.create", &tid, json!({"detail": sch}))
                     .await;
@@ -1226,7 +1244,7 @@ keep counters with schedule_state_set, change it with schedule_update, or schedu
                         "details": arr(o, "details").iter().map(|d| truncate(&py_str(d), 200)).take(6).collect::<Vec<_>>(),
                         "source_url": truncate(&sget(o, "source_url"), 500),
                         "note": truncate(&sget(o, "note"), 400)});
-                    // a machine's offer keeps its structured price and id (the Shopping bot's card, 2026-11-02:
+                    // a machine's offer keeps its structured price and id (the Money bot's shopping card, 2026-11-02:
                     // shopping_real found the card's offers without their prices)
                     if let Some(p) = o.get("price").and_then(Value::as_f64) {
                         c["price"] = json!(p);
@@ -3218,8 +3236,12 @@ pub(crate) fn goal_args_from_trigger(a: &Value, success: &str) -> Value {
 /// workflow tool called: refused once, as data — the request's skill and its tool come first, and the tool asks for
 /// what only the user can give (arrival_cards4_real 2026-11-02: "Do I need ETIAS for Paris?" got "What date do you
 /// arrive?" — entry_requirements needs no date). A second ask is let through.
-fn ask_before_any_skill(bot: &crate::bots::Bot, events: &[Value]) -> Option<Value> {
-    if !super::runtime::one_off(bot) {
+/// In a specialised bot, a question to the user before any skill was loaded or workflow tool called is refused once:
+/// the request's tool asks (`needs_input`) or answers without the question (money_real 2026-11-08: the Money bot asked
+/// for the trip's dates instead of calling `apdt_refund`, whose information path needs nothing — Travel had this rule
+/// since the one-off tasks; every specialised bot has it now). A second ask goes through.
+pub(crate) fn ask_before_any_skill(bot: &crate::bots::Bot, events: &[Value]) -> Option<Value> {
+    if bot.is_main() {
         return None;
     }
     let started = events.iter().any(|e| {

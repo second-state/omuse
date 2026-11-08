@@ -33,14 +33,15 @@ async def main():
         await pg.goto(B + "#chat")
         await pg.wait_for_selector("#navlinks a")
         labels = await pg.evaluate("() => [...document.querySelectorAll('#navlinks a')].map(a => [...a.childNodes].filter(n => !(n.classList && (n.classList.contains('ic') || n.classList.contains('badge')))).map(n => n.textContent).join('').trim())")
-        BOTS = ["Main", "Travel", "Money", "Photos & videos", "Shopping"]
-        check("the sidebar shows the five bots (Main first) in place of Chat, then the eight views in order",
-              labels == BOTS + ["Tasks", "Browser", "Connections", "Memory", "Status", "Audit", "Skills", "Settings"], labels)
+        TASKS = ["Main", "News report", "What's next", "Email brief"]
+        BOTS = ["Travel", "Money", "Social media"]
+        check("the sidebar shows Main and the three task bots, the three specialised bots, then the eight views in order",
+              labels == TASKS + BOTS + ["Tasks", "Browser", "Connections", "Memory", "Status", "Audit", "Skills", "Settings"], labels)
         seps = await pg.evaluate("() => [...document.querySelectorAll('#navlinks > *')].map(e => e.classList.contains('navhead') ? '[' + e.textContent + ']' : (a => [...a.childNodes].filter(n => !(n.classList && (n.classList.contains('ic') || n.classList.contains('badge')))).map(n => n.textContent).join('').trim())(e)).join(' ')")
-        check("four named sections: Bots, Tools, Trust, Config",
-              seps == "[Bots] " + " ".join(BOTS) + " [Tools] Tasks Browser Connections Memory [Trust] Status Audit [Config] Skills Settings", seps)
+        check("five named sections: Assistant, Bots, Tools, Trust, Config",
+              seps == "[Assistant] " + " ".join(TASKS) + " [Bots] " + " ".join(BOTS) + " [Tools] Tasks Browser Connections Memory [Trust] Status Audit [Config] Skills Settings", seps)
         icons = await pg.evaluate("() => [...document.querySelectorAll('#navlinks a')].map(a => [!!a.querySelector('.boticon svg .head'), a.querySelectorAll('.boticon .bb').length])")
-        check("each bot has a robot icon with a badge; the tools do not", icons[:5] == [[True, 1]] * 5 and all(not i[0] for i in icons[5:]), icons)
+        check("each bot has a robot icon with a badge; the tools do not", icons[:7] == [[True, 1]] * 7 and all(not i[0] for i in icons[7:]), icons)
         check("Tasks is the scheduled-tasks page (#timers); no Automations tab",
               await pg.locator("#navlinks a[href='#timers']").count() == 1 and "Automations" not in labels, labels)
         await pg.goto(B + "#tasks/" + t["id"])

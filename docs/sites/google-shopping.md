@@ -1,4 +1,4 @@
-# Google Shopping through SerpApi (the Shopping bot's opt-in provider)
+# Google Shopping through SerpApi (the Money bot's shopping opt-in provider)
 
 Walked 2026-11-02 with the e2e SerpApi key: two requests, recorded (trimmed) in
 `crates/omuse-apps/src/serpapi_recorded/`.

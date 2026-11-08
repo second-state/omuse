@@ -124,7 +124,7 @@ every `EXTRACT_SYSTEM`, `extract_exchange` and code-written answer text.
 | tool | machine | replaces |
 |---|---|---|
 | `travel_search` / `travel_book` (kind flight · hotel · michelin · restaurant); a flight's every-flight result (`pick_needed`) → `travel_pick {offer_ids}` (the model's JSON pick, shown exactly) | `agent/booking.rs` | regex request parsing, `search_request`, `follow_up`, `mail_to`, `profile_with_words`, `preferred_airlines`, `HABIT`, `WORK` |
-| `shop_order` (the Shopping bot: the product words, the criteria, `choices` = the offer ids the model picks from a `review` result; no browser: a shop's link is not searched, `not_covered`) | `agent/booking/shopping.rs` (`shop_search`: the store providers for the user's location by API, `omuse_apps::shops`; docs/sites/shopify.md) | `shop_ranking` regexes, `known_shop_request` |
+| `shop_order` (the Money bot's shopping: the product words, the criteria, `choices` = the offer ids the model picks from a `review` result; no browser: a shop's link is not searched, `not_covered`) | `agent/booking/shopping.rs` (`shop_search`: the store providers for the user's location by API, `omuse_apps::shops`; docs/sites/shopify.md) | `shop_ranking` regexes, `known_shop_request` |
 | `arrival_card_fill` (country, trip facts) | `agent/driver.rs` | `user_asks`, `dates_in` over the request, `trip_dates_from_request` |
 | `claim_file` / `insurance_buy` | `agent/claims.rs` | the claims machine's request regexes |
 | `apdt_refund` | `agent/apdt.rs` | its request regexes |
@@ -145,6 +145,41 @@ language as a JSON choice (`Runtime::request_lang`: a `decide` over `en | zh | o
 the chat title call answers `{"title", "lang"}` (`prompts::parse_title`, `lang` checked against `en | zh`). Code counts
 no characters to decide a language; the character classes left in code only strip code's own bilingual strings
 (`prompts::en_only`, `drop_cjk`, `system_text_en`) or report a written file's length (`files_write`).
+
+## Long tasks (`agent/longtask.rs`; the user's design of 2026-11-07)
+
+The Main bot's skills that take a while and can run on a timer — the news research report (with a market monitor's
+prices: `news_gather`), What's next (`whats_next`) and the email brief (`email_brief`) — are **long tasks**. Each works
+the same way:
+
+1. **Converse.** The model turns the request into the task's JSON and calls the task's ONE code tool. A question the
+   task needs is asked before the subagent's JSON is put together (What's next: today's list and "anything missing?",
+   `status: confirm`; the reply owes the same tool again with `confirmed: true` and the additions). A schedule's run
+   asks nothing.
+2. **The code tool runs the whole task**: the mail, the calendar, the searches and pages, the market data — and, where
+   words must be written or read, a **subagent** (`subagent_json {kind, input}`, code's own call, never offered to the
+   model): the kind's fixed instruction (`SubSpec`), the assembled data as JSON in, read-only tools only if the spec
+   lists them, an answer that must be JSON matching the spec's schema — checked in code (`SubSpec::check`), asked once
+   more with the problems, then the spec's code default (`SubSpec::fallback`). Kinds: `news_edition` (the stories by
+   article number; links, publications and dates stay code's), `whats_next_items` (the plan's items from the emails
+   and events; default: the calendar's events), `whats_next_notes` (the day's words), `email_triage` (needs a reply /
+   for information, by email number; default: everything for information).
+3. **JSON back** with `show` (links, facts, the brief's table) that code appends to the reply.
+4. **The schedule offer.** A chat run whose request asked for no schedule ends with `schedule_offer` (the task's call,
+   its key, the proposed time, the question) and a `show` line — only when the same task (tool + stored arguments,
+   `longtask::task_key`) is not on the schedule list and was not offered in this conversation (`schedule_offers`
+   table; a "no" is asked again only in a new chat). The reply owes `task_schedule {answer, frequency?, time?,
+   weekday?}` (agent/required.rs), which makes the schedule with `schedule_create {…, task}`.
+5. **A schedule stores the task's JSON** (`schedules.task = {"tool", "args"}`, the stored arguments only:
+   `LongTask::stored`). Its run opens a NEW conversation under the task's bot (`LongTask::bot`, `bots/<id>.md` with
+   `group: tasks`), titled with the run's time, so the user can chat about that run there (`Scheduler::run_conv`);
+   `Runtime::run` puts the stored call in the transcript as it is (`sch_1`), checked like any workflow call; the
+   machine runs, and the model only words the reply. Each long task is a bot of its own (the menu's first section, with
+   Main); Main hands a request for one over with `ask_bot`. A schedule made from a request ("every week",
+   "every morning at 7", "every weekday at 8") stores the same JSON.
+
+A new long task: a `LongTask` entry (tool, stored arguments, the schedule's name and default time), its machine, and a
+`SubSpec` per subagent kind.
 
 ## Email verification codes (one reusable step)
 

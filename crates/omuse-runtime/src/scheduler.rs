@@ -1031,6 +1031,28 @@ impl Scheduler {
         Ok(cid)
     }
 
+    /// A long task's run gets a conversation of its own under the task's bot (the user's design, 2026-11-07), titled
+    /// with the run's time in the user's timezone ("2026-11-08 06:30"), so the user can chat about that run there.
+    /// `None` for a schedule run from its goal text (its runs post into its own chat).
+    fn run_conv(&self, sch: &Value) -> Result<Option<String>> {
+        let Some(task) = Store::schedule_task(sch) else {
+            return Ok(None);
+        };
+        let Some(lt) = crate::agent::longtask::long_task(&get_str(&task, "tool")) else {
+            return Ok(None);
+        };
+        let tz = get_str(&self.settings(), "timezone");
+        let z = tz.parse::<chrono_tz::Tz>().unwrap_or(chrono_tz::UTC);
+        let title = chrono::Utc::now()
+            .with_timezone(&z)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+        let store = self.store();
+        let cid = store.create_conv(&title, "chat", None)?;
+        store.set_conv_bot(&cid, lt.bot, "")?;
+        Ok(Some(cid))
+    }
+
     /// Start a run of a schedule now (optionally with the events that triggered it). Returns the task.
     pub async fn run_now(
         &self,
@@ -1111,13 +1133,23 @@ impl Scheduler {
                 };
             (label, shown)
         };
-        let conv_id = self.ensure_conv(&sch, goal.as_ref())?;
+        let run_conv = self.run_conv(&sch)?;
+        let conv_id = match &run_conv {
+            Some(c) => c.clone(),
+            None => self.ensure_conv(&sch, goal.as_ref())?,
+        };
         let msg = if goal.is_some() || !events.is_empty() {
             shown
         } else {
             format!("{}: {}", label, get_str(&sch, "goal"))
         };
         store.add_msg(&conv_id, "user", &msg, "", None)?;
+        if run_conv.is_some() {
+            // the new conversation shows up in the bot's chat list at once
+            self.rt
+                .publish(json!({"kind": "conv_update", "conv_id": conv_id}))
+                .await;
+        }
         let t = self.rt.submit(&conv_id, &text, "schedule", sid).await?;
         let tid = get_str(&t, "id");
         store.db.execute(
@@ -1415,8 +1447,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deleting_a_schedules_chat_deletes_the_schedule_and_stops_its_run() {
-        // the user, 2026-11-02: a scheduled task deleted from the bot's chat list must stop and leave the Tasks page
+    async fn deleting_a_schedules_chat_keeps_the_schedule_and_its_run() {
+        // the user, 2026-11-07: the Tasks page is the only place a task is deleted; deleting a chat (the one the task
+        // was asked in, a run's conversation, the schedule's own chat) deletes the conversation and nothing else
         let rt = FakeRt::new();
         let sch = create_schedule(
             &rt.store,
@@ -1430,43 +1463,24 @@ mod tests {
         )
         .unwrap();
         let (sid, cid) = (get_str(&sch, "id"), get_str(&sch, "conv_id"));
+        rt.store
+            .create_conv("⏰ Daily mail", "schedule", Some(&cid))
+            .unwrap();
         let running = rt
             .store
             .create_task("summarise my new emails", &cid, "schedule", &sid, "", None)
             .unwrap();
-        let done = rt
-            .store
-            .create_task("summarise my new emails", &cid, "schedule", &sid, "", None)
-            .unwrap();
-        rt.store
-            .db
-            .execute(
-                "UPDATE tasks SET status='COMPLETED' WHERE id=?",
-                params![get_str(&done, "id").as_str()],
-            )
-            .unwrap();
-        let open = rt.store.drop_conv_schedules(&cid).unwrap();
-        assert_eq!(open, [get_str(&running, "id")]);
-        assert!(rt.store.schedule(&sid).unwrap().is_none());
-        assert!(rt.store.schedules().unwrap().is_empty());
-        // another chat's delete leaves other schedules alone
-        let other = create_schedule(
-            &rt.store,
-            "Weekly",
-            "x",
-            "cron",
-            &json!("0 9 * * 1"),
-            "UTC",
-            "",
-            "",
-        )
-        .unwrap();
-        assert!(rt
-            .store
-            .drop_conv_schedules("conv_none")
-            .unwrap()
-            .is_empty());
-        assert!(rt.store.schedule(&get_str(&other, "id")).unwrap().is_some());
+        rt.store.delete_conv(&cid).unwrap();
+        assert!(rt.store.conv(&cid).unwrap().is_none());
+        let kept = rt.store.schedule(&sid).unwrap().unwrap();
+        assert_eq!(get_str(&kept, "conv_id"), cid);
+        assert_eq!(rt.store.schedules().unwrap().len(), 1);
+        let t = rt.store.task(&get_str(&running, "id")).unwrap().unwrap();
+        assert!(!crate::agent::is_terminal(&get_str(&t, "status")));
+        // the next run makes the schedule's chat again under the same id, so the Tasks page's link keeps working
+        let sc = Scheduler::new(rt.clone());
+        assert_eq!(sc.ensure_conv(&kept, None).unwrap(), cid);
+        assert!(rt.store.conv(&cid).unwrap().is_some());
     }
 
     #[tokio::test]
@@ -1527,6 +1541,71 @@ mod tests {
         assert_eq!(rt.submitted.lock().len(), 1);
         assert!(sc.pending(now).unwrap().is_empty());
         assert!(as_f64(&rt.store.schedule(&sid).unwrap().unwrap()["next_run"]).unwrap() > now);
+    }
+
+    #[tokio::test]
+    async fn a_long_tasks_run_opens_a_new_conversation_under_its_bot_titled_with_the_time() {
+        // the user, 2026-11-07: every run of a long task starts a new conversation under the task's bot, titled with
+        // the timestamp, where the user can chat about that run; the schedule's own chat is left alone
+        let rt = FakeRt::new();
+        let sch = create_schedule(
+            &rt.store,
+            "What's next",
+            "What's next",
+            "cron",
+            &json!("30 6 * * *"),
+            "Asia/Singapore",
+            "",
+            "conv_asked",
+        )
+        .unwrap();
+        let sid = get_str(&sch, "id");
+        rt.store
+            .set_schedule_task(&sid, &json!({"tool": "whats_next", "args": {}}))
+            .unwrap();
+        let sc = Scheduler::new(rt.clone());
+        let t = sc.run_now(&sid, None, None, "").await.unwrap();
+        let cid = get_str(&t, "conv_id");
+        assert_ne!(cid, "conv_asked");
+        let conv = rt.store.conv(&cid).unwrap().unwrap();
+        assert_eq!(get_str(&conv, "bot_id"), "whatsnext");
+        assert_eq!(get_str(&conv, "kind"), "chat");
+        let title = get_str(&conv, "title");
+        assert!(
+            chrono::NaiveDateTime::parse_from_str(&title, "%Y-%m-%d %H:%M").is_ok(),
+            "{title}"
+        );
+        let msgs = rt.store.msgs(&cid, 10).unwrap();
+        assert_eq!(msgs[0]["content"], "⏰ 定时运行 Scheduled run: What's next");
+        assert!(rt
+            .published
+            .lock()
+            .iter()
+            .any(|e| e["kind"] == "conv_update" && e["conv_id"] == cid));
+        // a second run: another conversation; the schedule still points at the chat it was asked in
+        let t2 = sc.run_now(&sid, None, None, "").await.unwrap();
+        assert_ne!(get_str(&t2, "conv_id"), cid);
+        assert_eq!(
+            get_str(&rt.store.schedule(&sid).unwrap().unwrap(), "conv_id"),
+            "conv_asked"
+        );
+        // a schedule run from its goal text keeps posting into its own chat
+        let plain = create_schedule(
+            &rt.store,
+            "Daily",
+            "do it",
+            "cron",
+            &json!("0 8 * * *"),
+            "UTC",
+            "",
+            "",
+        )
+        .unwrap();
+        let t3 = sc
+            .run_now(&get_str(&plain, "id"), None, None, "")
+            .await
+            .unwrap();
+        assert_eq!(get_str(&t3, "conv_id"), get_str(&plain, "conv_id"));
     }
 
     #[tokio::test]

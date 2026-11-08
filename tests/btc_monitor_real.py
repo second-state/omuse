@@ -3,13 +3,14 @@ of view (tests/user_common.py). A real-data suite (run_in_docker.sh REAL_DATA_SU
 web search and pages, the price from the real market data (Yahoo Finance), so what the report says is the live news's
 and is not checked — only that the update came, carries the price, opens and is scheduled.
 
-1. monitor — Main's first example, in Main's chat: "Monitor BTC price and news. Send me an update with research report
+1. monitor — the News report bot's example, asked in Main's chat (Main hands it to the News report bot): "Monitor BTC price and news. Send me an update with research report
    every day at 8am." No mailbox is connected (nothing is ever mailed in e2e). Checked, all in what code appends after
    the answer and on the app's pages: the BTC price (BTC-USD, within 3% of the live price the market data gives now);
    the first update's report (the HTML edition under /artifacts/, which opens and is the newspaper with the price under
    its masthead); delivered here in the chat and not emailed; Automations lists the daily task at 08:00 and the Tasks
-   tab its next run at 08:00. The runs post into this chat (no ⏰ chat); the user deletes the chat: the task leaves the
-   Tasks tab.
+   tab its next run at 08:00. The request's conversation is the News report bot's; the user deletes the task on the
+   Tasks tab (the user's design, 2026-11-07: the Tasks menu manages the scheduled tasks; each run gets a conversation
+   of its own under the bot).
 One TIMING line per request.
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env tests/run_in_docker.sh btc_monitor_real"""
@@ -49,6 +50,7 @@ async def main():
     async with U.User() as u:
         a = await u.ask(REQUEST, label="monitor", timeout=1500)
         check("monitor: the answer came (no time-out)", bool(a.text.strip()) and not a.timed_out, a.text[:300])
+        check("monitor: Main hands the request to the News report bot", "News report" in a.bot_link, a.bot_link)
 
         # the price: the block code appends carries BTC-USD's price from the market data
         line = next((ln for ln in a.block.splitlines() if "BTC-USD" in ln), "")
@@ -85,20 +87,22 @@ async def main():
         check("monitor: the Tasks tab lists it with its next run at 08:00",
               re.search(r"News report", tasks) and re.search(r"Next run[^A-Za-z]{0,40}\b0?8:00", tasks), tasks[:600])
 
-        # the update runs post into this same chat (no "⏰" chat of their own); the user deletes this chat (🗑 in its
-        # header): the task goes with it — gone from the Tasks tab
-        titles = await u.chat_titles()
-        print(f"INFO chat list: {titles}")
-        check("monitor: no separate scheduled-task chat (the runs post into this chat)", not any("⏰" in t for t in titles), titles)
+        # the request's conversation is listed under the News report bot (no ⏰ chat of its own)
+        titles = await u.chat_titles("#bot/news")
+        print(f"INFO News report chats: {titles}")
+        check("monitor: the request's conversation is the News report bot's (one chat there)", len(titles) == 1, titles)
+        check("monitor: no separate scheduled-task chat", not any("⏰" in t for t in titles), titles)
+        # the Tasks tab is where the task is deleted: the user presses Delete on its card and confirms
         pg = u.page
-        await pg.goto(U.APP + "#chat/" + await u.conv_id())
-        await pg.wait_for_timeout(2000)
+        await pg.goto(U.APP + "#timers")
+        await pg.wait_for_timeout(2500)
+        row = pg.locator("#view .card", has_text="News report").first
         pg.once("dialog", lambda d: asyncio.ensure_future(d.accept()))
-        await pg.locator(".thread button", has_text="🗑").first.click()
+        await row.locator("button", has_text="Delete").first.click()
         await pg.wait_for_timeout(2500)
         tasks = await C.page_text(u, "timers")
         print(f"INFO Tasks tab after the delete: {tasks[:400]!r}")
-        check("monitor: deleting the chat removes the task from the Tasks tab", "News report" not in tasks, tasks[:400])
+        check("monitor: deleting the task on the Tasks tab removes it", "News report" not in tasks, tasks[:400])
 
 U.setup()
 U.run(main)

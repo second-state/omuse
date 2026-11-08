@@ -1964,7 +1964,10 @@ fn review_gate(run: &[Value], ids: &Ids, after: usize, reason: String) -> Result
         .filter(|(a, m)| pos(run, m) > after && !sget(a, "reason").starts_with(OWN_STEP))
         .collect();
     match review.last() {
-        None => Err(ids.one("browser_request_takeover", json!({"reason": reason}))),
+        None => Err(ids.one(
+            "browser_request_takeover",
+            json!({"reason": reason, "code": true}),
+        )),
         Some((_, m)) if handed_back(m) => Ok(pos(run, m)),
         Some(_) => Err(Step::Done(json!({"status": "not_confirmed",
             "show": [S::fact("Status", "状态", "the form is filled in and waiting in the browser tab — nothing has been submitted or paid")],
@@ -2969,11 +2972,21 @@ fn next_buy_th(args: &Value, run: &[Value], ids: &Ids) -> Step {
     ) {
         return ids.one("browser_navigate", json!({"url": TH_QUOTE_URL}));
     }
+    // a stage's latest fill, and how many times it ran: Dhipaya's slow site gets ONE more try of a step that did not
+    // open within its wait, on the page opened again (insurance_th_real 2026-11-08: the packages did not list within
+    // 40 s in one run, the application did not open in another — both on a site that answered the runs around them)
     let stage = |name: &str| {
         results_of(run, "form_fill")
             .into_iter()
-            .find(|(a, _)| sget(a, "stage") == name)
+            .filter(|(a, _)| sget(a, "stage") == name)
             .map(|(_, msg)| msg)
+            .next_back()
+    };
+    let tries = |name: &str| {
+        results_of(run, "form_fill")
+            .iter()
+            .filter(|(a, _)| sget(a, "stage") == name)
+            .count()
     };
     let stopped_at = |why: &str| {
         Step::Done(
@@ -2983,16 +2996,24 @@ fn next_buy_th(args: &Value, run: &[Value], ids: &Ids) -> Step {
             "hints": []}),
         )
     };
+    let quote_args =
+        json!({"stage": "quote", "destination": th_country(&dest), "depart": dep, "return": ret});
     let Some(quoted) = stage("quote") else {
-        return ids.one(
-            "form_fill",
-            json!({"stage": "quote", "destination": th_country(&dest), "depart": dep, "return": ret}),
-        );
+        return ids.one("form_fill", quote_args);
     };
     if landed_on_maintenance(run) {
         return Step::Done(site_down("TIP Insure", &trip, TH_QUOTE_URL));
     }
     if let Some(why) = stopped(quoted) {
+        if tries("quote") == 1 {
+            let reopened = results_of(run, "browser_navigate")
+                .iter()
+                .any(|(_, m)| pos(run, m) > pos(run, quoted));
+            if !reopened {
+                return ids.one("browser_navigate", json!({"url": TH_QUOTE_URL}));
+            }
+            return ids.one("form_fill", quote_args);
+        }
         return stopped_at(&why);
     }
     let quote_pos = pos(run, quoted);
@@ -3074,6 +3095,9 @@ fn next_buy_th(args: &Value, run: &[Value], ids: &Ids) -> Step {
         Step::Done(r)
     };
     if let Some(why) = stopped(pick) {
+        if tries("pick") == 1 {
+            return ids.one("form_fill", json!({"stage": "pick", "plan": picked.name}));
+        }
         return stopped_after(&why);
     }
     let Some(details) = stage("details") else {

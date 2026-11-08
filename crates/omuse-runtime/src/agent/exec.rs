@@ -418,6 +418,7 @@ impl Runtime {
                 .or_else(|| super::guards::input_scope_guard(transcript, call))
                 .or_else(|| clear_guard(transcript, call))
                 .or_else(|| apdt_face_guard(transcript, call))
+                .or_else(|| super::guards::saved_quote_guard(transcript, call))
                 .or_else(|| super::guards::takeover_before_fill_guard(transcript, call))
                 .or_else(|| super::guards::user_edit_guard(transcript, call))
                 .or_else(|| super::guards::web_budget_guard(transcript, call))
@@ -490,7 +491,9 @@ impl Runtime {
                 || super::trains::TOOLS.contains(&name)
                 || super::flightstatus::TOOLS.contains(&name)
                 || super::entry::TOOLS.contains(&name)
-                || super::whatsnext::TOOLS.contains(&name))
+                || super::whatsnext::TOOLS.contains(&name)
+                || super::emailbrief::TOOLS.contains(&name)
+                || super::longtask::TOOLS.contains(&name))
                 && crate::bots::has_tool(self.bot_of(t), name)
             {
                 // a workflow tool: its arguments checked by the JSON layer (repair, schema, the tool's field checks, the
@@ -533,6 +536,9 @@ call was not run.".to_string();
                 // the "What's next" machine's own research calls (the flight and event searches are the Travel
                 // bot's; the machine runs in Main): code's calls, never the model's
                 && !call.id.starts_with(super::whatsnext::PREFIX)
+                && !call.id.starts_with(super::news::PREFIX)
+                && !call.id.starts_with(super::emailbrief::PREFIX)
+                && !call.id.starts_with(super::longtask::PREFIX)
             {
                 // another bot's tool (crate::bots, `tools:`): never run here, whatever the model asked for
                 let owners: Vec<String> = crate::bots::tool_owners(name)
@@ -763,7 +769,8 @@ blocked automated browsing in this task; it is not opened again.");
                         self.locate(&task_id, &call.id, &sget(&args, "target"), r)
                             .await
                     }
-                    _ if call.id.starts_with("bkg_") || call.id.starts_with("nws_") => {
+                    // a code machine's own call: code reads the whole result (a JSON cut short reads as nothing found)
+                    _ if super::workflow::machine_call(&call.id) => {
                         self.format_external_within(name, &res, CODE_RESULT_LIMIT)
                     }
                     _ => self.format_external(name, &res),
@@ -898,7 +905,7 @@ This is a bot-protection wall ({detail}), not the site's content; the site is no
                         args: json!({"reason": format!(
                             "The page is filled in. Review it, fill in anything still missing (such as the CAPTCHA or \
                         security code) and press \"{button}\" yourself; hand the browser back when it is done."
-                        )}),
+                        ), "code": true}),
                     };
                     transcript.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": tc.id, "type": "function",
                         "function": {"name": tc.name, "arguments": tc.args.to_string()}}]}));

@@ -1,20 +1,20 @@
-//! The news research machine behind the workflow tools `news_gather`, `news_publish` and `news_mail`
-//! (docs/json-tools.md; the protocol is [`super::workflow`]).
+//! The news research machine behind the workflow tools `news_gather` and `news_mail` (docs/json-tools.md; the protocol
+//! is [`super::workflow`]); a long task (agent/longtask.rs).
 //!
-//! The model reads the user's words and calls `news_gather` with JSON arguments (the subject, the window). [`check`]
-//! validates them; then every step is code ([`next`]): ONE browser news search of the subject (a second, wider one only
-//! when the first finds no article), the first [`ARTICLES`] distinct links of the results read in one turn, and a JSON
-//! result with the articles (number, title, publication, date, url, text excerpt). The model writes the edition as
-//! JSON from that result and calls `news_publish` (a title, one story per article by its number — headline and
-//! summary —, insights, the schedule, whether to email it). [`check`] keeps only stories whose article number exists,
-//! takes each story's link, publication and date from the gathered articles (never from the model) and adds every
-//! article the model left out with its own headline and opening. The machine publishes with `news_report` (the
-//! newspaper HTML and PDF under `/artifacts/`, `crate::newsreport`), makes the schedule the arguments ask for
-//! (`schedule_create`, the goal written by code so that the scheduled run calls `news_gather` → `news_publish` again)
-//! and mails the edition to the user's own connected address when asked. `news_mail` mails an edition published earlier
-//! in the chat (its links, which the model copies from the earlier reply). Each run ends with [`Step::Done`]: a JSON
-//! result with `show` (the editions' links, the schedule, the mail: code appends them to the reply) and `hints`; the
-//! model writes the reply from it. Nothing here reads the user's wording or calls a model.
+//! The model reads the user's words and calls `news_gather` ONCE with the whole task as JSON (the subject, the window,
+//! the market symbols of a monitor, the schedule and the mail asked for). [`check`] validates them; then every step is
+//! code ([`next`]): the market prices, ONE browser news search of the subject (a second, wider one only when the first
+//! finds no article), the first [`ARTICLES`] distinct links read in one turn; then the edition's subagent
+//! ([`EDITION`], JSON in and out: a title, one story per article by its number, insights). Code keeps only stories
+//! whose article exists, takes each story's link, publication and date from the gathered articles (never from the
+//! subagent), adds every article it left out with its own headline and opening, publishes with `news_report` (the
+//! newspaper HTML and PDF under `/artifacts/`, `crate::newsreport`), makes the schedule asked for with the task's JSON
+//! (`schedule_create` with `task`: the scheduled run calls `news_gather` with the same arguments, no model in
+//! between) and mails the edition to the user's own connected address when asked. A chat run that asked for no
+//! schedule ends with the schedule offer (agent/longtask.rs). `news_mail` mails an edition published earlier in the
+//! chat (its links, which the model copies from the earlier reply). The result is JSON with `show` (the editions'
+//! links, the schedule, the mail: code appends them to the reply); the model writes the reply from it. Nothing here
+//! reads the user's wording.
 //!
 //! As in [`super::booking`], the next step is a function of the validated arguments and the transcript after the tool
 //! call alone, so a run suspended for a takeover carries on where it was.
@@ -27,6 +27,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use super::driver::{json_of, Step};
+use super::longtask::{self, SubSpec};
 use super::show as S;
 use super::tools::fn_;
 use super::util::{content_of, sget, stored_call, tool_calls};
@@ -38,10 +39,11 @@ pub const SKILL: &str = "news-research";
 /// The id prefix of the machine's code calls.
 pub const PREFIX: &str = "nws_";
 pub const NEWS_GATHER: &str = "news_gather";
-pub const NEWS_PUBLISH: &str = "news_publish";
 pub const NEWS_MAIL: &str = "news_mail";
 /// The workflow tools this machine runs.
-pub const TOOLS: [&str; 3] = [NEWS_GATHER, NEWS_PUBLISH, NEWS_MAIL];
+pub const TOOLS: [&str; 2] = [NEWS_GATHER, NEWS_MAIL];
+/// The subagent that writes the edition from the articles.
+pub const EDITION: &str = "news_edition";
 /// The layout tool the machine publishes with (code's own call; not offered to the model).
 pub const REPORT_TOOL: &str = "news_report";
 /// The market quotes the machine fetches with the news (code's own call; not offered to the model): Sentinel's
@@ -61,38 +63,22 @@ pub fn tool_schemas() -> Vec<Value> {
     let s = json!({"type": "string"});
     let gather = fn_(
         NEWS_GATHER,
-        "Research the latest news on a subject for a newspaper-style report or a regular update (also a scheduled \
-edition; \"monitor the price and news of X\" too, with markets). Code fetches the market prices asked for, runs the \
-browser's news search, reads the top articles and returns them as JSON (prices; article number, title, publication, \
-date, url, text). Then write the edition from those articles and call news_publish. status nothing_found: no recent article — say \
-so; needs_input: ask the user for the subject.",
+        "Research the latest news on a subject as a newspaper-style report, once or on a schedule (\"monitor the \
+price and news of X\" too, with markets). Call it ONCE with the whole request: code fetches the market prices asked \
+for, runs the browser's news search, reads the top articles, writes the edition from them, lays out the newspaper as \
+HTML and PDF under /artifacts/, makes the schedule asked for and emails the edition to the user's own address when \
+asked. The JSON result has the links, the schedule and the mail (code appends them to the reply). status \
+nothing_found: no recent article — say so; needs_input: ask the user for the subject.",
         json!({
             "subject": {"type": "string", "description": "what the news is about — a company, topic, place or person — without words such as 'latest news', 'report' or 'weekly'"},
             "window": {"type": "string", "enum": ["day", "week", "month"], "description": "how far back the news goes: day for a daily report, month for a monthly one, else week"},
-            "markets": {"type": "array", "items": s.clone(), "description": "the prices to report with the news when the user asks to monitor / track / watch a price (a cryptocurrency, a stock, an index, a currency pair, gold): Yahoo Finance symbols, e.g. BTC-USD, ETH-USD, AAPL, 0700.HK, ^GSPC, GC=F, USDJPY=X; code fetches each price from the market data and shows it with the edition"}
-        }),
-        &["subject"],
-    );
-    let publish = fn_(
-        NEWS_PUBLISH,
-        "Publish the edition written from news_gather's articles. Code adds each story's link, publication and date from \
-the gathered articles, lays out the newspaper (masthead, lead, stories, sources) as HTML and PDF under /artifacts/, makes \
-the schedule asked for and emails the edition to the user's own address when asked; the JSON result has the links, the \
-schedule and the mail. Write the reply from it, using its hints (code appends the facts in show to the reply).",
-        json!({
-            "title": {"type": "string", "description": "the paper's name, short (e.g. \"The Tidal Weekly\")"},
-            "stories": {"type": "array", "description": "one per article, every article once, the most important first (it is the lead)",
-                "items": {"type": "object", "properties": {
-                    "article": {"type": "integer", "description": "the article's number in news_gather's result"},
-                    "headline": {"type": "string", "description": "in your own words"},
-                    "summary": {"type": "string", "description": "2-4 sentences in your own words that keep the article's numbers, amounts, names, places and dates"}}}},
-            "insights": {"type": "array", "items": s.clone(), "description": "3-5 short points across the stories (trends, what changed, what to watch)"},
+            "markets": {"type": "array", "items": s.clone(), "description": "the prices to report with the news when the user asks to monitor / track / watch a price (a cryptocurrency, a stock, an index, a currency pair, gold): Yahoo Finance symbols, e.g. BTC-USD, ETH-USD, AAPL, 0700.HK, ^GSPC, GC=F, USDJPY=X; code fetches each price from the market data and shows it with the edition"},
             "schedule": {"type": "string", "enum": ["once", "daily", "weekly", "monthly"], "description": "a new edition on a timer when the user asked for one (\"every week\" = weekly); once = no schedule"},
             "weekday": {"type": "integer", "description": "weekly: the day the user named, 0 = Sunday … 6 = Saturday (default Monday)"},
             "hour": {"type": "integer", "description": "the hour (0-23) the user named for the editions (default 8)"},
             "email": {"type": "boolean", "description": "the user wants the edition (or each new edition) sent to them — by email, or \"send me\" a report / a new edition every week: it goes to their own connected address"}
         }),
-        &["stories"],
+        &["subject"],
     );
     let mail = fn_(
         NEWS_MAIL,
@@ -105,7 +91,7 @@ reply from the JSON result.",
         }),
         &["files"],
     );
-    vec![gather, publish, mail]
+    vec![gather, mail]
 }
 
 /// The catalog entry of [`MARKET_TOOL`] (code's own call: it makes the tool local; [`offered`] withholds it).
@@ -154,46 +140,13 @@ pub fn ask_before_tool(events: &[Value]) -> Option<Value> {
     })
 }
 
-/// Whether the model is offered tool `name` on its next turn: `news_report` is code's own call; on the reply to a
-/// machine's result the news tools are withdrawn, except `news_publish` right after the articles were gathered.
-/// `market_quotes` is code's own call too.
+/// Whether the model is offered tool `name` on its next turn: `news_report` and `market_quotes` are code's own calls
+/// (and `choose_option`); on the reply to a machine's result the news tools are withdrawn.
 pub fn offered(transcript: &[Value], name: &str) -> bool {
     if name == REPORT_TOOL || name == MARKET_TOOL || name == super::choose::TOOL {
         return false;
     }
-    if !TOOLS.contains(&name) || !workflow::reply_turn(transcript) {
-        return true;
-    }
-    name == NEWS_PUBLISH
-        && last_result_name(transcript).as_deref() == Some("news_gather_result")
-        && gathered(transcript).is_some()
-}
-
-fn last_result_name(transcript: &[Value]) -> Option<String> {
-    transcript
-        .iter()
-        .flat_map(tool_calls)
-        .filter(|tc| get_str(tc, "id").starts_with(workflow::RESULT_PREFIX))
-        .map(|tc| stored_call(tc).0)
-        .next_back()
-}
-
-/// The latest `news_gather` result with articles (`status: gathered`) in the transcript.
-pub fn gathered(transcript: &[Value]) -> Option<Value> {
-    let want = format!("{NEWS_GATHER}{}", workflow::RESULT_SUFFIX);
-    let id = transcript
-        .iter()
-        .flat_map(tool_calls)
-        .filter(|tc| {
-            get_str(tc, "id").starts_with(workflow::RESULT_PREFIX) && stored_call(tc).0 == want
-        })
-        .map(|tc| get_str(tc, "id"))
-        .next_back()?;
-    transcript
-        .iter()
-        .find(|m| get_str(m, "role") == "tool" && get_str(m, "tool_call_id") == id)
-        .map(|m| serde_json::from_str::<Value>(&content_of(m)).unwrap_or(Value::Null))
-        .filter(|v| get_str(v, "status") == "gathered")
+    !TOOLS.contains(&name) || !workflow::reply_turn(transcript)
 }
 
 // ---------------------------------------------------------------- validation (code, on the JSON)
@@ -202,28 +155,12 @@ pub fn gathered(transcript: &[Value]) -> Option<Value> {
 pub struct Ctx<'a> {
     /// the profile, with the connected mailbox's address as `mailbox` when one is connected
     pub profile: &'a Value,
-    /// the latest `news_gather` result with articles ([`gathered`])
-    pub gathered: Option<&'a Value>,
-}
-
-/// [`check`] with its context read from the transcript.
-pub fn check_in(tool: &str, args: &Value, transcript: &[Value], profile: &Value) -> Checked {
-    let g = gathered(transcript);
-    check(
-        tool,
-        args,
-        &Ctx {
-            profile,
-            gathered: g.as_ref(),
-        },
-    )
 }
 
 /// Validates a workflow tool's arguments: the arguments to run with (normalised), the problems the model can fix, or
 /// the fields only the user can give.
 pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
     match tool {
-        NEWS_PUBLISH => check_publish(args, cx),
         NEWS_MAIL => check_mail(args, cx),
         _ => check_gather(args),
     }
@@ -267,7 +204,14 @@ fn check_gather(a: &Value) -> Checked {
         "month" | "monthly" => "month",
         _ => "week",
     };
-    let mut out = json!({"subject": take_chars(&subject, 120), "window": window});
+    let schedule = match s_arg(a, "schedule").to_lowercase().as_str() {
+        s @ ("daily" | "weekly" | "monthly") => s.to_string(),
+        _ => "once".to_string(),
+    };
+    let mut out = json!({"subject": take_chars(&subject, 120), "window": window, "schedule": schedule,
+        "weekday": i_arg(a, "weekday").filter(|d| (0..=6).contains(d)).unwrap_or(1),
+        "hour": i_arg(a, "hour").filter(|h| (0..=23).contains(h)).unwrap_or(8),
+        "email": a.get("email").is_some_and(truthy)});
     let markets = market_symbols(a.get("markets"));
     if !markets.is_empty() {
         out["markets"] = json!(markets);
@@ -319,12 +263,11 @@ pub fn market_symbols(v: Option<&Value>) -> Vec<String> {
     out
 }
 
-fn check_publish(a: &Value, cx: &Ctx) -> Checked {
-    let Some(g) = cx.gathered else {
-        return Checked::Invalid(vec![format!(
-            "no articles gathered: call {NEWS_GATHER} first, then {NEWS_PUBLISH} with the stories written from its articles"
-        )]);
-    };
+/// The edition to publish: the subagent's stories (`a`: title, stories, insights) checked against the gathered articles
+/// `g`, with the request's schedule and mail (`req`, the validated `news_gather` arguments). Only stories whose article
+/// exists are kept; each takes its link, publication and date from its article; an article left out gets its own
+/// headline and opening. `Invalid` when no story names an article.
+fn edition(a: &Value, req: &Value, g: &Value) -> Checked {
     let arts = g
         .get("articles")
         .and_then(Value::as_array)
@@ -398,10 +341,6 @@ fn check_publish(a: &Value, cx: &Ctx) -> Checked {
         .filter(|s| !s.is_empty())
         .take(6)
         .collect();
-    let schedule = match s_arg(a, "schedule").to_lowercase().as_str() {
-        s @ ("daily" | "weekly" | "monthly") => s.to_string(),
-        _ => "once".to_string(),
-    };
     let mut out = Map::new();
     out.insert("subject".into(), json!(get_str(g, "subject")));
     out.insert("period".into(), json!(get_str(g, "period")));
@@ -409,20 +348,9 @@ fn check_publish(a: &Value, cx: &Ctx) -> Checked {
     out.insert("title".into(), json!(take_chars(&s_arg(a, "title"), 60)));
     out.insert("stories".into(), json!(stories));
     out.insert("insights".into(), json!(insights));
-    out.insert("schedule".into(), json!(schedule));
-    out.insert(
-        "weekday".into(),
-        json!(i_arg(a, "weekday")
-            .filter(|d| (0..=6).contains(d))
-            .unwrap_or(1)),
-    );
-    out.insert(
-        "hour".into(),
-        json!(i_arg(a, "hour")
-            .filter(|h| (0..=23).contains(h))
-            .unwrap_or(8)),
-    );
-    out.insert("email".into(), json!(a.get("email").is_some_and(truthy)));
+    for k in ["schedule", "weekday", "hour", "email"] {
+        out.insert(k.into(), req.get(k).cloned().unwrap_or(Value::Null));
+    }
     // the market prices are the gathered ones (code's, from the market data), never the model's
     if let Some(m) = g.get("markets").filter(|m| m.is_array()) {
         out.insert("markets".into(), m.clone());
@@ -714,6 +642,9 @@ pub struct Machine<'a> {
     pub zh: bool,
     /// the machine's code calls in the transcript before this run's tool call: the ids go on from there
     pub first: usize,
+    /// the schedule offer a chat run ends with (agent/longtask.rs; `None`: a schedule's run, the task is scheduled
+    /// already, or this chat was offered it)
+    pub offer: Option<Value>,
 }
 
 fn next_id(t: &[Value], first: usize) -> usize {
@@ -730,7 +661,6 @@ fn next_id(t: &[Value], first: usize) -> usize {
 pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     let n = next_id(t, m.first);
     match tool {
-        NEWS_PUBLISH => next_publish(args, t, m, n),
         NEWS_MAIL => next_mail(args, t, n),
         _ => next_gather(args, t, m, n),
     }
@@ -814,7 +744,7 @@ fn next_gather(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
                 .collect(),
         );
     }
-    // 3. the articles as JSON, for the model to write the edition from
+    // 3. the articles as JSON, for the edition's subagent
     let list: Vec<Value> = articles_read(t)
         .iter()
         .enumerate()
@@ -823,15 +753,92 @@ fn next_gather(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
                    "lead": a.lead, "text": take_chars(&a.text, ARTICLE_CHARS)})
         })
         .collect();
-    let mut out = json!({
-        "status": "gathered", "subject": subject, "window": window, "period": period_line, "articles": list,
-        "next_tool": NEWS_PUBLISH, "hints": []
+    let mut gathered = json!({
+        "subject": subject, "window": window, "period": period_line, "articles": list,
     });
     if !markets.is_empty() {
-        out["markets"] = json!(markets);
-        out["prices"] = json!(prices);
+        gathered["markets"] = json!(markets);
+        gathered["prices"] = json!(prices);
     }
-    Step::Done(out)
+    // 4. the subagent writes the edition from the articles (JSON in, JSON out)
+    let Some(written) = longtask::sub_answer(t, EDITION) else {
+        let input = json!({"subject": subject, "period": period_line, "articles": list.iter().map(|a| json!({
+            "article": a["article"], "title": a["title"], "publication": a["publication"], "date": a["date"],
+            "lead": a["lead"], "text": a["text"]})).collect::<Vec<_>>()});
+        return Step::Calls(vec![longtask::sub_call(PREFIX, n, EDITION, input)]);
+    };
+    // 5. code checks it against the articles and publishes
+    let pargs = match edition(&written, args, &gathered) {
+        Checked::Valid(v) => v,
+        _ => match edition(&edition_fallback(&gathered), args, &gathered) {
+            Checked::Valid(v) => v,
+            _ => {
+                return Step::Done(
+                    json!({"status": "error", "subject": subject, "why": "no article to publish",
+                    "show": [S::fact("Not published", "未发布", &format!("the report on {subject}: no article to publish"))],
+                    "hints": []}),
+                )
+            }
+        },
+    };
+    next_publish(&pargs, t, m, n)
+}
+
+// ---------------------------------------------------------------- the edition's subagent
+
+fn edition_output() -> Value {
+    json!({"type": "object", "properties": {
+        "title": {"type": "string", "description": "the paper's name, short (e.g. \"The Tidal Weekly\")"},
+        "stories": {"type": "array", "description": "one per article, every article once, the most important first (it is the lead)",
+            "items": {"type": "object", "properties": {
+                "article": {"type": "integer", "description": "the article's number in the input"},
+                "headline": {"type": "string", "description": "in your own words"},
+                "summary": {"type": "string", "description": "2-4 sentences in your own words that keep the article's numbers, amounts, names, places and dates"}}}},
+        "insights": {"type": "array", "items": {"type": "string"}, "description": "3-5 short points across the stories (trends, what changed, what to watch)"}},
+        "required": ["stories"]})
+}
+
+/// The subagent's answer: an object whose stories name the input's articles, each with a summary.
+fn edition_check(input: &Value, out: &Value) -> Result<Value, Vec<String>> {
+    if !out.is_object() {
+        return Err(vec!["the answer is not a JSON object".into()]);
+    }
+    let n = input["articles"].as_array().map_or(0, Vec::len) as i64;
+    let ok = out["stories"].as_array().into_iter().flatten().any(|s| {
+        i_arg(s, "article").is_some_and(|k| (1..=n).contains(&k)) && !s_arg(s, "summary").is_empty()
+    });
+    if ok {
+        Ok(out.clone())
+    } else {
+        Err(vec![format!(
+            "stories: none names an article of the input (1–{n}) with a summary"
+        )])
+    }
+}
+
+/// The default edition: every article with its own headline and opening.
+fn edition_fallback(input: &Value) -> Value {
+    let stories: Vec<Value> = input["articles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| json!({"article": a["article"], "headline": get_str(a, "title"), "summary": opening(a)}))
+        .collect();
+    json!({"title": "", "stories": stories, "insights": []})
+}
+
+pub fn edition_spec() -> SubSpec {
+    SubSpec {
+        kind: EDITION,
+        instruction: "You write a newspaper edition from the news articles in the input. One story per article, by \
+its number, the most important first (it is the lead): a headline in your own words and a summary of 2-4 sentences in \
+your own words that keeps the article's numbers, amounts, names, places and dates. Use only what the articles say. \
+Then 3-5 short insights across the stories, and a short name for the paper.",
+        output: edition_output,
+        tools: &[],
+        check: edition_check,
+        fallback: edition_fallback,
+    }
 }
 
 /// The market prices the machine's `market_quotes` call returned (its JSON `quotes`), in the order asked.
@@ -921,7 +928,7 @@ fn price_items(prices: &[Value], markets: &[String]) -> Vec<Value> {
     show
 }
 
-/// The `news_report` call's arguments from the validated `news_publish` arguments.
+/// The `news_report` call's arguments from the validated edition (`edition`).
 fn report_args(args: &Value) -> Value {
     let stories: Vec<Value> = args
         .get("stories")
@@ -980,28 +987,6 @@ fn cadence(ask: &Ask) -> String {
     }
 }
 
-/// The scheduled run's goal (natural language for the model of that run): it calls `news_gather` with the same
-/// subject, window and market symbols, then `news_publish` — with `email: true` when the editions are mailed.
-pub fn schedule_goal(subject: &str, window: &str, markets: &[String], email: bool) -> String {
-    let markets = if markets.is_empty() {
-        String::new()
-    } else {
-        format!(
-            ", markets {}",
-            serde_json::to_string(markets).unwrap_or_default()
-        )
-    };
-    format!(
-        "News report on {subject}: research the latest news with the {SKILL} skill — {NEWS_GATHER} with subject \"{subject}\" \
-and window \"{window}\"{markets} — and publish the newspaper edition with {NEWS_PUBLISH}{}",
-        if email {
-            " (email: true — email it to me)"
-        } else {
-            ""
-        }
-    )
-}
-
 fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
     let subject = sget(args, "subject");
     // 1. published by code
@@ -1034,7 +1019,7 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
             n,
             "schedule_create",
             json!({"name": format!("News report: {subject}"), "kind": "cron", "spec": a.cron().unwrap_or_default(),
-                   "goal": schedule_goal(&subject, &sget(args, "window"), &market_symbols(args.get("markets")), a.email)}),
+                   "goal": format!("News report: {subject}"), "task": longtask::task_call(NEWS_GATHER, args)}),
         )]);
     }
     // 3. the mail to the user's own address (the delivery: code's decision, [`delivery`])
@@ -1162,6 +1147,12 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
         ));
     } else if !mailbox.is_empty() && !m.scheduled {
         out["next_question"] = json!(format!("email this edition (PDF attached) to {mailbox}?"));
+    }
+    // the schedule offer: a chat run that asked for no schedule (agent/longtask.rs)
+    if let Some(o) = m.offer.as_ref().filter(|_| ask.is_none() && !m.scheduled) {
+        show.push(longtask::offer_item(o));
+        out[longtask::OFFER] = o.clone();
+        out["next_question"] = o["question"].clone();
     }
     out["show"] = json!(show);
     out["hints"] = json!(must);

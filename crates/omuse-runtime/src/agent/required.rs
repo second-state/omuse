@@ -30,14 +30,9 @@ const APDT: [&str; 1] = [super::apdt::APDT_REFUND];
 const NEWS: [&str; 1] = [super::news::NEWS_GATHER];
 const ENTRY: [&str; 1] = [super::entry::ENTRY_REQUIREMENTS];
 const WHATSNEXT: [&str; 1] = [super::whatsnext::WHATS_NEXT];
-/// "What's next" asks its question (anything to add to today?) from a machine result (`status: confirm`); the
-/// reply owes `whats_next_items` again.
-const WHATSNEXT_ASKS: [&str; 1] = [super::whatsnext::WHATS_NEXT_ITEMS];
-/// The steps a "What's next" result can name as owed next.
-const WHATSNEXT_STEPS: [&str; 2] = [
-    super::whatsnext::WHATS_NEXT_ITEMS,
-    super::whatsnext::WHATS_NEXT_PUBLISH,
-];
+const EMAILBRIEF: [&str; 1] = [super::emailbrief::EMAIL_BRIEF];
+/// A long task's schedule offer is answered through this tool (agent/longtask.rs).
+const TASKSCHED: [&str; 1] = [super::longtask::TASK_SCHEDULE];
 
 /// The workflow tools a skill asks through (empty: the skill has none, nothing is required). Read from the machines'
 /// own tables, so a new card or booking skill is covered without a list here.
@@ -62,6 +57,7 @@ pub fn tools_of(skill: &str) -> &'static [&'static str] {
         s if s == super::apdt::APDT.skill => &APDT,
         s if s == super::news::SKILL => &NEWS,
         s if s == super::whatsnext::SKILL => &WHATSNEXT,
+        s if s == super::emailbrief::SKILL => &EMAILBRIEF,
         _ => &[],
     }
 }
@@ -102,9 +98,6 @@ pub fn pending(transcript: &[Value]) -> Option<Need> {
     if let Some(need) = asked_back(transcript, last_user) {
         return Some(need);
     }
-    if let Some(need) = machine_next(t) {
-        return Some(need);
-    }
     let mut need = Need {
         skills: Vec::new(),
         tools: Vec::new(),
@@ -134,49 +127,23 @@ pub fn pending(transcript: &[Value]) -> Option<Need> {
             }
         }
     }
-    let from = first?;
-    let called = t[from..].iter().enumerate().any(|(j, m)| {
+    first?;
+    // the call counts wherever it is in this request — before the skill's load too (money_real 2026-11-08: the model
+    // called apdt_refund, then loaded the skill, and the answer got "Not checked")
+    let called = t.iter().enumerate().any(|(j, m)| {
         tool_calls(m).iter().any(|tc| {
             let (name, _) = stored_call(tc);
             need.tools.contains(&name.as_str())
-                && result_of(&t[from + j..], &get_str(tc, "id")).is_some_and(|c| answered(&c))
+                && result_of(&t[j..], &get_str(tc, "id")).is_some_and(|c| answered(&c))
         })
     });
     (!called).then_some(need)
 }
 
-/// A machine result in this request that names the next workflow tool ("What's next": `whats_next_items` after the
-/// gathered mail and calendar, `whats_next_publish` after the research), with no answered call of it since: that call
-/// is owed (whats_next_real 2026-11-05: the research done, the model answered in prose and no report was made).
-fn machine_next(t: &[Value]) -> Option<Need> {
-    let (at, next) = t.iter().enumerate().rev().find_map(|(i, m)| {
-        if get_str(m, "role") != "tool"
-            || !get_str(m, "tool_call_id").starts_with(super::workflow::RESULT_PREFIX)
-        {
-            return None;
-        }
-        let v = serde_json::from_str::<Value>(content_of(m).trim()).ok()?;
-        let next = get_str(&v, "next_tool");
-        let owed = matches!(get_str(&v, "status").as_str(), "gathered" | "researched")
-            && WHATSNEXT_STEPS.contains(&next.as_str());
-        Some(owed.then_some((i, next)))
-    })??;
-    let called = t[at..].iter().enumerate().any(|(j, m)| {
-        tool_calls(m).iter().any(|tc| {
-            stored_call(tc).0 == next
-                && result_of(&t[at + j..], &get_str(tc, "id")).is_some_and(|c| answered(&c))
-        })
-    });
-    let tool = WHATSNEXT_STEPS.iter().find(|x| **x == next)?;
-    (!called).then(|| Need {
-        skills: Vec::new(),
-        tools: vec![tool],
-    })
-}
-
-/// A result that asks the user: the tool's `needs_input`, or a machine's `confirm` ("What's next": anything to add?).
+/// A result that asks the user: the tool's `needs_input`, a machine's `confirm` ("What's next": anything to add?), or
+/// a long task's schedule offer.
 fn asks(v: &Value) -> bool {
-    matches!(get_str(v, "status").as_str(), "needs_input" | "confirm")
+    matches!(get_str(v, "status").as_str(), "needs_input" | "confirm") || super::longtask::offers(v)
 }
 
 /// The result of workflow call `id`: its own result, or — when the machine ran (`running`) — the machine's result
@@ -211,7 +178,8 @@ pub(crate) fn workflow_tool(name: &str) -> Option<&'static str> {
         &NEWS,
         &ENTRY,
         &WHATSNEXT,
-        &WHATSNEXT_ASKS,
+        &EMAILBRIEF,
+        &TASKSCHED,
     ]
     .into_iter()
     .flatten()
@@ -231,9 +199,15 @@ fn asked_back(transcript: &[Value], last_user: usize) -> Option<Need> {
             workflow_tool(&name).map(|w| (w, get_str(tc, "id")))
         })
     })?;
-    let asked = effective_result(before, tool, &id)
-        .and_then(|c| serde_json::from_str::<Value>(c.trim()).ok())
-        .is_some_and(|v| asks(&v));
+    let result = effective_result(before, tool, &id)
+        .and_then(|c| serde_json::from_str::<Value>(c.trim()).ok());
+    let asked = result.as_ref().is_some_and(asks);
+    // a long task's schedule offer: the reply owes its answer, `task_schedule` (whatever it is: yes, no, a time)
+    let tool = if result.as_ref().is_some_and(super::longtask::offers) {
+        super::longtask::TASK_SCHEDULE
+    } else {
+        tool
+    };
     let since = &transcript[last_user..];
     let called = since.iter().enumerate().any(|(j, m)| {
         tool_calls(m).iter().any(|tc| {
@@ -305,9 +279,11 @@ fn what(tool: &str) -> (&'static str, &'static str) {
         super::claims::BAG_TRACE => ("the bag's status", "行李状态"),
         super::apdt::APDT_REFUND => ("the departure tax refund", "离境税退款"),
         super::news::NEWS_GATHER => ("the news", "新闻"),
-        super::whatsnext::WHATS_NEXT | super::whatsnext::WHATS_NEXT_ITEMS => {
+        super::whatsnext::WHATS_NEXT => {
             ("the plan from your mail and calendar", "邮件和日历里的日程")
         }
+        super::emailbrief::EMAIL_BRIEF => ("your recent email", "最近的邮件"),
+        super::longtask::TASK_SCHEDULE => ("the schedule", "定时任务"),
         _ => ("the check", "这项检查"),
     }
 }
@@ -341,49 +317,60 @@ mod tests {
     }
 
     #[test]
-    fn after_whats_nexts_research_the_report_is_owed() {
-        let mut t = vec![json!({"role": "user", "content": "nothing to add"})];
-        t.push(call("c1", "whats_next_items", json!({"confirmed": true})));
-        t.push(tool("c1", r#"{"status": "running", "args": {}}"#));
-        t.extend(super::super::workflow::result_exchange(
-            &t,
-            "whats_next_items",
-            &json!({"status": "researched", "next_tool": "whats_next_publish"}),
+    fn a_long_tasks_schedule_offer_is_carried_and_the_reply_owes_task_schedule() {
+        // the user, 2026-11-07: a chat run of a long task offers a schedule; the reply (yes, no, another time) is
+        // its answer
+        let mut prev = vec![
+            json!({"role": "user", "content": "news on Lumora"}),
+            call("c1", "news_gather", json!({"subject": "Lumora"})),
+            tool(
+                "c1",
+                r#"{"status": "running", "args": {"subject": "Lumora"}}"#,
+            ),
+        ];
+        let offer = super::super::longtask::offer(
+            "news_gather",
+            &json!({"subject": "Lumora", "window": "week"}),
+        )
+        .unwrap();
+        prev.extend(super::super::workflow::result_exchange(
+            &prev,
+            "news_gather",
+            &json!({"status": "published", "schedule_offer": offer}),
         ));
-        assert_eq!(
-            pending(&t).map(|n| n.tools),
-            Some(vec!["whats_next_publish"])
+        prev.push(
+            json!({"role": "assistant", "content": "Here is your edition. Every Monday at 8?"}),
         );
-        t.push(call("c2", "whats_next_publish", json!({"summary": "x"})));
-        t.push(tool("c2", r#"{"status": "running", "args": {}}"#));
-        assert_eq!(pending(&t), None);
-        // the question (confirm) is the user's to answer: nothing owed in this request
-        let mut q = vec![json!({"role": "user", "content": "what's next?"})];
-        q.extend(super::super::workflow::result_exchange(
-            &q,
-            "whats_next_items",
-            &json!({"status": "confirm", "next_tool": "whats_next_items"}),
+        // nothing is owed in the request itself: the offer is the user's to answer
+        assert_eq!(pending(&prev), None);
+        let carried = open_question(&prev);
+        assert_eq!(carried.len(), 2, "{carried:?}");
+        let mut next = carried.clone();
+        next.push(json!({"role": "user", "content": "yes, but at 9"}));
+        assert_eq!(pending(&next).map(|n| n.tools), Some(vec!["task_schedule"]));
+        next.push(call(
+            "c2",
+            "task_schedule",
+            json!({"answer": "yes", "time": "09:00"}),
         ));
-        assert_eq!(pending(&q), None);
+        next.push(tool("c2", r#"{"status": "running", "args": {}}"#));
+        assert_eq!(pending(&next), None);
     }
 
     #[test]
-    fn whats_nexts_question_is_carried_to_the_next_task_and_the_reply_owes_the_items_call() {
+    fn whats_nexts_question_is_carried_to_the_next_task_and_the_reply_owes_the_call_again() {
         // the user, 2026-11-04: asked in the chat, today's list and "anything to add?"; the reply (a new task in the
-        // same chat) must call whats_next_items again with the items and what the user added
-        let items = json!({"items": [{"kind": "meeting", "title": "Q4 review", "date": "2026-11-04", "item": 1}], "confirmed": false});
+        // same chat) must call whats_next again with confirmed: true and what the user added
         let mut prev = vec![
             json!({"role": "user", "content": "what's next?"}),
-            call("c1", "whats_next_items", items.clone()),
-            tool(
-                "c1",
-                &json!({"status": "running", "args": items}).to_string(),
-            ),
+            call("c1", "whats_next", json!({})),
+            tool("c1", r#"{"status": "running", "args": {}}"#),
         ];
         prev.extend(super::super::workflow::result_exchange(
             &prev,
-            "whats_next_items",
-            &json!({"status": "confirm", "items": items["items"], "question": "Is anything missing from today?"}),
+            "whats_next",
+            &json!({"status": "confirm", "items": [{"kind": "meeting", "title": "Q4 review", "date": "2026-11-04", "item": 1}],
+                    "question": "Is anything missing from today?"}),
         ));
         prev.push(json!({"role": "assistant", "content": "Here is today. Anything to add?"}));
         let carried = open_question(&prev);
@@ -391,15 +378,12 @@ mod tests {
         assert!(content_of(&carried[1]).contains("\"confirm\""));
         let mut next = carried.clone();
         next.push(json!({"role": "user", "content": "Add dinner at Den at 7pm"}));
-        assert_eq!(
-            pending(&next).map(|n| n.tools),
-            Some(vec!["whats_next_items"])
-        );
-        // once called again, nothing is owed
-        next.push(call("c2", "whats_next_items", json!({"confirmed": true})));
+        assert_eq!(pending(&next).map(|n| n.tools), Some(vec!["whats_next"]));
+        next.push(call("c2", "whats_next", json!({"confirmed": true})));
         next.push(tool("c2", r#"{"status": "running", "args": {}}"#));
         assert_eq!(pending(&next), None);
         assert_eq!(tools_of("whats-next"), ["whats_next"]);
+        assert_eq!(tools_of("morning-email-brief"), ["email_brief"]);
     }
 
     #[test]
@@ -511,6 +495,30 @@ mod tests {
             l.starts_with("- Not checked: OMuse could not look up the entry requirements"),
             "{l}"
         );
+    }
+
+    #[test]
+    fn a_tool_called_before_its_skill_was_loaded_counts() {
+        // money_real 2026-11-08: apdt_refund called first, the skill loaded after — nothing is owed
+        let t = vec![
+            json!({"role": "user", "content": "can I get the HK departure tax back?"}),
+            call(
+                "c1",
+                "apdt_refund",
+                json!({"file": false, "out_date": "2026-11-01"}),
+            ),
+            tool("c1", r#"{"status": "running", "args": {}}"#),
+            call("c2", "load_skill", json!({"name": "hk-apdt-refund"})),
+            tool("c2", "skill text"),
+        ];
+        assert_eq!(pending(&t), None);
+        // without the call: owed
+        let t2 = vec![
+            json!({"role": "user", "content": "can I get the HK departure tax back?"}),
+            call("c2", "load_skill", json!({"name": "hk-apdt-refund"})),
+            tool("c2", "skill text"),
+        ];
+        assert_eq!(pending(&t2).map(|n| n.tools), Some(vec!["apdt_refund"]));
     }
 
     #[test]

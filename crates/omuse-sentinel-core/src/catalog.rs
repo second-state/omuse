@@ -197,7 +197,7 @@ pub fn builtin_tools() -> IndexMap<String, Value> {
          hidden?, max?}] → {elements: {name: [text | attribute | {cells, links} | {field: value}]}}.",
         obj(json!({"read": {"type": "array", "items": {"type": "object"}}}), &["read"])));
     add("shop_search", tool("shopping", "read", "search", "low", "PUBLIC",
-        "购物搜索（仅供代码机器调用）。The Shopping bot's store providers by API (called by the shop_order machine only, \
+        "购物搜索（仅供代码机器调用）。The Money bot's shopping store providers by API (called by the shop_order machine only, \
          never offered to the model): the providers for the user's location (Shopify's Global Catalog first) queried in \
          parallel, the offers merged with their ids, each price also in the user's currency (price_local).",
         obj(json!({"query": {"type": S}, "country": {"type": S}, "currency": {"type": S},

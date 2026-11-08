@@ -1135,7 +1135,7 @@ pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
         return Step::Calls(vec![call(
             0,
             "browser_request_takeover",
-            json!({"reason": reason}),
+            json!({"reason": reason, "code": true}),
         )]);
     }
     let back_after_fill = last_back.is_some_and(|b| b > fill_pos);

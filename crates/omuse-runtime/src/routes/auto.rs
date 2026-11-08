@@ -55,7 +55,27 @@ pub async fn schedules(st: St) -> R {
         } else {
             store.task(&lt)?
         };
-        x["last_status"] = json!(last.map(|t| get_str(&t, "status")).unwrap_or_default());
+        x["last_status"] = json!(last
+            .as_ref()
+            .map(|t| get_str(t, "status"))
+            .unwrap_or_default());
+        // where the runs are read: a long task's runs each have a conversation under the task's bot (the latest one
+        // is linked); other schedules post into their own chat
+        let last_conv = last
+            .as_ref()
+            .map(|t| get_str(t, "conv_id"))
+            .unwrap_or_default();
+        let conv_of = |cid: &str| -> (String, String) {
+            if cid.is_empty() {
+                return (String::new(), String::new());
+            }
+            (cid.to_string(), store.conv_bot(cid))
+        };
+        let (c, b) = conv_of(&last_conv);
+        x["last_conv"] = json!(c);
+        x["last_bot"] = json!(b);
+        x["conv_bot"] = json!(conv_of(&get_str(&x, "conv_id")).1);
+        x["task"] = crate::store::Store::schedule_task(&x).unwrap_or(Value::Null);
         let mut blocked = Map::new();
         for k in ["_skipped", "_superseded"] {
             if let Some(v) = stv.get(k).filter(|v| truthy(v)) {

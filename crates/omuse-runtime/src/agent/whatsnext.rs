@@ -1,27 +1,30 @@
-//! "What's next" (skill `whats-next`, the Main bot): today's plan from every connected mailbox and calendar,
-//! researched, as one HTML report. Three workflow tools (docs/json-tools.md; the protocol is [`super::workflow`]):
+//! "What's next" (skill `whats-next`, the Main bot; a long task: agent/longtask.rs): today's plan from every connected
+//! mailbox and calendar, researched, as one HTML report. ONE workflow tool, `whats_next` (docs/json-tools.md; the
+//! protocol is [`super::workflow`]); code runs every step:
 //!
-//! 1. `whats_next` — code gathers: the calendars' events from today to the day after tomorrow and two fixed mail
-//!    searches (bookings; invitations), then reads the first booking emails in full. The result lists them as data.
-//! 2. `whats_next_items` — the model turns those emails and events into JSON items (a flight with its number, airports
-//!    and countries; a meeting with its people; a hotel, a reservation, a place to be). Asked interactively, code first
-//!    shows today's items as a table and asks once whether anything is missing (`status: confirm`); the model calls
-//!    again with `confirmed: true` and the user's additions (`source: user`), which code puts in the default calendar.
-//!    A scheduled run asks nothing. Code then researches in one turn: each of today's flights (a web search of its
-//!    status; the same route's later flights from the flight search), the local news of today's city, the external
-//!    people of today's meetings (a web search each — participants outside the user's own domains), the earlier emails
-//!    with them, and, when the evening is free, the city's events and films. The arrival card (on arriving in a
-//!    country) and the tax refund (on leaving one) come from code's own tables; the maps are Google Maps links.
-//! 3. `whats_next_publish` — the model writes short notes as JSON (the day's summary, a note per item, each flight's
-//!    status as read from the search, each person's profile); code lays the report out (`whats_next_report`,
-//!    crate::whatsnext_report), makes the daily schedule when asked, and mails it to the user's own address on a
-//!    scheduled run. Nothing here reads the user's wording or calls a model.
+//! 1. Code gathers: the calendars' events from today to the day after tomorrow and two fixed mail searches (bookings;
+//!    invitations), then reads the first booking emails in full.
+//! 2. A subagent ([`ITEMS`], JSON in and out) turns those emails and events into JSON items (a flight with its number,
+//!    airports and countries; a meeting with its people; a hotel, a reservation, a place to be); code cleans and
+//!    numbers them. Asked in the chat, code shows today's items as a table and asks once whether anything is missing
+//!    (`status: confirm`) — before the research and the notes' subagent; the reply owes `whats_next` again with
+//!    `confirmed: true` and the user's additions, which code puts in the default calendar. A scheduled run asks nothing.
+//! 3. Code researches in one turn: each of today's flights (a web search of its status; the same route's later flights
+//!    from the flight search), the local news of today's city, the external people of today's meetings (a web search
+//!    each — participants outside the user's own domains), the earlier emails with them, and, when the evening is
+//!    free, the city's events and films. The arrival card (on arriving in a country) and the tax refund (on leaving
+//!    one) come from code's own tables; the maps are Google Maps links.
+//! 4. A second subagent ([`NOTES`]) writes the words as JSON (the day's summary, a note per item, each flight's status
+//!    as read from the search, each person's profile); code lays the report out (`whats_next_report`,
+//!    crate::whatsnext_report), makes the daily schedule asked for with the task's JSON, mails it to the user's own
+//!    address on a scheduled run, and ends with the JSON result (and, in a chat, the schedule offer).
 
 use chrono::{Duration, NaiveDate, NaiveTime};
 use omuse_common::util::{get_str, take_chars, truthy};
 use serde_json::{json, Value};
 
 use super::driver::{json_of, results_of, walk_messages, Step};
+use super::longtask::{self, SubSpec};
 use super::show as S;
 use super::tools::fn_;
 use super::util::{content_of, sget, tool_calls};
@@ -33,10 +36,12 @@ pub const SKILL: &str = "whats-next";
 /// The id prefix of the machine's code calls.
 pub const PREFIX: &str = "wnx_";
 pub const WHATS_NEXT: &str = "whats_next";
-pub const WHATS_NEXT_ITEMS: &str = "whats_next_items";
-pub const WHATS_NEXT_PUBLISH: &str = "whats_next_publish";
 /// The workflow tools this machine runs.
-pub const TOOLS: [&str; 3] = [WHATS_NEXT, WHATS_NEXT_ITEMS, WHATS_NEXT_PUBLISH];
+pub const TOOLS: [&str; 1] = [WHATS_NEXT];
+/// The subagent that turns the emails and events into items.
+pub const ITEMS: &str = "whats_next_items";
+/// The subagent that writes the report's words.
+pub const NOTES: &str = "whats_next_notes";
 /// The layout tool the machine publishes with (code's own call; never offered to the model).
 pub const REPORT_TOOL: &str = "whats_next_report";
 /// Days covered: today and the next two (the user's decision: today in full, the next two in brief).
@@ -79,14 +84,13 @@ const PUBLIC_MAIL: [&str; 14] = [
     "aol.com",
 ];
 
-/// The catalog entries of the workflow tools.
-pub fn tool_schemas() -> Vec<Value> {
+fn item_schema() -> Value {
     let s = |d: &str| json!({"type": "string", "description": d});
     let person = json!({"type": "object", "properties": {
         "name": s("the person's full name, as the invitation or email gives it"),
         "email": s("their email address"),
         "organization": s("their company or organization, when known")}});
-    let item = json!({"type": "object", "properties": {
+    json!({"type": "object", "properties": {
         "kind": {"type": "string", "enum": KINDS},
         "title": s("what it is, short: \"SQ 637 Tokyo → Singapore\", \"Q4 review with Acme\", \"Park Hyatt check-in\""),
         "date": s("YYYY-MM-DD (local date where it happens)"),
@@ -101,49 +105,26 @@ pub fn tool_schemas() -> Vec<Value> {
         "origin_country": s("flight: the country it departs from"),
         "reference": s("booking or confirmation reference"),
         "people": {"type": "array", "items": person, "description": "meeting: the participants other than the user"},
-        "source": {"type": "string", "enum": ["calendar", "email", "user"], "description": "where it comes from; user = the user added it in the chat"}}});
-    vec![
-        fn_(
-            WHATS_NEXT,
-            "What's next: today's plan (and the next two days) from every connected mailbox and calendar, researched \
-— flight status and backups, arrival cards, tax refunds, local news, maps, the people the user meets, the meetings' \
-background, evening events — as one HTML report. Code gathers the mail and the calendar; the result lists them for \
-whats_next_items.",
-            json!({"every_day_at": s("HH:MM — only when the user asked for this report every day (a daily schedule)")}),
-            &[],
-        ),
-        fn_(
-            WHATS_NEXT_ITEMS,
-            "Give the items of the plan from whats_next's emails and events as JSON: every flight, hotel stay, meeting, \
-reservation, event or place to be from today to the day after tomorrow, one item each (a later email about the same \
-booking wins; drop cancelled ones). Code shows today's items and asks the user once whether anything is missing \
-(status confirm): then call again with the same items, confirmed: true, and anything the user added as items with \
-source user (code puts those in the calendar). Code then researches everything and returns it for whats_next_publish.",
-            json!({
-                "location": {"type": "object", "properties": {"city": s("where the user is today (the city of the first item, or home)"), "country": s("its country")}},
-                "items": {"type": "array", "items": item},
-                "confirmed": {"type": "boolean", "description": "true once the user answered the question about today's list (whether or not they added anything)"}
-            }),
-            // an empty plan is an answer (nothing in the mail or the calendar): never "required"
-            // (whats_next_real 2026-11-05: `items: []` came back invalid)
-            &[],
-        ),
-        fn_(
-            WHATS_NEXT_PUBLISH,
-            "Write the report's words from whats_next_items' researched result, as JSON: a summary of the day (two or \
-three sentences), a short note per item (by its number: what to know or do — from the emails, the meeting's earlier \
-emails and the searches), each of today's flights' status as the status search shows it, and a one-line profile of \
-each person from the search results (role, company; nothing private). Code lays out the report and delivers it.",
-            json!({
-                "summary": s("two or three sentences on the day"),
-                "notes": {"type": "array", "items": {"type": "object", "properties": {"item": {"type": "integer"}, "text": s("at most 60 words")}}},
-                "flights": {"type": "array", "items": {"type": "object", "properties": {"item": {"type": "integer"},
-                    "status": {"type": "string", "enum": STATUSES}, "detail": s("e.g. \"departs 19:40, 50 min late\"")}}},
-                "people": {"type": "array", "items": {"type": "object", "properties": {"name": s("as the result lists it"), "profile": s("one line: role, company, what they are known for")}}}
-            }),
-            &["summary"],
-        ),
-    ]
+        "source": {"type": "string", "enum": ["calendar", "email", "user"], "description": "where it comes from"}}})
+}
+
+/// The catalog entry of the workflow tool.
+pub fn tool_schemas() -> Vec<Value> {
+    let s = |d: &str| json!({"type": "string", "description": d});
+    vec![fn_(
+        WHATS_NEXT,
+        "What's next: today's plan (and the next two days) from every connected mailbox and calendar, researched — \
+flight status and backups, arrival cards, tax refunds, local news, maps, the people the user meets, the meetings' \
+background, evening events — as one HTML report. Code does all of it. Asked in the chat, the result first shows \
+today's list and asks whether anything is missing (status confirm): the user's reply — whatever it is — calls \
+whats_next again with confirmed: true and anything they added as additions (code puts those in the calendar).",
+        json!({
+            "every_day_at": s("HH:MM — only when the user asked for this report every day (a daily schedule)"),
+            "confirmed": {"type": "boolean", "description": "true on the reply to the question about today's list (whether or not the user added anything)"},
+            "additions": {"type": "array", "items": item_schema(), "description": "what the user added to the plan in that reply, one item each"}
+        }),
+        &[],
+    )]
 }
 
 // ---------------------------------------------------------------- checks
@@ -154,36 +135,55 @@ pub struct Ctx<'a> {
     pub transcript: &'a [Value],
 }
 
-pub fn check(tool: &str, args: &Value, cx: &Ctx) -> Checked {
-    match tool {
-        WHATS_NEXT => {
-            let mut out = json!({});
-            let at = sget(args, "every_day_at");
-            if NaiveTime::parse_from_str(at.trim(), "%H:%M").is_ok() {
-                out["every_day_at"] = json!(at.trim());
-            }
-            Checked::Valid(out)
-        }
-        WHATS_NEXT_ITEMS => {
-            // `confirmed` is the user's answer, decided in code: it counts only after today's list was shown and the
-            // user wrote since (whats_next_real 2026-11-05: the model answered its own question — another tool call
-            // on the reply turn, then `confirmed: true` with nothing asked)
-            let (asked, answered) = question_state(cx.transcript);
-            let said = args.get("confirmed").is_some_and(truthy);
-            if said && asked && !answered {
-                return Checked::NeedsInput(vec![
-                    "the user's answer to the question about today's list: is anything missing (it goes into the calendar too)?".into(),
-                ]);
-            }
-            Checked::Valid(json!({
-                "location": {"city": sget(&args["location"], "city"), "country": sget(&args["location"], "country")},
-                "items": items_of(args, cx.today),
-                "confirmed": said && asked && answered,
-                "every_day_at": every_day_at_in(cx.transcript),
-            }))
-        }
-        _ => check_publish(args, cx),
+pub fn check(_tool: &str, args: &Value, cx: &Ctx) -> Checked {
+    let at = sget(args, "every_day_at");
+    let at = if NaiveTime::parse_from_str(at.trim(), "%H:%M").is_ok() {
+        at.trim().to_string()
+    } else {
+        every_day_at_in(cx.transcript)
+    };
+    // the reply to the question about today's list is decided in code: the list was shown and the user wrote since
+    // (whats_next_real 2026-11-05: the model answered its own question — `confirmed: true` with nothing asked)
+    let (asked, answered) = question_state(cx.transcript);
+    let said = args.get("confirmed").is_some_and(truthy);
+    if said && asked && !answered {
+        return Checked::NeedsInput(vec![
+            "the user's answer to the question about today's list: is anything missing (it goes into the calendar too)?".into(),
+        ]);
     }
+    let mut out = json!({});
+    if !at.is_empty() {
+        out["every_day_at"] = json!(at);
+    }
+    if let (true, Some(q)) = (asked && answered, latest_confirm(cx.transcript)) {
+        // the items shown with the question, and what the user added (source: user)
+        let mut all: Vec<Value> = q["items"].as_array().cloned().unwrap_or_default();
+        all.extend(
+            args.get("additions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|i| {
+                    let mut i = i.clone();
+                    i["source"] = json!("user");
+                    i
+                }),
+        );
+        out["items"] = json!(items_of(&json!({"items": all}), cx.today));
+        out["location"] = q.get("location").cloned().unwrap_or_else(|| json!({}));
+        out["confirmed"] = json!(true);
+    }
+    Checked::Valid(out)
+}
+
+/// The latest `confirm` result (today's list and its question) in the transcript.
+pub fn latest_confirm(transcript: &[Value]) -> Option<Value> {
+    transcript
+        .iter()
+        .rev()
+        .filter(|m| get_str(m, "role") == "tool")
+        .filter_map(|m| serde_json::from_str::<Value>(&content_of(m)).ok())
+        .find(|v| get_str(v, "status") == "confirm" && v.get("question").is_some())
 }
 
 fn hhmm(v: &str) -> String {
@@ -251,23 +251,9 @@ pub fn items_of(args: &Value, today: NaiveDate) -> Vec<Value> {
     out
 }
 
-/// The latest researched result in the transcript (the data the report is laid out from).
-pub fn researched(transcript: &[Value]) -> Option<Value> {
-    transcript
-        .iter()
-        .rev()
-        .filter(|m| get_str(m, "role") == "tool")
-        .filter_map(|m| serde_json::from_str::<Value>(&content_of(m)).ok())
-        .find(|v| get_str(v, "status") == "researched" && get_str(v, "machine") == SKILL)
-}
-
-/// The model's words merged into the researched data: the report, as `whats_next_report` takes it.
-fn check_publish(args: &Value, cx: &Ctx) -> Checked {
-    let Some(r) = researched(cx.transcript) else {
-        return Checked::Invalid(vec![
-            "nothing researched yet: call whats_next, then whats_next_items first".into(),
-        ]);
-    };
+/// The notes' subagent's words (`args`) merged into the researched data `r`: the report, as `whats_next_report`
+/// takes it.
+fn report_of(args: &Value, r: &Value) -> Report {
     let by_item = |key: &str| -> Vec<(i64, Value)> {
         args.get(key)
             .and_then(Value::as_array)
@@ -330,18 +316,17 @@ fn check_publish(args: &Value, cx: &Ctx) -> Checked {
         e
     };
     let rows = |k: &str| -> Vec<Value> { r[k].as_array().cloned().unwrap_or_default() };
-    let report = Report {
-        title: format!("What's next — {}", get_str(&r, "day")),
-        date: get_str(&r, "today"),
-        location: get_str(&r, "location"),
+    Report {
+        title: format!("What's next — {}", get_str(r, "day")),
+        date: get_str(r, "today"),
+        location: get_str(r, "location"),
         summary: take_chars(sget(args, "summary").trim(), 600).to_string(),
         today: rows("today_rows").iter().map(|i| entry(i, true)).collect(),
         later: rows("later").iter().map(|i| entry(i, false)).collect(),
         news: serde_json::from_value(r["news"].clone()).unwrap_or_default(),
-        news_city: get_str(&r, "news_city"),
+        news_city: get_str(r, "news_city"),
         evening: serde_json::from_value(r["evening"].clone()).unwrap_or_default(),
-    };
-    Checked::Valid(json!({"report": report, "every_day_at": r["every_day_at"].clone()}))
+    }
 }
 
 // ---------------------------------------------------------------- the machine
@@ -355,6 +340,8 @@ pub struct Machine<'a> {
     pub scheduled: bool,
     /// the machine's code calls before this run's tool call: the ids go on from there
     pub first: usize,
+    /// the schedule offer a chat run ends with (agent/longtask.rs)
+    pub offer: Option<Value>,
 }
 
 fn next_id(t: &[Value], first: usize) -> usize {
@@ -385,13 +372,102 @@ fn data_of(m: &Value) -> Value {
 }
 
 /// The next step of a run of workflow tool `tool` with its validated arguments; `t` is the transcript from the call on.
-pub fn next(tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
+/// The next step of a run of `whats_next` with its validated arguments; `t` is the transcript from the call on. Each
+/// stage is a step function whose `Done` is its data for the next stage: the gathered mail and calendar, the items
+/// (the question, asked in a chat), the research, the notes, the report.
+pub fn next(_tool: &str, args: &Value, t: &[Value], m: &Machine) -> Step {
     let n = next_id(t, m.first);
-    match tool {
-        WHATS_NEXT_ITEMS => next_items(args, t, m, n),
-        WHATS_NEXT_PUBLISH => next_publish(args, t, m, n),
-        _ => next_gather(args, t, m, n),
+    let every = sget(args, "every_day_at");
+    // 1–2. the items: the ones shown with the question and the user's additions (the reply's run), else gathered and
+    // made by the items' subagent
+    let plan = if args.get("items").is_some_and(Value::is_array) {
+        json!({"items": args["items"], "location": args["location"], "every_day_at": every, "confirmed": true})
+    } else {
+        let gathered = match next_gather(args, t, m, n) {
+            Step::Done(g) => g,
+            calls => return calls,
+        };
+        let Some(made) = longtask::sub_answer(t, ITEMS) else {
+            let input = json!({"today": gathered["today"], "window": gathered["window"], "home": gathered["home"],
+                               "events": gathered["events"], "emails": gathered["emails"]});
+            return Step::Calls(vec![longtask::sub_call(PREFIX, n, ITEMS, input)]);
+        };
+        let items = items_of(&made, m.today);
+        let location = json!({"city": sget(&made["location"], "city"), "country": sget(&made["location"], "country")});
+        if !m.scheduled {
+            return confirm(&items, &location, &every, m.today);
+        }
+        json!({"items": items, "location": location, "every_day_at": every})
+    };
+    // 3. the additions into the calendar, then the research
+    let r = match next_items(&plan, t, m, n) {
+        Step::Done(r) => r,
+        calls => return calls,
+    };
+    // 4. the notes' subagent writes the words; code lays out the report and delivers it
+    let Some(notes) = longtask::sub_answer(t, NOTES) else {
+        return Step::Calls(vec![longtask::sub_call(PREFIX, n, NOTES, notes_input(&r))]);
+    };
+    let report = report_of(&notes, &r);
+    next_publish(&json!({"report": report, "every_day_at": every}), t, m, n)
+}
+
+/// Asked in the chat: today's items as a table, and one question (`status: confirm`); the reply owes `whats_next`
+/// again (agent/required.rs), which finds the items here (`latest_confirm`).
+fn confirm(items: &[Value], location: &Value, every: &str, today: NaiveDate) -> Step {
+    let today = today.format("%Y-%m-%d").to_string();
+    let mut table = String::from("| Time | What | Where |\n|---|---|---|\n");
+    let todays: Vec<&Value> = items
+        .iter()
+        .filter(|i| get_str(i, "date") == today)
+        .collect();
+    for i in &todays {
+        table.push_str(&format!(
+            "| {} | {} | {} |\n",
+            md_cell(&if time_of(i).is_empty() {
+                "all day".into()
+            } else {
+                time_of(i)
+            }),
+            md_cell(&get_str(i, "title")),
+            md_cell(
+                &[get_str(i, "place"), get_str(i, "city")]
+                    .into_iter()
+                    .filter(|x| !x.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ));
     }
+    if todays.is_empty() {
+        table.push_str("| — | nothing found in your mail or calendar for today | |\n");
+    }
+    Step::Done(json!({
+        "status": "confirm", "today": today, "items": items, "location": location, "every_day_at": every,
+        "question": "Is anything missing from today? Anything you add goes into your calendar too.",
+        "next_tool": WHATS_NEXT,
+        "show": [S::block(&format!("**Today, {today}**\n\n{table}"))],
+        "hints": ["ask the user the question in one line; their reply calls whats_next again with confirmed: true and their additions"],
+    }))
+}
+
+/// The research as the notes' subagent reads it: the rows without the report's own entries.
+fn notes_input(r: &Value) -> Value {
+    let strip = |k: &str| -> Vec<Value> {
+        r[k].as_array()
+            .into_iter()
+            .flatten()
+            .map(|row| {
+                let mut row = row.clone();
+                if let Some(o) = row.as_object_mut() {
+                    o.remove("entry");
+                }
+                row
+            })
+            .collect()
+    };
+    json!({"today": r["today"], "day": r["day"], "location": r["location"], "today_rows": strip("today_rows"),
+           "later": strip("later"), "news_city": r["news_city"], "news": r["news"], "evening": r["evening"]})
 }
 
 /// The fixed mail searches: bookings (flights, hotels, tables, tickets) and invitations.
@@ -493,7 +569,7 @@ fn next_gather(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
         "status": "gathered", "today": today.format("%Y-%m-%d").to_string(),
         "window": [today.format("%Y-%m-%d").to_string(), (end - Duration::days(1)).format("%Y-%m-%d").to_string()],
         "home": {"city": get_str(m.profile, "home_city"), "country": get_str(m.profile, "home_country")},
-        "events": events, "emails": emails, "next_tool": WHATS_NEXT_ITEMS, "hints": [],
+        "events": events, "emails": emails,
     });
     if let Some(e) = calendar_error {
         out["calendar"] = json!(format!("not read: {e}"));
@@ -635,38 +711,6 @@ fn next_items(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
         .filter(|i| get_str(i, "date") == today)
         .cloned()
         .collect();
-    // 1. asked in the chat: today's items, and one question (a scheduled run asks nothing)
-    if !m.scheduled && !args.get("confirmed").is_some_and(truthy) {
-        let mut table = String::from("| Time | What | Where |\n|---|---|---|\n");
-        for i in &todays {
-            table.push_str(&format!(
-                "| {} | {} | {} |\n",
-                md_cell(&if time_of(i).is_empty() {
-                    "all day".into()
-                } else {
-                    time_of(i)
-                }),
-                md_cell(&get_str(i, "title")),
-                md_cell(
-                    &[get_str(i, "place"), get_str(i, "city")]
-                        .into_iter()
-                        .filter(|x| !x.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            ));
-        }
-        if todays.is_empty() {
-            table.push_str("| — | nothing found in your mail or calendar for today | |\n");
-        }
-        return Step::Done(json!({
-            "status": "confirm", "today": today, "items": items, "every_day_at": sget(args, "every_day_at"),
-            "question": "Is anything missing from today? Anything you add goes into your calendar too.",
-            "next_tool": WHATS_NEXT_ITEMS,
-            "show": [S::block(&format!("**Today, {today}**\n\n{table}"))],
-            "hints": ["ask the user the question in one line, then call whats_next_items again with confirmed: true"],
-        }));
-    }
     // 2. the user's additions go into the default calendar
     let added: Vec<&Value> = items
         .iter()
@@ -720,11 +764,12 @@ fn next_items(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
         .filter(|(_, p)| !get_str(p, "name").is_empty() && external(p, m.profile, &domains))
         .take(PEOPLE)
         .collect();
+    // (the gathering's own mail searches, in a scheduled run's transcript, are not research)
     let researching = !own(t, "web_search").is_empty()
         || !own(t, "browser_news_search").is_empty()
         || !own(t, "events_search").is_empty()
         || !own(t, "flights_search").is_empty()
-        || !own(t, "gmail_search").is_empty();
+        || research_mail(t).next().is_some();
     if !researching {
         let mut calls = Vec::new();
         let mut call = |name: &str, a: Value| {
@@ -1017,8 +1062,14 @@ fn next_items(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
         "later": later_rows, "news_city": news_city, "news": news, "evening": evening,
         "evening_free": evening_free(&todays), "added_to_calendar": added_ok,
         "every_day_at": sget(args, "every_day_at"),
-        "next_tool": WHATS_NEXT_PUBLISH, "hints": [],
     }))
+}
+
+/// The research's mail searches (the earlier emails with a meeting's people): not the gathering's fixed ones.
+fn research_mail(t: &[Value]) -> impl Iterator<Item = (Value, &Value)> {
+    own(t, "gmail_search")
+        .into_iter()
+        .filter(|(a, _)| !searches().iter().any(|(q, _)| *q == sget(a, "query")))
 }
 
 /// Whether today's list was shown with its question (a `confirm` result), and whether the user wrote after the latest
@@ -1090,7 +1141,7 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
             "schedule_create",
             json!({"name": "What's next", "kind": "cron",
                    "spec": format!("{} {} * * *", mi.trim_start_matches('0').parse::<u32>().unwrap_or(0), h.trim_start_matches('0').parse::<u32>().unwrap_or(0)),
-                   "goal": "Run the whats-next skill: call whats_next, then whats_next_items with the plan's items, then whats_next_publish. This is a scheduled run: ask nothing; the report is emailed to me."}),
+                   "goal": "What's next", "task": longtask::task_call(WHATS_NEXT, &json!({}))}),
         )]);
     }
     // 3. a scheduled run: the report goes to the user's own address
@@ -1169,26 +1220,128 @@ fn next_publish(args: &Value, t: &[Value], m: &Machine, n: usize) -> Step {
         }
         None => {}
     }
+    // the schedule offer: a chat run that asked for no daily report (agent/longtask.rs)
+    if let Some(o) = m.offer.as_ref().filter(|_| at.is_empty() && !m.scheduled) {
+        show.push(longtask::offer_item(o));
+        out[longtask::OFFER] = o.clone();
+        out["next_question"] = o["question"].clone();
+    }
     out["show"] = json!(show);
     out["hints"] = json!([]);
     Step::Done(out)
 }
 
-/// Whether the model is offered tool `name` on its next turn: `whats_next_report` is code's own call; on the reply to
-/// a machine's result the workflow tools are withdrawn, except the next one this machine's result asks for
-/// (`whats_next_items` after the gathered mail and calendar, `whats_next_publish` after the research).
+/// Whether the model is offered tool `name` on its next turn: `whats_next_report` is code's own call; on the reply
+/// to the machine's result `whats_next` is withdrawn.
 pub fn offered(transcript: &[Value], name: &str) -> bool {
     if name == REPORT_TOOL {
         return false;
     }
-    if !TOOLS.contains(&name) || !workflow::reply_turn(transcript) {
-        return true;
+    !TOOLS.contains(&name) || !workflow::reply_turn(transcript)
+}
+
+// ---------------------------------------------------------------- the subagents
+
+fn items_output() -> Value {
+    json!({"type": "object", "properties": {
+        "location": {"type": "object", "properties": {"city": {"type": "string", "description": "where the user is today (the city of the first item, or home)"},
+                                                      "country": {"type": "string"}}},
+        "items": {"type": "array", "items": item_schema()}},
+        "required": ["items"]})
+}
+
+fn items_check(_input: &Value, out: &Value) -> Result<Value, Vec<String>> {
+    match out.get("items") {
+        Some(Value::Array(_)) => Ok(out.clone()),
+        _ => Err(vec![
+            "items: a JSON array of the plan's items (empty when there is none)".into(),
+        ]),
     }
-    let last = transcript
-        .last()
-        .and_then(|m| serde_json::from_str::<Value>(&content_of(m)).ok())
-        .unwrap_or(Value::Null);
-    get_str(&last, "next_tool") == name && get_str(&last, "status") != "confirm"
+}
+
+/// The default items: the calendar's events as they are (each a meeting when it has attendees, else an event).
+fn items_fallback(input: &Value) -> Value {
+    let items: Vec<Value> = input["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let start = get_str(e, "start");
+            let date = start.get(..10)?.to_string();
+            let time = |v: &str| v.get(11..16).unwrap_or("").to_string();
+            let people: Vec<Value> = e["attendees"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|a| match a {
+                    Value::String(x) => json!({"email": x}),
+                    other => json!({"name": get_str(other, "name"), "email": get_str(other, "email")}),
+                })
+                .collect();
+            Some(json!({"kind": if people.is_empty() { "event" } else { "meeting" }, "title": get_str(e, "title"),
+                        "date": date, "start": time(&start), "end": time(&get_str(e, "end")),
+                        "place": get_str(e, "location"), "people": people, "source": "calendar"}))
+        })
+        .collect();
+    json!({"location": input["home"], "items": items})
+}
+
+pub fn items_spec() -> SubSpec {
+    SubSpec {
+        kind: ITEMS,
+        instruction: "You make a user's plan from their emails and calendar events (the input). Give every item from \
+`today` to the end of `window`, one each: flights (number, IATA airports, the arrival city and country, the departure \
+country), hotel check-ins and check-outs, meetings (with every participant other than the user: name, email, \
+organization), reservations, events, places to be. Times are local where it happens. A later email about the same \
+booking wins; leave out cancelled ones. Never invent an item, a time or a person. location: where the user is today.",
+        output: items_output,
+        tools: &[],
+        check: items_check,
+        fallback: items_fallback,
+    }
+}
+
+fn notes_output() -> Value {
+    let s = |d: &str| json!({"type": "string", "description": d});
+    json!({"type": "object", "properties": {
+        "summary": s("two or three sentences on the day"),
+        "notes": {"type": "array", "items": {"type": "object", "properties": {"item": {"type": "integer"}, "text": s("at most 60 words")}}},
+        "flights": {"type": "array", "items": {"type": "object", "properties": {"item": {"type": "integer"},
+            "status": {"type": "string", "enum": STATUSES}, "detail": s("e.g. \"departs 19:40, 50 min late\"")}}},
+        "people": {"type": "array", "items": {"type": "object", "properties": {"name": s("as the input lists it"), "profile": s("one line: role, company, what they are known for")}}}},
+        "required": ["summary"]})
+}
+
+fn notes_check(_input: &Value, out: &Value) -> Result<Value, Vec<String>> {
+    if sget(out, "summary").trim().is_empty() {
+        return Err(vec!["summary: two or three sentences on the day".into()]);
+    }
+    Ok(out.clone())
+}
+
+/// The default words: a summary that counts today's items, no notes.
+fn notes_fallback(input: &Value) -> Value {
+    let n = input["today_rows"].as_array().map_or(0, Vec::len);
+    json!({"summary": match n {
+        0 => "Nothing on your plan for today.".to_string(),
+        1 => "One item on your plan today.".to_string(),
+        n => format!("{n} items on your plan today."),
+    }, "notes": [], "flights": [], "people": []})
+}
+
+pub fn notes_spec() -> SubSpec {
+    SubSpec {
+        kind: NOTES,
+        instruction: "You write the words of a user's day report from the researched plan in the input: a summary of \
+the day (two or three sentences), a short note per item by its number (what to know or do — from the emails, the \
+earlier emails with the participants, the searches), each of today's flights' status as its status search shows it \
+(`unknown` when it does not say), and a one-line public profile of each person from their search results (role and \
+company only; nothing private, nothing guessed).",
+        output: notes_output,
+        tools: &[],
+        check: notes_check,
+        fallback: notes_fallback,
+    }
 }
 
 #[cfg(test)]

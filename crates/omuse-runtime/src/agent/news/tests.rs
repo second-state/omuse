@@ -97,6 +97,13 @@ fn tools(name: &str, args: &Value) -> String {
             "已创建定时任务 schedule created: id=sch_1, next run 2026-11-02 08:00".into()
         }
         "gmail_send" => json!({"sent": true, "id": "m1"}).to_string(),
+        // the edition's subagent: one story for the first article (code adds the rest)
+        "subagent_json" => sub_result(
+            args,
+            json!({"title": "The Tidal Current", "stories": [
+                {"article": 1, "headline": "Orkney array goes live", "summary": "Lumora switched on a 40 MW array of 16 turbines."}],
+                "insights": ["Tidal power is leaving the pilot stage."]}),
+        ),
         "market_quotes" => quotes_of(&json!({"results": [
             {"symbol": "BTC-USD", "name": "Bitcoin USD", "exchange": "CCC", "currency": "USD", "range": "5d",
              "last": 68123.45, "last_time": "2026-11-01 07:58", "day_change_pct": 1.2, "series": []}],
@@ -104,6 +111,17 @@ fn tools(name: &str, args: &Value) -> String {
         .to_string(),
         other => panic!("unexpected call {other}"),
     }
+}
+
+/// The subagent's result as `Runtime::subagent_json` returns it: the answer through the spec's check, else its default.
+fn sub_result(args: &Value, answer: Value) -> String {
+    assert_eq!(sget(args, "kind"), EDITION);
+    let input = &args["input"];
+    let (answer, defaulted) = match edition_check(input, &answer) {
+        Ok(v) => (v, false),
+        Err(_) => (edition_fallback(input), true),
+    };
+    json!({"kind": EDITION, "answer": answer, "retried": false, "defaulted": defaulted}).to_string()
 }
 
 fn valid(c: Checked) -> Value {
@@ -168,38 +186,35 @@ fn machine(profile: &Value, scheduled: bool) -> Machine<'_> {
         scheduled,
         zh: false,
         first: 0,
+        offer: None,
     }
 }
 
 const REQUEST: &str = "Research the latest news on Lumora tidal power and make me a newspaper-style report. Send me a new edition every week.";
 
-fn gather_result() -> Value {
+fn gargs(a: Value) -> Value {
     let p = json!({});
-    let args = valid(check(
+    valid(check(NEWS_GATHER, &a, &Ctx { profile: &p }))
+}
+
+/// One whole `news_gather` run with the edition's subagent answering `edition`.
+fn run_with(args: &Value, m: &Machine, edition: Value) -> (Vec<Value>, Value) {
+    run(
         NEWS_GATHER,
-        &json!({"subject": "Lumora tidal power", "window": "week"}),
-        &Ctx {
-            profile: &p,
-            gathered: None,
+        args,
+        started(REQUEST, NEWS_GATHER, args),
+        m,
+        |n, a| match n {
+            "subagent_json" => sub_result(a, edition.clone()),
+            _ => tools(n, a),
         },
-    ));
-    let (_, res) = run(
-        NEWS_GATHER,
-        &args,
-        started(REQUEST, NEWS_GATHER, &args),
-        &machine(&p, false),
-        tools,
-    );
-    res
+    )
 }
 
 #[test]
-fn gather_needs_a_subject_and_normalises_the_window() {
+fn gather_needs_a_subject_and_normalises_the_whole_request() {
     let p = json!({});
-    let cx = Ctx {
-        profile: &p,
-        gathered: None,
-    };
+    let cx = Ctx { profile: &p };
     assert_eq!(
         check(NEWS_GATHER, &json!({"window": "week"}), &cx),
         Checked::NeedsInput(vec!["subject".into()])
@@ -207,26 +222,36 @@ fn gather_needs_a_subject_and_normalises_the_window() {
     assert_eq!(
         valid(check(
             NEWS_GATHER,
-            &json!({"subject": " \"Lumora\" ", "window": "Daily"}),
+            &json!({"subject": " \"Lumora\" ", "window": "Daily", "schedule": "every day", "hour": 30}),
             &cx
         )),
-        json!({"subject": "Lumora", "window": "day"})
+        json!({"subject": "Lumora", "window": "day", "schedule": "once", "weekday": 1, "hour": 8, "email": false})
     );
+    let a = valid(check(
+        NEWS_GATHER,
+        &json!({"subject": "AI", "schedule": "weekly", "weekday": 3, "email": true}),
+        &cx,
+    ));
     assert_eq!(
-        valid(check(NEWS_GATHER, &json!({"subject": "AI"}), &cx))["window"],
-        "week"
+        (
+            a["window"].as_str(),
+            a["schedule"].as_str(),
+            a["weekday"].as_i64(),
+            a["email"].as_bool()
+        ),
+        (Some("week"), Some("weekly"), Some(3), Some(true))
     );
     assert_eq!(period(7, today()), "26 October 2026 – 1 November 2026");
     assert_eq!(period(1, today()), "1 November 2026");
 }
 
 /// news_report_real (g31, r32): the model ran six searches of its own and called the articles "unverified". Code makes
-/// ONE search from the call's subject, reads the six articles in one turn, and returns them as JSON for the model to
-/// write the edition from.
+/// ONE search from the call's subject, reads the six articles in one turn, gives them to the edition's subagent as
+/// JSON (without their links) and publishes — one call of the model's.
 #[test]
-fn gather_runs_one_search_and_one_read_turn_and_returns_the_articles_as_json() {
+fn one_call_runs_one_search_one_read_turn_the_subagent_and_publishes() {
     let p = json!({});
-    let args = json!({"subject": "Lumora tidal power", "window": "week"});
+    let args = gargs(json!({"subject": "Lumora tidal power", "window": "week"}));
     let (t, res) = run(
         NEWS_GATHER,
         &args,
@@ -249,22 +274,42 @@ fn gather_runs_one_search_and_one_read_turn_and_returns_the_articles_as_json() {
     assert!(tool_calls(turn)
         .iter()
         .all(|tc| stored_call(tc).0 == "browser_read"));
-    assert_eq!(res["status"], "gathered");
-    assert_eq!(res["period"], "26 October 2026 – 1 November 2026");
-    assert_eq!(res["next_tool"], NEWS_PUBLISH);
-    let arts = res["articles"].as_array().unwrap();
+    // the subagent's input: the articles as JSON, numbered, with their publication and date — no links
+    let sub = &calls_of(&t, "subagent_json")[0];
+    assert_eq!(sub["kind"], EDITION);
+    let arts = sub["input"]["articles"].as_array().unwrap();
     assert_eq!(arts.len(), 6);
-    assert_eq!(arts[0]["article"], 1);
-    assert_eq!(arts[0]["publication"], "Reuters");
+    assert_eq!(
+        (arts[0]["article"].as_i64(), arts[0]["publication"].as_str()),
+        (Some(1), Some("Reuters"))
+    );
     assert_eq!(arts[0]["date"], day(1));
-    assert_eq!(arts[0]["url"], url("lumora-orkney-array"));
     assert!(get_str(&arts[3], "text").contains("Ofgem"));
+    assert!(!sub.to_string().contains("news.example"));
+    assert_eq!(sub["input"]["period"], "26 October 2026 – 1 November 2026");
+    assert_eq!(res["status"], "published");
+    let names: Vec<String> = t
+        .iter()
+        .flat_map(tool_calls)
+        .map(|tc| stored_call(tc).0)
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "news_gather",
+            "browser_news_search",
+            "browser_read",
+            "browser_read",
+            "subagent_json",
+            "news_report"
+        ]
+    );
 }
 
 #[test]
 fn no_news_ends_with_nothing_found_after_one_wider_search() {
     let p = json!({});
-    let args = json!({"subject": "Lumora", "window": "day"});
+    let args = gargs(json!({"subject": "Lumora", "window": "day"}));
     let empty = |name: &str, args: &Value| match name {
         "browser_news_search" => enveloped(
             &format!("web search (none): {}", sget(args, "query")),
@@ -293,35 +338,32 @@ fn no_news_ends_with_nothing_found_after_one_wider_search() {
     );
 }
 
-/// Links, publications and dates come from the gathered articles, never from the model: a story naming an article
-/// that does not exist is dropped, an article named twice is kept once, an article the model left out is added with
+/// Links, publications and dates come from the gathered articles, never from the subagent: a story naming an
+/// article that does not exist is dropped, an article named twice is kept once, an article left out is added with
 /// its own headline and opening.
 #[test]
-fn publish_keeps_only_gathered_articles_and_takes_their_links() {
-    let g = gather_result();
+fn the_edition_keeps_only_gathered_articles_and_takes_their_links() {
     let p = json!({});
-    let cx = Ctx {
-        profile: &p,
-        gathered: Some(&g),
-    };
-    let a = valid(check(
-        NEWS_PUBLISH,
-        &json!({"title": "The Tidal Current", "stories": [
-            {"article": 2, "headline": "Brussels backs Brittany site", "summary": "The EU awarded Lumora €120 million for a 60 MW array near Paimpol."},
-            {"article": 1, "headline": "Orkney array goes live", "summary": "Lumora switched on a 40 MW array of 16 turbines.", "url": "https://evil.example/x"},
-            {"article": 1, "headline": "again", "summary": "dup"},
-            {"article": 9, "headline": "no such article", "summary": "x"}],
-            "insights": ["Tidal power is leaving the pilot stage.", ""], "schedule": "weekly", "email": true}),
-        &cx,
-    ));
-    let stories = a["stories"].as_array().unwrap();
-    assert_eq!(stories.len(), 6, "{a}");
+    let args = gargs(json!({"subject": "Lumora tidal power", "window": "week"}));
+    let (t, _) = run_with(
+        &args,
+        &machine(&p, false),
+        json!({"title": "The Tidal Current", "stories": [
+        {"article": 2, "headline": "Brussels backs Brittany site", "summary": "The EU awarded Lumora €120 million for a 60 MW array near Paimpol."},
+        {"article": 1, "headline": "Orkney array goes live", "summary": "Lumora switched on a 40 MW array of 16 turbines.", "url": "https://evil.example/x"},
+        {"article": 1, "headline": "again", "summary": "dup"},
+        {"article": 9, "headline": "no such article", "summary": "x"}],
+        "insights": ["Tidal power is leaving the pilot stage.", ""]}),
+    );
+    let rep = &calls_of(&t, "news_report")[0];
+    let stories = rep["stories"].as_array().unwrap();
+    assert_eq!(stories.len(), 6, "{rep}");
     assert_eq!(stories[0]["headline"], "Brussels backs Brittany site");
     assert_eq!(stories[0]["url"], url("lumora-eu-grant"));
     assert_eq!(stories[0]["source"], "Financial Times");
     assert_eq!(stories[0]["date"], day(2));
     assert_eq!(stories[1]["url"], url("lumora-orkney-array"));
-    assert!(!a.to_string().contains("evil.example"));
+    assert!(!rep.to_string().contains("evil.example"));
     // the omitted articles: their own headline and opening
     assert_eq!(stories[2]["headline"], NEWS[2].3);
     assert!(get_str(&stories[2], "summary").starts_with("Kestrel Marine will supply 200"));
@@ -329,67 +371,53 @@ fn publish_keeps_only_gathered_articles_and_takes_their_links() {
         .iter()
         .any(|s| get_str(s, "summary").contains("Ofgem")));
     assert_eq!(
-        a["insights"],
+        rep["insights"],
         json!(["Tidal power is leaving the pilot stage."])
     );
+    assert_eq!(rep["period"], "26 October 2026 – 1 November 2026");
+}
+
+/// A subagent that names no article (twice): code's default edition, every article with its own headline and opening.
+#[test]
+fn an_edition_that_names_no_article_is_codes_default() {
+    let input =
+        json!({"articles": [{"article": 1, "title": "T", "lead": "The lead.", "text": "x"}]});
+    assert!(edition_check(
+        &input,
+        &json!({"stories": [{"article": 9, "summary": "s"}]})
+    )
+    .is_err());
+    assert!(edition_check(&input, &json!("prose")).is_err());
     assert_eq!(
-        (a["subject"].as_str(), a["period"].as_str()),
-        (
-            Some("Lumora tidal power"),
-            Some("26 October 2026 – 1 November 2026")
-        )
+        edition_fallback(&input)["stories"],
+        json!([{"article": 1, "headline": "T", "summary": "The lead."}])
     );
-    assert_eq!(
-        (
-            a["schedule"].as_str(),
-            a["weekday"].as_i64(),
-            a["hour"].as_i64(),
-            a["email"].as_bool()
-        ),
-        (Some("weekly"), Some(1), Some(8), Some(true))
+    let p = json!({});
+    let args = gargs(json!({"subject": "Lumora tidal power"}));
+    let (t, res) = run_with(
+        &args,
+        &machine(&p, false),
+        json!({"stories": [{"article": 9, "summary": "x"}]}),
     );
-    // no story names an article: invalid; nothing gathered: invalid
-    assert!(matches!(
-        check(
-            NEWS_PUBLISH,
-            &json!({"stories": [{"article": 9, "headline": "h", "summary": "s"}]}),
-            &cx
-        ),
-        Checked::Invalid(_)
-    ));
-    let none = Ctx {
-        profile: &p,
-        gathered: None,
-    };
-    match check(
-        NEWS_PUBLISH,
-        &json!({"stories": [{"article": 1, "summary": "s"}]}),
-        &none,
-    ) {
-        Checked::Invalid(p) => assert!(p[0].contains(NEWS_GATHER), "{p:?}"),
-        other => panic!("{other:?}"),
-    }
+    assert_eq!(res["status"], "published");
+    let rep = &calls_of(&t, "news_report")[0];
+    assert_eq!(rep["stories"].as_array().unwrap().len(), 6);
+    assert_eq!(rep["stories"][0]["headline"], NEWS[0].3);
 }
 
 #[test]
-fn publish_lays_out_schedules_and_mails_the_edition_and_says_so() {
-    let g = gather_result();
+fn every_week_lays_out_schedules_the_tasks_json_and_mails_the_edition() {
     let p = json!({"mailbox": "me@example.com"});
-    let cx = Ctx {
-        profile: &p,
-        gathered: Some(&g),
+    let args = gargs(json!({"subject": "Lumora tidal power", "schedule": "weekly", "email": true}));
+    let m = Machine {
+        offer: longtask::offer(NEWS_GATHER, &args),
+        ..machine(&p, false)
     };
-    let args = valid(check(
-        NEWS_PUBLISH,
-        &json!({"title": "The Tidal Current", "stories": [{"article": 1, "headline": "Orkney array goes live", "summary": "40 MW."}],
-                "schedule": "weekly", "email": true}),
-        &cx,
-    ));
     let (t, res) = run(
-        NEWS_PUBLISH,
+        NEWS_GATHER,
         &args,
-        started(REQUEST, NEWS_PUBLISH, &args),
-        &machine(&p, false),
+        started(REQUEST, NEWS_GATHER, &args),
+        &m,
         tools,
     );
     let rep = &calls_of(&t, "news_report")[0];
@@ -398,13 +426,10 @@ fn publish_lays_out_schedules_and_mails_the_edition_and_says_so() {
     let sch = &calls_of(&t, "schedule_create")[0];
     assert_eq!(sch["spec"], "0 8 * * 1");
     assert_eq!(sch["name"], "News report: Lumora tidal power");
-    // the scheduled run's goal makes its model call the two tools, with the mail
-    let goal = sget(sch, "goal");
-    assert!(
-        goal.contains("news_gather")
-            && goal.contains("news_publish")
-            && goal.contains("email: true"),
-        "{goal}"
+    // the schedule stores the task's JSON: its run calls news_gather with it, no model in between
+    assert_eq!(
+        sch["task"],
+        json!({"tool": "news_gather", "args": {"subject": "Lumora tidal power", "window": "week", "email": true}})
     );
     let mail = &calls_of(&t, "gmail_send")[0];
     assert_eq!(mail["to"], "me@example.com");
@@ -417,10 +442,9 @@ fn publish_lays_out_schedules_and_mails_the_edition_and_says_so() {
     );
     assert_eq!(res["status"], "published");
     // the lines code appends to the reply (gate 40 news_report_real: the editions' links left out of the prose)
-    let shown = super::super::show::lines(&res, false);
     let title = res["title"].as_str().unwrap().to_string();
     assert_eq!(
-        shown,
+        super::super::show::lines(&res, false),
         vec![
             format!("- HTML edition: [{title}](/artifacts/news/lumora-tidal-power/2026-11-01-0800.html)"),
             format!("- PDF edition: [{title}](/artifacts/news/lumora-tidal-power/2026-11-01-0800.pdf)"),
@@ -428,53 +452,60 @@ fn publish_lays_out_schedules_and_mails_the_edition_and_says_so() {
             "- Emailed to: me@example.com (PDF attached)".to_string(),
         ]
     );
-    assert!(res.get("next_question").is_none());
+    // a schedule asked for: none offered
+    assert!(res.get(longtask::OFFER).is_none() && res.get("next_question").is_none());
 }
 
 #[test]
-fn a_scheduled_run_makes_no_new_schedule_and_a_one_off_offers_the_mail() {
-    let g = gather_result();
+fn a_scheduled_run_makes_no_schedule_and_a_chat_run_offers_one() {
     let p = json!({"mailbox": "me@example.com"});
-    let cx = Ctx {
-        profile: &p,
-        gathered: Some(&g),
-    };
-    let args = valid(check(
-        NEWS_PUBLISH,
-        &json!({"stories": [{"article": 1, "headline": "h", "summary": "s"}], "schedule": "weekly", "email": true}),
-        &cx,
-    ));
+    // the schedule's run (the stored task's arguments): mailed, no schedule
+    let stored = gargs(json!({"subject": "Lumora tidal power", "window": "week", "email": true}));
     let (t, res) = run(
-        NEWS_PUBLISH,
-        &args,
-        started("News report on Lumora", NEWS_PUBLISH, &args),
+        NEWS_GATHER,
+        &stored,
+        started("⏰", NEWS_GATHER, &stored),
         &machine(&p, true),
         tools,
     );
     assert!(calls_of(&t, "schedule_create").is_empty());
     assert_eq!(calls_of(&t, "gmail_send").len(), 1);
-    assert!(res["schedule"].is_null());
-    // a one-off edition without the mail: no schedule, no mail, the offer to email it
-    let once = valid(check(
-        NEWS_PUBLISH,
-        &json!({"stories": [{"article": 1, "headline": "h", "summary": "s"}]}),
-        &cx,
-    ));
+    assert!(res["schedule"].is_null() && res.get(longtask::OFFER).is_none());
+    // a one-off edition in a chat: no schedule, no mail, the schedule offered (agent/longtask.rs)
+    let once = gargs(json!({"subject": "Lumora tidal power"}));
+    let m = Machine {
+        offer: longtask::offer(NEWS_GATHER, &once),
+        ..machine(&p, false)
+    };
     let (t, res) = run(
-        NEWS_PUBLISH,
+        NEWS_GATHER,
         &once,
-        started("x", NEWS_PUBLISH, &once),
-        &machine(&p, false),
+        started("x", NEWS_GATHER, &once),
+        &m,
         tools,
     );
     assert!(calls_of(&t, "schedule_create").is_empty() && calls_of(&t, "gmail_send").is_empty());
+    assert_eq!(res[longtask::OFFER]["every"], "every Monday at 08:00");
+    assert_eq!(
+        res[longtask::OFFER]["task"],
+        json!({"tool": "news_gather", "args": {"subject": "Lumora tidal power", "window": "week"}})
+    );
+    assert!(sget(&res, "next_question").contains("every Monday at 08:00"));
+    // offered already (or scheduled): the email question instead
+    let (_, res) = run(
+        NEWS_GATHER,
+        &once,
+        started("x", NEWS_GATHER, &once),
+        &machine(&p, false),
+        tools,
+    );
     assert!(sget(&res, "next_question").contains("me@example.com"));
     // the mail asked for with no mailbox connected: delivered in the chat, nothing sent
     let none = json!({});
     let (t, res) = run(
-        NEWS_PUBLISH,
-        &args,
-        started("x", NEWS_PUBLISH, &args),
+        NEWS_GATHER,
+        &stored,
+        started("x", NEWS_GATHER, &stored),
         &machine(&none, true),
         tools,
     );
@@ -487,20 +518,12 @@ fn a_scheduled_run_makes_no_new_schedule_and_a_one_off_offers_the_mail() {
 
 #[test]
 fn a_failed_layout_ends_with_the_error() {
-    let g = gather_result();
     let p = json!({});
-    let args = valid(check(
-        NEWS_PUBLISH,
-        &json!({"stories": [{"article": 1, "headline": "h", "summary": "s"}]}),
-        &Ctx {
-            profile: &p,
-            gathered: Some(&g),
-        },
-    ));
+    let args = gargs(json!({"subject": "Lumora tidal power"}));
     let (_, res) = run(
-        NEWS_PUBLISH,
+        NEWS_GATHER,
         &args,
-        started("x", NEWS_PUBLISH, &args),
+        started("x", NEWS_GATHER, &args),
         &machine(&p, false),
         |n, a| match n {
             "news_report" => "ERROR: the template is missing".into(),
@@ -513,17 +536,15 @@ fn a_failed_layout_ends_with_the_error() {
 
 #[test]
 fn the_published_edition_is_the_newspaper_with_every_link() {
-    let g = gather_result();
     let p = json!({});
-    let args = valid(check(
-        NEWS_PUBLISH,
-        &json!({"stories": [{"article": 3, "headline": "Kestrel order", "summary": "Kestrel Marine will supply 200 K4 turbines."}]}),
-        &Ctx {
-            profile: &p,
-            gathered: Some(&g),
-        },
-    ));
-    let r = crate::newsreport::Report::from_args(&report_args(&args)).unwrap();
+    let args = gargs(json!({"subject": "Lumora tidal power"}));
+    let (t, _) = run_with(
+        &args,
+        &machine(&p, false),
+        json!({"stories": [
+        {"article": 3, "headline": "Kestrel order", "summary": "Kestrel Marine will supply 200 K4 turbines."}]}),
+    );
+    let r = crate::newsreport::Report::from_args(&calls_of(&t, "news_report")[0]).unwrap();
     let html = crate::newsreport::render(
         include_str!("../../../../../skills/news-research/template.html"),
         &r,
@@ -549,10 +570,7 @@ fn the_published_edition_is_the_newspaper_with_every_link() {
 #[test]
 fn email_it_mails_the_edition_the_model_names_to_the_users_own_address() {
     let p = json!({"mailbox": "me@example.com"});
-    let cx = Ctx {
-        profile: &p,
-        gathered: None,
-    };
+    let cx = Ctx { profile: &p };
     let args = valid(check(
         NEWS_MAIL,
         &json!({"files": ["http://localhost:8080/artifacts/news/lumora/2026-11-01-0800.html",
@@ -594,8 +612,7 @@ fn email_it_mails_the_edition_the_model_names_to_the_users_own_address() {
             NEWS_MAIL,
             &json!({"files": ["/artifacts/news/a/b.pdf"]}),
             &Ctx {
-                profile: &json!({}),
-                gathered: None
+                profile: &json!({})
             }
         ),
         Checked::NeedsInput(_)
@@ -604,24 +621,13 @@ fn email_it_mails_the_edition_the_model_names_to_the_users_own_address() {
 }
 
 #[test]
-fn the_model_gets_news_publish_after_the_articles_and_never_the_layout_tool() {
+fn the_model_never_gets_the_layout_tool_and_no_news_tool_on_the_reply() {
     let mut t = vec![json!({"role": "user", "content": REQUEST})];
-    assert!(!offered(&t, REPORT_TOOL));
+    assert!(!offered(&t, REPORT_TOOL) && !offered(&t, MARKET_TOOL));
     assert!(offered(&t, NEWS_GATHER) && offered(&t, "web_search"));
-    t.extend(workflow::result_exchange(&t, NEWS_GATHER, &gather_result()));
-    assert!(offered(&t, NEWS_PUBLISH));
-    assert!(!offered(&t, NEWS_GATHER) && !offered(&t, NEWS_MAIL));
-    // after nothing found, or after the edition was published: no news tool on the reply turn
-    let mut nf = vec![json!({"role": "user", "content": REQUEST})];
-    nf.extend(workflow::result_exchange(
-        &nf,
-        NEWS_GATHER,
-        &json!({"status": "nothing_found"}),
-    ));
-    assert!(!offered(&nf, NEWS_PUBLISH));
     t.extend(workflow::result_exchange(
         &t,
-        NEWS_PUBLISH,
+        NEWS_GATHER,
         &json!({"status": "published"}),
     ));
     assert!(TOOLS.iter().all(|n| !offered(&t, n)));
@@ -671,23 +677,12 @@ fn market_symbols_are_normalised_in_code() {
         ["BTC-USD", "GC=F"]
     );
     assert!(market_symbols(None).is_empty());
-    let p = json!({});
-    let cx = Ctx {
-        profile: &p,
-        gathered: None,
-    };
-    let a = valid(check(
-        NEWS_GATHER,
-        &json!({"subject": "Bitcoin", "window": "day", "markets": ["BTC"]}),
-        &cx,
-    ));
+    let a = gargs(json!({"subject": "Bitcoin", "window": "day", "markets": ["BTC"]}));
     assert_eq!(a["markets"], json!(["BTC-USD"]));
-    // no markets asked: the arguments stay as they were
-    assert!(
-        valid(check(NEWS_GATHER, &json!({"subject": "Bitcoin"}), &cx))
-            .get("markets")
-            .is_none()
-    );
+    // no markets asked: none in the arguments
+    assert!(gargs(json!({"subject": "Bitcoin"}))
+        .get("markets")
+        .is_none());
 }
 
 #[test]
@@ -710,52 +705,30 @@ fn market_quotes_keep_only_structured_prices() {
     assert_eq!(quotes_of(&json!({"error": "down"}))["quotes"], json!([]));
 }
 
-/// The daily BTC update: the prices are fetched in the same turn as the first news search, carried into the edition
-/// (the HTML's markets line) and appended to the reply; the schedule is daily at 08:00 and its goal keeps the symbols.
-fn btc_run(profile: &Value) -> (Vec<Value>, Value, Vec<Value>) {
+/// The daily BTC update in ONE call: the prices are fetched in the same turn as the first news search, carried into
+/// the edition (the HTML's markets line) and appended to the reply; the schedule is daily at 08:00 and its task keeps
+/// the symbols.
+fn btc_run(profile: &Value) -> (Vec<Value>, Value) {
     let request =
         "Monitor BTC price and news. Send me an update with research report every day at 8am.";
-    let gp = json!({});
-    let gargs = valid(check(
-        NEWS_GATHER,
-        &json!({"subject": "Bitcoin", "window": "day", "markets": ["BTC-USD"]}),
-        &Ctx {
-            profile: &gp,
-            gathered: None,
-        },
-    ));
-    let (gt, g) = run(
-        NEWS_GATHER,
-        &gargs,
-        started(request, NEWS_GATHER, &gargs),
-        &machine(&gp, false),
-        tools,
+    let args = gargs(
+        json!({"subject": "Bitcoin", "window": "day", "markets": ["BTC-USD"], "schedule": "daily", "hour": 8, "email": true}),
     );
-    let args = valid(check(
-        NEWS_PUBLISH,
-        &json!({"title": "The Bitcoin Daily", "stories": [{"article": 1, "headline": "h", "summary": "s"}],
-                "schedule": "daily", "hour": 8, "email": true}),
-        &Ctx {
-            profile,
-            gathered: Some(&g),
-        },
-    ));
-    let (t, res) = run(
-        NEWS_PUBLISH,
+    run(
+        NEWS_GATHER,
         &args,
-        started(request, NEWS_PUBLISH, &args),
+        started(request, NEWS_GATHER, &args),
         &machine(profile, false),
         tools,
-    );
-    (gt, res, t)
+    )
 }
 
 #[test]
 fn a_price_monitor_fetches_the_prices_with_the_news_and_shows_them() {
     let none = json!({});
-    let (gt, res, t) = btc_run(&none);
+    let (t, res) = btc_run(&none);
     // one turn: the market prices and the first news search
-    let first = gt
+    let first = t
         .iter()
         .find(|m| !tool_calls(m).is_empty() && get_str(&tool_calls(m)[0], "id").starts_with(PREFIX))
         .unwrap();
@@ -764,8 +737,8 @@ fn a_price_monitor_fetches_the_prices_with_the_news_and_shows_them() {
         .map(|tc| stored_call(tc).0)
         .collect();
     assert_eq!(names, [MARKET_TOOL, "browser_news_search"]);
-    assert_eq!(calls_of(&gt, MARKET_TOOL)[0]["symbols"], json!(["BTC-USD"]));
-    // the edition carries the price (code's line), the schedule is daily at 08:00 and keeps the symbols
+    assert_eq!(calls_of(&t, MARKET_TOOL)[0]["symbols"], json!(["BTC-USD"]));
+    // the edition carries the price (code's line), the schedule is daily at 08:00 and its task keeps the symbols
     let rep = &calls_of(&t, "news_report")[0];
     assert_eq!(
         rep["markets"],
@@ -773,10 +746,7 @@ fn a_price_monitor_fetches_the_prices_with_the_news_and_shows_them() {
     );
     let sch = &calls_of(&t, "schedule_create")[0];
     assert_eq!(sch["spec"], "0 8 * * *");
-    assert!(
-        sget(sch, "goal").contains(r#"markets ["BTC-USD"]"#),
-        "{sch}"
-    );
+    assert_eq!(sch["task"]["args"]["markets"], json!(["BTC-USD"]));
     let shown = super::super::show::lines(&res, false);
     assert_eq!(
         shown[0],
@@ -796,7 +766,7 @@ fn a_price_monitor_fetches_the_prices_with_the_news_and_shows_them() {
 #[test]
 fn send_me_delivers_in_the_chat_and_by_email_only_when_a_mailbox_is_connected() {
     let none = json!({});
-    let (_, res, t) = btc_run(&none);
+    let (t, res) = btc_run(&none);
     assert!(calls_of(&t, "gmail_send").is_empty());
     assert_eq!(res["delivery"], json!({"chat": true, "email": null}));
     assert_eq!(res["schedule"]["delivery"], json!(["chat"]));
@@ -805,7 +775,7 @@ fn send_me_delivers_in_the_chat_and_by_email_only_when_a_mailbox_is_connected() 
         .any(|l| l.starts_with("- Delivered: here in this chat, each new edition too")));
 
     let mail = json!({"mailbox": "me@example.com"});
-    let (_, res, t) = btc_run(&mail);
+    let (t, res) = btc_run(&mail);
     assert_eq!(calls_of(&t, "gmail_send")[0]["to"], "me@example.com");
     assert_eq!(
         res["delivery"],

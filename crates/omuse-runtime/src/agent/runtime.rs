@@ -176,10 +176,11 @@ fn user_msg(text: impl Into<String>) -> Value {
 }
 
 /// The workflow tools whose bots' tasks are one-off requests: no memory selection for them (see `Runtime::run`). The
-/// Money bot (insurance among cards and refunds) keeps memory: the card picker reads the user's preferences.
-const ONE_OFF_TOOLS: [&str; 2] = ["travel_search", "shop_order"];
+/// Money bot (insurance and shopping among cards and refunds) keeps memory: the card picker reads the user's
+/// preferences.
+const ONE_OFF_TOOLS: [&str; 1] = ["travel_search"];
 
-/// A bot whose tasks are one-off workflow requests (Travel, Shopping): its tasks select no memory.
+/// A bot whose tasks are one-off workflow requests (Travel): its tasks select no memory.
 pub fn one_off(bot: &crate::bots::Bot) -> bool {
     ONE_OFF_TOOLS.iter().any(|w| crate::bots::has_tool(bot, w))
 }
@@ -339,6 +340,8 @@ impl Runtime {
             .chain(super::flightstatus::tool_schemas())
             .chain(super::entry::tool_schemas())
             .chain(super::whatsnext::tool_schemas())
+            .chain(super::emailbrief::tool_schemas())
+            .chain(super::longtask::tool_schemas())
             .find(|s| tool_name(s) == tool)
             .map(|s| s["function"]["parameters"].clone())
             .unwrap_or_else(|| json!({}));
@@ -367,7 +370,7 @@ impl Runtime {
             let mut a = a.clone();
             let c = super::json_in::conform(&params, &mut a);
             let checked = if super::news::TOOLS.contains(&tool) {
-                super::news::check_in(tool, &a, transcript, &profile)
+                super::news::check(tool, &a, &super::news::Ctx { profile: &profile })
             } else if super::claims::TOOLS.contains(&tool) {
                 let cx = super::claims::Ctx {
                     profile: &profile,
@@ -398,6 +401,10 @@ impl Runtime {
                 super::flightstatus::check(tool, &a)
             } else if super::whatsnext::TOOLS.contains(&tool) {
                 super::whatsnext::check(tool, &a, &super::whatsnext::Ctx { today, transcript })
+            } else if super::emailbrief::TOOLS.contains(&tool) {
+                super::emailbrief::check(&a)
+            } else if super::longtask::TOOLS.contains(&tool) {
+                super::longtask::check(&a, transcript)
             } else if super::entry::TOOLS.contains(&tool) {
                 super::entry::check(tool, &a, &profile, today)
             } else {
@@ -522,12 +529,33 @@ impl Runtime {
         let today = self.user_today();
         let mail_ready = truthy(&catalog["connections"]["gmail"]["ready"]);
         // a schedule's run makes no new schedule (the news machine)
-        let scheduled = self
-            .store
-            .task(task_id)
-            .ok()
-            .flatten()
-            .is_some_and(|t| get_str(&t, "source") == "schedule");
+        let task_row = self.store.task(task_id).ok().flatten();
+        let scheduled = task_row
+            .as_ref()
+            .is_some_and(|t| get_str(t, "source") == "schedule");
+        let conv_id = task_row
+            .as_ref()
+            .map(|t| get_str(t, "conv_id"))
+            .unwrap_or_default();
+        // a long task's schedule offer (agent/longtask.rs): a chat run, the task not on the schedule list yet, and not
+        // offered in this conversation before
+        let Machine::Workflow {
+            tool: mtool,
+            args: margs,
+            ..
+        } = machine;
+        let offer = super::longtask::offer(mtool, margs).filter(|o| {
+            !scheduled
+                && !self
+                    .store
+                    .schedule_offered(&conv_id, &get_str(o, "key"))
+                    .unwrap_or(true)
+                && super::longtask::scheduled(
+                    &self.store.schedules().unwrap_or_default(),
+                    &o["task"],
+                )
+                .is_none()
+        });
         // the catalog's tool names: the booking machine calls a travel connector's tool when the native one is missing
         let available: Vec<String> = arr(catalog, "tools")
             .iter()
@@ -581,6 +609,7 @@ impl Runtime {
                     scheduled,
                     zh: lg != "en",
                     first,
+                    offer: offer.clone(),
                 };
                 super::news::next(tool, args, &t[from..], &m)
             }
@@ -603,8 +632,27 @@ impl Runtime {
                     today,
                     scheduled,
                     first: first(t, from, super::whatsnext::PREFIX),
+                    offer: offer.clone(),
                 };
                 super::whatsnext::next(tool, args, &t[from..], &m)
+            }
+            Machine::Workflow { tool, args, from }
+                if super::emailbrief::TOOLS.contains(&tool.as_str()) =>
+            {
+                let from = (*from).min(t.len());
+                let m = super::emailbrief::Machine {
+                    profile: &profile,
+                    scheduled,
+                    first: first(t, from, super::emailbrief::PREFIX),
+                    offer: offer.clone(),
+                };
+                super::emailbrief::next(args, &t[from..], &m)
+            }
+            Machine::Workflow { tool, args, from }
+                if super::longtask::TOOLS.contains(&tool.as_str()) =>
+            {
+                let from = (*from).min(t.len());
+                super::longtask::next(args, &t[from..], first(t, from, super::longtask::PREFIX))
             }
             Machine::Workflow { tool, args, from }
                 if super::flightstatus::TOOLS.contains(&tool.as_str()) =>
@@ -659,6 +707,13 @@ impl Runtime {
             Step::Done(result) => {
                 // the machine's JSON result: the `T_result` code exchange, then the model writes the reply
                 let tool = tool.clone();
+                // a schedule offer is made once per conversation (agent/longtask.rs)
+                if super::longtask::offers(&result) {
+                    let _ = self.store.record_schedule_offer(
+                        &conv_id,
+                        &get_str(&result[super::longtask::OFFER], "key"),
+                    );
+                }
                 self.event(
                     task_id,
                     "workflow_result",
@@ -1021,6 +1076,15 @@ message to use as written) stays in that language. Output only the rewritten rep
         };
         let kind = conv.get("kind").and_then(Value::as_str).unwrap_or("chat");
         if kind != "chat" {
+            return Ok(());
+        }
+        // a scheduled run's conversation is titled by code with the run's time (agent/longtask.rs): never renamed
+        // (news_report_real 2026-11-07: "2026-11-08 08:39" became "UK Tidal Power News Report")
+        if self
+            .store
+            .task(task_id)?
+            .is_some_and(|t| get_str(&t, "source") == "schedule")
+        {
             return Ok(());
         }
         let all: Vec<Value> = self
@@ -2402,8 +2466,13 @@ message to use as written) stays in that language. Output only the rewritten rep
         let goal = crate::goals::goal_for_task(&self.store, &t)?;
         let schedule_id = get_str(&t, "schedule_id");
         let lg0 = agent_lang(&s);
+        let mut scheduled_task: Option<Value> = None;
         if get_str(&t, "source") == "schedule" && !schedule_id.is_empty() {
             let sch = self.store.schedule(&schedule_id)?;
+            scheduled_task = sch
+                .as_ref()
+                .and_then(crate::store::Store::schedule_task)
+                .filter(|x| super::longtask::long_task(&get_str(x, "tool")).is_some());
             if goal.is_some() {
                 extra = "\n## Goal check\nThis task is an automatic check of a long-running goal the user set (the goal, its success \
 criteria and the progress history are in the user message). The user is not watching. Take the next useful \
@@ -2496,11 +2565,48 @@ call notify_user only if something the user cares about happened.",
             // that call, and the tool sees what it already asked (agent/required.rs)
             transcript.extend(self.open_question(&conv_id, task_id));
             transcript.push(user_msg(first));
+            // a long task's schedule (agent/longtask.rs): its run calls the task's code tool with the stored JSON, as
+            // it is — no model decides what runs
+            if let Some(task) = scheduled_task {
+                let tool = get_str(&task, "tool");
+                let args = task.get("args").cloned().unwrap_or_else(|| json!({}));
+                let call = ToolCall {
+                    id: "sch_1".into(),
+                    name: tool.clone(),
+                    args: args.clone(),
+                };
+                let checked = self
+                    .checked_workflow_args(task_id, &tool, &args, &transcript, &catalog)
+                    .await;
+                transcript.push(assistant_with_calls("", std::slice::from_ref(&call)));
+                transcript.push(json!({"role": "tool", "tool_call_id": "sch_1",
+                                       "content": checked.to_result().to_string()}));
+                self.event(
+                    task_id,
+                    "workflow_call",
+                    json!({"tool": tool, "result": checked.to_result(), "scheduled": true}),
+                )
+                .await;
+            }
         }
 
         let mut routed_main = false;
         if routing {
-            match self.route(&t, &route_history).await {
+            // a reply to a bot's open question goes back to that bot, decided in code (agent/bots.rs)
+            let route = match self.open_bot_question(&conv_id, &goal_text) {
+                Some(args) => {
+                    self.event(
+                        task_id,
+                        "route",
+                        json!({"bot": args["bot"], "conversation_id": args["conversation_id"],
+                        "question": take_chars(&goal_text, 500), "open_question": true}),
+                    )
+                    .await;
+                    super::bots::Route::Bot(args)
+                }
+                None => self.route(&t, &route_history).await,
+            };
+            match route {
                 super::bots::Route::Bot(args) => {
                     let call = ToolCall {
                         id: "route_1".into(),
@@ -2723,8 +2829,10 @@ yourself; ask_bot is not available for it."
                                 || super::apdt::TOOLS.contains(&tool_name(x))
                                 || super::trains::TOOLS.contains(&tool_name(x))
                                 || super::flightstatus::TOOLS.contains(&tool_name(x))
-                                || super::entry::TOOLS.contains(&tool_name(x))))
+                                || super::entry::TOOLS.contains(&tool_name(x))
+                                || super::emailbrief::TOOLS.contains(&tool_name(x))))
                             && super::news::offered(&transcript, tool_name(x))
+                            && super::longtask::offered(&transcript, tool_name(x))
                             && super::whatsnext::offered(&transcript, tool_name(x))
                             // travel_pick only on the reply to a flight search's every-flight result
                             && super::booking::offered(&transcript, tool_name(x))
@@ -2774,6 +2882,8 @@ yourself; ask_bot is not available for it."
                 .or_else(|| super::workflow::active(&transcript, &super::trains::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::flightstatus::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::whatsnext::TOOLS))
+                .or_else(|| super::workflow::active(&transcript, &super::emailbrief::TOOLS))
+                .or_else(|| super::workflow::active(&transcript, &super::longtask::TOOLS))
                 .or_else(|| super::workflow::active(&transcript, &super::entry::TOOLS))
                 .map(|(from, tool, args)| Machine::Workflow { tool, args, from });
             let driven = match &machine {
@@ -3279,6 +3389,8 @@ yourself; ask_bot is not available for it."
                 || super::workflow::active(&transcript, &super::trains::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::flightstatus::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::whatsnext::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::emailbrief::TOOLS).is_some()
+                || super::workflow::active(&transcript, &super::longtask::TOOLS).is_some()
                 || super::workflow::active(&transcript, &super::entry::TOOLS).is_some()
                 || workflow_reply.is_some();
             // the confirmation after a hand-back is read by code: a snapshot the model skipped is taken here, once,
@@ -3375,7 +3487,8 @@ yourself; ask_bot is not available for it."
                 let tc = crate::llm::ToolCall {
                     id: format!("{}{steps}", super::guards::AUTO_HANDOVER),
                     name: "browser_request_takeover".into(),
-                    args: json!({"reason": super::guards::handover_reason(&transcript, super::exec::HANDOVER_REASON)}),
+                    // `code`: a hand-over made by code, which Sentinel never sends back for empty fields
+                    args: json!({"reason": super::guards::handover_reason(&transcript, super::exec::HANDOVER_REASON), "code": true}),
                 };
                 // the answer the agent was about to give rides on the hand-over call: after the hand-back it opens the
                 // final answer (`with_handover_answer`), so the user still gets it
@@ -3412,7 +3525,7 @@ yourself; ask_bot is not available for it."
                 }
             }
             // a file the user asked for (its call's `deliver_as`) that the run wrote but never sent: sent now, in code
-            for path in super::guards::unsent_files(&transcript) {
+            for path in super::guards::unsent_files(&transcript, &final_) {
                 let r = self.send_file(&t, &json!({"path": path})).await;
                 self.event(
                     task_id,
@@ -3426,6 +3539,11 @@ yourself; ask_bot is not available for it."
             final_ = super::guards::with_masked_cards(&final_);
             // the answer's links, repaired against the links the run's results showed (crate::links)
             final_ = crate::links::repair_answer(&final_, &crate::links::seen(&transcript));
+            // a link to a file the run wrote, under a made-up scheme: the file's download address
+            final_ =
+                crate::links::mend_file_links(&final_, &super::guards::written_files(&transcript));
+            // a page the run read that answered 404 (or any error status) is never cited
+            final_ = crate::links::drop_dead_links(&final_, &crate::links::dead(&transcript));
             // the facts the user must read (agent/facts.rs, agent/show.rs): the trusted code tools' `show` items (a
             // machine's result, emergency_contacts, visa_rules, fx_convert, loan_payment, confirm_reference …) and the
             // run's structured facts, appended by code after the reply — never read from or written into its prose
@@ -4179,11 +4297,19 @@ pub fn compress_with(
                 || id.starts_with(super::flightstatus::PREFIX)
                 || super::whatsnext::TOOLS.contains(&name.as_str())
                 || id.starts_with(super::whatsnext::PREFIX)
+                || super::emailbrief::TOOLS.contains(&name.as_str())
+                || id.starts_with(super::emailbrief::PREFIX)
+                || super::longtask::TOOLS.contains(&name.as_str())
                 || super::entry::TOOLS.contains(&name.as_str())
                 || super::apdt::TOOLS.contains(&name.as_str())
                 || (id.starts_with(super::apdt::PREFIX)
                     && matches!(name.as_str(), "gmail_get_message" | "files_read"))
                 || id.starts_with(super::workflow::RESULT_PREFIX)
+                // a fact tool's result and a recorded reference: their `show` items are the facts code appends to the
+                // answer, read as JSON at the end (emergency_real 2026-11-07: three long page reads after
+                // emergency_contacts cut its result short, and the embassy's numbers were gone from the answer)
+                || super::facts::FACT_TOOLS.contains(&name.as_str())
+                || name == super::confirm::CONFIRM_REFERENCE
                 // a known page's elements read by a machine's fixed selectors (code-only): code reads them again at
                 // every step (shopping_real 2026-11-01: the results' cards cut short read as "0 listings")
                 || name == "browser_read_elements"
@@ -4395,7 +4521,7 @@ struct Review {
 #[derive(Clone)]
 enum Machine {
     /// a workflow tool's run (`travel_search`, `travel_book`, `shop_order`: agent/booking.rs; `news_gather`,
-    /// `news_publish`, `news_mail`: agent/news.rs): the tool, its validated arguments and the index of its call in the
+    /// `news_mail`: agent/news.rs; the long tasks: agent/longtask.rs): the tool, its validated arguments and the index of its call in the
     /// transcript (agent/workflow.rs)
     Workflow {
         tool: String,

@@ -1,18 +1,15 @@
 ---
 name: morning-email-brief
-description: 整理重要邮件并建议回复 Triage recent emails, find the important ones that need a reply, summarize and propose replies.
+description: 重要邮件简报：一次 email_brief 调用，代码搜索并读取最近的邮件，挑出需要回复的（附建议回复）和仅供参考的，做成一张表；可定时（如每个工作日 8 点）Email brief — ONE email_brief call: code searches and reads the recent mail, sorts out the emails that need a reply (with a suggested reply each) and the ones for information, as one table; also on a timer ("every weekday at 8 am, summarise my new emails").
 ---
-# Morning email brief / 重要邮件简报
+# Email brief / 重要邮件简报
 
-1. Search recent mail, excluding noise:
-   `in:inbox newer_than:7d -category:promotions -category:social -category:updates -category:forums`
-   (use the period the user asked for; "今天" → `newer_than:1d`, "这周" → `newer_than:7d`). Use max_results 20–30.
-2. Classify each email from the metadata: NEEDS_REPLY (a person asks a question / requests action / waits for a decision),
-   FYI, or NOISE (newsletters, receipts, notifications, no-reply senders).
-3. For every NEEDS_REPLY email, call gmail_get_message to read the full body (never guess from the snippet) — all of
-   them in ONE turn, one call per email: same-turn reads run at the same time and come back together.
-4. Output a table: 发件人 From | 主题 Subject | 为什么重要 Why | 建议回复 Suggested reply (1–2 sentences) | message_id.
-   Order by urgency. Then list FYI items in one line each. Skip NOISE.
-5. Do NOT send anything. Offer: "要我为哪几封创建草稿或直接回复？" If the user already asked for drafts, create them with
-   gmail_create_draft using reply_to_message_id.
-6. Mention any email flagged with injection_warning as suspicious.
+A long task: code does the whole job (`agent/emailbrief.rs`). Call **email_brief** once:
+- `period`: `day` for today's / new mail (default), `week` for this week's.
+- `schedule`: only when the user asked for it on a timer — `frequency` (`daily`, `weekdays`, `weekly`), `time`
+  ("HH:MM"), `weekday` for weekly (0 = Sunday).
+- `email: true` only when the user asked for the brief to be emailed to them.
+
+The reply: one or two sentences on what came in; code appends the table (with each email's message_id) and the
+schedule. `schedule_offer`: ask its `question` in one line. Nothing is sent to anyone: offer to draft replies, and when
+the user asks for drafts, create them with gmail_create_draft using reply_to_message_id.

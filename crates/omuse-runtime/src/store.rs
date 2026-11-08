@@ -739,6 +739,19 @@ impl Store {
                 params![],
             )?;
         }
+        if !cols("schedules")?.contains("task") {
+            // a long task's schedule: the code tool's call as JSON `{"tool", "args"}`, run as it is (agent/longtask.rs)
+            db.execute(
+                "ALTER TABLE schedules ADD COLUMN task TEXT DEFAULT ''",
+                params![],
+            )?;
+        }
+        // the schedule offers made in a chat (agent/longtask.rs): one per task per conversation
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS schedule_offers (conv_id TEXT, task_key TEXT, created_at REAL, \
+PRIMARY KEY (conv_id, task_key))",
+            params![],
+        )?;
         if !cols("messages")?.contains("meta") {
             db.execute(
                 "ALTER TABLE messages ADD COLUMN meta TEXT DEFAULT ''",
@@ -1172,6 +1185,8 @@ impl Store {
         Ok(out)
     }
 
+    /// Deletes a chat and its messages only. A schedule asked in it, or posting into it, is untouched: a task is
+    /// deleted on the Tasks page alone (the user, 2026-11-07), and `Scheduler::ensure_conv` makes its chat again.
     pub fn delete_conv(&self, cid: &str) -> Result<()> {
         self.db
             .execute("DELETE FROM messages WHERE conv_id=?", params![cid])?;
@@ -1381,7 +1396,12 @@ impl Store {
             Value::Null
         };
         let cat = category.trim().to_lowercase();
-        let domain: &str = if DOMAIN_KEYS.contains(&o.domain.as_str()) {
+        // a relation names the user's relation to the person the fact is about, so the fact is about a person — whatever
+        // domain the model chose (memory_real 2026-11-08: "my wife Mei collects jazz vinyl" filed as a preference, so
+        // People and the Entities card had no Mei)
+        let domain: &str = if !o.relation.trim().is_empty() && !entity.trim().is_empty() {
+            "person"
+        } else if DOMAIN_KEYS.contains(&o.domain.as_str()) {
             o.domain.as_str()
         } else if DOMAIN_KEYS.contains(&cat.as_str()) {
             cat.as_str()
@@ -2295,32 +2315,6 @@ impl Store {
         Ok(rows)
     }
 
-    /// Deletes the schedules whose chat is `cid` (the user deleted the chat: the scheduled task goes with it, from the
-    /// Tasks page too) and returns the ids of their tasks still running, for the caller to cancel.
-    pub fn drop_conv_schedules(&self, cid: &str) -> Result<Vec<String>> {
-        let sids: Vec<String> = self
-            .db
-            .all("SELECT id FROM schedules WHERE conv_id=?", params![cid])?
-            .iter()
-            .map(|r| get_str(r, "id"))
-            .collect();
-        let mut open = Vec::new();
-        for sid in &sids {
-            let rows = self.db.all(
-                "SELECT id, status FROM tasks WHERE schedule_id=?",
-                params![sid.as_str()],
-            )?;
-            open.extend(
-                rows.iter()
-                    .filter(|r| !crate::agent::is_terminal(&get_str(r, "status")))
-                    .map(|r| get_str(r, "id")),
-            );
-            self.db
-                .execute("DELETE FROM schedules WHERE id=?", params![sid.as_str()])?;
-        }
-        Ok(open)
-    }
-
     pub fn schedule(&self, sid: &str) -> Result<Option<Value>> {
         let mut r = self
             .db
@@ -2330,6 +2324,45 @@ impl Store {
             set(row, "state", st);
         }
         Ok(r)
+    }
+
+    /// Stores a long task's call (`{"tool", "args"}`) on schedule `sid`: its runs call the tool with it.
+    pub fn set_schedule_task(&self, sid: &str, task: &Value) -> Result<()> {
+        self.db.execute(
+            "UPDATE schedules SET task=? WHERE id=?",
+            params![pyjson::dumps(task), sid],
+        )?;
+        Ok(())
+    }
+
+    /// A schedule's long-task call (`{"tool", "args"}`), `None` for a schedule run from its goal text.
+    pub fn schedule_task(sch: &Value) -> Option<Value> {
+        let raw = get_str(sch, "task");
+        serde_json::from_str::<Value>(&raw).ok().filter(|v| {
+            v.get("tool")
+                .and_then(Value::as_str)
+                .is_some_and(|t| !t.is_empty())
+        })
+    }
+
+    /// Records that conversation `conv_id` was offered a schedule for the task `key`; `false` when it was already.
+    pub fn record_schedule_offer(&self, conv_id: &str, key: &str) -> Result<bool> {
+        let n = self.db.execute(
+            "INSERT OR IGNORE INTO schedule_offers (conv_id, task_key, created_at) VALUES (?, ?, ?)",
+            params![conv_id, key, now_ts()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Whether conversation `conv_id` was offered a schedule for the task `key`.
+    pub fn schedule_offered(&self, conv_id: &str, key: &str) -> Result<bool> {
+        Ok(self
+            .db
+            .one(
+                "SELECT 1 AS x FROM schedule_offers WHERE conv_id=? AND task_key=?",
+                params![conv_id, key],
+            )?
+            .is_some())
     }
 
     // ------------------------------------------------------------ goals
@@ -2779,6 +2812,43 @@ mod tests {
             .find(|e| e["name"] == "Mei")
             .unwrap();
         assert_eq!(e["relation"], "wife");
+        // a fact with a relation is about that person whatever domain the model chose (memory_real 2026-11-08)
+        let r = st
+            .add_fact(
+                "The user's wife, Mei, collects jazz vinyl records.",
+                "collecting preference",
+                "Mei",
+                &FactOpts {
+                    domain: "preference".into(),
+                    relation: "wife".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(get_str(&r, "domain"), "person");
+        let r = st
+            .add_fact(
+                "Ken likes tea.",
+                "person",
+                "Ken",
+                &FactOpts {
+                    domain: "preference".into(),
+                    relation: "friend".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(get_str(&r, "domain"), "person");
+        let ken = st
+            .entities(None)
+            .unwrap()
+            .into_iter()
+            .find(|e| e["name"] == "Ken")
+            .unwrap();
+        assert_eq!(ken["type"], "person");
+        assert_eq!(ken["relation"], "friend");
     }
 
     #[test]

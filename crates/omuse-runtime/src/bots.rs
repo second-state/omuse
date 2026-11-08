@@ -35,6 +35,9 @@ pub struct Bot {
     /// What the web UI draws on the bot's robot icon in the menu (`plane`, `shield`, …).
     pub badge: String,
     pub order: i64,
+    /// The menu section (`group:`): `main`, `tasks` (the long-running tasks, listed with Main at the top) or `bots`
+    /// (the specialised bots, the second section).
+    pub group: String,
     /// The ids of earlier bots merged into this one.
     pub aliases: Vec<String>,
     pub description: String,
@@ -68,7 +71,7 @@ impl Bot {
     /// The API view (`GET /api/bots`).
     pub fn to_json(&self) -> Value {
         json!({"id": self.id, "name": self.name, "name_zh": self.name_zh, "icon": self.icon, "badge": self.badge,
-               "order": self.order,
+               "order": self.order, "group": self.group,
                "description": self.description, "description_zh": self.description_zh, "skills": self.skills,
                "examples": self.examples, "examples_zh": self.examples_zh})
     }
@@ -98,6 +101,11 @@ pub fn parse(id: &str, text: &str) -> Option<Bot> {
         icon: field("icon"),
         badge: field("badge"),
         order: field("order").parse().unwrap_or(99),
+        group: match field("group").as_str() {
+            "" if id == MAIN => MAIN.to_string(),
+            "" => "bots".to_string(),
+            g => g.to_string(),
+        },
         aliases: list(&field("aliases")),
         description: field("description"),
         description_zh: field("description_zh"),
@@ -135,6 +143,11 @@ static BOTS: LazyLock<Vec<Bot>> = LazyLock::new(|| {
 /// Every bot, the main one first.
 pub fn all() -> &'static [Bot] {
     &BOTS
+}
+
+/// The long-running task bots (`group: tasks`), in menu order.
+pub fn task_bots() -> impl Iterator<Item = &'static Bot> {
+    BOTS.iter().filter(|b| b.group == "tasks")
 }
 
 /// The bot with this id, or the bot an earlier bot of that id was merged into.
@@ -284,7 +297,37 @@ mod tests {
     #[test]
     fn built_in_bots_parse_with_main_first_and_known_skills() {
         let ids: Vec<&str> = all().iter().map(|b| b.id.as_str()).collect();
-        assert_eq!(ids, ["main", "travel", "money", "photos", "shopping"]);
+        assert_eq!(
+            ids,
+            [
+                "main",
+                "news",
+                "whatsnext",
+                "brief",
+                "travel",
+                "money",
+                "social"
+            ]
+        );
+        // the menu's sections: Main and the long-running tasks on top, the specialised bots below
+        let groups: Vec<&str> = all().iter().map(|b| b.group.as_str()).collect();
+        assert_eq!(
+            groups,
+            ["main", "tasks", "tasks", "tasks", "bots", "bots", "bots"]
+        );
+        assert_eq!(
+            task_bots().map(|b| b.id.as_str()).collect::<Vec<_>>(),
+            ["news", "whatsnext", "brief"]
+        );
+        // every long task's bot exists and claims its tool
+        for lt in crate::agent::longtask::LONG_TASKS.iter() {
+            let b = get(lt.bot).unwrap_or_else(|| panic!("{}", lt.bot));
+            assert!(
+                has_tool(b, lt.tool) && !has_tool(get(MAIN).unwrap(), lt.tool),
+                "{}",
+                lt.tool
+            );
+        }
         for b in all() {
             assert!(
                 !b.name.is_empty()
@@ -341,12 +384,19 @@ mod tests {
                 ("arrival", "travel"),
                 ("cards", "money"),
                 ("cities", "travel"),
-                ("insurance", "money")
+                ("insurance", "money"),
+                ("photos", "social"),
+                ("shopping", "money")
             ]
         );
         // Credit cards and Insurance & claims were merged into Money (0.6.6): their chats move to it
         assert_eq!(get("cards").unwrap().id, "money");
         assert_eq!(get("insurance").unwrap().id, "money");
+        // Shopping was merged into Money and Photos & videos renamed Social media (0.6.8): their chats move
+        assert_eq!(get("shopping").unwrap().id, "money");
+        assert_eq!(get("photos").unwrap().id, "social");
+        assert!(has_skill(get("money").unwrap(), "online-shopping"));
+        assert!(has_tool(get("money").unwrap(), "shop_order"));
     }
 
     #[test]
@@ -356,6 +406,16 @@ mod tests {
         let travel = get("travel").unwrap();
         assert!(has_skill(travel, "flight-booking") && !has_skill(main, "flight-booking"));
         assert!(has_skill(main, "news-search") && !has_skill(travel, "news-search"));
+        // the long-running tasks are their bots': Main hands them over
+        let news = get("news").unwrap();
+        assert!(has_skill(news, "news-research") && !has_skill(main, "news-research"));
+        assert!(
+            has_skill(get("whatsnext").unwrap(), "whats-next") && !has_skill(main, "whats-next")
+        );
+        assert!(
+            has_skill(get("brief").unwrap(), "morning-email-brief")
+                && !has_skill(main, "morning-email-brief")
+        );
         // an imported skill no bot names belongs to main
         assert!(has_skill(main, "my-imported-skill") && !has_skill(travel, "my-imported-skill"));
         // shared: listed by a specialised bot and by main
@@ -368,7 +428,7 @@ mod tests {
         assert!(
             has_skill(travel, "baggage-delayed-lost") && !has_skill(money, "baggage-delayed-lost")
         );
-        let photos = get("photos").unwrap();
+        let photos = get("social").unwrap();
         assert!(has_skill(photos, "drive-video-edit") && !has_skill(main, "drive-video-edit"));
         assert_eq!(owners("pdf-forms").len(), 2);
         let skills = vec![
@@ -449,7 +509,7 @@ mod tests {
     fn the_one_off_workflow_bots_load_no_memory() {
         let one_off =
             |id: &str| crate::agent::runtime::one_off(BOTS.iter().find(|b| b.id == id).unwrap());
-        assert!(one_off("travel") && one_off("shopping"));
-        assert!(!one_off("main") && !one_off("money") && !one_off("photos"));
+        assert!(one_off("travel"));
+        assert!(!one_off("main") && !one_off("money") && !one_off("social") && !one_off("news"));
     }
 }
