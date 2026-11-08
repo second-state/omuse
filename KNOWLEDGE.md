@@ -1001,6 +1001,12 @@ connector's `mcp_<server>__<name>` counts as `<name>`) and `examples` / `example
 between them: shown in an Examples dropdown above the chat input of the bot's empty conversation; a click fills the input); the body
 is the bot's prompt, added to the executor prompt.
 
+- **The rules of a long task** (the user, 2026-11-08; docs/json-tools.md "The rules of a long task"): the skill says what
+  to collect and which ONE tool to call, never steps for the model to perform; the tool is a deterministic sequence of
+  steps fixed in code, and a step may run the subagent (JSON in and out, checked, one retry, the spec's default) —
+  code decides when and with what, the subagent never chooses the next step; the scheduler calls the same tool with
+  the stored JSON; the tool is in-process Rust (a CLI and a declarative step file were weighed and not taken: "in-process
+  is fine"), so a new task is a `LongTask` entry, a machine, its `SubSpec`s, a skill and a bot, and a release.
 - **Main** (`main`) is the entrance: it has every skill no other bot lists (imported skills included) plus the
   ones its own file names (`pdf-forms`). The long-running task bots (0.6.8, `group: tasks`, agent/longtask.rs): News
   report (`news`: `news-research`, `news_gather` / `news_mail`), What's next (`whatsnext`: `whats-next`,

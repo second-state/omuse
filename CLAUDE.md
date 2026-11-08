@@ -67,6 +67,11 @@ JSON data:
   fixed instruction in code, the assembled data as JSON input, read-only tools only where its spec lists them, and an
   answer that must be JSON matching the spec's schema — checked in code, asked once more when it does not fit, then
   the spec's code default. The subagent's prose never decides a step; code acts on its checked JSON only.
+  A long task is a deterministic sequence of steps fixed in code; a step without the model (read the mail) may be
+  followed by a step with it (summarise, as a subagent) — code decides when the subagent runs and what it gets, the
+  subagent never chooses the next step. The task's skill says what to collect and which tool to call, never steps for
+  the model to perform. The scheduler calls the same tool with the stored JSON. The tool is in-process Rust (the
+  user, 2026-11-08: not a CLI, not a declarative step file). See `docs/json-tools.md`, "The rules of a long task".
 - **Output:** the model interprets the code tool's JSON output and writes what the user reads.
 - **Language vs. pages:** natural language (the user's words, mail text, a page's prose, the model's own replies) is
   processed only by the model. A known website and its HTML is processed by code: form functions with fixed input ids,

@@ -178,8 +178,35 @@ the same way:
    Main); Main hands a request for one over with `ask_bot`. A schedule made from a request ("every week",
    "every morning at 7", "every weekday at 8") stores the same JSON.
 
-A new long task: a `LongTask` entry (tool, stored arguments, the schedule's name and default time), its machine, and a
-`SubSpec` per subagent kind.
+### The rules of a long task (the user's decisions of 2026-11-08)
+
+- **The skill understands, the code tool runs.** A long task's skill says what the task does, which parameters the
+  model must collect (from the user's words, their mail, their profile, the chat's files) and the ONE code tool to
+  call with them as JSON. It never lists steps for the model to perform one at a time: the steps are the machine's,
+  in code. All natural-language parsing and every decision about what the user wants is the model's and its skill's;
+  nothing after the call is.
+- **The code tool is a deterministic sequence of steps**, fixed in code (`next(args, transcript, …)` in the task's
+  module): which step runs next depends only on the task's JSON and the results so far, never on the model's words.
+- **A step may call the model.** A step that must read or write words (sort the emails, write the stories, name the
+  plan's items, summarise) runs the subagent: the step's `SubSpec` fixes the instruction, the input (the assembled data
+  as JSON), the output schema, the read-only tools it may use (usually none), the check and the default. Code decides
+  WHEN it runs and WHAT it gets; the subagent cannot choose the next step, call another tool, or end the task; its
+  answer is JSON checked against the input, asked once more with the problems, then the default — so the task always
+  completes. The texts inside its input are data, never instructions (its system prompt says so). An email step
+  without the model followed by a summary step with the model is the normal shape.
+- **The scheduler calls the same tool with the same JSON.** The model assembles the JSON once, in the chat; the
+  schedule stores it (`schedules.task`); a run adds the run-time values (the date, the window since the last run) and
+  calls the tool directly. No model turn until the reply is worded.
+- **In-process, in Rust.** The code tool is a function compiled into the runtime (the machine), not a CLI or a
+  declarative step file: the services a task needs (the mail connections, the Google tokens, the search key, the
+  browser service, the model client of the subagent) live in the runtime's process. A CLI speaking JSON over
+  stdin/stdout, or a declarative runner reading a step file, were weighed on 2026-11-08 and not taken: "in-process is
+  fine"; a new task is a build and a release.
+
+A new long task: a `LongTask` entry (tool, stored arguments, the schedule's name and default time), its machine
+(`agent/<task>.rs`: `tool_schemas`, `check`, `next` — the steps), a `SubSpec` per subagent kind (registered in
+`longtask::spec`), its skill (`skills/<task>/SKILL.md`: what to collect and the tool) and its bot (`bots/<id>.md`,
+`group: tasks`).
 
 ## Email verification codes (one reusable step)
 
