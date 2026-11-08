@@ -1,12 +1,12 @@
-"""The Shopping bot on the real Shopify Global Catalog, as the user does it, with a real model (OMUSE_E2E_REAL=1, the e2e
+"""Shopping in the Money bot on the real Shopify Global Catalog, as the user does it, with a real model (OMUSE_E2E_REAL=1, the e2e
 env file with OMUSE_E2E_SHOPIFY_CLIENT_ID / _SECRET). Read-only: nothing is bought, no page is opened by the agent.
 
-A Singapore user (the profile's home city and country) asks the Shopping bot for running shoes under S$150. Code
+A Singapore user (the profile's home city and country) asks the Money bot for running shoes under S$150. Code
 searches the Catalog for what ships to Singapore, prices every offer in SGD (the merchant's own SGD price, or converted at
 the market rate), ranks them; the model picks a few by their offer ids; code shows the choice card and appends each
 offer's link. Checked, from what the user sees: a choice card of a few offers that ship to SG, each priced in SGD within
 the budget with its merchant; the block's links are the cards' merchants' pages and some open; and Main hands the same
-request to the Shopping bot.
+request to the Money bot.
 
     OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh -j 1 shopping_real"""
 import os
@@ -18,7 +18,7 @@ from tests import user_common as U  # noqa: E402
 from tests.user_common import check  # noqa: E402
 
 REQUEST = "Find me running shoes under S$150."
-# a brand named: Google Shopping too (SerpApi, the Flights & hotels key) — also the Shopping bot's example in the UI
+# a brand named: Google Shopping too (SerpApi, the Flights & hotels key)
 BRAND_REQUEST = "Find me Nike running shoes under S$250."
 KEY = os.environ.get("OMUSE_E2E_SERPAPI_KEY", "")
 PROFILE = {"name_en": "OMUSE TESTER", "home_city": "SIN", "home_country": "SG",
@@ -31,7 +31,7 @@ def host(u: str) -> str:
 
 async def main():
     async with U.User() as u:
-        await u.open_bot("Shopping")
+        await u.open_bot("Money")
         a = await u.ask(REQUEST, label="find", new_chat=False)
         cards = [c for c in await u.choices() if c.get("kind") == "comparison"]
         opts = (cards[-1].get("options") if cards else None) or []
@@ -67,7 +67,7 @@ async def main():
             await card.locator("button", has_text="Connect & test").click()
             await pg.wait_for_function("() => [...document.querySelectorAll('.card')].some(c => c.textContent.includes('Flights & hotels') && /searches left/.test(c.textContent))",
                                        timeout=60000)
-            await u.open_bot("Shopping")
+            await u.open_bot("Money")
             c = await u.ask(BRAND_REQUEST, label="brand", new_chat=True)
             cards = [x for x in await u.choices() if x.get("kind") == "comparison"]
             copts = (cards[-1].get("options") if cards else None) or []
@@ -86,11 +86,11 @@ async def main():
         else:
             print("SKIP the brand search: no OMUSE_E2E_SERPAPI_KEY")
 
-        # the same request to Main goes to the Shopping bot
+        # the same request to Main goes to the Money bot
         await u.open_bot("Main")
         b = await u.ask(REQUEST, label="main", new_chat=False)
         print(f"INFO main: {b.bot_link!r}")
-        check("Main hands the request to the Shopping bot", "Shopping" in b.bot_link, b.bot_link)
+        check("Main hands the request to the Money bot", "Money" in b.bot_link, b.bot_link)
 
 
 U.setup(vault=False, profile=PROFILE)

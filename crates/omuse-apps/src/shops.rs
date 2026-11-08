@@ -1,4 +1,4 @@
-//! The Shopping bot's store providers behind one search (`shop_search`, called by the `shop_order` machine): each
+//! The Money bot's shopping store providers behind one search (`shop_search`, called by the `shop_order` machine): each
 //! provider turns `(query, criteria, location)` into structured offers; code picks the providers for the user's
 //! location (or only the one the user named), queries them in parallel with a time limit each, leaves a late or failing
 //! one out (the result says so) and merges the offers into one list. Shopify's Global Catalog is the first provider;

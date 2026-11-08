@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 use super::lang::agent_lang;
 use super::runtime::{opts, Runtime, Suspend};
-use super::util::sget;
+use super::util::{arr, sget};
 use crate::bots::{self, Bot};
 use crate::llm::{extract_json, ChatOpts, ToolCall};
 
@@ -68,7 +68,7 @@ not see this chat. The bot's answer is shown to the user word for word with a li
 task ends there. A follow-up on something a bot already answered here (the history marks it \"[answered by the … bot \
 in conversation conv_…]\") goes back to that bot with conversation_id = that conversation, so it keeps its context. A \
 request for two bots: hand it to the bot for the main part and put the rest in question as context. Everything else — \
-general questions, email, news, research, shopping, documents, calls — you answer yourself.",
+general questions, email, a quick news search, research, documents, calls — you answer yourself.",
                 lines.join("\n"))
         } else {
             format!("\n\n## 专门助手\n下面这些专门助手各有自己的技能；记忆、档案、保险箱和连接器都是共用的：\n{}\n\
@@ -76,7 +76,7 @@ general questions, email, news, research, shopping, documents, calls — you ans
 也不要去找它的技能（你没有）。question = 用户的完整请求，加上这个助手需要的本对话里的信息（日期、姓名、地点、已经定下的事）：\
 它看不到这段对话。助手的回答会原样显示给用户，并附上它那段对话的链接，你的任务到此结束。用户追问某个助手已经在这里回答过的事\
 （历史里标着「[answered by the … bot in conversation conv_…]」）时，用 conversation_id = 那段对话交回同一个助手，它会记得上下文。\
-一个请求涉及两个助手时，交给负责主要部分的那个，其余写进 question 作为背景。其他请求（一般问题、邮件、新闻、调研、购物、文件、\
+一个请求涉及两个助手时，交给负责主要部分的那个，其余写进 question 作为背景。其他请求（一般问题、邮件、快讯、调研、文件、\
 电话）你自己回答。",
                 lines.join("\n"))
         };
@@ -112,7 +112,9 @@ pub fn route_prompt() -> String {
         .collect();
     format!("## Route\nYou route a request the user sent to OMuse's main bot. Specialised bots (each has its own skills; \
 all share the user's memory, profile, Vault and connectors):\n{}\n\
-- main — everything else: general questions, writing, email, news, research, shopping, documents, calls, schedules.\n\n\
+- main — everything else: general questions, writing, email, a quick news search, research, documents, calls, and \
+the automations — a goal (\"keep an eye on my inbox until X replies\", \"until …\"), a trigger or a watch (\"tell me \
+when …\", a price or a page to watch).\n\n\
 Answer with ONE JSON object and nothing else: {{\"bot\": \"<id>\", \"question\": \"…\", \"conversation_id\": \"…\"}}.\n\
 - bot: the bot whose work the request is; for a request that needs two bots, the one for the main part. \"main\" when \
 no specialised bot fits.\n\
@@ -166,7 +168,42 @@ pub fn continued_conv(msgs: &[Value], bot: &str) -> Option<String> {
     (sget(h, "bot") == bot && !cid.is_empty()).then_some(cid)
 }
 
+/// The bot conversation that gave the main conversation's latest answer (its `meta.handoff`): `(bot id, conversation)`.
+pub fn last_handoff(msgs: &[Value]) -> Option<(String, String)> {
+    let last = msgs
+        .iter()
+        .rev()
+        .find(|m| get_str(m, "role") == "assistant")?;
+    let h = last.get("meta").and_then(|m| m.get("handoff"))?;
+    let (bot, cid) = (sget(h, "bot"), sget(h, "conv_id").trim().to_string());
+    (!bot.is_empty() && !cid.is_empty()).then_some((bot, cid))
+}
+
 impl Runtime {
+    /// A reply to a bot's open question, decided in code before any routing call: the main conversation's latest answer
+    /// came from a bot, and that bot's conversation ends with a question the tool itself asked and the user owes an
+    /// answer to (`needs_input`; What's next's "anything missing?", `confirm` — `required::open_question`). The user's
+    /// words go back to that bot in that conversation, whatever they are (whats_next_real 2026-11-07: the planner kept
+    /// "Please add dinner at Burnt Ends …" in Main as a calendar request, and the bot's question was never answered).
+    /// A long task's schedule offer is not such a question: the user may move on to something else, so the planner
+    /// routes that reply (the offer is in the history it reads). The `ask_bot` arguments, or `None`.
+    pub(crate) fn open_bot_question(&self, parent_conv: &str, goal: &str) -> Option<Value> {
+        let msgs = self.store.msgs(parent_conv, 30).ok()?;
+        let (bot_id, cid) = last_handoff(&msgs)?;
+        let bot = bots::get(&bot_id).filter(|b| !b.is_main())?;
+        let conv = self.store.conv(&cid).ok()??;
+        if get_str(&conv, "bot_id") != bot.id || get_str(&conv, "parent_conv") != parent_conv {
+            return None;
+        }
+        let prev = self.store.prev_task(&cid, "").ok()??;
+        let open = super::required::open_question(arr(&prev, "transcript"));
+        let asked = open
+            .get(1)
+            .and_then(|m| serde_json::from_str::<Value>(&super::util::content_of(m)).ok())
+            .is_some_and(|v| matches!(get_str(&v, "status").as_str(), "needs_input" | "confirm"));
+        asked.then(|| json!({"bot": bot.id, "question": goal.trim(), "conversation_id": cid}))
+    }
+
     /// The main bot's first step: the planner model picks the bot for this request (see the module docs).
     pub(crate) async fn route(&self, t: &Value, history: &[Value]) -> Route {
         let tid = get_str(t, "id");
@@ -635,7 +672,7 @@ mod tests {
         let main = bots::get_or_main(bots::MAIN);
         let en = bot_prompt(main, true);
         assert!(en.contains("## You are the Main bot") && en.contains("## Bots"));
-        assert!(en.contains("- travel — Travel:") && en.contains("- photos — Photos & videos:"));
+        assert!(en.contains("- travel — Travel:") && en.contains("- social — Social media:"));
         assert!(!en.contains("- main —"));
         assert!(
             en.contains("ask_bot(bot, question): ONE call")

@@ -675,6 +675,12 @@ pub struct Machine<'a> {
 /// rule's verdict when the departure is known, the deadline as a date, the documents, the official platform's link.
 /// Applying is for when the user asks for it (`file`).
 fn refund_info(f: &Facts, today: NaiveDate, window_days: i64) -> Value {
+    // a question has no receipt read: a tax of 0 is the model's "not given", never "no tax paid" (money_real
+    // 2026-11-08: "can I get the tax back?" answered "not eligible: the receipt does not show the tax")
+    let f = &Facts {
+        tax: f.tax.filter(|t| *t > 0),
+        ..f.clone()
+    };
     if let Some((code, why)) = ineligible(f, today, window_days) {
         return json!({"status": "not_eligible", "reason": code, "rule": why,
             "show": [S::fact("Not eligible for the Hong Kong departure tax refund", "不符合香港离境税退税条件", &why),
@@ -1268,6 +1274,16 @@ card.";
                 && lines.contains("25 November 2026"),
             "{lines}"
         );
+        // the tax not given (the model's 0): the rule, the deadline and the link, never "no tax paid" (money_real
+        // 2026-11-08)
+        let (t, a) = started(
+            Vec::new(),
+            json!({"file": false, "out_date": "2026-11-01", "tax_hkd": 0}),
+            true,
+        );
+        let (_, res) = run(t, &a, "");
+        assert_eq!(res["status"], "info", "{res}");
+        assert_eq!(res["apply_by"], "2026-11-29");
         // a trip outside the rule: not eligible, said without applying
         let (t, late) = started(
             Vec::new(),

@@ -195,6 +195,13 @@ relocating from Europe, North America or Australia. Figures were checked in Octo
 | 2025 | 1 July: districts abolished, 126 wards and communes |
 | 2026 | Low-emission pilot in the Old Quarter (July); Michelin's fourth Vietnam edition |
 
+## Arrival card and tax
+
+From OMuse's own tables (the same facts `arrival_card_fill` and `tax_refund_rules` answer with; tax table checked 2026-11-04). Asked how, give the requirement and the official link; file only when the user asks.
+
+- **Arrival card**: none to file before arriving in Vietnam (no card in OMuse's arrival-card table); visas and entry rules: `entry-requirements`.
+- **Shopping tax refund (visitors)** — VAT refund for foreigners on departure (Circular 84/2026/TT-BTC, from 1 July 2026). Who: foreigners and overseas Vietnamese with a foreign passport, leaving through an international airport or seaport refund gate. Minimum: check the official circular (a minimum spend per shop per day applies). Time limit: show the goods and the refund declaration to customs at least 30 minutes before departure. Official: Government legal portal — Circular 84/2026/TT-BTC: https://vanban.chinhphu.vn/?pageid=27160&docid=218820&classid=1. The steps and what to carry: the Money bot (`tax-refund-shopping`).
+
 ## Local events
 
 - **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call

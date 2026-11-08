@@ -1,6 +1,6 @@
 ---
 name: online-shopping
-description: 网购（购物助手）：用 shop_order 按用户所在地通过 API 搜索商店（先是 Shopify 全球商品目录），代码筛选排序后把商品以 JSON 给你，你选出最合适的几个（offer_id），代码显示选择卡（本地货币价格、商家、链接）；不用浏览器 Shop online (the Shopping bot) — call shop_order: code searches the stores for the user's location by API (Shopify's Global Catalog first), filters and ranks the offers and gives them to you as JSON; you pick the few that fit best by their offer_ids and code shows them as a choice card (price in the user's currency, merchant, link) — no browser.
+description: 网购（钱包助手的购物）：用 shop_order 按用户所在地通过 API 搜索商店（先是 Shopify 全球商品目录），代码筛选排序后把商品以 JSON 给你，你选出最合适的几个（offer_id），代码显示选择卡（本地货币价格、商家、链接）；不用浏览器 Shop online (the Money bot) — call shop_order: code searches the stores for the user's location by API (Shopify's Global Catalog first), filters and ranks the offers and gives them to you as JSON; you pick the few that fit best by their offer_ids and code shows them as a choice card (price in the user's currency, merchant, link) — no browser.
 form: on
 browser: off
 ---

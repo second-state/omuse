@@ -210,6 +210,13 @@ Europe, North America or Australia. Figures were checked in October 2026 and car
 | 2026 | No-Boarding Directives (30 January); Circle Line loop completed (12 July); population 6.21 million (June) |
 | 2027 | RTS Link to Johor Bahru expected (February); EP salary threshold rises (1 January) |
 
+## Arrival card and tax
+
+From OMuse's own tables (the same facts `arrival_card_fill` and `tax_refund_rules` answer with; tax table checked 2026-11-04). Asked how, give the requirement and the official link; file only when the user asks.
+
+- **Arrival card — what to file**: SG Arrival Card (Singapore). **When**: within 3 days before you arrive. **You need**: your passport, the flight that arrives and its date, where you stay (the hotel's name and address) and the day you leave. **Official site** (free): https://eservices.ica.gov.sg/sgarrivalcard/. OMuse fills it in when asked (`sg-arrival-card`).
+- **Shopping tax refund (visitors)** — Tourist Refund Scheme (eTRS), GST. Who: visitors aged 16 or over, not Singapore citizens or PRs, not holding a work, dependant's or student's pass; the original passport shown at the shop. Minimum: S$100 including GST (up to 3 same-day receipts from the same retailer combined). Time limit: leave with the goods within 2 months of purchase; claim at the central refund counter within 2 months of approval. Official: IRAS — Tourist Refund Scheme: https://www.iras.gov.sg/taxes/goods-services-tax-(gst)/consumers/tourist-refund-scheme; eTRS e-services: https://touristrefund.sg/. The steps and what to carry: the Money bot (`tax-refund-shopping`).
+
 ## Local events
 
 - **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call

@@ -1502,6 +1502,12 @@ static FORM_FILLED: LazyLock<parking_lot::Mutex<std::collections::HashSet<String
 /// How many empty fields a hand-over tolerates without a send-back: the user fills a few in before submitting.
 const MAX_LEFT_FOR_USER: usize = 3;
 
+/// Whether a `browser_request_takeover` was made by code (the runtime or a code machine), not the model: `"code": true`
+/// in its arguments. Code's hand-over is never sent back for empty fields.
+fn code_handover(args: &Value) -> bool {
+    args.get("code").is_some_and(|v| v.as_bool() == Some(true))
+}
+
 /// Whether this is the first send-back for `page` (each page is sent back at most once).
 fn sent_back_first_time(page: &str) -> bool {
     static SENT: LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
@@ -1601,7 +1607,11 @@ pub async fn browser(
         if let Some((left, n)) = empty_fields_left(st, page).await {
             // a page code filled (`form_fill`) is best effort and goes to the user as it is (the user's rule,
             // 2026-10-31: "it does not have to be perfect"); the send-back is for the generic path only
+            // a hand-over made by code (`"code": true` — the runtime's automatic one after an approved purchase or a
+            // refused final click, a machine's) is a step decided from the run, never too early: it goes through
+            // (travel_book_real 2026-11-08: Kiwi's passenger form sent back, the model gave up instead of asking again)
             if n > MAX_LEFT_FOR_USER
+                && !code_handover(args)
                 && !FORM_FILLED.lock().contains(page)
                 && sent_back_first_time(page)
             {
@@ -1727,8 +1737,11 @@ is left for the final hand-over. Then call browser_request_takeover again; it go
             if !dom.is_empty() {
                 store.update_task_ctx(task_id, None, None, Some(&dom))?;
             }
+            // the page's HTTP status (the browser service records the navigation's): a 404 read is never cited
+            // (research_real 2026-11-08: two sources in the answer were pages the run had read as "Page Not Found")
             let mut item = json!({"url": url, "title": pg.get("title").cloned().unwrap_or(Value::Null), "text": text,
-                "chars": pg.get("length").cloned().unwrap_or(Value::Null)});
+                "chars": pg.get("length").cloned().unwrap_or(Value::Null),
+                "status": pg.get("status").cloned().unwrap_or(Value::Null)});
             // the page's structured parts read by their elements (its lead paragraph, og:site_name, published time)
             for k in ["lead", "site_name", "published"] {
                 let v = sarg(&pg, k);
@@ -2222,7 +2235,7 @@ fn remember_search_ok(st: &AppState, p: omuse_apps::websearch::Provider) {
     }
 }
 
-/// `shop_search` (the shop_order machine's code call; docs/sites/shopify.md): the Shopping bot's store providers by
+/// `shop_search` (the shop_order machine's code call; docs/sites/shopify.md): the Money bot's shopping store providers by
 /// API — the providers for the user's location (or only the ones the user named), queried in parallel with a time limit
 /// each (`omuse_apps::shops`), the offers merged, and every price also in the user's currency (`price_local`: the
 /// merchant's own price for that market, else converted at the market rate). Always a JSON answer (the machine reads it).
@@ -2307,7 +2320,7 @@ fn strs(args: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The SerpApi client for the Shopping bot's Google Shopping provider: the Flights & hotels key, `None` without one.
+/// The SerpApi client for the Money bot's shopping Google Shopping provider: the Flights & hotels key, `None` without one.
 fn serpapi_client(st: &AppState) -> Option<omuse_apps::serpapi::SerpApi> {
     let key = serpapi_key(st);
     (!key.is_empty()).then(|| {
@@ -3860,6 +3873,13 @@ async fn drive_write(st: &AppState, tool: &str, args: &Value, account: Option<&s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hand_over_made_by_code_is_never_sent_back() {
+        assert!(code_handover(&json!({"reason": "x", "code": true})));
+        assert!(!code_handover(&json!({"reason": "x"})));
+        assert!(!code_handover(&json!({"reason": "x", "code": "yes"})));
+    }
 
     #[test]
     fn the_places_fallback_decides_in_code() {

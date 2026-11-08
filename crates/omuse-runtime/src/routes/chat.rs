@@ -210,12 +210,10 @@ pub async fn conversation(st: St, UrlPath(cid): UrlPath<String>) -> R {
     ))
 }
 
-/// Deletes a chat; a scheduled task's chat takes its schedule with it (stopped, gone from the Tasks page) and its run
-/// still going is cancelled.
+/// Deletes a chat and nothing else: the chat a scheduled task was asked in, a run's conversation or the schedule's own
+/// chat goes, the task keeps running and stays on the Tasks page, the only place a task is deleted (the user,
+/// 2026-11-07; `Scheduler::ensure_conv` makes a schedule's chat again at its next run).
 pub async fn del_conv(st: St, UrlPath(cid): UrlPath<String>) -> R {
-    for tid in st.rt.store.drop_conv_schedules(&cid)? {
-        st.rt.cancel(&tid, "the scheduled task was deleted").await;
-    }
     st.rt.store.delete_conv(&cid)?;
     Ok(Json(json!({"ok": true})))
 }

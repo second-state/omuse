@@ -9,7 +9,9 @@
 #                                                 OMUSE_E2E_ENV_FILE (default ~/.config/omuse/e2e.env)
 #   bash tests/run_in_docker.sh realdata        # only the e2e suites that run on the real services now (REAL_DATA_SUITES)
 #   bash tests/run_in_docker.sh realsites       # the bookings and orders on the real booking sites and shops (REAL_SITES),
-#                                                 always one at a time (-j 1)
+#                                                 always one at a time (-j 1); ON DEMAND, like the arrival cards — not part
+#                                                 of the strict gate (the user, 2026-11-08: real-site browser flows fail run
+#                                                 to run for different reasons)
 # OMUSE_IMAGE picks the image (default: omuse-test, built from Dockerfile.test when missing). Exit code 1 if a suite fails.
 # docker_browser_e2e.py is not part of this: it needs a real model (see its docstring).
 set -u

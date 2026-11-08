@@ -196,6 +196,13 @@ Australia. Figures were checked in October 2026 and carry their date.
 | 2025 | TDAC mandatory (May); cannabis re-regulated (June) |
 | 2026 | 30-day visa exemption from 15 September; common ticket approved for 2027 |
 
+## Arrival card and tax
+
+From OMuse's own tables (the same facts `arrival_card_fill` and `tax_refund_rules` answer with; tax table checked 2026-11-04). Asked how, give the requirement and the official link; file only when the user asks.
+
+- **Arrival card — what to file**: Thailand Digital Arrival Card (TDAC) (Thailand). **When**: within 3 days before you arrive. **You need**: your passport, the flight that arrives and its date, where you stay (the hotel's name and address) and the day you leave. **Official site** (free): https://tdac.immigration.go.th/. OMuse fills it in when asked (`th-arrival-card`).
+- **Shopping tax refund (visitors)** — VAT Refund for Tourists (Revenue Department). Who: non-Thai visitors staying 180 days or less, leaving by air from one of 10 international airports (Suvarnabhumi, Don Mueang, Chiang Mai, Phuket, Hat Yai, U-Tapao, Krabi, Samui, Surat Thani, Chiang Rai). Minimum: ฿2,000 including VAT per shop per day, with the P.P.10 (or e-P.P.10) form issued on the day. Time limit: the goods leave within 60 days of purchase; claim on the departure day. Official: Revenue Department — conditions: https://vrtweb.rd.go.th/81.html; Revenue Department — refund table: https://vrtweb.rd.go.th/80.html. The steps and what to carry: the Money bot (`tax-refund-shopping`).
+
 ## Local events
 
 - **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call

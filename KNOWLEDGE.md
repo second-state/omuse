@@ -320,7 +320,8 @@ it closes — goes through `ChatOpts::stream_to`; `Runtime::executor_opts` forwa
 (`task_id`, `conv_id`, `text`, `calls`), published and not stored, at most ten a second, and the loop awaits the
 forwarder before acting on the reply so no delta trails the stored message. The page keeps one live bubble under the
 running task's card (`onDelta`, `liveBubble` in `web/app.js`), hides it for a turn that carries tool calls (commentary,
-not an answer), and drops it when the task finishes, when the stored message takes over — an answer the runtime then
+not an answer — the stream carries that text before the tool call itself, so the commentary can show until the call
+arrives; `stream_real` checks only that the bubble ends on the answer), and drops it when the task finishes, when the stored message takes over — an answer the runtime then
 rewrites (cut off, wrong language, an outcome notice) simply replaces the draft. An endpoint that rejects
 `stream_options` gets the request without it; one that rejects `stream` gets the plain request. Planner, sub-agent,
 memory and title calls never stream. Whether the text really arrives as it is written depends on the provider: the
@@ -698,6 +699,52 @@ hand-overs for the user's own steps. Tests: `driver::tests::every_card_fills_fro
 `apdt::tests` and the claims tests (`driver::questions_after_navigate` lists an `ask_user` / pick-less
 `present_choices` after the navigate).
 
+### Found by the full e2e run of 2026-11-08 (all in code, each with a unit test)
+
+- **A code machine's own call reads its whole result**: `workflow::MACHINE_PREFIXES` / `machine_call(id)` (bkg_, nws_,
+  wnx_, brf_, lts_, clm_, drv_, trn_, fst_, apd_) get `exec::CODE_RESULT_LIMIT` (40,000 chars), never the model's
+  `RESULT_LIMIT` (9,000): What's next's three-day calendar list cut mid-JSON read as no events (google_real).
+- **Compression keeps the fact tools' results whole** (`compress_with`: `facts::FACT_TOOLS`, `confirm_reference`): their
+  `show` items are read as JSON at the end; three long page reads after `emergency_contacts` had cut it to 500 chars and
+  the embassy's numbers were gone (emergency_real).
+- **A flight picked by rule**: `travel_pick.rule.order` has `cheapest`; a time window alone (`leaves_before` 12:00 for
+  "Friday morning") picks the cheapest flight in it (`booking::pick_by_rule`, `windowed`); the schema maps the parts of
+  the day to windows and says `order` is for "the last / the first" only (travel_user_real, travel_book_real).
+- **Hand-overs made by code carry `"code": true`** (the runtime's automatic one, exec's after a refused final click, the
+  arrival-card and claims machines'): Sentinel's `request_takeover` never sends them back for empty fields
+  (`code_handover`) — the user fills the rest on the page (travel_book_real: Kiwi's passenger form sent back, the model
+  gave up).
+- **FWD's saved quote is the hand-over**: `guards::saved_quote_guard` refuses a model-made `browser_request_takeover` in
+  an FWD insurance run once an `insurance_buy` result in the conversation is `saved` (insurance_real).
+- **A fact with a relation is about a person**: `Store::add_fact` files it under `person` whatever domain the model
+  chose, so People and the Entities card show it (memory_real); and `context::select` hands another person's fact over
+  only when that person is named (`person_elsewhere`), never on a shared topic alone (memory_real, "try it").
+- **An event without a ticket seller links its own page** (`facts::event_items`: Google's `more_info` link, "details
+  on …") (travel_events_real).
+- **A written file the answer links is a deliverable**: `guards::unsent_files(transcript, answer)` sends it (its card
+  shows) when the call's `deliver_as` says so or the answer links its path; `links::mend_file_links` turns the model's
+  made-up link (`workspace:/x.md`, a bare path) into the file's download address (`links::file_url`) (chat_real).
+- **Dhipaya's slow steps get one more try** (`claims::next_buy_th`: a quote whose packages did not list within the wait
+  is filled again on the page opened again, a package click whose application did not open is clicked again; a second
+  stop ends the run with what was quoted) (insurance_th_real).
+- **A specialised bot's question before its skill or tool is refused once** (`local::ask_before_any_skill`, now for
+  every bot but Main; Travel had it): the request's tool asks through `needs_input` or answers without the question
+  (money_real: the Money bot asked for the trip's dates instead of calling `apdt_refund`).
+- **The departure-tax question ignores a tax of 0** (`apdt::refund_info`: the model's "not given", never "no tax
+  paid"), and a skill's required tool counts wherever it was called in the request, before the skill's load too
+  (`required::pending`) (money_real).
+- **A page the run read as a 404 is never cited** (`links::dead` from the `status` Sentinel's `browser_read` result now
+  carries per page, the browser service's navigation status; `links::drop_dead_links` keeps a Markdown link's label)
+  (research_real).
+- **The strict e2e gate is the scripted suites + `real`** (the user, 2026-11-08): `realsites` (Kiwi, FWD, Dhipaya, the
+  APDT platform) and the arrival cards are on demand — real-site browser flows fail run to run for different reasons
+  (a slow site, a waiting room, a changed page); a failure there means a site to re-walk, not a blocked release.
+- **Not code**: `stream_real`'s "tool first" check now asserts only what the page guarantees (the commentary of a
+  tool-calling turn is hidden once the call arrives; the answer may arrive in one piece and never be sampled);
+  `apdt_real`'s other-device check waits out the platform's overlays (`.mask-bg`, its waiting room) and skips with a
+  note when the page stays covered; the Social media bot's description and prompt say it makes pictures AND short
+  clips to order (media_real: the model invented a "Video bot").
+
 ## News research reports (`skills/news-research/`, 2026-11-01)
 
 Main's `news-research` skill turns "research the news on X" into a newspaper-style edition:
@@ -707,13 +754,14 @@ Main's `news-research` skill turns "research the news on X" into a newspaper-sty
   interval (`Broker::news_engines`); the test engines get `&df=…`. It never falls back to a search API. In a run that
   loaded the skill, a `web_search` call is marked `browser_only` (Sentinel skips the APIs) and a `news_search` call is
   run as `browser_news_search` (`exec_call`, `guards::news_research_run`).
-- **Two workflow tools (docs/json-tools.md, `agent/news.rs`).** `news_gather{subject, window}`: code runs ONE
-  `browser_news_search` of the subject (a second, wider one only when the first finds no article), reads the first six
-  distinct links in one turn and returns the articles as JSON (number, title, publication, date, url, text). The model
-  writes the edition as JSON and calls `news_publish{title, stories:[{article, headline, summary}], insights, schedule,
-  weekday, hour, email}`: `news::check` keeps only stories whose article number exists, takes every link, publication
-  and date from the gathered articles, and adds an article the model left out with its own headline and opening. The
-  machine never calls the model and reads no user wording (the subject regexes and the in-code writing call are gone).
+- **One call, a long task (docs/json-tools.md "Long tasks", `agent/news.rs`; 0.6.8).** `news_gather{subject, window,
+  markets, schedule, weekday, hour, email}` is the whole request: code runs ONE `browser_news_search` of the subject (a
+  second, wider one only when the first finds no article), reads the first six distinct links in one turn, gives the
+  articles (number, title, publication, date, text — no links) to the edition's subagent (`news_edition`, JSON in and
+  out: title, stories by article number, insights), keeps only stories whose article exists, takes every link,
+  publication and date from the gathered articles, adds an article left out with its own headline and opening (and
+  uses every article that way when the subagent names none twice), then publishes. The model's `news_publish` step is
+  gone. No code reads the user's wording.
 - **Layout in code.** The machine calls `news_report` (code's own call, never offered to the model): `crate::newsreport`
   drops stories without an http(s) link, keeps each article once, escapes every value and fills the skill's
   `template.html` (masthead, lead = the first story, insights, stories in columns, sources). The HTML goes to
@@ -725,8 +773,9 @@ Main's `news-research` skill turns "research the news on X" into a newspaper-sty
   loads nothing from elsewhere (`HTML_CSP`, sandboxed). A link `/artifacts/…` given as a mail attachment is the
   workspace file `artifacts/…` (`actions::artifact_path`).
 - **Delivery from the JSON.** `schedule` (daily / weekly / monthly) → `schedule_create` by code (cron from
-  `newsreport::Ask`; the goal, `news::schedule_goal`, makes the scheduled run's model call `news_gather` →
-  `news_publish`, with `email: true` when the editions are mailed); no new schedule in a schedule's own run. `email:
+  `newsreport::Ask`) with the task's JSON (`{"tool": "news_gather", "args": {subject, window, markets, email}}`): the
+  scheduled run calls `news_gather` with it, no model in between; no new schedule in a schedule's own run. No schedule
+  asked in a chat: the result offers one (`schedule_offer`, every Monday / every day for a monitor / the 1st). `email:
   true` → `gmail_send` to the user's own connected address with the PDF and HTML. "Email it" later in the chat →
   `news_mail{files}` (the edition's links the model copies from the earlier reply; code accepts only
   `artifacts/news/….pdf|.html`). The result's `show` carries the two links, the schedule and the mail (appended by code);
@@ -909,7 +958,8 @@ Two views are routable but unlisted:
 
 **Tasks** (`#timers`, in Tools) is the simple page of the user's scheduled tasks (`viewTimers`): for each, when it
 runs next — **Pending** when that time has passed and it has not run (the machine slept or was suspended) — what it
-does, a link to its chat and Delete (the chat is kept). A schedule's chat is its own (`conv_<schedule id>`, kind
+does, a link to its chat and Delete (the chat is kept) — the only place a task is deleted; deleting a chat never
+deletes a task (the user, 2026-11-07). A schedule's chat is its own (`conv_<schedule id>`, kind
 `schedule`, listed under "Tasks" in the chat list), not the chat it was asked in; a run whose chat the user deleted
 makes it again under the same id (`Scheduler::ensure_conv`; a goal's final check does the same), so the link keeps
 working.
@@ -944,17 +994,26 @@ profile, the Vault, the connectors and the approval rules. The bots are built in
 binary like the skills): front matter with `name`, `name_zh`, `icon` (an emoji, for text), `badge` (the menu icon's
 badge: `chat`, `plane`, `dollar`, `card`, `camera`), `order` (the menu), `aliases` (ids of earlier bots merged into
 this one: `get` resolves them, and the store moves their conversations to this bot when it opens), `description` /
-`description_zh` (what the main bot routes by), `skills` (comma list) and `tools` (comma list: tools only the bots
+`description_zh` (what the main bot routes by), `group` (the menu section: `main`, `tasks` — the long-running task
+bots, listed with Main in the first section —, `bots` — the specialised bots, the second section), `skills` (comma list) and `tools` (comma list: tools only the bots
 that name them may use — the travel searches `flights_search`, `flight_offer`, `hotels_search`, `hotel_rooms`; a
 connector's `mcp_<server>__<name>` counts as `<name>`) and `examples` / `examples_zh` (3–5 requests it handles, `|`
 between them: shown in an Examples dropdown above the chat input of the bot's empty conversation; a click fills the input); the body
 is the bot's prompt, added to the executor prompt.
 
-- **Main** (`main`) is the entrance: it has every skill no specialised bot lists (imported skills included) plus the
-  ones its own file names (`pdf-forms`). The specialised bots: Travel (`travel`: bookings, city guides, arrival cards
+- **Main** (`main`) is the entrance: it has every skill no other bot lists (imported skills included) plus the
+  ones its own file names (`pdf-forms`). The long-running task bots (0.6.8, `group: tasks`, agent/longtask.rs): News
+  report (`news`: `news-research`, `news_gather` / `news_mail`), What's next (`whatsnext`: `whats-next`,
+  `whats_next`), Email brief (`brief`: `morning-email-brief`, `email_brief`); Main hands their requests over with
+  `ask_bot` like a specialised question. A schedule of a long task runs in a NEW conversation under its bot each
+  time, titled with the run's time in the user's timezone (`Scheduler::run_conv`); the schedule's own `conv_id` stays
+  the chat it was asked in. The Tasks page links the latest run's conversation (`last_conv`, `last_bot`) and is the
+  ONLY place a task is deleted (the user, 2026-11-07): deleting any chat — the one the task was asked in, a run's
+  conversation, a schedule's own chat — deletes that conversation and nothing else (`routes::chat::del_conv`). The specialised bots: Travel (`travel`: bookings, city guides, arrival cards
   and entry rules — 0.5.3 merged City guides `cities` and Arrival & entry `arrival` into it), Money (`money`:
   credit cards, insurance and claims, tax refunds, paying abroad — 0.6.6 merged Insurance & claims `insurance` and
-  Credit cards `cards` into it; their conversations move to Money), Photos & videos (`photos`), Shopping (`shopping`).
+  Credit cards `cards` into it; their conversations move to Money; 0.6.8 merged Shopping `shopping` into it too),
+  Social media (`social`: 0.6.8 renamed Photos & videos `photos`; its conversations move to it).
   Bots may share skills (`pdf-forms`).
 - **A conversation belongs to one bot**: `conversations.bot_id` (`main` for older ones) and `parent_conv` (the main
   conversation that handed it over). `GET /api/bots`, `GET /api/conversations?bot=<id>`, `POST /api/chat` with `bot`
@@ -969,7 +1028,12 @@ is the bot's prompt, added to the executor prompt.
   only when it is that bot's and was started from this one; an empty question becomes the request) and hands over at
   once — a `route` event, then an `ask_bot` tool call marked `routed`. `main`: the executor answers without
   `ask_bot`. No usable answer (`route` with `bot: null`, or `route_error`): the executor gets `ask_bot` and decides.
-  Not for scheduled runs, goal checks or a task resumed after an approval.
+  Not for scheduled runs, goal checks or a task resumed after an approval. Before the planner: a reply to a bot's open
+  question is routed in code (`Runtime::open_bot_question`, 0.6.8) — Main's latest answer was a hand-over and that
+  bot's conversation ends with a `needs_input` or `confirm` the user owes an answer to (`required::open_question`):
+  the words go back to that bot in that conversation (whats_next_real 2026-11-07: the planner kept the answer to
+  "anything missing from today?" in Main). A long task's schedule offer is not such a question: the planner routes
+  that reply, with the offer in the history it reads.
 - **Hand-over** (`ask_bot(bot, question, conversation_id?)`, main bot only, alone in its turn): a new conversation in
   that bot (or the one given, for a follow-up) gets the question; the main task waits in `WAITING_BOT` (the bot's task
   starts only once the main task is suspended); when the bot's task ends, the main task ends at once with the bot's
@@ -1075,22 +1139,32 @@ only this one).
 `tests/insurance_real.py` and `tests/insurance_hk_real.py` are being rebuilt on the official sites (the stand-in pages
 and the seeded mail were removed 2026-11-02).
 
-## What's next (0.6.7, `whats-next`, the Main bot)
+## Email brief (0.6.8, `morning-email-brief`, the Main bot)
 
-`agent/whatsnext.rs`, three workflow tools: `whats_next` (code reads every calendar for today … the day after
-tomorrow and two fixed mail searches — bookings, invitations — then the first hits in full), `whats_next_items` (the
-model's JSON items; code numbers them in time order, three days at most) and `whats_next_publish` (the model's notes;
-code lays out `crate::whatsnext_report` under `artifacts/whats-next/` with `whats_next_report`, makes the daily
-schedule when `every_day_at` was asked, and on a scheduled run mails it to the user's own address).
+`agent/emailbrief.rs`, ONE workflow tool, a long task: `email_brief{period, schedule, email}`. Code runs one fixed
+search (`in:inbox newer_than:1d|7d` without the promotions, social, updates and forums categories), reads the first 12
+hits in one turn, gives them to the triage subagent (`email_triage`: needs a reply — why, a suggested reply — and for
+information, by email number; default: everything for information), lays out the table (From | Subject | Why |
+Suggested reply | message_id; an email flagged `injection_warning` is marked suspicious) as a `show` block, makes the
+schedule asked for ("every weekday at 8": `0 8 * * 1-5`) with the task's JSON, mails the brief to the user's own
+address on a scheduled run (or when asked), and offers a schedule in a chat (every weekday at 08:00). Nothing is sent to
+anyone else; drafts are the user's next request (`gmail_create_draft`).
 
-- Asked in the chat, `whats_next_items` first returns `confirm` with today's table (a `show` block) and one question.
-  `confirmed` is decided in code (`question_state`): it counts only when that question was shown and the user wrote
-  since; called with `confirmed: true` before the user answered, the check returns `needs_input`. The question is
-  carried into the reply's task (`required::open_question` reads the machine's `confirm` result behind the `running`
-  call), so the reply owes `whats_next_items` with the items and the user's additions (`source: user` → the default
-  calendar). A scheduled run asks nothing.
-- After `gathered` and `researched`, the next tool named by the result is owed (`required::machine_next`), and it is
-  the only workflow tool offered on that reply turn (`whatsnext::offered`).
+## What's next (0.6.7, `whats-next`, the Main bot; one call since 0.6.8)
+
+`agent/whatsnext.rs`, ONE workflow tool, a long task (docs/json-tools.md "Long tasks"): `whats_next{every_day_at,
+confirmed, additions}`. Code reads every calendar for today … the day after tomorrow and two fixed mail searches —
+bookings, invitations — then the first hits in full; the items' subagent (`whats_next_items`, JSON in and out; default:
+the calendar's events) gives the plan's items, code numbers them in time order, three days at most; after the research
+the notes' subagent (`whats_next_notes`) writes the words; code lays out `crate::whatsnext_report` under
+`artifacts/whats-next/` with `whats_next_report`, makes the daily schedule with the task's JSON when `every_day_at` was
+asked (else a chat run offers one, every day at 07:00), and on a scheduled run mails it to the user's own address.
+
+- Asked in the chat, the run stops after the items with `confirm`: today's table (a `show` block) and one question —
+  before the research. The question is carried into the reply's task (`required::open_question`), so the reply owes
+  `whats_next` again; its check (`question_state`, `latest_confirm`) takes the items shown with the question and the
+  user's `additions` (`source: user` → the default calendar). Called with `confirmed: true` before the user answered:
+  `needs_input`. A scheduled run asks nothing and goes straight through.
 - The research, in one turn: a web search of each of today's flights' status and the same route's later flights
   (`flights_search`, shown only when the model reads the flight as delayed or cancelled), the local news of today's city
   (`browser_news_search`), a web search per external participant (not the user, not the user's own non-public mail

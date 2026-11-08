@@ -264,6 +264,11 @@ fn local_tools() -> Vec<Value> {
         &["report"],
     ));
     tools.extend(super::entry::tool_schemas());
+    // the long tasks (agent/longtask.rs): the email brief, the answer to a schedule offer, and the subagent (code's
+    // own call, never offered to the model: `longtask::offered`)
+    tools.extend(super::emailbrief::tool_schemas());
+    tools.extend(super::longtask::tool_schemas());
+    tools.push(super::longtask::subagent_schema());
     // an unknown site's confirmation reference, read by the model after the hand-back and passed as JSON
     tools.push(super::confirm::schema());
     tools

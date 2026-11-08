@@ -1,6 +1,6 @@
 # Notes for coding agents working on this repo
 
-**Natural language is the model's; code tools work only on JSON (hard rule).** The model turns the user's words (and any natural language: mail text, a page's prose) into a code tool's JSON arguments; the code tool uses only that JSON, runs every step in code and returns JSON; it never calls the model; the model words the result for the user. Known websites and their HTML are code's (form functions with fixed ids, the fixed parts of known pages). No regex or keyword list over natural language, anywhere. Read `docs/json-tools.md` (the design: workflow tools, the run-loop protocol, `show` — the facts code appends to the answer — and the optional `hints`, the API for adding a machine) before changing a skill, a machine or the run loop. The rule is in `CLAUDE.md` ("Natural language is the model's; code tools work only on JSON").
+**Natural language is the model's; code tools work only on JSON (hard rule).** The model turns the user's words (and any natural language: mail text, a page's prose) into a code tool's JSON arguments; the code tool uses only that JSON, runs every step in code and returns JSON; it never calls the model (one exception: a long task's subagent, JSON in and JSON out with a fixed instruction, an output schema checked in code, one retry, then a code default — `agent/longtask.rs`, `docs/json-tools.md` "Long tasks"); the model words the result for the user. Known websites and their HTML are code's (form functions with fixed ids, the fixed parts of known pages). No regex or keyword list over natural language, anywhere. Read `docs/json-tools.md` (the design: workflow tools, the run-loop protocol, `show` — the facts code appends to the answer — and the optional `hints`, the API for adding a machine) before changing a skill, a machine or the run loop. The rule is in `CLAUDE.md` ("Natural language is the model's; code tools work only on JSON").
 
 **Skills are code first.** A skill uses code tools for every step that can be computed; a decision the model must make is a JSON multiple choice; the model's prose is only the reply to the user. The full rule is in `CLAUDE.md` ("Skills: code decides").
 
@@ -214,14 +214,19 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
     Tavily keys; the browser's engines switched off for it), `travel_info_real` (official entry links, JR East fares,
     reminders), `emergency_real`, `money_real` (the Money bot's questions: tax refunds, the HK departure tax rule, paying in China), `market_real`, `research_real`, `library_real` (about 22 min),
     `cards_real`, `cards_markets_real` (issuers' sites), `news_report_real` (a real subject on the real web),
-    `travel_ask_real`, `stream_real`, `bots_real` (routing), `shopping_real` (the Shopping bot on Shopify's real
+    `travel_ask_real`, `stream_real`, `bots_real` (routing), `shopping_real` (shopping in the Money bot on Shopify's real
     Global Catalog with `OMUSE_E2E_SHOPIFY_CLIENT_ID` / `_SECRET` from the env file — written into `[shopping]` by
     `tests/run_local.sh` in real mode: a Singapore profile's request gets a choice card of offers that ship to SG,
     priced in SGD; the map of the APIs is `docs/sites/shopify.md`).
   - `REAL_APP_SUITES` (the app with the real model and media provider, nothing outside faked): `assistant_real`,
     `automations_real`, `memory_real`, `chat_real`, `docs_real`, `chart_real`, `media_real`, `attach_media_real`,
     `travel_receipts_real`, `cards_claim_real` (the Money bot prepares a Chase Sapphire trip cancellation claim and hands over Card Claim Center's link).
-  - `REAL_SITES` — bookings and orders on the real booking sites and shops, run one at a time:
+  - **The strict gate** (what a release and every commit of a fix must pass): the scripted suites and `real`
+    (`REAL_DATA_SUITES` + `REAL_APP_SUITES`). `REAL_SITES` and the arrival cards are on demand (the user, 2026-11-08):
+    browser flows on real booking, insurance and government sites fail run to run for different reasons — a slow
+    site, a waiting room, a changed page — so they are no part of the strict validation; run them when their site
+    flows change, and read a failure as a site to re-walk, not a gate.
+  - `REAL_SITES` — bookings and orders on the real booking sites and shops, run one at a time, on demand:
     `OMUSE_E2E_ENV_FILE=~/.config/omuse/e2e.env bash tests/run_in_docker.sh realsites` (forces `-j 1`; not in
     `real`). Per-machine inputs a suite cannot ship (the user's own documents) live in the git-ignored `e2e-local/`:
     `apdt_real` uses `e2e-local/apdt/` (passport.jpg, boarding_pass.jpg, ticket_with_tax.pdf, doc_no.txt) when it is
@@ -232,7 +237,7 @@ calls share `llm_concurrency` (Settings → LLM, 1..=8, applied without a restar
     not even a test card goes into a real payment form. Checked: the choice card, the hand-over on the real site, no
     card number or secret in the page, the appended block (booking link, amount), nothing booked. A site that blocks
     automation is handed over at the block — never get around bot protection. `travel_book_real` (a Kiwi.com flight
-    without a key, then a Google Hotels hotel with the SerpApi key). (Shopping has no browser path: the Shopping bot
+    without a key, then a Google Hotels hotel with the SerpApi key). (Shopping has no browser path: it
     searches by API only, `shopping_real`.)
     The arrival cards' walkthroughs (`arrival_real`, `arrival_cards_real` … `arrival_cards4_real`,
     `arrival_address_real`, `arrival_address2_real`) run on demand only, by name (the user, 2026-11-04: commented out

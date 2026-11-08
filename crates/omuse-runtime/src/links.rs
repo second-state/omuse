@@ -36,6 +36,47 @@ static LEFTOVER_MD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[([^\]\n]*)\]\(https://link\.omuse\.local/[^)\n]*\)").unwrap());
 static LEFTOVER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<?https://link\.omuse\.local/[A-Za-z0-9_~-]*>?").unwrap());
+static MD_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]\n]*)\]\(([^)\s]+)\)").unwrap());
+
+/// The download address of a file the run wrote (`routes/files.rs`), as the chat's file cards link it.
+pub fn file_url(path: &str) -> String {
+    format!(
+        "/api/files/raw?path={}&download=1",
+        percent_encoding::utf8_percent_encode(path, percent_encoding::NON_ALPHANUMERIC)
+    )
+}
+
+/// `text` with every Markdown link to a file the run wrote — written as a bare path or under a made-up scheme
+/// (`workspace:/packing-lists/x.md`, `/x.md`, `x.md`), which no page can open — pointing at the file's download address
+/// (chat_real 2026-11-08). A link that is a web address, or to a file the run did not write, stays as written.
+pub fn mend_file_links(text: &str, written: &[String]) -> String {
+    if written.is_empty() || !text.contains("](") {
+        return text.to_string();
+    }
+    MD_LINK
+        .replace_all(text, |c: &regex::Captures| {
+            let target = &c[2];
+            if target.starts_with("http://")
+                || target.starts_with("https://")
+                || target.trim_start_matches('/').starts_with("api/files/raw")
+            {
+                return c[0].to_string();
+            }
+            let t = target
+                .split_once(':')
+                .map_or(target, |(_, r)| r)
+                .trim_start_matches("./")
+                .trim_start_matches('/');
+            match written.iter().find(|w| {
+                !w.is_empty() && (t == w.trim_start_matches('/') || t.ends_with(&format!("/{w}")))
+            }) {
+                Some(w) => format!("[{}]({})", &c[1], file_url(w)),
+                None => c[0].to_string(),
+            }
+        })
+        .into_owned()
+}
 
 /// The FNV-1a checksum the old stand-ins carried.
 fn check(url: &str) -> String {
@@ -112,6 +153,67 @@ pub fn seen(transcript: &[Value]) -> Vec<String> {
         }
     }
     out
+}
+
+/// The links of the pages the run read that answered with an error status (404, 410, a 5xx): the browser service
+/// records each navigation's HTTP status and Sentinel's `browser_read` result carries it per page (`status`).
+pub fn dead(transcript: &[Value]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for m in transcript {
+        if m.get("role").and_then(Value::as_str) != Some("tool") {
+            continue;
+        }
+        let Some(text) = m.get("content").and_then(Value::as_str) else {
+            continue;
+        };
+        if !text.contains("\"status\"") {
+            continue;
+        }
+        let (Some(i), Some(j)) = (text.find('{'), text.rfind('}')) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&text[i..=j]) else {
+            continue;
+        };
+        for pg in v
+            .get("pages")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let st = pg.get("status").and_then(Value::as_i64).unwrap_or(0);
+            let u = pg.get("url").and_then(Value::as_str).unwrap_or("").trim();
+            if st >= 400 && u.starts_with("http") && !out.iter().any(|x| x == u) {
+                out.push(u.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// `text` without its links to the dead pages (research_real 2026-11-08: an answer cited two pages the run had read as
+/// 404s): a Markdown link to one keeps its label, a bare one is taken out.
+pub fn drop_dead_links(text: &str, dead: &[String]) -> String {
+    if dead.is_empty() {
+        return text.to_string();
+    }
+    let is_dead = |u: &str| dead.iter().any(|d| d == trimmed(u));
+    let t = MD_LINK.replace_all(text, |c: &regex::Captures| {
+        if is_dead(&c[2]) {
+            c[1].to_string()
+        } else {
+            c[0].to_string()
+        }
+    });
+    URL.replace_all(&t, |c: &regex::Captures| {
+        let whole = &c[0];
+        if is_dead(trimmed(whole)) {
+            whole[trimmed(whole).len()..].to_string()
+        } else {
+            whole.to_string()
+        }
+    })
+    .into_owned()
 }
 
 /// A link's query as `(name, value)` pairs.
@@ -244,6 +346,64 @@ mod tests {
             json!({"role": "tool", "content": "Compare: https://www.kayak.com/flights/SIN-HND,NRT/2026-11-30?sort=price_a"}),
             json!({"role": "user", "content": "https://never.example/shown"}),
         ])
+    }
+
+    #[test]
+    fn a_page_the_run_read_as_a_404_is_never_cited() {
+        let read = json!({"trust": "untrusted", "source": "web pages …", "pages": [
+            {"url": "https://www.mas.gov.sg/regulation/explainers/new-housing-loans/msr-and-tdsr-rule", "title": "Page Not Found", "text": "…", "status": 404},
+            {"url": "https://www.hdb.gov.sg/buying-a-flat", "title": "Buying a Flat", "text": "…", "status": 200},
+            {"url": "https://example.com/err", "error": "could not open"}]});
+        let t = vec![
+            json!({"role": "user", "content": "rent or buy?"}),
+            json!({"role": "tool", "tool_call_id": "c1", "content": format!("<untrusted_content source=\"web pages\">\n{}\n</untrusted_content>", read)}),
+        ];
+        let d = dead(&t);
+        assert_eq!(
+            d,
+            vec![
+                "https://www.mas.gov.sg/regulation/explainers/new-housing-loans/msr-and-tdsr-rule"
+                    .to_string()
+            ]
+        );
+        let out = drop_dead_links(
+            "See [MAS's rule](https://www.mas.gov.sg/regulation/explainers/new-housing-loans/msr-and-tdsr-rule) and [HDB](https://www.hdb.gov.sg/buying-a-flat); also https://www.mas.gov.sg/regulation/explainers/new-housing-loans/msr-and-tdsr-rule.",
+            &d,
+        );
+        assert_eq!(
+            out,
+            "See MAS's rule and [HDB](https://www.hdb.gov.sg/buying-a-flat); also ."
+        );
+        assert_eq!(
+            drop_dead_links("x https://a.example/", &[]),
+            "x https://a.example/"
+        );
+    }
+
+    #[test]
+    fn a_link_to_a_file_the_run_wrote_points_at_its_download() {
+        // chat_real 2026-11-08: "[Download the Markdown file](workspace:/packing-lists/helsinki.md)"
+        let written = vec!["packing-lists/helsinki.md".to_string()];
+        let out = mend_file_links(
+            "Here: [Download the Markdown file](workspace:/packing-lists/helsinki.md) and [the site](https://example.com/a.md) and [other](notes/other.md).",
+            &written,
+        );
+        assert_eq!(
+            out,
+            format!(
+                "Here: [Download the Markdown file]({}) and [the site](https://example.com/a.md) and [other](notes/other.md).",
+                file_url("packing-lists/helsinki.md")
+            )
+        );
+        assert!(file_url("packing-lists/helsinki.md")
+            .starts_with("/api/files/raw?path=packing%2Dlists%2Fhelsinki%2Emd&download=1"));
+        // a bare path or a leading slash: the same; nothing written: untouched
+        assert!(mend_file_links("[x](/packing-lists/helsinki.md)", &written)
+            .contains("/api/files/raw?path="));
+        assert_eq!(
+            mend_file_links("[x](workspace:/a.md)", &[]),
+            "[x](workspace:/a.md)"
+        );
     }
 
     #[test]

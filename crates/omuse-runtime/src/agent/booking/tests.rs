@@ -3058,10 +3058,13 @@ fn a_google_round_trip_searches_the_returns_of_the_outbound_picked_and_shows_bot
     let a = valid(
         TRAVEL_SEARCH,
         json!({"kind": "flight", "origin": "Hong Kong", "destination": "Bali", "date": "2026-11-06",
-               "return_date": "2026-11-08"}),
+               "return_date": "2026-11-08", "leaves_before": "12:00", "return_leaves_after": "17:00"}),
         "bali",
         &p,
     );
+    // the legs' departure windows ride in the search's JSON (travel_user_real 2026-11-08)
+    assert_eq!(a["leaves_before"], "12:00");
+    assert_eq!(a["return_leaves_after"], "17:00");
     // the model picks the outbound ("Friday morning"); code then searches its returns
     let (mut t, listed, res) =
         search_then_pick(TRAVEL_SEARCH, &a, "bali", &env, round_trip_answer, |r| {
@@ -3083,6 +3086,14 @@ fn a_google_round_trip_searches_the_returns_of_the_outbound_picked_and_shows_bot
     // the model picks the return ("Sunday evening")
     let pa = pick_args(&t, json!({"offer_ids": ["fl_ret1850"]}), &p);
     assert_eq!(pa["outbound"]["id"], "fl_out1015");
+    // the model's rule with the outbound's morning window copied onto the return (travel_user_real 2026-11-08): the
+    // request's own return window (after 17:00) overrides it — the earliest evening return, not the 16:30 one
+    let wrong = pick_args(
+        &t,
+        json!({"offer_ids": ["fl_ret1630"], "rule": {"order": "earliest_departure", "leaves_after": "06:00", "leaves_before": "12:00"}}),
+        &p,
+    );
+    assert_eq!(wrong["offer_ids"], json!(["fl_ret1850"]), "{wrong}");
     t.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_p2", "type": "function",
            "function": {"name": TRAVEL_PICK, "arguments": json!({"offer_ids": ["fl_ret1850"]}).to_string()}}]}));
     t.push(json!({"role": "tool", "tool_call_id": "call_p2", "content": json!({"status": "running", "args": pa}).to_string()}));
@@ -3239,6 +3250,42 @@ fn a_flight_named_by_its_place_in_the_day_is_picked_by_code() {
         rule(json!({"order": "latest_departure", "lands_by": "06:00"})),
         None
     );
+    // a part of the day alone ("Friday morning", travel_user_real 2026-11-07) is a window with no order: the cheapest
+    // flight in it, an unpriced one last; an empty order with no window picks nothing (the model's ids stand)
+    let priced = |id: &str, dep: &str, price: Option<f64>| super::Offer {
+        price,
+        ..f(id, dep, "2026-11-07 23:00")
+    };
+    let fl = vec![
+        priced("late", "2026-11-07 22:10", Some(900.0)),
+        priced("am_unpriced", "2026-11-07 07:05", None),
+        priced("am_dear", "2026-11-07 08:30", Some(1500.0)),
+        priced("am_cheap", "2026-11-07 10:45", Some(1200.0)),
+    ];
+    let rule = |r: Value| super::pick_by_rule(&fl, sget(&r, "order").as_str(), &r);
+    assert_eq!(
+        rule(json!({"order": "", "leaves_before": "12:00"})).as_deref(),
+        Some("am_cheap")
+    );
+    assert_eq!(
+        rule(json!({"leaves_after": "17:00"})).as_deref(),
+        Some("late")
+    );
+    assert_eq!(
+        rule(json!({"order": "earliest_departure", "leaves_before": "12:00"})).as_deref(),
+        Some("am_unpriced")
+    );
+    assert_eq!(rule(json!({"order": "", "leaves_before": ""})), None);
+    // "the cheapest flight" as a rule (travel_book_real 2026-11-08), with or without a window
+    assert_eq!(rule(json!({"order": "cheapest"})).as_deref(), Some("late"));
+    assert_eq!(
+        rule(json!({"order": "cheapest", "leaves_before": "12:00"})).as_deref(),
+        Some("am_cheap")
+    );
+    assert!(super::windowed(&json!({"leaves_before": "12:00"})));
+    assert!(!super::windowed(
+        &json!({"order": "latest_departure", "leaves_before": ""})
+    ));
 }
 
 #[test]

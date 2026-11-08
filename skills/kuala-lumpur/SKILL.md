@@ -201,6 +201,13 @@ relocating from Europe, North America or Australia. Figures were checked in Octo
 | 2024 | MDAC mandatory; autogates open to 63 nationalities |
 | 2026 | Visit Malaysia Year; LRT3 Shah Alam line opens (June) |
 
+## Arrival card and tax
+
+From OMuse's own tables (the same facts `arrival_card_fill` and `tax_refund_rules` answer with; tax table checked 2026-11-04). Asked how, give the requirement and the official link; file only when the user asks.
+
+- **Arrival card — what to file**: Malaysia Digital Arrival Card (MDAC) (Malaysia). **When**: within 3 days before you arrive. **You need**: your passport, the flight that arrives and its date, where you stay (the hotel's name and address) and the day you leave. **Official site** (free): https://imigresen-online.imi.gov.my/mdac/main?registerMain. OMuse fills it in when asked (`my-arrival-card`).
+- **Shopping tax refund (visitors)** — no refund: the Tourist Refund Scheme ended with GST in 2018, and there is none under SST. Official: Royal Malaysian Customs — travellers' guide: https://www.customs.gov.my/en/individu/pengembara/travelers-guide.
+
 ## Local events
 
 - **A specific event** (an artist, a concert, a festival, "jazz this weekend", "what's on tonight"): call

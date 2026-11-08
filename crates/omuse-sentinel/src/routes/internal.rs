@@ -163,7 +163,7 @@ pub async fn catalog(State(ctx): State<App>) -> JsonResult {
         }
     }
     status.insert("mcp".into(), mcp);
-    // the Shopping bot's store providers (`shop_search`): the server's API keys, no connection of the user's; the policy
+    // the Money bot's shopping store providers (`shop_search`): the server's API keys, no connection of the user's; the policy
     // allows them always (omuse_sentinel_core::policy)
     enabled.insert("shopping".into());
     let read_only = deps::calendar_read_only(store);

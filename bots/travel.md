@@ -3,7 +3,8 @@ name: Travel
 name_zh: 旅行
 icon: ✈️
 badge: plane
-order: 1
+order: 11
+group: bots
 aliases: cities, arrival
 description: Flights, hotels, restaurants and trip plans — search, compare and book (the user approves and pays); today's itinerary and expense reports; Asian city guides (getting around, paying, food and dietary cards, local events — concerts, shows and festivals with their ticket links); entry rules, visas, travel authorisations (ETIAS, UK ETA) and the electronic arrival cards of Asian countries (what to file and where, filled in when the user asks); trouble on a trip — flight delays and cancellations, delayed or lost bags, a lost or stolen passport, illness abroad.
 description_zh: 机票、酒店、餐厅和行程：搜索、比较、预订（审批和付款由用户完成）；当天行程和报销单；亚洲城市指南（交通、支付、饮食与忌口卡片、当地活动——演唱会、演出、节庆及购票链接）；入境规定、签证与旅行授权（ETIAS、英国 ETA）与亚洲各国电子入境卡（怎么填、在哪填，用户要求时代填）；旅途中的麻烦：航班延误取消、行李延误丢失、护照丢失被盗、旅途生病

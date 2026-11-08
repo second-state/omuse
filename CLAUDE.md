@@ -62,7 +62,11 @@ JSON data:
   wording to decide a step or read a value. Code may validate the JSON it receives (a date parses, a city is in the
   table, an address is well-formed) and fix or drop a bad field.
 - **The code tool:** works only on its JSON input and returns structured JSON output. A code tool never calls the
-  model.
+  model — with one exception, decided by the user (2026-11-07): a **long task's** code tool (the news report and
+  market monitor, What's next, the email brief; `agent/longtask.rs`) may run a **subagent**, JSON in and JSON out: a
+  fixed instruction in code, the assembled data as JSON input, read-only tools only where its spec lists them, and an
+  answer that must be JSON matching the spec's schema — checked in code, asked once more when it does not fit, then
+  the spec's code default. The subagent's prose never decides a step; code acts on its checked JSON only.
 - **Output:** the model interprets the code tool's JSON output and writes what the user reads.
 - **Language vs. pages:** natural language (the user's words, mail text, a page's prose, the model's own replies) is
   processed only by the model. A known website and its HTML is processed by code: form functions with fixed input ids,

@@ -2,8 +2,9 @@
 the user asks Main for a short story and watches the reply bubble while it is written. Only what the user sees is
 checked: the text appears in the bubble bit by bit, well before the answer is finished, each piece is the beginning of
 the final answer, and the final answer is what streamed — with no <think> tags anywhere. Then a request that needs a
-tool first (a web search, then a short poem): whatever the model says while it calls the tool never shows in the bubble
-as if it were the answer — every text the bubble showed is the beginning of the final answer.
+tool first (a web search, then a short poem): what the model says while it calls the tool (the stream carries that text
+before the call itself) is hidden the moment its tool call arrives, and the answer's own stream replaces it — the bubble
+ends on the final answer's beginning, never on the commentary.
 
 Settings → Models points straight at the endpoint (no timing proxy, so the stream is the provider's own). Some
 providers behind a gateway hand the whole stream over in one piece (the gateway's `openai/…` route does; `openai-codex/…`
@@ -76,9 +77,17 @@ async def main():
         final = norm(re.sub(r"[*_`#]", "", a.text))
         texts = [norm(re.sub(r"[*_`#]", "", t)) for _, t in seen]   # the live bubble may show markdown before it is rendered
         check("tool first: the answer is on the page (not empty)", not a.timed_out and bool(final.strip()), (a.timed_out, final[:200]))
-        bad = [t for t in texts if not final.startswith(t[:-12] if len(t) > 24 else t[:12])]
-        check("tool first: nothing the model said while calling the tool showed in the bubble as the answer (every text is the answer's beginning)",
-              not bad, ([b[:120] for b in bad][:3], final[:120]))
+        # the model's commentary on a tool-calling turn streams before the tool call does, so it may show until the call
+        # arrives; the page hides it then (`calls`), and the answer replaces it: whatever the bubble shows after the
+        # last commentary is the answer's beginning (2026-11-07: "The Eiffel Tower is 330 metres…" with a browser_read,
+        # then the poem). The answer may arrive in one piece and never be sampled (the gateway hands `openai/…` replies
+        # over whole, 2026-11-08): then nothing follows the commentary, and that is not a failure.
+        is_answer = lambda t: final.startswith(t[:-12] if len(t) > 24 else t[:12])
+        last_other = max((i for i, t in enumerate(texts) if not is_answer(t)), default=-1)
+        after = texts[last_other + 1:]
+        check("tool first: once the answer shows in the bubble, nothing but the answer follows (the commentary of the tool-calling turn never comes back)",
+              all(is_answer(t) for t in after),
+              ([t[:120] for t in texts if not is_answer(t)][:3], [t[:80] for t in after][:3], final[:120]))
         check("tool first: no <think> tags", not THINK.search(a.text) and not any(THINK.search(t) for t in texts), a.text[:200])
 
 

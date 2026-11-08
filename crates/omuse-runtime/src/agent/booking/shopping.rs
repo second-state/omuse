@@ -1,4 +1,4 @@
-//! `shop_order` by API (the Shopping bot; docs/sites/shopify.md): no page is opened and nothing is filled in a browser.
+//! `shop_order` by API (the Money bot's shopping; docs/sites/shopify.md): no page is opened and nothing is filled in a browser.
 //!
 //! 1. Search: `shop_search` — the store providers for the user's location (Shopify's Global Catalog first; only the
 //!    stores the user named when they named some), in parallel, the offers merged, each price also in the user's
@@ -12,7 +12,7 @@
 //! 4. A pick to buy: the store's checkout for that variant (the catalog's `checkout_url`, Shopify's cart link), else
 //!    the product page (`status: link`) — the user pays there, in their own browser.
 //!
-//! No page is ever opened (the Shopping bot has no browser): a shop's link the user gave is reported back as not
+//! No page is ever opened (shopping has no browser): a shop's link the user gave is reported back as not
 //! searched (`not_covered`) — only the providers' stores are searched.
 
 use omuse_common::util::get_str;

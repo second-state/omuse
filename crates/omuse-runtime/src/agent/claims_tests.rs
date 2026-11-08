@@ -1520,6 +1520,133 @@ fn th_buy_answers(approve: bool) -> impl Fn(&str, &Value) -> String {
     }
 }
 
+/// `th_buy_answers`, with the first `stops` fills of each named stage stopped (the step did not open in time).
+fn th_slow_answers(stops: &'static [(&'static str, usize)]) -> impl Fn(&str, &Value) -> String {
+    let inner = th_buy_answers(true);
+    let seen = std::cell::RefCell::new(std::collections::HashMap::<String, usize>::new());
+    move |name: &str, a: &Value| -> String {
+        if name == "form_fill" {
+            let stage = sget(a, "stage");
+            let mut seen = seen.borrow_mut();
+            let n = seen.entry(stage.clone()).or_insert(0);
+            *n += 1;
+            if let Some((_, limit)) = stops.iter().find(|(s, _)| *s == stage) {
+                if *n <= *limit {
+                    return json!({"url": "https://affinity.tipinsure.com/Tourist/ta_step_2/inter",
+                        "filled": [{"op": "require", "field": stage, "ok": false, "stop": true,
+                                    "why": format!("{stage}: the step did not open")}]})
+                    .to_string();
+                }
+            }
+        }
+        inner(name, a)
+    }
+}
+
+fn th_args() -> Value {
+    match check(
+        INSURANCE_BUY,
+        &json!({"market": "th", "destination": "Japan", "depart": "2026-12-03", "return": "2026-12-09",
+                "cover": "delay", "cover_at_least": 15000, "title": "mr", "family_name": "Jaidee",
+                "given_names": "Somchai", "address_house_no": "12", "address_road": "Sukhumvit",
+                "address_subdistrict": "Khlong Toei Nuea", "address_district": "Watthana",
+                "address_province": "Bangkok", "address_postcode": "10110"}),
+        &cx(&th_profile(), false, &[]),
+    ) {
+        Checked::Valid(v) => v,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn fwd_thailand_tries_a_step_that_did_not_open_once_more() {
+    // insurance_th_real 2026-11-08: Dhipaya's packages did not list within the wait in one run, its application page
+    // did not open in another — each step gets one more try (the quote on the page opened again), then the run stops
+    let p = th_profile();
+    let args = th_args();
+    let (mut t, from) = started(
+        Vec::new(),
+        "Buy FWD travel insurance for Japan",
+        INSURANCE_BUY,
+        &args,
+    );
+    let (calls, res) = run(
+        INSURANCE_BUY,
+        &args,
+        &mut t,
+        from,
+        &p,
+        th_slow_answers(&[("quote", 1), ("pick", 1)]),
+    );
+    assert_eq!(
+        &names(&calls)[..9],
+        [
+            "browser_navigate",
+            "form_fill",
+            "browser_navigate",
+            "form_fill",
+            "browser_read_elements",
+            "present_choices",
+            "form_fill",
+            "form_fill",
+            "form_fill"
+        ]
+    );
+    assert_eq!(sget(&calls[3].args, "stage"), "quote");
+    assert_eq!(sget(&calls[6].args, "stage"), "pick");
+    assert_eq!(sget(&calls[7].args, "stage"), "pick");
+    assert_eq!(sget(&calls[8].args, "stage"), "details");
+    assert_eq!(res["status"], "payment_link");
+    // stopped twice: the run stops and says why, with what was quoted
+    let (mut t, from) = started(
+        Vec::new(),
+        "Buy FWD travel insurance for Japan",
+        INSURANCE_BUY,
+        &args,
+    );
+    let (calls, res) = run(
+        INSURANCE_BUY,
+        &args,
+        &mut t,
+        from,
+        &p,
+        th_slow_answers(&[("pick", 2)]),
+    );
+    assert_eq!(res["status"], "stopped", "{res}");
+    assert_eq!(
+        names(&calls).iter().filter(|n| **n == "form_fill").count(),
+        3
+    );
+    assert!(sget(&res, "why").contains("pick: the step did not open"));
+    assert!(crate::agent::show::lines(&res, false)
+        .join("\n")
+        .contains("Chosen: Backpack 2"));
+    let (mut t, from) = started(
+        Vec::new(),
+        "Buy FWD travel insurance for Japan",
+        INSURANCE_BUY,
+        &args,
+    );
+    let (calls, res) = run(
+        INSURANCE_BUY,
+        &args,
+        &mut t,
+        from,
+        &p,
+        th_slow_answers(&[("quote", 2)]),
+    );
+    assert_eq!(res["status"], "stopped", "{res}");
+    assert_eq!(
+        names(&calls),
+        [
+            "browser_navigate",
+            "form_fill",
+            "browser_navigate",
+            "form_fill"
+        ]
+    );
+}
+
 #[test]
 fn fwd_thailand_quotes_picks_and_after_the_approval_gives_the_payment_link() {
     // walked 2026-11-03 with fake data to Dhipaya's 2C2P page: the session lives in cookies, the payment link opens

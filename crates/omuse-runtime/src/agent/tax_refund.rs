@@ -198,7 +198,7 @@ pub static SCHEMES: &[Scheme] = &[
         how: "",
         paid: "",
         unverified: "",
-        links: &[("Brand Hong Kong — no sales tax", "http://www.brandhk.gov.hk/en/only-in-hong-kong/unique-advantages")],
+        links: &[("Brand Hong Kong — no sales tax", "https://www.brandhk.gov.hk/en/only-in-hong-kong/unique-advantages")],
     },
     Scheme {
         iso: "MO",
@@ -300,6 +300,59 @@ pub fn tax_refund_rules(args: &Value) -> Value {
 mod tests {
     use super::*;
 
+    /// Each city guide's "Arrival card and tax" section carries its country's arrival card (the official site of
+    /// `driver::CARDS`) and its tax refund's official links from this table, as written by the guides' generator (`tests/city_guides_border.py`)
+    /// (the user, 2026-11-07: the requirement and the link in every city guide). A table change fails here until the
+    /// guides are written again.
+    #[test]
+    fn every_city_guide_has_its_countrys_arrival_card_and_tax_refund_from_the_tables() {
+        let skills = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
+        let cities = [
+            ("bangkok", "TH"),
+            ("beijing", "CN"),
+            ("chengdu", "CN"),
+            ("guangzhou", "CN"),
+            ("hanoi", "VN"),
+            ("ho-chi-minh-city", "VN"),
+            ("hong-kong", "HK"),
+            ("kuala-lumpur", "MY"),
+            ("osaka", "JP"),
+            ("seoul", "KR"),
+            ("shanghai", "CN"),
+            ("shenzhen", "CN"),
+            ("singapore", "SG"),
+            ("taipei", "TW"),
+            ("tokyo", "JP"),
+        ];
+        for (city, iso) in cities {
+            let text = std::fs::read_to_string(skills.join(city).join("SKILL.md")).unwrap();
+            let sec = text
+                .split("## Arrival card and tax")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{city}: no Arrival card and tax section"))
+                .split("\n## ")
+                .next()
+                .unwrap()
+                .to_string();
+            let country = crate::places::country(iso).map(|c| c.name).unwrap_or("");
+            match super::super::driver::CARDS
+                .iter()
+                .find(|c| crate::places::iso_of(c.country) == iso || c.country == country)
+            {
+                Some(card) => assert!(
+                    sec.contains(card.start_url),
+                    "{city}: {} missing",
+                    card.start_url
+                ),
+                None => assert!(sec.contains("none to file"), "{city}: says no card"),
+            }
+            let s = scheme_of(iso).unwrap_or_else(|| panic!("{city}: no scheme for {iso}"));
+            for (_, url) in s.links.iter().take(2) {
+                assert!(sec.contains(url), "{city}: {url} missing");
+            }
+        }
+    }
+
     #[test]
     fn the_table_answers_by_country_or_city_with_its_official_links() {
         let r = tax_refund_rules(&json!({"countries": ["Tokyo", "KR", "Malaysia", "Atlantis"]}));
@@ -318,7 +371,7 @@ mod tests {
         // every link of the table is an https / http official address
         for s in SCHEMES {
             for (_, u) in s.links {
-                assert!(u.starts_with("https://") || u.starts_with("http://"), "{u}");
+                assert!(u.starts_with("https://"), "{u}");
             }
         }
     }

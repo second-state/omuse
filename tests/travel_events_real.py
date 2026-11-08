@@ -45,11 +45,12 @@ async def main():
 
         a = await u.ask("Are there any jazz concerts in Tokyo this weekend? Give me a link to book one.", label="specific", timeout=900)
         by_travel(a, "specific")
-        # code appends the ticket links when Google Events has the user's words; when it has only the city's events (or
-        # nothing: web search) the answer links the matching events' pages itself
+        # code appends the ticket links when Google Events has the user's words; whether a jazz concert with a ticket
+        # page exists for "this weekend" is live data (2026-11-08, a Sunday: Google listed seven unrelated events without
+        # links and the answer said so), so the link check is only on the broader scenarios below (the user, 2026-11-08:
+        # keep the basic checks for what cannot be tested deterministically)
         page = [x for x in a.block_links + a.links if x.startswith("https://") and "google." not in x]
-        check("specific: the answer links at least one page to book or see the events (https, not Google)", bool(page),
-              (a.block[:800], a.block_links, a.links))
+        print(f"INFO specific: pages to book or see the events {page}")
 
         # Google Events has this one (Concerts in Tokyo: 9 events, 6 with ticket links on 2026-11-04): code appends them
         a = await u.ask("Any concerts in Tokyo this week? I'd like to book tickets.", label="concerts", timeout=900)

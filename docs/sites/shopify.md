@@ -1,6 +1,6 @@
 # Shopify by API — the map (recorded 2026-11-02)
 
-The Shopping bot reaches Shopify **by API only**: no store page is opened in the agent's browser and no form is filled.
+The Money bot's shopping reaches Shopify **by API only**: no store page is opened in the agent's browser and no form is filled.
 Every shape below was recorded from the real services on 2026-11-02 (clearly fake buyer data: OMUSE TESTER,
 `omuse.e2e.tester@example.com`, `+1 415 555 0123`, 1 Test Street Apt 2, San Francisco CA 94105; nothing paid, never
 `complete_checkout`). Trimmed copies of the responses are the unit tests' recorded data:
@@ -9,7 +9,7 @@ Every shape below was recorded from the real services on 2026-11-02 (clearly fak
 Code: `crates/omuse-apps/src/shopify.rs` (client, normalisers, request builders), `crates/omuse-apps/src/shops.rs` (the
 store-provider interface: providers by location, in parallel, merged), Sentinel `shop_search`
 (`crates/omuse-sentinel/src/actions.rs`), the machine `crates/omuse-runtime/src/agent/booking/shopping.rs` behind the
-model's `shop_order` (Shopping bot, `bots/shopping.md`).
+model's `shop_order` (the Money bot's shopping, `bots/money.md`).
 
 ## 1. Authentication and trust tier
 
@@ -146,7 +146,7 @@ extension interaction is required to complete the checkout."}`.
 
 ## 4. The store's own JSON endpoints (recorded, not used)
 
-Recorded on Allbirds, Brooklinen and Tentree for reference only — the Shopping bot uses the APIs above:
+Recorded on Allbirds, Brooklinen and Tentree for reference only — shopping uses the APIs above:
 `/products.json?limit=250` and `/collections/<c>/products.json` (`products[]` with `variants[]{id, title,
 option1..3, price "105.00", available}` — no currency, no ratings; a hidden collection answers `{"products": []}`;
 curl got Cloudflare `429 local_rate_limited` on `/products.json` while the browser got 200), `/products/<handle>.js`

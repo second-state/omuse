@@ -477,6 +477,56 @@ their phone."
     })
 }
 
+/// FWD Singapore's purchase goes on from the saved quote's link, on any device (the user, 2026-11-02): once the insurance
+/// machine has saved the quote in this conversation, a `browser_request_takeover` the model makes in an FWD insurance
+/// run (the skill loaded or `insurance_buy` called since the user's last message) is refused — there is nothing to hand
+/// over in our browser (insurance_real 2026-11-08: the model handed the summary page over before retrying the quote).
+/// A hand-over made by code passes.
+pub fn saved_quote_guard(transcript: &[Value], call: &ToolCall) -> Option<String> {
+    if call.name != "browser_request_takeover" || code_call(call) {
+        return None;
+    }
+    let last_user = transcript
+        .iter()
+        .rposition(|m| get_str(m, "role") == "user")
+        .unwrap_or(0);
+    let fwd_run = transcript[last_user..]
+        .iter()
+        .flat_map(tool_calls)
+        .any(|tc| {
+            let (name, args) = stored_call(tc);
+            name == super::claims::INSURANCE_BUY
+                || (name == "load_skill" && sget(&args, "name") == "fwd-travel-insurance")
+        });
+    if !fwd_run {
+        return None;
+    }
+    let result_ids: Vec<String> = transcript
+        .iter()
+        .flat_map(tool_calls)
+        .filter(|tc| {
+            stored_call(tc).0
+                == format!(
+                    "{}{}",
+                    super::claims::INSURANCE_BUY,
+                    super::workflow::RESULT_SUFFIX
+                )
+        })
+        .map(|tc| get_str(tc, "id"))
+        .collect();
+    let saved = transcript.iter().any(|m| {
+        get_str(m, "role") == "tool"
+            && result_ids.contains(&get_str(m, "tool_call_id"))
+            && serde_json::from_str::<Value>(&content_of(m))
+                .ok()
+                .is_some_and(|v| get_str(&v, "status") == "saved")
+    });
+    saved.then(|| {
+        "ERROR: [saved_quote] 没有交接 — 报价已保存在 FWD，用户用回答里的链接在任何设备上继续（资格声明、详情、付款都是用户自己的步骤）。 Not handed over: the quote is saved with FWD and the user continues on its link in the answer, on any device — the eligibility statements, the details and Pay are their own steps. Answer with the saved quote's link."
+            .to_string()
+    })
+}
+
 /// Whether the run loaded the Hong Kong departure-tax refund skill.
 fn apdt_run(transcript: &[Value]) -> bool {
     transcript.iter().flat_map(tool_calls).any(|tc| {
@@ -823,7 +873,7 @@ fn purchase_approved(transcript: &[Value], calls: &[(String, String)]) -> bool {
 /// The files the run wrote for the user to receive (`files_write`, `make_pdf`, `make_xlsx`, `make_docx` with
 /// `deliver_as`, without an error) that never reached the chat (`send_file`): the runtime sends them before the answer
 /// (chat_real 2026-10-31: "as a Markdown file I can download" — written, never sent). Read from the calls' JSON.
-pub fn unsent_files(transcript: &[Value]) -> Vec<String> {
+pub fn unsent_files(transcript: &[Value], answer: &str) -> Vec<String> {
     let calls: Vec<(String, String, Value)> = transcript
         .iter()
         .flat_map(tool_calls)
@@ -850,9 +900,6 @@ pub fn unsent_files(transcript: &[Value]) -> Vec<String> {
         .collect();
     let mut out: Vec<String> = Vec::new();
     for (id, n, a) in &calls {
-        if !delivers(a) {
-            continue;
-        }
         let path = match n.as_str() {
             "files_write" => sget(a, "path"),
             "make_pdf" | "make_xlsx" | "make_docx" => {
@@ -865,10 +912,49 @@ pub fn unsent_files(transcript: &[Value]) -> Vec<String> {
             }
             _ => continue,
         };
-        if path.is_empty() || !ok(id) || sent.iter().any(|s| s == &path) || out.contains(&path) {
+        // asked for: the call's `deliver_as`, or the answer linking the file — the model's own hand-over, as a link
+        // code cannot serve (chat_real 2026-11-08: "[Download the Markdown file](workspace:/packing-lists/….md)" with
+        // no deliver_as, and no card)
+        if path.is_empty() || !(delivers(a) || answer.contains(path.as_str())) {
+            continue;
+        }
+        if !ok(id) || sent.iter().any(|s| s == &path) || out.contains(&path) {
             continue;
         }
         out.push(path);
+    }
+    out
+}
+
+/// The paths of the files the run wrote with a file tool (`files_write`, `make_pdf` / `make_xlsx` / `make_docx`) and
+/// that were written (no error), in order, without repeats.
+pub fn written_files(transcript: &[Value]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for m in transcript {
+        for tc in tool_calls(m) {
+            let (n, a) = stored_call(tc);
+            let path = match n.as_str() {
+                "files_write" => sget(&a, "path"),
+                "make_pdf" | "make_xlsx" | "make_docx" => {
+                    let o = sget(&a, "output");
+                    if o.is_empty() {
+                        sget(&a, "path")
+                    } else {
+                        o
+                    }
+                }
+                _ => continue,
+            };
+            let id = get_str(tc, "id");
+            let ok = transcript.iter().any(|r| {
+                get_str(r, "role") == "tool"
+                    && get_str(r, "tool_call_id") == id
+                    && !content_of(r).starts_with("ERROR")
+            });
+            if !path.is_empty() && ok && !out.contains(&path) {
+                out.push(path);
+            }
+        }
     }
     out
 }
